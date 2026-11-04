@@ -5,14 +5,16 @@ on:
   push:
     branches:
       - main
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Cancel superseded pull request runs; retain every main-branch run.
+# Cancel superseded pull request runs; retain every main-branch run. The prefix is literal because
+# in a wheels.yml call github.workflow names the caller, and sharing its group is a deadlock.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:

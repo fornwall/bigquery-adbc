@@ -98,14 +98,21 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
+  # Calling CI tests the tagged commit itself, which need not have reached main.
+  ci:
+    name: CI
+    if: github.ref_type == 'tag'
+    uses: ./.github/workflows/ci.yml
+
   # PyPI trusts this workflow and environment through Trusted Publishing, so no token is stored.
-  # PyPI versions are immutable: publish only after every platform has built and passed its tests.
+  # PyPI versions are immutable: publish only after CI and every platform build have passed.
   publish:
     name: Publish to PyPI
     if: github.ref_type == 'tag'
     needs:
       - build-sdist
       - build-wheels
+      - ci
     runs-on: ubuntu-26.04
     environment:
       name: pypi
@@ -120,4 +127,7 @@ jobs:
           merge-multiple: true
           path: dist
 
+      # skip-existing lets a re-run finish an upload that stopped partway.
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          skip-existing: true

@@ -59,15 +59,16 @@ to new source material or replace review of unusual license terms.
 ## Releasing
 
 Pushing a `vX.Y.Z` tag runs the [wheel workflow](.github/workflows/wheels.yml), which publishes the
-wheels and source distribution to PyPI once every platform has built and passed its tests. The tag
-must match the `version` in `Cargo.toml`, the package's single version source:
+wheels and source distribution to PyPI once CI and every platform build have passed on the tagged
+commit. The tag must match the `version` in `Cargo.toml`, the package's single version source:
 
 ```sh
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-PyPI never accepts a version twice, so a bad release needs a new version. Publishing uses
+PyPI never accepts a version twice, so a bad release needs a new version; re-running the workflow
+only finishes an interrupted upload. Publishing uses
 [Trusted Publishing](https://docs.pypi.org/trusted-publishers/) from the `pypi` GitHub environment,
 which only `v*` tags can deploy to; no token is stored. Other tag forms, including pre-releases, do
 not publish.
