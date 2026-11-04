@@ -307,7 +307,11 @@ fn upload_through(
             match endpoint {
                 UploadEndpoint::Paced { bytes, pause } => {
                     while seen < size {
-                        seen += socket.read(&mut buffer[..bytes]).await.unwrap();
+                        // A client that timed out closes or resets; the test reports its error.
+                        let Ok(read @ 1..) = socket.read(&mut buffer[..bytes]).await else {
+                            return;
+                        };
+                        seen += read;
                         tokio::time::sleep(pause).await;
                     }
                     socket
@@ -350,16 +354,20 @@ fn upload_through(
 
 /// A seed can take far longer to send than any fixed deadline, so an upload that keeps moving
 /// is never timed out, however long it takes.
+///
+/// The transport takes frames as the kernel frees buffer space, so gaps between frames grow with
+/// the buffer (megabytes on macOS) over the read rate. The body and rate keep them under the
+/// window.
 #[test]
 fn an_upload_that_keeps_moving_outlasts_the_progress_timeout() {
-    let progress_timeout = Duration::from_millis(500);
+    let progress_timeout = Duration::from_secs(1);
     let started = std::time::Instant::now();
     let status = upload_through(
         UploadEndpoint::Paced {
-            bytes: 64 * 1024,
+            bytes: 256 * 1024,
             pause: Duration::from_millis(5),
         },
-        32 << 20,
+        128 << 20,
         progress_timeout,
     )
     .unwrap();
