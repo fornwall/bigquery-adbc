@@ -5,8 +5,8 @@
 
 An [Arrow Database Connectivity (ADBC)](https://arrow.apache.org/adbc/current/format/specification.html)
 driver for Google BigQuery, written in Rust. Build it as a shared library for ADBC driver managers,
-install the Python package from source, or use it as a Rust dependency. Nothing is published to
-crates.io or PyPI yet.
+install the Python package from PyPI, or use it as a Rust dependency from git. The driver is not on
+crates.io yet.
 
 ## Status
 
@@ -32,16 +32,16 @@ See the [known limitations](docs/REVIEW.md) and the
 
 ## Python quickstart
 
-Install [Rust with rustup](https://rustup.rs/) and Python 3.11 or newer, then run these commands
-from the repository root. The package build uses the pinned [Rust toolchain](rust-toolchain.toml):
+Python 3.11 or newer is required:
 
 ```sh
 python3 -m venv .venv
-. .venv/bin/activate                    # Windows: .venv\Scripts\Activate.ps1
-python -m pip install "./python[dbapi]" # compiles the Rust driver
+. .venv/bin/activate                         # Windows: .venv\Scripts\Activate.ps1
+python -m pip install "bigquery-adbc[dbapi]"
 ```
 
-The `dbapi` extra installs PyArrow; the `pandas` extra also adds pandas for `cursor.fetch_df()`.
+The `dbapi` extra installs PyArrow; the `pandas` extra also adds pandas for `cursor.fetch_df()`. To
+build from source instead, see the [Python package](python/README.md#install).
 Configure Application Default Credentials (ADC) with the Google Cloud CLI:
 
 ```sh

@@ -8,17 +8,22 @@ See the [known limitations](https://github.com/fornwall/bigquery-adbc/blob/main/
 
 ## Install
 
-Nothing is published to PyPI yet. Install [Rust](https://rustup.rs/), then run this from the
-[repository](https://github.com/fornwall/bigquery-adbc) root to compile the native driver and
-install the package. The build uses the repository's pinned Rust toolchain:
+```sh
+python3 -m pip install "bigquery-adbc[dbapi]"
+```
+
+The `dbapi` extra installs PyArrow; the `pandas` extra also adds pandas for `cursor.fetch_df()`. The
+low-level `bigquery_adbc.connect()` API needs neither.
+
+To build from source, install [Rust](https://rustup.rs/), then run this from the
+[repository](https://github.com/fornwall/bigquery-adbc) root. The build uses the repository's pinned
+Rust toolchain:
 
 ```sh
 python3 -m pip install "./python[dbapi]"
 ```
 
-To install a built wheel, replace `./python` with its path. The `dbapi` extra installs PyArrow; the
-`pandas` extra also adds pandas for `cursor.fetch_df()`. The low-level `bigquery_adbc.connect()` API
-needs neither.
+To install a built wheel, replace `./python` with its path.
 
 ## Usage
 
@@ -121,7 +126,7 @@ them to `python/dist/`.
 Wheels include `LICENSE`, `NOTICE`, the complete collected dependency license texts, and the
 Rust standard-library notices under their `.dist-info/licenses/` directory. Source distributions
 carry the same bundle. Builds reject a bundle that no longer matches the dependency manifests,
-lockfile, or Rust version. See [distribution packaging](../CONTRIBUTING.md#distribution-packaging)
+lockfile, or Rust version. See [distribution packaging](https://github.com/fornwall/bigquery-adbc/blob/main/CONTRIBUTING.md#distribution-packaging)
 for regeneration and native release archives.
 
 Wheel builds run `cargo rustc --release --locked --lib --crate-type cdylib`. The build checks the
