@@ -1,0 +1,6 @@
+order_id,customer_id,ordered_at,status,shipping_amount
+101,1,2026-01-10 10:00:00+00,completed,5.50
+102,1,2026-01-11 11:30:00+00,cancelled,0.00
+103,2,2026-01-10 15:15:00+00,completed,3.25
+104,3,2026-01-12 08:00:00+00,completed,4.00
+105,4,2026-01-12 09:45:00+00,pending,2.00

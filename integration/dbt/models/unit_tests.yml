@@ -1,0 +1,86 @@
+version: 2
+
+unit_tests:
+  - name: stg_customers_trims_and_normalizes_text
+    model: stg_customers
+    given:
+      - input: ref('customers')
+        rows:
+          - {customer_id: 9, customer_name: "  Ada Lovelace  ", region: NORTH, signup_date: '2026-03-01', is_active: true}
+    expect:
+      rows:
+        - {customer_id: 9, customer_name: "Ada Lovelace", region: north, signup_date: '2026-03-01', is_active: true}
+
+  - name: stg_orders_classifies_revenue_states
+    model: stg_orders
+    given:
+      - input: ref('orders')
+        rows:
+          - {order_id: 1, customer_id: 1, ordered_at: '2026-01-01 01:00:00+00', status: COMPLETED, shipping_amount: 1.25}
+          - {order_id: 2, customer_id: 1, ordered_at: '2026-01-02 01:00:00+00', status: CANCELLED, shipping_amount: 0}
+          - {order_id: 3, customer_id: 1, ordered_at: '2026-01-03 01:00:00+00', status: PENDING, shipping_amount: 2}
+    expect:
+      rows:
+        - {order_id: 1, status: completed, revenue_state: recognized}
+        - {order_id: 2, status: cancelled, revenue_state: lost}
+        - {order_id: 3, status: pending, revenue_state: open}
+
+  - name: int_order_items_calculates_discounts
+    model: int_order_items
+    given:
+      - input: ref('order_items')
+        rows:
+          - {order_id: 1, line_number: 1, sku: sku-x, quantity: 3, unit_price: 4.50, discount_amount: 1.50}
+    expect:
+      rows:
+        - {order_id: 1, line_number: 1, sku: SKU-X, quantity: 3, unit_price: 4.50, gross_amount: 13.50, discount_amount: 1.50, net_amount: 12.00}
+
+  - name: dim_customers_aggregates_completed_value
+    model: dim_customers
+    given:
+      - input: ref('stg_customers')
+        rows:
+          - {customer_id: 1, customer_name: Alice, region: north, signup_date: '2026-01-01', is_active: true}
+      - input: ref('fct_orders')
+        rows:
+          - {order_id: 10, customer_id: 1, ordered_at: '2026-01-02 00:00:00+00', status: completed, order_total: 12.50}
+          - {order_id: 11, customer_id: 1, ordered_at: '2026-01-03 00:00:00+00', status: cancelled, order_total: 99.00}
+    expect:
+      rows:
+        - {customer_id: 1, customer_name: Alice, region: north, order_count: 2, completed_order_count: 1, lifetime_value: 12.50}
+
+  - name: customer_order_rankings_keeps_two_latest_orders
+    model: customer_order_rankings
+    given:
+      - input: ref('fct_orders')
+        rows:
+          - {customer_id: 1, order_id: 10, ordered_at: '2026-01-01 00:00:00+00', order_total: 10}
+          - {customer_id: 1, order_id: 11, ordered_at: '2026-01-02 00:00:00+00', order_total: 20}
+          - {customer_id: 1, order_id: 12, ordered_at: '2026-01-03 00:00:00+00', order_total: 30}
+    expect:
+      rows:
+        - {customer_id: 1, order_id: 12, recency_rank: 1}
+        - {customer_id: 1, order_id: 11, recency_rank: 2}
+
+  - name: fct_orders_rolls_up_line_items_and_shipping
+    model: fct_orders
+    given:
+      - input: ref('stg_orders')
+        format: sql
+        rows: |
+          select 1 as order_id, 7 as customer_id,
+                 timestamp '2026-01-10 00:00:00' as ordered_at,
+                 date '2026-01-10' as order_date, 'completed' as status,
+                 'recognized' as revenue_state, numeric '2.00' as shipping_amount
+      - input: ref('int_order_items')
+        format: sql
+        rows: |
+          select 1 as order_id, 1 as line_number, 'SKU-A' as sku, 2 as quantity,
+                 numeric '5.00' as unit_price, numeric '10.00' as gross_amount,
+                 numeric '1.00' as discount_amount, numeric '9.00' as net_amount
+          union all
+          select 1, 2, 'SKU-B', 1, numeric '3.00', numeric '3.00',
+                 numeric '0.00', numeric '3.00'
+    expect:
+      rows:
+        - {order_id: 1, customer_id: 7, item_count: 2, gross_amount: 13.00, discount_amount: 1.00, item_net_amount: 12.00, order_total: 14.00}

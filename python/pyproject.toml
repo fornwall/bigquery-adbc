@@ -1,0 +1,182 @@
+[build-system]
+requires = [
+    "packaging>=26.3",
+    "setuptools>=84.2.1",
+]
+build-backend = "build_backend"
+backend-path = ["."]
+
+[project]
+name = "bigquery-adbc"
+dynamic = ["version"]
+description = "Python bindings for the BigQuery ADBC driver"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+# PEP 639 requires files inside the project directory. Keep copies instead of
+# symlinks for Windows checkouts; test_build_backend.py checks them for drift.
+license-files = ["LICENSE", "NOTICE", "licenses/THIRD_PARTY_LICENSES.txt", "licenses/RUST-STD.html"]
+authors = [
+    { name = "Fredrik Fornwall" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Topic :: Database :: Front-Ends",
+    "Typing :: Typed",
+]
+dependencies = [
+    "adbc-driver-manager>=1.13,<2",
+]
+
+[project.optional-dependencies]
+# The manager's dbapi extra also installs pandas; this Arrow API needs only PyArrow.
+dbapi = [
+    "pyarrow>=26.0.0",
+]
+# Everything needed for `Cursor.fetch_df()`, including the DB-API facade.
+pandas = [
+    "pandas",
+    "pyarrow>=26.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/fornwall/bigquery-adbc"
+Repository = "https://github.com/fornwall/bigquery-adbc"
+Issues = "https://github.com/fornwall/bigquery-adbc/issues"
+
+[dependency-groups]
+dev = [
+    "packaging>=26.3",
+    "pyarrow>=26.0.0",
+    "pyrefly>=1.4.0",
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+    "setuptools>=84.2.1",
+    "types-setuptools>=84.0.0.20261006",
+]
+
+[tool.uv]
+# The backend reads the version and compiles the driver from the parent tree.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "setup.py" },
+    { file = "build_backend.py" },
+    { file = "_build_support.py" },
+    { file = "_native_wheel.py" },
+    { file = "_licenses.py" },
+    { file = "licenses/*" },
+    { file = "src/**/*.py" },
+    { file = "src/**/py.typed" },
+    { file = "README.md" },
+    { file = "LICENSE" },
+    { file = "NOTICE" },
+    { file = "../LICENSE" },
+    { file = "../NOTICE" },
+    { file = "../Cargo.toml" },
+    { file = "../Cargo.lock" },
+    { file = "../rust-toolchain.toml" },
+    { file = "../src/**/*.rs" },
+    { env = "BIGQUERY_ADBC_BUILD_LIBRARY" },
+    { env = "RUSTFLAGS" },
+    { env = "CARGO_BUILD_TARGET" },
+]
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.pyrefly]
+python-version = "3.11"
+# Fail local and CI checks on warnings as well as errors.
+min-severity = "warn"
+strict-callable-subtyping = true
+strict-partial-subtyping = true
+project-includes = [
+    "src",
+    "_build_support.py",
+    "_native_wheel.py",
+    "_licenses.py",
+    "build_backend.py",
+    "setup.py",
+    # Type-checks the public API's accepted argument types.
+    "tests/test_api.py",
+    "../integration/duckdb/extension.py",
+    "../integration/duckdb/profiles.py",
+    "../integration/duckdb/sql.py",
+    "../integration/dbt/run.py",
+    "../integration/dbt/benchmark.py",
+    "../integration/dbt/benchmark_metadata.py",
+    "../integration/dbt/local_driver.py",
+]
+search-path = [
+    "src",
+    ".",
+    "../integration/foundry-validation",
+    "../integration/dbt",
+    "../integration/duckdb",
+]
+# Integration dependencies live in their own uv projects. The published package
+# and build backend are checked against dependencies installed in this project.
+ignore-missing-imports = ["adbc_drivers_validation.*", "duckdb.*", "google.*"]
+
+[tool.pyrefly.errors]
+direct-abstract-base-instantiation = "error"
+method-assign = "error"
+open-unpacking = "error"
+potential-bad-keyword-argument = "error"
+unreachable = "error"
+unused-ignore = "error"
+unused-type-ignore = "error"
+
+[tool.pytest.ini_options]
+markers = [
+    "bigquery: requires real BigQuery with ADC, or explicitly configured emulator endpoints",
+]
+
+[tool.cibuildwheel]
+# The package and native driver do not use the Python ABI, so one Python build creates the
+# py3-none wheel for every supported Python 3 version.
+build = "cp311-*"
+skip = "*-musllinux_*"
+archs = ["native"]
+build-frontend = "uv"
+build-verbosity = 1
+environment = { RUSTUP_TOOLCHAIN="1.99.1" }
+test-requires = ["packaging>=26.3", "pytest", "setuptools>=84.2.1"]
+test-extras = ["dbapi"]
+test-command = [
+    "python {package}/tests/verify_built_wheel.py {wheel}",
+    "python -m pytest -q {package}/tests/test_installed_wheel.py",
+]
+
+[tool.cibuildwheel.linux]
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+before-all = "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.99.1"
+# Fixed container paths allow registry and git-checkout path remapping. RUSTFLAGS
+# also includes --icf=all because it overrides any flags from Cargo configuration;
+# only x86-64's default linker, rust-lld, accepts it.
+# Platform environments replace the top-level table, so repeat RUSTUP_TOOLCHAIN.
+# Size measurements are in docs/BINARY-SIZE.md.
+environment = { CARGO_HOME="/opt/bigquery-adbc/cargo", CARGO_TARGET_DIR="/tmp/bigquery-adbc-target", RUSTUP_HOME="/opt/bigquery-adbc/rustup", RUSTUP_TOOLCHAIN="1.99.1", PATH="/opt/bigquery-adbc/cargo/bin:$PATH", RUSTFLAGS="--remap-path-prefix=/opt/bigquery-adbc/cargo/registry/src/= --remap-path-prefix=/opt/bigquery-adbc/cargo/git/checkouts/= -Clink-arg=-Wl,--icf=all" }
+
+# aarch64 links with GNU ld, which has no --icf. Appended assignments apply in order, so this
+# RUSTFLAGS replaces the Linux value above and every other variable stays.
+[[tool.cibuildwheel.overrides]]
+select = "*-manylinux_aarch64"
+inherit.environment = "append"
+environment = { RUSTFLAGS="--remap-path-prefix=/opt/bigquery-adbc/cargo/registry/src/= --remap-path-prefix=/opt/bigquery-adbc/cargo/git/checkouts/=" }
+
+[tool.cibuildwheel.macos]
+# delocate rejects the default 10.9 target: the Rust standard library targets 10.12.
+environment = { MACOSX_DEPLOYMENT_TARGET = "10.12" }

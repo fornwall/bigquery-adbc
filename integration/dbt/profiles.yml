@@ -1,0 +1,21 @@
+bigquery_adbc_integration:
+  target: integration
+  outputs:
+    integration:
+      type: bigquery
+      method: oauth
+      # The suite uses Google Cloud services, so ordinary gcloud ADC is sufficient.
+      scopes: ["https://www.googleapis.com/auth/cloud-platform"]
+      project: "{{ env_var('BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT') }}"
+      # Use the integration project for Cloud Storage quota instead of the ADC quota project.
+      quota_project: "{{ env_var('BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT') }}"
+      dataset: "{{ env_var('DBT_BIGQUERY_SCHEMA', 'bigquery_adbc_integration_local') }}"
+      location: "{{ env_var('DBT_BIGQUERY_LOCATION', 'US') }}"
+      threads: 4
+      job_execution_timeout_seconds: 300
+      job_retries: 1
+      # dbt-core 2.0 requires all three for a cluster submission. The cluster does not exist, so
+      # exotic_python_model uploads for real and then fails at Dataproc submission.
+      compute_region: "{{ env_var('DBT_BIGQUERY_COMPUTE_REGION', 'us-central1') }}"
+      gcs_bucket: "{{ env_var('DBT_BIGQUERY_GCS_BUCKET', env_var('BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT') ~ '-adbc-scratch') }}"
+      dataproc_cluster_name: "{{ env_var('DBT_BIGQUERY_DATAPROC_CLUSTER', 'bigquery-adbc-integration-absent-cluster') }}"

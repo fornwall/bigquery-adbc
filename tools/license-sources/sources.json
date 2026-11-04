@@ -1,0 +1,26 @@
+{
+  "flatbuffers 25.12.19": {
+    "revision": "7e163021e59cca4f8e1e35a7c828b5c6b7915953",
+    "files": {
+      "flatbuffers-LICENSE.txt": "https://raw.githubusercontent.com/google/flatbuffers/7e163021e59cca4f8e1e35a7c828b5c6b7915953/LICENSE"
+    }
+  },
+  "opentelemetry 0.33.1": {
+    "revision": "372ebbc74d4dba71bb9820732f57f7316b4e7a1e",
+    "files": {
+      "opentelemetry-LICENSE.txt": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-rust/372ebbc74d4dba71bb9820732f57f7316b4e7a1e/LICENSE"
+    }
+  },
+  "opentelemetry-semantic-conventions 0.33.1": {
+    "revision": "372ebbc74d4dba71bb9820732f57f7316b4e7a1e",
+    "files": {
+      "opentelemetry-LICENSE.txt": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-rust/372ebbc74d4dba71bb9820732f57f7316b4e7a1e/LICENSE"
+    }
+  },
+  "opentelemetry_sdk 0.33.1": {
+    "revision": "372ebbc74d4dba71bb9820732f57f7316b4e7a1e",
+    "files": {
+      "opentelemetry-LICENSE.txt": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-rust/372ebbc74d4dba71bb9820732f57f7316b4e7a1e/LICENSE"
+    }
+  }
+}

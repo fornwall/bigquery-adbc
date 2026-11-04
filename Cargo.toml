@@ -1,0 +1,387 @@
+[package]
+name = "bigquery-adbc"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+description = "An Arrow ADBC driver for Google BigQuery"
+license = "Apache-2.0"
+repository = "https://github.com/fornwall/bigquery-adbc"
+readme = "README.md"
+keywords = ["adbc", "arrow", "bigquery", "database", "google-cloud"]
+categories = ["database"]
+publish = false
+
+# Unused in code; listed only to set their release-level log caps.
+[package.metadata.cargo-machete]
+ignored = ["log", "tracing"]
+
+# The C ABI library is built on its own with `cargo rustc --lib --crate-type cdylib`. Declaring a
+# cdylib here too would make `cargo build` link one without the release profile's LTO.
+[lib]
+name = "adbc_driver_bigquery"
+crate-type = ["rlib"]
+
+[lints.rust]
+ffi_unwind_calls = "warn"
+missing_debug_implementations = "warn"
+missing_docs = "warn"
+unreachable_pub = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+unused_unsafe = "deny"
+unused_qualifications = "warn"
+
+[lints.clippy]
+# `expect`/`unreachable!` require an invariant proof; bare `unwrap` is banned.
+# FFI guards contain panics. Tests are exempted in `clippy.toml`.
+dbg_macro = "deny"
+exit = "deny"
+indexing_slicing = "warn"
+mem_forget = "deny"
+panic = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+# Performance: avoid allocations, copies, and oversized futures.
+cloned_instead_of_copied = "warn"
+collection_is_never_read = "warn"
+format_push_string = "warn"
+implicit_clone = "warn"
+inefficient_to_string = "warn"
+large_futures = "warn"
+large_include_file = "warn"
+large_stack_arrays = "warn"
+large_stack_frames = "warn"
+needless_collect = "warn"
+needless_pass_by_ref_mut = "warn"
+needless_pass_by_value = "warn"
+or_fun_call = "warn"
+readonly_write_lock = "warn"
+redundant_clone = "warn"
+string_add = "warn"
+trivially_copy_pass_by_ref = "warn"
+unnecessary_join = "warn"
+unused_async = "warn"
+# Correctness: numeric conversions must be visibly lossless or explicitly justified.
+cast_lossless = "warn"
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_sign_loss = "warn"
+# Reject subtle fallibility, nondeterminism, and unsafe representations.
+debug_assert_with_mut_call = "warn"
+fallible_impl_from = "warn"
+iter_over_hash_type = "warn"
+lossy_float_literal = "warn"
+non_send_fields_in_send_ty = "warn"
+path_buf_push_overwrite = "warn"
+read_zero_byte_vec = "warn"
+transmute_undefined_repr = "warn"
+uninhabited_references = "warn"
+# Safety contracts apply to private FFI helpers too (`check-private-items` in clippy.toml).
+missing_safety_doc = "deny"
+undocumented_unsafe_blocks = "deny"
+unnecessary_safety_doc = "warn"
+# Clarity and brevity.
+allow_attributes_without_reason = "warn"
+explicit_iter_loop = "warn"
+ignored_unit_patterns = "warn"
+items_after_statements = "warn"
+manual_let_else = "warn"
+map_unwrap_or = "warn"
+semicolon_if_nothing_returned = "warn"
+uninlined_format_args = "warn"
+unnecessary_wraps = "warn"
+use_self = "warn"
+wildcard_imports = "warn"
+
+[features]
+default = ["ffi"]
+ffi = []
+# Developer-only generation of the checked-in Python option constants.
+python-option-codegen = []
+# Synthetic fixtures for native benchmarks; excluded from shipped drivers.
+benchmark = []
+# Developer-only bridge from `fuzz/` to the crate-private decoders; excluded from shipped drivers.
+fuzz-shim = []
+
+[[bin]]
+name = "generate-python-options"
+path = "tools/generate_python_options.rs"
+required-features = ["python-option-codegen"]
+
+[[bench]]
+name = "rest_rows"
+harness = false
+required-features = ["benchmark"]
+
+[[bench]]
+name = "query_result"
+harness = false
+required-features = ["benchmark"]
+
+[[bench]]
+name = "normalize"
+harness = false
+required-features = ["benchmark"]
+
+[[bench]]
+name = "ipc"
+harness = false
+required-features = ["benchmark"]
+
+[dependencies]
+# Keep all ADBC crates on this lockstep revision.
+adbc_core = { git = "https://github.com/apache/arrow-adbc", rev = "aa2c1c2496d287e111d70d382e5d9af07568488b" }
+arrow-array = { version = "60.1.0", default-features = false, features = ["ffi"] }
+arrow-buffer = { version = "60.1.0", default-features = false }
+# Type-erased gathers avoid linking arrow-select's per-type kernels; see docs/BINARY-SIZE.md.
+arrow-data = { version = "60.1.0", default-features = false }
+arrow-schema = { version = "60.1.0", default-features = false }
+# The BigQuery-scoped IPC codec avoids linking the general-purpose arrow-ipc crate.
+flatbuffers = { version = "25.12.19", default-features = false }
+# Block decoding only; arrow_ipc_bigquery::compression parses the frames.
+lz4_flex = { version = "0.14.0", default-features = false }
+# LZ4 frame header, block and content checksums.
+twox-hash = { version = "2.1.5", default-features = false, features = ["xxhash32"] }
+# 0.23 matches the google-cloud and reqwest stacks; tonic pins 0.22.
+base64 = { version = "0.23.1", default-features = false }
+# Reference-counted request bodies avoid copying on retries.
+bytes = { version = "1.12.1", default-features = false }
+# Stream trait for CSV upload bodies.
+futures-core = { version = "0.3.34", default-features = false }
+
+# Keep Google clients on one revision. Disable the default aws-lc TLS provider to avoid
+# its CMake build and binary weight; src/runtime.rs installs rustls's ring provider.
+google-cloud-auth = { git = "https://github.com/googleapis/google-cloud-rust", rev = "5a2297f47973775e925ce49d37971b03ce358fba", default-features = false }
+google-cloud-bigquery = { git = "https://github.com/googleapis/google-cloud-rust", rev = "5a2297f47973775e925ce49d37971b03ce358fba", default-features = false }
+# REST uses src/rest and its compact models; bigquery-v2 is only a transitive dependency.
+google-cloud-gax = { git = "https://github.com/googleapis/google-cloud-rust", rev = "5a2297f47973775e925ce49d37971b03ce358fba" }
+# Header types for the static-token CredentialsProvider.
+http = { version = "1.5.0", default-features = false, features = ["std"] }
+# CSV uploads need the body trait, not reqwest's broader stream feature.
+http-body = { version = "1.1.0", default-features = false }
+libc = { version = "0.2.191", default-features = false }
+# Cap dependency logging in release builds; driver diagnostics use src/diag.rs.
+log = { version = "0.4.34", default-features = false, features = ["release_max_level_off"] }
+percent-encoding = { version = "2.3.2", default-features = false }
+# Proxy environment variables apply to REST and OAuth; system-proxy adds Windows and macOS
+# settings. No json feature: the driver uses serde_json directly.
+reqwest = { version = "0.13.5", default-features = false, features = ["http2", "rustls-no-provider", "system-proxy"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
+# Borrow nested metadata bytes instead of building an intermediate Value tree.
+serde_json = { version = "1.0.154", default-features = false, features = ["std", "raw_value"] }
+# YAML input for dbt-core 2.0's Dataproc batch option.
+serde_norway = { version = "0.9.42", default-features = false }
+tokio = { version = "1.54.1", default-features = false, features = ["rt-multi-thread", "sync"] }
+# ReaderStream bounds asynchronous CSV upload reads to one chunk at a time.
+tokio-util = { version = "0.7.20", default-features = false, features = ["io"] }
+# Both tracing and log caps are needed to remove dependency events; see docs/BINARY-SIZE.md.
+tracing = { version = "0.1.44", default-features = false, features = ["std", "release_max_level_off"] }
+
+[dev-dependencies]
+adbc_driver_manager = { git = "https://github.com/apache/arrow-adbc", rev = "aa2c1c2496d287e111d70d382e5d9af07568488b" }
+# Oracle for the type-erased gathers.
+arrow-select = { version = "60.1.0", default-features = false }
+# Independent IPC oracle and compressed test fixtures; excluded from the shipped driver.
+arrow-ipc = { version = "60.1.0", default-features = false, features = ["lz4"] }
+# Frame encoding for the LZ4 decoder's tests.
+lz4_flex = { version = "0.14.0", default-features = false, features = ["frame"] }
+# Entry-point type for ManagedDriver::load_static tests.
+adbc_ffi = { git = "https://github.com/apache/arrow-adbc", rev = "aa2c1c2496d287e111d70d382e5d9af07568488b" }
+# Cleartext HTTP/2 server for multiplexing tests.
+h2 = { version = "0.4.20", default-features = false }
+# Paused-clock tests reach upstream's token-cache refresh without waiting it out.
+tokio = { version = "1.54.1", default-features = false, features = ["test-util"] }
+
+[patch.crates-io]
+# Keep all Arrow crates on one snapshot, including the Google client's target-gated dependencies.
+arrow = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-arith = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-array = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-buffer = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-cast = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-cmp = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-data = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-ipc = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-ord = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-row = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-schema = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-select = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-string = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+
+# Keep file/line backtraces while reducing dependency build time and disk usage.
+[profile.dev.package."*"]
+debug = "line-tables-only"
+
+[profile.release]
+# Measured profile choices and rejected alternatives are recorded in docs/BINARY-SIZE.md.
+strip = true
+codegen-units = 1
+# The shipped library gets fat LTO as a cdylib-only target:
+# `cargo rustc --release --locked --lib --crate-type cdylib`.
+lto = "fat"
+# FFI guards turn arithmetic overflow into an error instead of silently wrapping.
+overflow-checks = true
+# Keep unwinding: panic = "abort" would kill the host instead of returning an ADBC error.
+
+# Dependencies keep overflow checks only where Arrow buffer arithmetic feeds unsafe indexing.
+# "*" excludes this package; a root-package override would disable stripping.
+[profile.release.package."*"]
+overflow-checks = false
+[profile.release.package.arrow-array]
+overflow-checks = true
+[profile.release.package.arrow-buffer]
+overflow-checks = true
+[profile.release.package.arrow-data]
+overflow-checks = true
+[profile.release.package.arrow-schema]
+overflow-checks = true
+
+# Control-plane dependencies are compiled for size ("z"), the HTTP and TLS stream glue at "s", and
+# data paths keep opt-level 3. Measured under fat LTO; remeasure size and throughput before changing
+# it.
+[profile.release.package.form_urlencoded]
+opt-level = "z"
+[profile.release.package.futures]
+opt-level = "z"
+[profile.release.package.futures-channel]
+opt-level = "z"
+[profile.release.package.futures-executor]
+opt-level = "z"
+[profile.release.package.futures-util]
+opt-level = "z"
+[profile.release.package.google-cloud-auth]
+opt-level = "z"
+[profile.release.package.google-cloud-bigquery]
+opt-level = "z"
+[profile.release.package.google-cloud-bigquery-v2]
+opt-level = "z"
+[profile.release.package.google-cloud-gax]
+opt-level = "z"
+[profile.release.package.google-cloud-gax-internal]
+opt-level = "z"
+[profile.release.package.google-cloud-longrunning]
+opt-level = "z"
+[profile.release.package.google-cloud-lro]
+opt-level = "z"
+[profile.release.package.google-cloud-rpc]
+opt-level = "z"
+[profile.release.package.google-cloud-type]
+opt-level = "z"
+[profile.release.package.google-cloud-wkt]
+opt-level = "z"
+[profile.release.package.h2]
+opt-level = "z"
+[profile.release.package.http]
+opt-level = "z"
+[profile.release.package.http-body]
+opt-level = "s"
+[profile.release.package.http-body-util]
+opt-level = "s"
+[profile.release.package.httparse]
+opt-level = "s"
+[profile.release.package.hyper]
+opt-level = "z"
+[profile.release.package.hyper-rustls]
+opt-level = "z"
+[profile.release.package.hyper-util]
+opt-level = "z"
+[profile.release.package.icu_collections]
+opt-level = "z"
+[profile.release.package.icu_locale_core]
+opt-level = "z"
+[profile.release.package.icu_normalizer]
+opt-level = "z"
+[profile.release.package.icu_properties]
+opt-level = "z"
+[profile.release.package.icu_provider]
+opt-level = "z"
+[profile.release.package.idna]
+opt-level = "z"
+[profile.release.package.idna_adapter]
+opt-level = "z"
+[profile.release.package.ipnet]
+opt-level = "z"
+[profile.release.package.jiff]
+opt-level = "z"
+[profile.release.package.jiff-core]
+opt-level = "z"
+[profile.release.package.lazy_static]
+opt-level = "z"
+[profile.release.package.litemap]
+opt-level = "z"
+[profile.release.package.openssl-probe]
+opt-level = "z"
+[profile.release.package.opentelemetry]
+opt-level = "z"
+[profile.release.package.opentelemetry-semantic-conventions]
+opt-level = "z"
+[profile.release.package.opentelemetry_sdk]
+opt-level = "z"
+[profile.release.package.percent-encoding]
+opt-level = "z"
+[profile.release.package.potential_utf]
+opt-level = "z"
+[profile.release.package.reqwest]
+opt-level = "z"
+[profile.release.package.rustls]
+opt-level = "z"
+[profile.release.package.rustls-native-certs]
+opt-level = "z"
+[profile.release.package.rustls-pki-types]
+opt-level = "z"
+[profile.release.package.rustls-platform-verifier]
+opt-level = "z"
+# Not `webpki`, which is an unrelated package.
+[profile.release.package.rustls-webpki]
+opt-level = "z"
+[profile.release.package.serde_norway]
+opt-level = "z"
+[profile.release.package.serde_urlencoded]
+opt-level = "z"
+[profile.release.package.serde_with]
+opt-level = "z"
+[profile.release.package.sha2]
+opt-level = "z"
+[profile.release.package.signal-hook-registry]
+opt-level = "z"
+[profile.release.package.slab]
+opt-level = "s"
+[profile.release.package.smallvec]
+opt-level = "s"
+[profile.release.package.time]
+opt-level = "z"
+[profile.release.package.tinystr]
+opt-level = "z"
+[profile.release.package.tokio-rustls]
+opt-level = "s"
+[profile.release.package.tonic]
+opt-level = "z"
+[profile.release.package.tonic-prost]
+opt-level = "s"
+[profile.release.package.tower]
+opt-level = "z"
+[profile.release.package.tower-http]
+opt-level = "z"
+[profile.release.package.tracing-opentelemetry]
+opt-level = "z"
+[profile.release.package.unsafe-libyaml-norway]
+opt-level = "z"
+[profile.release.package.untrusted]
+opt-level = "z"
+[profile.release.package.url]
+opt-level = "z"
+[profile.release.package.uuid]
+opt-level = "z"
+[profile.release.package.writeable]
+opt-level = "z"
+[profile.release.package.yoke]
+opt-level = "z"
+[profile.release.package.zerofrom]
+opt-level = "z"
+[profile.release.package.zerotrie]
+opt-level = "z"
+[profile.release.package.zerovec]
+opt-level = "z"

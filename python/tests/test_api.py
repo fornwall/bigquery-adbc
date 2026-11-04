@@ -1,0 +1,423 @@
+from __future__ import annotations
+
+import re
+from pathlib import Path
+from typing import Any
+
+import pyarrow
+import pytest
+
+import bigquery_adbc as driver
+from bigquery_adbc import ConnectionOptions, dbapi
+
+
+def test_public_low_level_api() -> None:
+    assert driver.ENTRYPOINT == "AdbcDriverBigqueryInit"
+    assert isinstance(driver.__version__, str)
+    assert driver.__version__
+    assert set(driver.__all__) == {
+        "AuthenticationType",
+        "BulkIngestMethod",
+        "ConnectionOptions",
+        "CreateDisposition",
+        "CredentialsType",
+        "DatabaseOptions",
+        "ENTRYPOINT",
+        "ParameterMode",
+        "QueryPriority",
+        "StatementOptions",
+        "WriteDisposition",
+        "__version__",
+        "connect",
+        "driver_path",
+    }
+
+
+def test_driver_path_uses_development_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    library = tmp_path / "development-driver.so"
+    library.touch()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BIGQUERY_ADBC_LIBRARY", library.name)
+
+    assert driver.driver_path() == str(library.resolve())
+
+
+@pytest.mark.parametrize("kind", ["missing", "directory"])
+def test_driver_path_rejects_invalid_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str) -> None:
+    path = tmp_path / kind
+    if kind == "directory":
+        path.mkdir()
+    monkeypatch.setenv("BIGQUERY_ADBC_LIBRARY", str(path))
+
+    with pytest.raises(FileNotFoundError, match="not a regular file"):
+        driver.driver_path()
+
+
+def test_driver_path_finds_one_bundled_library(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    library = tmp_path / "libadbc_driver_bigquery.so"
+    library.touch()
+    monkeypatch.delenv("BIGQUERY_ADBC_LIBRARY", raising=False)
+    monkeypatch.setattr(driver, "_PACKAGE_DIR", tmp_path)
+
+    assert driver.driver_path() == str(library.resolve())
+
+
+def test_driver_path_requires_exactly_one_bundled_library(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("BIGQUERY_ADBC_LIBRARY", raising=False)
+    monkeypatch.setattr(driver, "_PACKAGE_DIR", tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="Install a platform wheel"):
+        driver.driver_path()
+
+    (tmp_path / "libadbc_driver_bigquery.so").touch()
+    (tmp_path / "libadbc_driver_bigquery.dylib").touch()
+    with pytest.raises(RuntimeError, match="exactly one"):
+        driver.driver_path()
+
+
+def test_driver_path_rereads_the_override_on_every_call(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    first = tmp_path / "first.so"
+    second = tmp_path / "second.so"
+    first.touch()
+    second.touch()
+
+    monkeypatch.setenv("BIGQUERY_ADBC_LIBRARY", str(first))
+    assert driver.driver_path() == str(first.resolve())
+    monkeypatch.setenv("BIGQUERY_ADBC_LIBRARY", str(second))
+    assert driver.driver_path() == str(second.resolve())
+
+
+def test_driver_path_does_not_restat_the_bundled_library(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """An installed package's own library is fixed, so it is looked up once."""
+
+    library = tmp_path / "libadbc_driver_bigquery.so"
+    library.touch()
+    monkeypatch.delenv("BIGQUERY_ADBC_LIBRARY", raising=False)
+    monkeypatch.setattr(driver, "_PACKAGE_DIR", tmp_path)
+    driver._bundled_library_path.cache_clear()
+
+    before = driver._bundled_library_path.cache_info()
+    assert driver.driver_path() == str(library.resolve())
+    assert driver.driver_path() == str(library.resolve())
+    after = driver._bundled_library_path.cache_info()
+
+    assert after.misses - before.misses == 1
+    assert after.hits - before.hits == 1
+
+
+@pytest.mark.parametrize(
+    ("uri", "options", "expected_uri"),
+    [
+        pytest.param(
+            "bigquery:///data-project",
+            {"bigquery.project_id": "billing-project"},
+            "bigquery:///data-project",
+            id="uri-and-options",
+        ),
+        pytest.param("bigquery:///project", {"uri": "bigquery:///project"}, "bigquery:///project", id="matching-uris"),
+        pytest.param(None, {"bigquery.project_id": "billing-project"}, None, id="options-only"),
+        pytest.param(None, {"uri": "bigquery:///project"}, "bigquery:///project", id="uri-in-options"),
+    ],
+)
+def test_low_level_connect_passes_options_without_mutating_them(
+    monkeypatch: pytest.MonkeyPatch,
+    uri: str | None,
+    options: dict[str, str],
+    expected_uri: str | None,
+) -> None:
+    calls: list[dict[str, str]] = []
+    database = object()
+
+    def make_database(**kwargs: str) -> object:
+        calls.append(kwargs)
+        return database
+
+    monkeypatch.setattr(driver, "driver_path", lambda: "/absolute/driver.so")
+    monkeypatch.setattr(driver.adbc_driver_manager, "AdbcDatabase", make_database)
+    original = options.copy()
+    expected = {"driver": "/absolute/driver.so", "entrypoint": "AdbcDriverBigqueryInit", **original}
+    if expected_uri is not None:
+        expected["uri"] = expected_uri
+
+    actual = driver.connect(db_kwargs=options) if uri is None else driver.connect(uri, options)
+    assert actual is database
+    assert options == original
+    assert calls == [expected]
+
+
+def test_low_level_connect_rejects_conflicting_uri() -> None:
+    with pytest.raises(ValueError, match="Conflicting BigQuery URIs") as caught:
+        driver.connect(
+            "bigquery:///one?client_secret=first-secret",
+            {"uri": "bigquery:///two?refresh_token=second-secret"},
+        )
+    message = str(caught.value)
+    assert "db_kwargs['uri']" in message
+    assert "first-secret" not in message
+    assert "second-secret" not in message
+
+
+@pytest.mark.parametrize("reserved", ["driver", "entrypoint"])
+def test_low_level_connect_rejects_loading_overrides(reserved: str) -> None:
+    with pytest.raises(ValueError, match=reserved):
+        driver.connect("bigquery:///project", {reserved: "unexpected"})
+
+
+def test_dbapi_reexports_manager_facade() -> None:
+    expected = {
+        "BINARY",
+        "DATETIME",
+        "NUMBER",
+        "ROWID",
+        "STRING",
+        "Connection",
+        "Cursor",
+        "DataError",
+        "DatabaseError",
+        "Date",
+        "DateFromTicks",
+        "Error",
+        "IntegrityError",
+        "InterfaceError",
+        "InternalError",
+        "NotSupportedError",
+        "OperationalError",
+        "ProgrammingError",
+        "Time",
+        "TimeFromTicks",
+        "Timestamp",
+        "TimestampFromTicks",
+        "Warning",
+        "apilevel",
+        "paramstyle",
+        "threadsafety",
+    }
+    type_objects = {"BINARY", "DATETIME", "NUMBER", "ROWID", "STRING"}
+    # Binary is defined locally: adbc_driver_manager.dbapi does not provide it.
+    # The type objects are wrapped locally: see the type-object tests below.
+    assert set(dbapi.__all__) == expected | {"Binary", "connect"}
+    for name in expected - type_objects:
+        assert getattr(dbapi, name) is getattr(dbapi._dbapi, name)
+    for name in type_objects:
+        assert set(getattr(dbapi, name)) >= set(getattr(dbapi._dbapi, name))
+    assert dbapi.paramstyle == "qmark"
+
+
+def test_dbapi_number_matches_bigquery_decimal_columns() -> None:
+    # NUMERIC and BIGNUMERIC are what cursor.description reports for BigQuery's
+    # exact numeric types; upstream's NUMBER matches neither.
+    assert pyarrow.decimal128(38, 9) == dbapi.NUMBER
+    assert pyarrow.decimal256(76, 38) == dbapi.NUMBER
+    # Any decimal parameters, not just BigQuery's widest.
+    assert pyarrow.decimal128(9, 2) == dbapi.NUMBER
+    # Everything upstream's NUMBER matched still matches.
+    assert pyarrow.int64() == dbapi.NUMBER
+    assert pyarrow.float64() == dbapi.NUMBER
+    assert set(dbapi._dbapi.NUMBER) <= set(dbapi.NUMBER)
+    # Non-numeric types do not.
+    assert pyarrow.string() != dbapi.NUMBER
+    assert pyarrow.binary() != dbapi.NUMBER
+
+
+def test_dbapi_string_matches_bigquery_json_columns() -> None:
+    # cursor.description reports BigQuery JSON as the canonical arrow.json extension type.
+    assert pyarrow.json_() == dbapi.STRING
+    assert dbapi.STRING == pyarrow.json_()  # noqa: SIM300 - the reflected comparison
+    assert pyarrow.string() == dbapi.STRING
+    assert pyarrow.large_string() == dbapi.STRING
+    assert pyarrow.json_() != dbapi.NUMBER
+    assert pyarrow.binary() != dbapi.STRING
+    # Type objects still compare with the manager's own.
+    assert dbapi.STRING == dbapi._dbapi.STRING
+    assert dbapi._dbapi.STRING == dbapi.STRING
+
+
+@pytest.mark.parametrize(
+    ("arrow_type", "type_object", "equal"),
+    [
+        (pyarrow.string(), "STRING", True),
+        (pyarrow.int64(), "STRING", False),
+        (pyarrow.binary(), "BINARY", True),
+        (pyarrow.string(), "BINARY", False),
+        (pyarrow.timestamp("us"), "DATETIME", True),
+        (pyarrow.int64(), "DATETIME", False),
+        (pyarrow.int64(), "ROWID", True),
+        (pyarrow.string(), "ROWID", False),
+    ],
+)
+def test_dbapi_type_objects_support_both_comparison_operators(
+    arrow_type: pyarrow.DataType, type_object: str, equal: bool
+) -> None:
+    # The manager's type objects answer `!=` with True for every Arrow type.
+    value = getattr(dbapi, type_object)
+    assert (arrow_type == value) is equal
+    assert (value == arrow_type) is equal
+    assert (arrow_type != value) is not equal
+    assert (value != arrow_type) is not equal
+
+
+def test_dbapi_binary_constructs_from_str_and_bytes() -> None:
+    # PEP 249 defines Binary(string); `bytes("abc")` would raise TypeError.
+    assert dbapi.Binary("abc") == b"abc"
+    assert dbapi.Binary("smörgås") == "smörgås".encode()
+    assert dbapi.Binary(b"\x00\xff") == b"\x00\xff"
+    assert isinstance(dbapi.Binary("abc"), bytes)
+
+
+@pytest.mark.parametrize("use_view", [False, True])
+def test_dbapi_binary_copies_mutable_buffers(use_view: bool) -> None:
+    source = bytearray(b"\x00\xff")
+    result = dbapi.Binary(memoryview(source) if use_view else source)
+    source[0] = 1
+    assert type(result) is bytes
+    assert result == b"\x00\xff"
+
+
+def test_dbapi_binary_normalizes_bytes_subclasses() -> None:
+    class BinarySubclass(bytes):
+        pass
+
+    result = dbapi.Binary(BinarySubclass(b"\x00\xff"))
+    assert type(result) is bytes
+    assert result == b"\x00\xff"
+
+
+@pytest.mark.parametrize(
+    "connect_options",
+    [
+        pytest.param({}, id="default-uri-and-autocommit"),
+        pytest.param({"uri": "bigquery:///data", "autocommit": True}, id="explicit-uri-and-autocommit"),
+    ],
+)
+def test_dbapi_connect_returns_manager_objects_directly(
+    monkeypatch: pytest.MonkeyPatch,
+    connect_options: dict[str, Any],
+) -> None:
+    calls: list[tuple[str, Any]] = []
+    database = object()
+    connection = object()
+    result = object()
+
+    def low_level_connect(uri: str | None, db_kwargs: Any = None) -> object:
+        calls.append(("database", (uri, db_kwargs)))
+        return database
+
+    def make_connection(db: object, **kwargs: str) -> object:
+        calls.append(("connection", (db, kwargs)))
+        return connection
+
+    def make_dbapi_connection(*args: Any, **kwargs: Any) -> object:
+        calls.append(("dbapi", (args, kwargs)))
+        return result
+
+    monkeypatch.setattr(dbapi, "_driver_connect", low_level_connect)
+    monkeypatch.setattr(dbapi.adbc_driver_manager, "AdbcConnection", make_connection)
+    monkeypatch.setattr(dbapi, "Connection", make_dbapi_connection)
+    db_options = {"bigquery.project_id": "billing"}
+    conn_options = {"adbc.connection.catalog": "data"}
+
+    actual = dbapi.connect(
+        db_kwargs=db_options,
+        conn_kwargs=conn_options,
+        backend="arrow",
+        **connect_options,
+    )
+
+    assert actual is result
+    assert db_options == {"bigquery.project_id": "billing"}
+    assert conn_options == {"adbc.connection.catalog": "data"}
+    assert calls == [
+        ("database", (connect_options.get("uri"), db_options)),
+        ("connection", (database, conn_options)),
+        (
+            "dbapi",
+            (
+                (database, connection),
+                {
+                    "conn_kwargs": conn_options,
+                    "autocommit": connect_options.get("autocommit", False),
+                    "backend": "arrow",
+                },
+            ),
+        ),
+    ]
+
+
+def test_connect_accepts_option_enum_mappings(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Pyrefly checks this file: Mapping keys are invariant, so these calls only type-check
+    # when the signatures accept enum-keyed mappings as well as str-keyed ones.
+    # Database option values may be any type AdbcDatabase converts, such as a path.
+    db_options = {
+        driver.DatabaseOptions.PROJECT_ID: "billing-project",
+        driver.DatabaseOptions.AUTHENTICATION_TYPE: driver.AuthenticationType.ANONYMOUS,
+        driver.DatabaseOptions.AUTHENTICATION_CREDENTIALS: Path("credentials.json"),
+    }
+    conn_options = {ConnectionOptions.CURRENT_DB_SCHEMA: "dataset"}
+    databases: list[dict[str, object]] = []
+    connections: list[dict[str, object]] = []
+    monkeypatch.setattr(driver, "driver_path", lambda: "/absolute/driver.so")
+    monkeypatch.setattr(driver.adbc_driver_manager, "AdbcDatabase", lambda **kwargs: databases.append(kwargs))
+    monkeypatch.setattr(dbapi.adbc_driver_manager, "AdbcConnection", lambda db, **kwargs: connections.append(kwargs))
+    monkeypatch.setattr(dbapi, "Connection", lambda *args, **kwargs: None)
+
+    driver.connect(db_kwargs=db_options)
+    dbapi.connect(db_kwargs=db_options, conn_kwargs=conn_options)
+
+    assert databases == [{"driver": "/absolute/driver.so", "entrypoint": driver.ENTRYPOINT, **db_options}] * 2
+    assert connections == [conn_options]
+
+
+@pytest.mark.parametrize("failure_stage", ["connection", "dbapi"])
+@pytest.mark.parametrize("close_fails", [False, True])
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
+def test_dbapi_connect_cleans_up_partial_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+    close_fails: bool,
+    error_type: type[BaseException],
+) -> None:
+    events: list[str] = []
+    failure = error_type("initialization failed")
+
+    class Resource:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def close(self) -> None:
+            events.append(f"close {self.name}")
+            if close_fails:
+                raise RuntimeError(f"close {self.name} failed")
+
+    database = Resource("database")
+    connection = Resource("connection")
+
+    monkeypatch.setattr(dbapi, "_driver_connect", lambda *args, **kwargs: database)
+
+    def make_connection(*args: Any, **kwargs: Any) -> Resource:
+        if failure_stage == "connection":
+            raise failure
+        return connection
+
+    def make_dbapi_connection(*args: Any, **kwargs: Any) -> object:
+        raise failure
+
+    monkeypatch.setattr(dbapi.adbc_driver_manager, "AdbcConnection", make_connection)
+    monkeypatch.setattr(dbapi, "Connection", make_dbapi_connection)
+
+    with pytest.raises(error_type) as caught:
+        dbapi.connect("bigquery:///project")
+
+    assert caught.value is failure
+    expected = ["close database"]
+    if failure_stage == "dbapi":
+        expected.insert(0, "close connection")
+    assert events == expected
+
+
+def test_dbapi_connect_rejects_autocommit_in_conn_kwargs() -> None:
+    with pytest.raises(ValueError, match=re.escape("adbc.connection.autocommit")):
+        dbapi.connect(
+            "bigquery:///project",
+            conn_kwargs={ConnectionOptions.AUTOCOMMIT: "false"},
+            autocommit=True,
+        )

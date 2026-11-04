@@ -1,0 +1,62 @@
+// Copyright (c) 2025 ADBC Drivers Contributors
+// Modified for bigquery-adbc, 2026.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//         http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// part: metadata
+
+[setup]
+drop = "test_binary"
+
+[tags]
+sql-type-name = "BYTES"
+field-type-name = "BYTES"
+
+// part: setup_query
+
+CREATE TABLE test_binary (
+    idx INT64,
+    res BYTES
+);
+
+INSERT INTO test_binary (idx, res) VALUES
+    (1, b'\xe3\x81\x93\xe3\x82\x93\xe3\x81\xab\xe3\x81\xa1\xe3\x81\xaf\xe3\x80\x81\xe4\xb8\x96\xe7\x95\x8c\xef\xbc\x81'),
+    (2, b'\x00'),
+    (3, b'\xde\xad\xbe\xef'),
+    (4, b''),
+    (5, NULL);
+
+// part: query
+
+SELECT res FROM test_binary ORDER BY idx
+
+// part: expected_schema
+
+{
+    "format": "+s",
+    "children": [
+        {
+            "name": "res",
+            "format": "z",
+            "flags": ["nullable"]
+        }
+    ]
+}
+
+// part: expected
+
+{"res": "44GT44KT44Gr44Gh44Gv44CB5LiW55WM77yB"}
+{"res": "AA=="}
+{"res": "3q2+7w=="}
+{"res": ""}
+{"res": null}

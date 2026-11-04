@@ -1,0 +1,63 @@
+# Canonical ADBC validation cases that pass only because a DriverQuirks hook
+# relaxed the assertion, or skip because a capability hook says BigQuery lacks
+# the feature. A bare pass count hides both.
+#
+# The suite runs all 100 canonical cases: 93 pass and seven skip. Six
+# skips are recorded below. SqlIngestUInt64 skips through a test-method
+# override in bigquery_validation.cc (BigQuery has no UInt64 type), not a
+# DriverQuirks hook, so it has no record.
+#
+# `tests/clients/adbc_validation.rs` verifies every record offline:
+# the test must exist in the enumerated suite, and its
+# mechanism must still be wired as the status claims. A `relaxed` hook must be
+# overridden in bigquery_validation.cc. A `self-skipped` hook must report the
+# capability as unavailable, either at its upstream default or overridden to
+# return `false`/`std::nullopt` outright (`true` for ddl_implicit_commit_txn,
+# whose polarity is reversed). A relaxation without a record, or a record
+# without its relaxation, fails the check. Live runs also fail a case that
+# skips without a self-skipped record, or passes despite one.
+#
+# Format, whitespace-separated:
+#   <status> <gtest name> <mechanism> <reason>
+#
+# relaxed       the case passes, but a hook changed what it asserts.
+# self-skipped  the case skips because a capability hook says BigQuery lacks
+#               the feature.
+#
+# Not recorded, because they change no assertion and only isolate the run: the
+# adapter's secondary_db_schema() override (a unique dataset instead of
+# upstream's "otherschema"), and the patch's per-subcase temporal table names
+# (UP-28) and catalog/schema-scoped table-filter lookups (UP-29).
+
+# The temporal cases ingest -42, 0 and 42 in the column's unit. BigQuery
+# TIMESTAMP and INTERVAL store microseconds, so 42ns would truncate to 0; the
+# multiplier scales the nanosecond subcase by 1000 (42000ns == 42us). That
+# subcase checks microsecond-aligned values in a nanosecond column, not
+# nanosecond resolution.
+relaxed       BigQueryStatementTest.SqlIngestDuration     IngestTemporalValueMultiplier  nanosecond subcase scaled to microsecond-aligned values; nanosecond resolution untested
+relaxed       BigQueryStatementTest.SqlIngestTimestamp    IngestTemporalValueMultiplier  nanosecond subcase scaled to microsecond-aligned values; nanosecond resolution untested
+relaxed       BigQueryStatementTest.SqlIngestTimestampTz  IngestTemporalValueMultiplier  nanosecond subcase scaled to microsecond-aligned values; nanosecond resolution untested
+
+# The list cases ingest [null, [1,2,3], [4,5]]. BigQuery stores a null ARRAY as
+# an empty one, so the hook expects an empty list in place of the null. These
+# cases cannot distinguish null from empty lists; nonempty lists are still
+# compared element-wise.
+relaxed       BigQueryStatementTest.SqlIngestListOfInt32   ingest_null_lists_as_empty     null list compared as empty; null-vs-empty list distinction untested
+relaxed       BigQueryStatementTest.SqlIngestListOfString  ingest_null_lists_as_empty     null list compared as empty; null-vs-empty list distinction untested
+
+# Bulk ingest cannot create BigQuery temporary tables, so
+# supports_bulk_ingest_temporary() keeps its upstream default of false.
+self-skipped  BigQueryStatementTest.SqlIngestTemporary           supports_bulk_ingest_temporary  BigQuery has no temporary bulk-ingest tables
+self-skipped  BigQueryStatementTest.SqlIngestTemporaryAppend     supports_bulk_ingest_temporary  BigQuery has no temporary bulk-ingest tables
+self-skipped  BigQueryStatementTest.SqlIngestTemporaryReplace    supports_bulk_ingest_temporary  BigQuery has no temporary bulk-ingest tables
+self-skipped  BigQueryStatementTest.SqlIngestTemporaryExclusive  supports_bulk_ingest_temporary  BigQuery has no temporary bulk-ingest tables
+
+# BigQuery enforces no PRIMARY KEY and has no auto-increment column.
+# PrimaryKeyIngestTableDdl() returns nullopt through an explicit override,
+# since the neighbouring key DDL hooks are implemented.
+self-skipped  BigQueryStatementTest.SqlIngestPrimaryKey  PrimaryKeyIngestTableDdl  BigQuery enforces no primary key and has no auto-increment column
+
+# Transactions expects rolling back the sample table's creation to remove it.
+# BigQuery rejects permanent-table DDL inside a transaction, and a temporary
+# table survives rollback. SqlQueryInsertRollback still covers DML rollback.
+self-skipped  BigQueryStatementTest.Transactions  ddl_implicit_commit_txn  BigQuery cannot roll back sample-table creation as required by this case

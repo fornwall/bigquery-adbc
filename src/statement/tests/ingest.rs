@@ -1,0 +1,353 @@
+//! Bulk ingest and the dbt CSV seed load: what each execute entry point does with bound data,
+//! what a dry run inspects, and which requests reach BigQuery before a table is written.
+
+use super::*;
+use crate::test_support::driver::test_statement_at;
+use crate::test_support::errors::assert_message;
+
+/// A bulk-ingest statement with `bigquery.query.dry_run` set, targeting the test
+/// connection whose endpoint is unroutable: every local check runs, and the first request
+/// fails.
+fn dry_run_ingest_statement(table: &str) -> BigQueryStatement {
+    let mut statement = test_statement();
+    set_option(&mut statement, OptionStatement::TargetDbSchema, "scratch");
+    set_option(
+        &mut statement,
+        OptionStatement::TargetTable,
+        table.to_owned(),
+    );
+    set_option(&mut statement, BigQueryStatementOption::DryRun, "true");
+    statement
+}
+
+fn ingest_row() -> RecordBatch {
+    int64_column("value", vec![1_i64])
+}
+
+/// One row under a column name BigQuery cannot accept, so the schema conversion rejects it
+/// locally and no test that binds it ever reaches the network.
+fn unusable_ingest_row() -> RecordBatch {
+    int64_column("1invalid", vec![1_i64])
+}
+
+#[test]
+fn dry_run_ingest_leaves_the_bound_data_in_place_for_every_execute_entrypoint() {
+    // A dry run reads only the bound schema, so every entry point leaves the statement bound and
+    // a later real execute ingests the data the dry run described. The column name fails
+    // validation locally, keeping this off the network.
+    let dry_run_statement = || {
+        let mut statement = dry_run_ingest_statement("events");
+        statement.bind(unusable_ingest_row()).unwrap();
+        statement
+    };
+
+    let mut statement = dry_run_statement();
+    assert_eq!(
+        statement.execute_update().unwrap_err().status,
+        Status::InvalidArguments
+    );
+    assert!(statement.parameters.schema().is_some());
+
+    let mut statement = dry_run_statement();
+    assert_eq!(
+        statement.execute().err().unwrap().status,
+        Status::InvalidArguments
+    );
+    assert!(statement.parameters.schema().is_some());
+
+    let mut statement = dry_run_statement();
+    assert_eq!(
+        statement.execute_partitions().unwrap_err().status,
+        Status::InvalidArguments
+    );
+    assert!(statement.parameters.schema().is_some());
+}
+
+#[test]
+fn dry_run_ingest_reports_schema_errors_before_any_request() {
+    // Schema conversion is local, so a dry run reports its errors (here an unusable column
+    // name) without contacting BigQuery.
+    let mut statement = dry_run_ingest_statement("events");
+    statement.bind(unusable_ingest_row()).unwrap();
+
+    let error = statement.execute_update().unwrap_err();
+    assert_eq!(error.status, Status::InvalidArguments);
+    assert_message(&error, &["1invalid"]);
+    assert!(statement.parameters.schema().is_some());
+}
+
+#[test]
+fn dry_run_ingest_requires_bound_data() {
+    // There is no schema to validate until something is bound, so the dry run reports the
+    // same missing-data error a real ingest would.
+    let error = dry_run_ingest_statement("events")
+        .execute_update()
+        .unwrap_err();
+    assert_eq!(error.status, Status::InvalidState);
+    assert_message(&error, &["bind"]);
+}
+
+#[test]
+fn dry_run_ingest_is_refused_in_a_manual_transaction() {
+    // What a dry run would faithfully report here is the rejection itself, so the manual
+    // transaction check runs ahead of it.
+    let mut statement = dry_run_ingest_statement("events");
+    statement.bind(ingest_row()).unwrap();
+    statement.transaction.disable_autocommit().unwrap();
+
+    let error = statement.execute_update().unwrap_err();
+    assert_eq!(error.status, Status::InvalidState);
+    assert_message(&error, &["adbc.connection.autocommit"]);
+}
+
+#[test]
+fn clearing_the_ingest_target_returns_the_statement_to_the_query_dry_run_path() {
+    let mut statement = dry_run_ingest_statement("events");
+    statement.set_sql_query("SELECT 1").unwrap();
+
+    // set_sql_query clears the ingest target, so the query path's dry-run rule applies again:
+    // a dry run creates no job, so there is nothing to partition. An ingest dry run, by
+    // contrast, reports zero partitions rather than refusing.
+    let error = statement.execute_partitions().unwrap_err();
+    assert_eq!(error.status, Status::InvalidState);
+    assert_message(&error, &["bigquery.query.dry_run"]);
+}
+
+fn empty_ingest_statement_at(endpoint: &str) -> BigQueryStatement {
+    let mut statement = test_statement_at(endpoint);
+    set_option(&mut statement, OptionStatement::TargetTable, "events");
+    set_option(&mut statement, OptionStatement::TargetDbSchema, "dataset");
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "value",
+        DataType::Int64,
+        false,
+    )]));
+    statement
+        .bind_stream(Box::new(RecordBatchIterator::new(
+            std::iter::empty::<Result<RecordBatch, ArrowError>>(),
+            schema,
+        )))
+        .unwrap();
+    statement
+}
+
+/// Create is one atomic table insertion: it does not first read the target, and even an empty
+/// ingest reports 0 appended rows rather than the -1 that means "unknown".
+#[test]
+fn execute_reports_the_ingest_row_count_alongside_the_stream() {
+    let (endpoint, requests) = capture_requests(vec![(
+        200,
+        json!({
+            "tableReference": {
+                "projectId": "fixture-project",
+                "datasetId": "dataset",
+                "tableId": "events"
+            }
+        }),
+    )]);
+    let mut statement = empty_ingest_statement_at(&endpoint);
+
+    let (mut reader, affected) = statement.execute_with_rows_affected().unwrap();
+    assert_eq!(affected, 0, "an empty ingest appended exactly zero rows");
+    // adbc.h tells an ingesting caller to pass NULL for `out`, but the Rust
+    // `ManagedStatement::execute` never does, so it gets an empty stream rather than a refusal.
+    assert_eq!(reader.schema().fields().len(), 0);
+    assert!(reader.next().is_none(), "ingest returns an empty stream");
+    let requests = requests.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0].line.starts_with("POST ")
+            && requests[0]
+                .path()
+                .contains("/projects/fixture-project/datasets/dataset/tables")
+    );
+    assert_eq!(requests[0].body["tableReference"]["tableId"], "events");
+}
+
+#[test]
+fn create_ingest_maps_insert_conflict_to_already_exists() {
+    let (endpoint, requests) = capture_requests(vec![(
+        409,
+        json!({
+            "error": {
+                "code": 409,
+                "message": "table already exists",
+                "status": "ALREADY_EXISTS"
+            }
+        }),
+    )]);
+    let mut statement = empty_ingest_statement_at(&endpoint);
+
+    let error = statement.execute_update().unwrap_err();
+    assert_eq!(error.status, Status::AlreadyExists);
+    let requests = requests.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].line.starts_with("POST "));
+}
+
+#[test]
+fn create_ingest_dry_run_still_inspects_the_target_without_inserting() {
+    let (endpoint, requests) = capture_requests(vec![(
+        404,
+        json!({
+            "error": {"code": 404, "message": "table not found", "status": "NOT_FOUND"}
+        }),
+    )]);
+    let mut statement = empty_ingest_statement_at(&endpoint);
+    set_option(&mut statement, BigQueryStatementOption::DryRun, "true");
+
+    assert_eq!(statement.execute_update().unwrap(), Some(0));
+    assert!(statement.parameters.schema().is_some());
+    let requests = requests.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].line.starts_with("GET "));
+    assert!(requests[0].path().contains("/tables/events"));
+}
+
+/// An unqualified ingest target lands where an unqualified name in the statement's SQL
+/// resolves: the statement's default project and dataset shadow the connection's, as in Go.
+#[test]
+fn the_ingest_target_falls_back_to_the_statement_defaults() {
+    let (endpoint, requests) = capture_requests(vec![(
+        404,
+        json!({
+            "error": {"code": 404, "message": "table not found", "status": "NOT_FOUND"}
+        }),
+    )]);
+    let mut statement = test_statement_at(&endpoint);
+    set_option(
+        &mut statement,
+        BigQueryStatementOption::DefaultProjectId,
+        "statement-project",
+    );
+    set_option(
+        &mut statement,
+        BigQueryStatementOption::DefaultDatasetId,
+        "statement_dataset",
+    );
+    set_option(&mut statement, OptionStatement::TargetTable, "events");
+    set_option(&mut statement, BigQueryStatementOption::DryRun, "true");
+    statement.bind(ingest_row()).unwrap();
+
+    assert_eq!(statement.execute_update().unwrap(), Some(0));
+    let requests = requests.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0]
+            .path()
+            .contains("/projects/statement-project/datasets/statement_dataset/tables/events"),
+        "{}",
+        requests[0].path()
+    );
+}
+
+#[test]
+fn append_ingest_still_inspects_and_validates_the_existing_target() {
+    let (endpoint, requests) = capture_requests(vec![(
+        200,
+        json!({
+            "tableReference": {
+                "projectId": "fixture-project",
+                "datasetId": "dataset",
+                "tableId": "events"
+            },
+            "schema": {
+                "fields": [{"name": "value", "type": "INTEGER", "mode": "REQUIRED"}]
+            }
+        }),
+    )]);
+    let mut statement = empty_ingest_statement_at(&endpoint);
+    set_option(
+        &mut statement,
+        OptionStatement::IngestMode,
+        "adbc.ingest.mode.append",
+    );
+
+    assert_eq!(statement.execute_update().unwrap(), Some(0));
+    let requests = requests.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].line.starts_with("GET "));
+    assert!(requests[0].path().contains("/tables/events"));
+}
+
+#[test]
+fn create_append_and_replace_still_probe_before_creating_a_missing_target() {
+    for mode in ["adbc.ingest.mode.create_append", "adbc.ingest.mode.replace"] {
+        let (endpoint, requests) = capture_requests(vec![
+            (
+                404,
+                json!({
+                    "error": {
+                        "code": 404,
+                        "message": "table not found",
+                        "status": "NOT_FOUND"
+                    }
+                }),
+            ),
+            (
+                200,
+                json!({
+                    "tableReference": {
+                        "projectId": "fixture-project",
+                        "datasetId": "dataset",
+                        "tableId": "events"
+                    }
+                }),
+            ),
+        ]);
+        let mut statement = empty_ingest_statement_at(&endpoint);
+        set_option(&mut statement, OptionStatement::IngestMode, mode);
+
+        assert_eq!(statement.execute_update().unwrap(), Some(0), "mode {mode}");
+        let requests = requests.join().unwrap();
+        assert_eq!(requests.len(), 2, "mode {mode}");
+        assert!(requests[0].line.starts_with("GET "), "mode {mode}");
+        assert!(requests[1].line.starts_with("POST "), "mode {mode}");
+    }
+}
+
+/// A dry run of a CSV seed validates the seed's declared schema and nothing else, so a seed that
+/// can be gigabytes is opened but never read into memory.
+#[test]
+fn a_dry_run_csv_seed_validates_the_schema_without_reading_the_seed() {
+    let schema = Schema::new(vec![bigquery_typed(
+        Field::new("id", DataType::Utf8, true),
+        "int64",
+    )]);
+    let encoded_schema = encode_schema_fixture(&schema);
+
+    let directory = std::env::temp_dir().join(format!("bigquery-adbc-seed-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let filepath = directory.join("seed.csv");
+    std::fs::write(&filepath, b"id\n1\n").unwrap();
+
+    // The endpoint is unroutable, so a dry run that sent anything would fail rather than report 0.
+    let mut statement = test_statement();
+    for (option, value) in [
+        (
+            BigQueryStatementOption::CsvFilepath,
+            OptionValue::String(filepath.to_str().unwrap().to_owned()),
+        ),
+        (
+            BigQueryStatementOption::CsvSchema,
+            OptionValue::Bytes(encoded_schema),
+        ),
+        (
+            BigQueryStatementOption::DestinationTable,
+            "data_set.seed".into(),
+        ),
+        (BigQueryStatementOption::DryRun, "true".into()),
+    ] {
+        set_option(&mut statement, option, value);
+    }
+    // Nothing was loaded, so the row count is the unknown one rather than a claimed zero.
+    assert_eq!(statement.execute_update().unwrap(), None);
+
+    // A missing seed still fails the dry run: opening it is what a dry run is run to check.
+    std::fs::remove_file(&filepath).unwrap();
+    assert_eq!(
+        statement.execute_update().unwrap_err().status,
+        Status::InvalidArguments
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+}

@@ -1,0 +1,30 @@
+name: bigquery_adbc_integration
+version: "1.0.0"
+config-version: 2
+profile: bigquery_adbc_integration
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+snapshot-paths: ["snapshots"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+target-path: "target"
+clean-targets: ["target", "logs", "dbt_packages"]
+
+query-comment:
+  comment: "bigquery-adbc integration: {{ node.unique_id }}"
+  job-label: true
+
+models:
+  bigquery_adbc_integration:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: ephemeral
+    marts:
+      +materialized: table
+
+seeds:
+  bigquery_adbc_integration:
+    +quote_columns: false
+

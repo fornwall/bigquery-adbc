@@ -1,0 +1,15 @@
+version: 2
+
+sources:
+  - name: known_issues_seed_tables
+    description: A warehouse-backed seed source used to exercise BigQuery freshness metadata.
+    database: "{{ target.database }}"
+    schema: "{{ target.schema }}"
+    tables:
+      - name: orders
+        config:
+          loaded_at_field: ordered_at
+          freshness:
+            warn_after: {count: 730, period: day}
+            error_after: {count: 1095, period: day}
+            filter: "ordered_at >= timestamp '2026-01-01 00:00:00+00'"

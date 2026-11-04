@@ -1,0 +1,169 @@
+version: 2
+
+models:
+  - name: known_issues_bigquery_sql
+    description: BigQuery SQL constructs that dbt-core 2.0 must accept.
+    columns:
+      - name: first_array_value
+        data_tests:
+          - accepted_values:
+              arguments: {values: [11], quote: false}
+      - name: timestamp_union_rows
+        data_tests:
+          - accepted_values:
+              arguments: {values: [6], quote: false}
+      - name: full_union_rows
+        data_tests:
+          - accepted_values:
+              arguments: {values: [2], quote: false}
+      - name: typeless_struct_values
+        data_tests:
+          - accepted_values:
+              arguments: {values: [abc]}
+      - name: typed_struct_values
+        data_tests:
+          - accepted_values:
+              arguments: {values: ["A1B1,A2B2"]}
+      - name: extracted_hour
+        data_tests:
+          - accepted_values:
+              arguments: {values: [12], quote: false}
+      - name: top_weight
+        data_tests:
+          - accepted_values:
+              arguments: {values: [6], quote: false}
+
+  - name: known_issues_contract_nested_types
+    description: Exercises nested contract field order, field types, docs and enforced nullability.
+    columns:
+      - name: id
+        data_type: int64
+        description: Required identifier.
+        constraints:
+          - type: not_null
+        data_tests: [not_null, unique]
+      - name: array_of_structs
+        data_type: array
+        description: Struct fields declared out of alphabetical order.
+      - name: array_of_structs.d
+        data_type: int64
+        description: First nested field.
+      - name: array_of_structs.e
+        data_type: int64
+        description: Second nested field.
+      - name: array_of_structs.b_id
+        data_type: int64
+        description: Third nested field.
+      - name: array_of_structs.a_color
+        data_type: string
+        description: Fourth nested field.
+      - name: struct_column
+        data_type: struct
+        description: Nested struct with separately documented fields.
+      - name: struct_column.id
+        data_type: int64
+        description: Nested identifier.
+      - name: struct_column.taste
+        data_type: string
+        description: Nested text.
+
+  - name: known_issues_complex_expression_target
+    description: Exact complex SQL-expression fixture regression from dbt-core issue 14625.
+    columns:
+      - name: id
+        data_type: int64
+      - name: struct_field
+        data_type: struct
+      - name: struct_field.field1
+        data_type: string
+      - name: struct_field.field2
+        data_type: string
+      - name: some_point
+        data_type: geography
+
+  - name: known_issues_current_interval_cast
+    columns:
+      - name: interval_value
+        data_tests: [not_null]
+
+  - name: known_issues_current_unnest_offset
+    columns:
+      - name: offset_val
+        data_tests:
+          - not_null
+          - unique
+          - accepted_values:
+              arguments: {values: [0, 1], quote: false}
+
+  - name: known_issues_current_time_bucket_bool
+    columns:
+      - name: boolean_check
+        data_tests:
+          - accepted_values:
+              arguments: {values: [false], quote: false}
+      - name: timestamp_bucket_check
+        data_tests: [not_null]
+
+  - name: known_issues_current_range
+    columns:
+      - name: date_range
+        data_tests: [not_null]
+
+  - name: known_issues_current_gap_fill
+    columns:
+      - name: status_date
+        data_tests: [not_null, unique]
+
+  - name: known_issues_current_snap_to_grid
+    columns:
+      - name: grid_cell
+        data_tests: [not_null]
+
+  - name: known_issues_current_pipe_syntax
+    columns:
+      - name: id
+        data_tests:
+          - accepted_values:
+              arguments: {values: [1], quote: false}
+
+  - name: known_issues_current_partition_union
+    columns:
+      - name: dt
+        data_tests: [not_null]
+      - name: a
+        data_tests: [not_null]
+      - name: b
+        data_tests: [not_null]
+
+unit_tests:
+  - name: known_issues_complex_expression_values_remain_sql
+    model: known_issues_complex_expression_target
+    expect:
+      rows:
+        - id: 1
+          struct_field: STRUCT("A" AS field1, "B" AS field2)
+          some_point: ST_GEOGPOINT(100, -37)
+
+  - name: known_issues_complex_types_are_unit_testable
+    model: known_issues_complex_unit_target
+    given:
+      - input: ref('known_issues_complex_input')
+        format: sql
+        rows: |
+          select 1337 as company_id, date '2025-01-01' as closing_date,
+                 struct(40 as revenue, 41 as debt) as financials
+          union all
+          select 1337, date '2024-01-01', struct(75 as revenue, 76 as debt)
+    expect:
+      format: sql
+      rows: |
+        select 1337 as company_id, struct(
+          [
+            struct(date '2025-01-01' as closing_date, 40 as amount),
+            struct(date '2024-01-01' as closing_date, 75 as amount)
+          ] as revenue,
+          [
+            struct(date '2025-01-01' as closing_date, 41 as amount),
+            struct(date '2024-01-01' as closing_date, 76 as amount)
+          ] as debt
+        ) as financial_history

@@ -1,0 +1,25 @@
+version: 2
+
+unit_tests:
+  - name: exotic_dispatched_fingerprint_uses_bigquery_implementation
+    model: exotic_dispatched_fingerprint
+    given:
+      - input: ref('orders')
+        rows:
+          - {order_id: 7, customer_id: 3, status: COMPLETED, shipping_amount: 1.25}
+    expect:
+      rows:
+        - {order_id: 7, customer_id: 3, normalized_status: completed, shipping_amount: 1.25, row_fingerprint: 0b7318682546beba9db21e7fba7118f4176304561d8fe92c0127a3e57d342ab7}
+
+  - name: exotic_version_consumer_resolves_explicit_and_latest_versions
+    model: exotic_version_consumer
+    given:
+      - input: ref('exotic_versioned_metric', version=1)
+        rows:
+          - {order_id: 10, metric_value: 13.50, metric_definition: gross_before_discounts}
+      - input: ref('exotic_versioned_metric', version=2)
+        rows:
+          - {order_id: 10, metric_value: 12.00, metric_definition: net_after_discounts}
+    expect:
+      rows:
+        - {order_id: 10, legacy_value: 13.50, current_value: 12.00, discount_value: 1.50, legacy_definition: gross_before_discounts, current_definition: net_after_discounts, unversioned_ref_uses_latest: true}

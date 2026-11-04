@@ -1,0 +1,47 @@
+// part: metadata
+
+[setup]
+drop = "test_date"
+
+[tags]
+sql-type-name = "DATE"
+field-type-name = "DATE"
+
+// part: setup_query
+
+CREATE TABLE test_date (
+    idx INT64,
+    res DATE
+);
+
+INSERT INTO test_date (idx, res) VALUES
+    (1, DATE '2023-05-15'),
+    (2, DATE '0001-01-01'),
+    (3, DATE '1969-07-20'),
+    (4, DATE '9999-12-31'),
+    (5, NULL);
+
+// part: query
+
+SELECT res FROM test_date ORDER BY idx
+
+// part: expected_schema
+
+{
+    "format": "+s",
+    "children": [
+        {
+            "name": "res",
+            "format": "tdD",
+            "flags": ["nullable"]
+        }
+    ]
+}
+
+// part: expected
+
+{"res": 19492}
+{"res": -719162}
+{"res": -165}
+{"res": 2932896}
+{"res": null}

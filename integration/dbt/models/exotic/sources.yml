@@ -1,0 +1,18 @@
+version: 2
+
+sources:
+  - name: exotic_seed_tables
+    database: "{{ target.database }}"
+    schema: "{{ target.schema }}"
+    tables:
+      - name: orders
+        identifier: orders
+      - name: fct_orders_metadata
+        identifier: fct_orders
+        description: >-
+          Source without loaded_at_field, so freshness takes BigQuery's bulk
+          __TABLES__ metadata path instead of a per-relation max() query.
+        config:
+          freshness:
+            warn_after: {count: 7, period: day}
+            error_after: {count: 30, period: day}

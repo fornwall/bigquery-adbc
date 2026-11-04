@@ -1,0 +1,10 @@
+# Shared by the integration runners and tests/harness/test_dbt_runner.py.
+[project]
+name = "bigquery-adbc-dbt-integration"
+version = "0.0.0"
+# run.py and benchmark.py use hashlib.file_digest(), introduced in Python 3.11.
+requires-python = ">=3.11"
+dependencies = ["google-cloud-bigquery==3.47.0"]
+
+[tool.uv]
+package = false

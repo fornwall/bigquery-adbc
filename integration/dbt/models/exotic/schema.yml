@@ -1,0 +1,290 @@
+version: 2
+
+models:
+  - name: exotic_bigquery_types
+    columns:
+      - name: id
+        data_tests: [not_null, unique]
+      - name: payload_bytes
+        data_tests: [not_null]
+      - name: precise_amount
+        data_tests: [not_null]
+      - name: document
+        data_tests: [not_null]
+      - name: location
+        data_tests: [not_null]
+      - name: local_datetime
+        data_tests: [not_null]
+      - name: local_time
+        data_tests: [not_null]
+    data_tests:
+      - exotic_exact_row_count:
+          arguments:
+            expected: 1
+
+  - name: exotic_hooked_model
+    columns:
+      - name: order_id
+        data_tests: [not_null, unique]
+      - name: customer_id
+        data_tests: [not_null]
+      - name: order_total
+        data_tests: [positive]
+    data_tests:
+      - exotic_exact_row_count:
+          arguments:
+            expected: 3
+
+  - name: exotic_seed_source_projection
+    columns:
+      - name: order_id
+        data_tests: [not_null, unique]
+      - name: normalized_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [completed, cancelled, pending]
+    data_tests:
+      - exotic_exact_row_count:
+          arguments:
+            expected: 5
+
+  - name: exotic_dispatched_fingerprint
+    columns:
+      - name: order_id
+        data_tests: [not_null, unique]
+      - name: normalized_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [completed, cancelled, pending]
+      - name: row_fingerprint
+        data_tests: [not_null]
+    data_tests:
+      - exotic_exact_row_count:
+          arguments:
+            expected: 5
+
+  - name: exotic_sequence_pivot
+    columns:
+      - name: bucket
+        data_tests: [not_null]
+      - name: metric_name
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [odd_total, even_total]
+      - name: metric_value
+        data_tests: [positive]
+    data_tests:
+      - exotic_exact_row_count:
+          arguments:
+            expected: 6
+
+  - name: exotic_versioned_metric
+    latest_version: 2
+    columns:
+      - name: order_id
+        data_tests: [not_null, unique]
+      - name: metric_value
+        data_tests: [non_negative]
+      - name: metric_definition
+        data_tests: [not_null]
+    versions:
+      - v: 1
+      - v: 2
+
+  - name: exotic_version_consumer
+    columns:
+      - name: order_id
+        data_tests: [not_null, unique]
+      - name: legacy_value
+        data_tests: [non_negative]
+      - name: current_value
+        data_tests: [non_negative]
+      - name: discount_value
+        data_tests: [non_negative]
+      - name: unversioned_ref_uses_latest
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [true]
+                quote: false
+    data_tests:
+      - exotic_exact_row_count:
+          arguments:
+            expected: 5
+
+  - name: exotic_materialized_view
+    description: Materialized view covering BigQuery refresh and staleness metadata.
+    columns:
+      - name: status
+        data_tests: [not_null, unique]
+      - name: order_count
+        data_tests: [positive]
+      - name: booked_revenue
+        data_tests: [non_negative]
+
+  - name: exotic_refreshed_materialized_view
+    description: >-
+      Materialized view rebuilt unchanged, so dbt reads its configuration back and refreshes it.
+    columns:
+      - name: status
+        data_tests: [not_null, unique]
+      - name: order_count
+        data_tests: [positive]
+
+  - name: exotic_range_partitioned
+    description: Integer-range partitioned table covering RangePartitioning metadata.
+    columns:
+      - name: bucket
+        data_tests: [not_null]
+      - name: parity
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [odd, even]
+      - name: order_id
+        data_tests: [not_null, unique]
+    data_tests:
+      - exotic_exact_row_count:
+          arguments:
+            expected: 5
+
+  - name: exotic_dynamic_overwrite
+    description: Dynamic insert-overwrite incremental covering the multi-statement script path.
+    columns:
+      - name: order_date
+        data_tests: [not_null, unique]
+      - name: order_count
+        data_tests: [positive]
+      - name: load_wave
+        data_tests: [positive]
+
+  - name: exotic_copied_partitions
+    description: >-
+      Static insert-overwrite incremental whose copy_partitions replaces each listed partition
+      through the driver's option-only table copy.
+    columns:
+      - name: order_date
+        data_tests: [not_null, unique]
+      - name: order_count
+        data_tests: [positive]
+      - name: load_wave
+        data_tests: [positive]
+    data_tests:
+      - exotic_exact_row_count:
+          arguments:
+            expected: 3
+
+  - name: exotic_authorized_source
+    description: >-
+      Table built into a second dataset so exotic_authorized_view reads across a dataset
+      boundary.
+    columns:
+      - name: order_id
+        data_tests: [not_null, unique]
+      - name: order_total
+        data_tests: [non_negative]
+    data_tests:
+      - exotic_exact_row_count:
+          arguments:
+            expected: 5
+
+  - name: exotic_authorized_view
+    description: >-
+      View authorized on the source dataset through grant_access_to and the driver's
+      option-only dataset authorization.
+    columns:
+      - name: order_date
+        description: Order day, documented through the view's column metadata update.
+        data_tests: [not_null, unique]
+      - name: order_count
+        description: Orders per day, documented through the view's column metadata update.
+        data_tests: [positive]
+    data_tests:
+      - exotic_exact_row_count:
+          arguments:
+            expected: 3
+
+  - name: exotic_python_model
+    description: >-
+      Python model uploaded through the driver's write_gcs operation and submitted to a Dataproc
+      cluster that does not exist. The runner builds it in its own phase and checks both steps;
+      it has no data tests because the relation is never created.
+
+  - name: exotic_schema_evolution
+    description: Incremental model covering append_new_columns schema evolution.
+    columns:
+      - name: order_id
+        data_tests: [not_null, unique]
+      - name: order_total
+        data_tests: [non_negative]
+      - name: load_wave
+        data_tests: [positive]
+
+  - name: exotic_result_edges
+    description: Scalar, null and nested boundary values carried through ADBC and dbt show.
+    columns:
+      - name: row_id
+        data_tests: [not_null, unique]
+    data_tests:
+      - exotic_exact_row_count:
+          arguments:
+            expected: 1
+
+  - name: exotic_empty_result
+    description: Typed zero-row view covering empty ADBC result schema retention.
+    data_tests:
+      - exotic_exact_row_count:
+          arguments:
+            expected: 0
+
+  - name: exotic_quoted_identifiers
+    description: Reserved relation alias and BigQuery flexible column names.
+    columns:
+      - name: order
+        description: Reserved-keyword column, persisted through the metadata update.
+      - name: Mixed Case
+        description: Space-containing column, persisted through the metadata update.
+      - name: dash-name
+        description: Dashed column, persisted through the metadata update.
+      - name: 名前-列
+        description: Unicode flexible column, persisted through the metadata update.
+    data_tests:
+      - exotic_exact_row_count:
+          arguments:
+            expected: 1
+
+  - name: exotic_schema_sync
+    description: >-
+      Composite-key incremental covering sync_all_columns, selective merge updates and an
+      incremental predicate.
+    columns:
+      - name: customer_id
+        data_tests: [not_null]
+      - name: order_id
+        data_tests: [not_null]
+      - name: order_date
+        data_tests: [not_null]
+      - name: load_wave
+        data_tests: [positive]
+      - name: wave_payload
+        data_tests: [not_null]
+      - name: original_wave
+        data_tests: [positive]
+
+exposures:
+  - name: exotic_version_comparison_dashboard
+    label: Exotic version comparison dashboard
+    type: dashboard
+    maturity: high
+    url: https://example.invalid/dbt-integration/exotic-version-comparison
+    description: Manifest-only downstream consumer for versioned-ref lineage coverage.
+    depends_on:
+      - ref('exotic_version_consumer')
+    owner:
+      name: BigQuery ADBC integration suite
+      email: integration@example.invalid

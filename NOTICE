@@ -1,0 +1,25 @@
+bigquery-adbc
+Copyright 2026 Fredrik Fornwall
+
+This product includes code adapted from the Apache Arrow Rust IPC reader
+in src/arrow_ipc_bigquery/reader.rs, and ADBC C ABI declarations in
+src/ffi/abi.rs transcribed from the Apache Arrow ADBC header
+c/include/arrow-adbc/adbc.h.
+
+Apache Arrow
+Copyright 2016-2026 The Apache Software Foundation
+
+Apache Arrow ADBC
+Copyright 2022-2026 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+
+The validation cases in the source repository's
+integration/foundry-validation/queries/ directory are adapted from the
+validation queries of the ADBC Driver for BigQuery
+(https://github.com/adbc-drivers/bigquery), licensed under the Apache
+License, Version 2.0.
+
+ADBC Driver for BigQuery
+Copyright 2025 ADBC Drivers Contributors

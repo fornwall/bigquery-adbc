@@ -1,0 +1,7 @@
+order_id,line_number,sku,quantity,unit_price,discount_amount
+101,1,SKU-A,2,10.00,2.00
+101,2,SKU-B,1,5.50,0.00
+102,1,SKU-A,1,10.00,0.00
+103,1,SKU-C,3,7.25,0.75
+104,1,SKU-D,1,100.00,10.00
+105,1,SKU-A,4,10.00,0.00

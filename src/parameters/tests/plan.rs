@@ -1,0 +1,134 @@
+//! Binding plans: parameter names and modes, and the nesting bound.
+
+use super::*;
+
+#[test]
+fn validates_named_parameter_field_names() {
+    use arrow_schema::Fields;
+
+    use crate::parameters::validate_parameter_fields;
+
+    fn fields(names: &[&str]) -> Fields {
+        names
+            .iter()
+            .map(|name| Field::new(*name, DataType::Int64, true))
+            .collect()
+    }
+
+    // Everything BigQuery accepts must pass: a quoted `@`identifier`` reference reaches
+    // names that are not unquoted identifiers (observed, not documented).
+    validate_parameter_fields(
+        &fields(&[
+            "my param",
+            "1abc",
+            "from",
+            "a`b",
+            "a\nb",
+            "\u{fc}ber",
+            &"x".repeat(127),
+            // The limit counts characters, not bytes: 127 two-byte characters pass.
+            &"\u{fc}".repeat(127),
+        ]),
+        ParameterMode::Named,
+    )
+    .unwrap();
+
+    let too_long = "x".repeat(128);
+    let error = validate_parameter_fields(&fields(&[&too_long]), ParameterMode::Named).unwrap_err();
+    assert_eq!(error.status, Status::InvalidArguments);
+    assert_message(
+        &error,
+        &[
+            &too_long,
+            "128 characters long; it cannot exceed 127 characters",
+        ],
+    );
+
+    let error = validate_parameter_fields(&fields(&["a", ""]), ParameterMode::Named).unwrap_err();
+    assert_eq!(error.status, Status::InvalidArguments);
+    assert_message(&error, &["parameter 1 has an empty field name"]);
+    let error =
+        validate_parameter_fields(&fields(&["a", "b", "a"]), ParameterMode::Named).unwrap_err();
+    assert_eq!(error.status, Status::InvalidArguments);
+    assert_message(
+        &error,
+        &["\"a\" at parameter 2 duplicates \"a\" at parameter 0"],
+    );
+    // BigQuery matches names case-insensitively, by full Unicode uppercase mapping.
+    let error =
+        validate_parameter_fields(&fields(&["a", "b", "A"]), ParameterMode::Named).unwrap_err();
+    assert_eq!(error.status, Status::InvalidArguments);
+    assert_message(
+        &error,
+        &[
+            "\"A\" at parameter 2 duplicates \"a\" at parameter 0",
+            "case-insensitive",
+        ],
+    );
+    for names in [["\u{e9}", "\u{c9}"], ["\u{df}", "SS"]] {
+        let error = validate_parameter_fields(&fields(&names), ParameterMode::Named).unwrap_err();
+        assert_message(&error, &["case-insensitive"]);
+    }
+    validate_parameter_fields(&fields(&["k", "\u{212a}"]), ParameterMode::Named).unwrap();
+
+    // Positional parameters carry no names, so nothing is validated.
+    validate_parameter_fields(&fields(&["", &"x".repeat(128)]), ParameterMode::Positional).unwrap();
+}
+
+#[test]
+fn rejects_deeply_nested_parameter_schemas() {
+    // A list-of-struct-of-list chain 100 levels deep; the iterative depth bound must reject
+    // it before the recursive parameter type builder walks it and overflows the stack.
+    let mut data_type = DataType::Utf8;
+    for _ in 0..50 {
+        data_type = DataType::Struct(vec![Arc::new(Field::new("child", data_type, true))].into());
+        data_type = DataType::List(Arc::new(Field::new("item", data_type, true)));
+    }
+    let schema = Schema::new(vec![Field::new("parameter", data_type, true)]);
+
+    let error = ParameterPlan::try_new(&schema, ParameterMode::Positional)
+        .err()
+        .expect("deeply nested parameter schemas must be rejected");
+    assert_eq!(error.status, Status::InvalidArguments);
+    assert_message(&error, &["nested", &MAX_SCHEMA_NESTING_DEPTH.to_string()]);
+
+    // A schema at the bound still produces a plan.
+    let mut data_type = DataType::Utf8;
+    for _ in 0..MAX_SCHEMA_NESTING_DEPTH - 1 {
+        data_type = DataType::Struct(vec![Arc::new(Field::new("child", data_type, true))].into());
+    }
+    let schema = Schema::new(vec![Field::new("parameter", data_type, true)]);
+    ParameterPlan::try_new(&schema, ParameterMode::Positional).unwrap();
+}
+
+/// BigQuery refuses placeholders of the other style with a bare message that never names the
+/// driver's option; only the mode that sent the parameters knows which value to suggest.
+#[test]
+fn a_refused_placeholder_style_names_the_parameter_mode_to_set() {
+    let refused = |message: &str| crate::error::error(message, Status::InvalidArguments);
+    let named = "invalidQuery: Named parameters are not supported at [1:8] (HTTP 400)";
+    let positional = "invalidQuery: Positional parameters are not supported at [1:8] (HTTP 400)";
+    assert_eq!(
+        ParameterMode::Positional
+            .explain_refusal(refused(named))
+            .message,
+        format!("{named}; set bigquery.query.parameter_mode to \"named\"")
+    );
+    assert_eq!(
+        ParameterMode::Named
+            .explain_refusal(refused(positional))
+            .message,
+        format!("{positional}; set bigquery.query.parameter_mode to \"positional\"")
+    );
+    // Any other failure, and a refusal the mode cannot have caused, pass through untouched.
+    for (mode, message) in [
+        (ParameterMode::Named, named),
+        (ParameterMode::Positional, positional),
+        (
+            ParameterMode::Positional,
+            "invalidQuery: Query parameter 'x' not found at [1:8] (HTTP 400)",
+        ),
+    ] {
+        assert_eq!(mode.explain_refusal(refused(message)).message, message);
+    }
+}

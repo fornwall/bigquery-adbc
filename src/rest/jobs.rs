@@ -1,0 +1,1342 @@
+//! BigQuery job submission and control over the JSON REST API.
+//!
+//! There is no full `Job` model: callers serialize only the configuration they send, through
+//! [`JobRequest`], and decode only the response fields they need, so a copy job does not link
+//! every other job model.
+
+use std::collections::hash_map::RandomState;
+use std::fmt::Write as _;
+use std::hash::{BuildHasher, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use adbc_core::error::{Result, Status};
+use google_cloud_auth::credentials::Credentials;
+use serde::Serialize;
+
+use crate::BigQueryDatabaseOption;
+use crate::cancellation::{self, Operation};
+use crate::clients::{DatasetKey, DatasetLocations};
+use crate::diag::diag;
+use crate::error::{
+    append_remedy, error, failure_reason, invalid_argument, invalid_state, job_name, with_job_link,
+};
+use crate::identifiers::ProjectIdentifier;
+use crate::rest::client::RestClient;
+use crate::rest::json::{decode_json, encode_json};
+use crate::rest::projects_prefix;
+use crate::rest::rejection::{reason_message, service_error};
+use crate::rest::request::{Request, RequestStart, send};
+use crate::rest::retry::{MAX_ATTEMPTS, RetryClass, RetryDelays, classify};
+use crate::rest::url::query_component;
+use crate::runtime::DetachedTask;
+
+/// The server-side wait for a query whose job reference is already registered.
+///
+/// Sent by [`JobClient::query_results_url`]. Initial `jobs.query` submission waits up to ten
+/// seconds for inline results. This completion wait must stay below the REST
+/// client's 60 s request timeout; `crate::query::direct::poll`'s poll floor assumes this value.
+pub(crate) const QUERY_COMPLETION_WAIT_MS: u32 = 45_000;
+
+/// What [`JobClient::query`] got back.
+#[derive(Debug)]
+pub(crate) enum QueryAnswer {
+    /// The `jobs.query` response document.
+    Response(bytes::Bytes),
+    /// The job an earlier attempt created, which a replay's 409 named instead of answering.
+    Replayed(JobReference),
+}
+
+/// Which read of a query's results one [`JobClient::get_query_results`] call is.
+///
+/// Rendered into "failed to get the BigQuery {read}".
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum QueryResultsRead {
+    /// Waiting for the query to complete, which also returns its first page.
+    Completion,
+    /// One sequential page of an already completed query's results.
+    Page,
+}
+
+impl std::fmt::Display for QueryResultsRead {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Completion => "query results",
+            Self::Page => "query result page",
+        })
+    }
+}
+
+/// The `reason` values a rejected completion read can carry only as the query job's own
+/// failure. `notFound`, `accessDenied` and `responseTooLarge` are left out: each may be about the
+/// read itself, the last when one row exceeds the read's row limit.
+const JOB_VERDICT_REASONS: [&str; 7] = [
+    "billingTierLimitExceeded",
+    "bytesBilledLimitExceeded",
+    "invalid",
+    "invalidQuery",
+    "resourcesExceeded",
+    "stopped",
+    "timeout",
+];
+
+/// Attempts to find a job after an ambiguous submission; an accepted job can take a moment to
+/// become visible to `jobs.get`.
+const MAX_RECONCILIATION_ATTEMPTS: u32 = 3;
+
+/// Bound the exceptional cross-region search, including credentials, pagination and the final
+/// job fetch. The page cap also bounds work if a service repeats pagination tokens.
+const JOB_SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_JOB_SEARCH_PAGES: u32 = 100;
+const JOB_SEARCH_CLOCK_SKEW: Duration = Duration::from_secs(300);
+
+/// A BigQuery job identity chosen before submission.
+///
+/// A caller-chosen ID lets a submission be retried after an ambiguous failure without duplicating
+/// the job. Each new execution needs a fresh ID from [`next_identity`]; only the caller knows when
+/// one begins.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct JobReference {
+    #[serde(default)]
+    pub(crate) project_id: String,
+    #[serde(default)]
+    pub(crate) job_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) location: Option<String>,
+}
+
+impl JobReference {
+    pub(crate) fn new(project_id: &str, location: Option<&str>, job_id: String) -> Self {
+        Self {
+            project_id: project_id.to_owned(),
+            job_id,
+            location: location
+                .filter(|location| !location.is_empty())
+                .map(ToOwned::to_owned),
+        }
+    }
+
+    /// Requires the regional identity a job needs when it cannot be found without one: a CSV load
+    /// is never resubmitted, so nothing else can reveal where BigQuery put it.
+    pub(crate) fn require_location(&self, what: &str) -> Result<()> {
+        if self
+            .location
+            .as_deref()
+            .is_some_and(|location| !location.is_empty())
+        {
+            return Ok(());
+        }
+        Err(invalid_state(format!(
+            "BigQuery option {} must be set to run a {what} job, so the driver can find and \
+             cancel the job it submitted",
+            BigQueryDatabaseOption::Location.as_str()
+        )))
+    }
+
+    /// Checks that `returned`, the job reference in `response`, names this job, and returns the
+    /// canonical identity. Later requests use that identity, so a mismatch is caught here.
+    pub(crate) fn confirm(&self, returned: Option<&Self>, response: &str) -> Result<Self> {
+        let returned = returned
+            .ok_or_else(|| invalid_data(format!("{response} contains no job reference")))?;
+        if returned.project_id.is_empty() || returned.job_id.is_empty() {
+            return Err(invalid_data(format!(
+                "{response} contains an incomplete job reference {}",
+                job_name(returned)
+            )));
+        }
+        if !matches_project(&self.project_id, &returned.project_id)
+            || returned.job_id != self.job_id
+        {
+            return Err(invalid_data(format!(
+                "{response} names job {}, but the request was for job {}",
+                job_name(returned),
+                job_name(self)
+            )));
+        }
+        let mut confirmed = self.clone();
+        confirmed.project_id.clone_from(&returned.project_id);
+        confirmed.with_location(returned.location.as_deref(), response)
+    }
+
+    /// Adopts `location`, which `response` names for this job: a location BigQuery inferred is
+    /// kept, and one that differs from this reference's only in case is the same one.
+    pub(crate) fn with_location(mut self, location: Option<&str>, response: &str) -> Result<Self> {
+        let Some(location) = location else {
+            return Ok(self);
+        };
+        if location.is_empty() {
+            return Err(invalid_data(format!(
+                "{response} names an empty location for job {}",
+                job_name(&self)
+            )));
+        }
+        if let Some(requested) = self.location.as_deref()
+            && !requested.eq_ignore_ascii_case(location)
+        {
+            return Err(invalid_data(format!(
+                "{response} names location {location} for job {}, but the request was for \
+                 location {requested}",
+                job_name(&self)
+            )));
+        }
+        self.location = Some(location.to_owned());
+        Ok(self)
+    }
+}
+
+/// An authenticated response can resolve a project number to its textual ID. Once resolved,
+/// later responses must name that exact project; a different number is never an alias.
+fn matches_project(requested: &str, returned: &str) -> bool {
+    let is_number =
+        |value: &str| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit());
+    requested == returned
+        || (is_number(requested)
+            && !is_number(returned)
+            && ProjectIdentifier::try_new(returned).is_ok())
+}
+
+fn invalid_data(message: String) -> adbc_core::error::Error {
+    error(message, Status::InvalidData)
+}
+
+static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+static PROCESS_NONCE: OnceLock<u64> = OnceLock::new();
+
+/// A process-unique request or job ID: `prefix` plus 32 hex digits. The process ID is hashed on
+/// every call, not only into the nonce, so a child forked after initialization does not repeat its
+/// parent's IDs. The counter half keeps IDs distinct within a process.
+pub(crate) fn next_identity(prefix: &str) -> String {
+    let nonce = *PROCESS_NONCE.get_or_init(|| {
+        let mut hash = RandomState::new().build_hasher();
+        hash.write_u32(std::process::id());
+        hash.write_u128(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+        );
+        hash.finish()
+    });
+    let sequence = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut hash = RandomState::new().build_hasher();
+    hash.write_u64(nonce);
+    hash.write_u32(std::process::id());
+    hash.write_u64(sequence);
+    let per_execution = hash.finish();
+    format!("{prefix}{per_execution:016x}{sequence:016x}")
+}
+
+/// An encoded `jobs.insert` request bound to its job ID.
+///
+/// The body is encoded once and replayed byte for byte; private fields keep a retry from pairing
+/// the ID with another configuration.
+pub(crate) struct JobRequest {
+    reference: JobReference,
+    dry_run: bool,
+    body: bytes::Bytes,
+    /// The table the job writes, which its submission messages name. See [`Self::writing`].
+    destination: Option<String>,
+    /// Where a job submitted without a location may be. See [`Self::locatable_in`].
+    datasets: Vec<DatasetKey>,
+}
+
+impl JobRequest {
+    /// Wraps the caller's compact configuration in the REST job envelope.
+    pub(crate) fn new<C: Serialize>(
+        reference: JobReference,
+        dry_run: bool,
+        configuration: &C,
+        what: &str,
+    ) -> Result<Self> {
+        if reference.project_id.is_empty() {
+            return Err(invalid_argument(
+                "a BigQuery job submission requires a billing project ID",
+            ));
+        }
+        if reference.job_id.is_empty() {
+            return Err(invalid_argument(
+                "a BigQuery job submission requires a caller-generated job ID",
+            ));
+        }
+        let body = encode_json(
+            &JobEnvelope {
+                job_reference: &reference,
+                configuration,
+            },
+            what,
+        )?
+        .into();
+        Ok(Self {
+            reference,
+            dry_run,
+            body,
+            destination: None,
+            datasets: Vec::new(),
+        })
+    }
+
+    /// Names `destination`, the table the job writes, in its submission messages.
+    pub(crate) fn writing(mut self, destination: impl std::fmt::Display) -> Self {
+        self.destination = Some(destination.to_string());
+        self
+    }
+
+    /// Names the datasets, in order, whose locations may hold this job when it is submitted
+    /// without a location and the submission is ambiguous. BigQuery runs a job where the data it
+    /// reads or writes is, so these are where it most likely ran. See [`JobClient::insert`].
+    pub(crate) fn locatable_in(mut self, datasets: impl IntoIterator<Item = DatasetKey>) -> Self {
+        for dataset in datasets {
+            if !self.datasets.contains(&dataset) {
+                self.datasets.push(dataset);
+            }
+        }
+        self
+    }
+
+    pub(crate) fn reference(&self) -> &JobReference {
+        &self.reference
+    }
+
+    /// The encoded job envelope, also used as the metadata part of media `jobs.insert`.
+    pub(crate) fn body(&self) -> &[u8] {
+        &self.body
+    }
+}
+
+impl std::fmt::Debug for JobRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("JobRequest")
+            .field("reference", &self.reference)
+            .field("dry_run", &self.dry_run)
+            .field("destination", &self.destination)
+            .field("datasets", &self.datasets)
+            .field("body_length", &self.body.len())
+            .finish()
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JobEnvelope<'a, C> {
+    job_reference: &'a JobReference,
+    configuration: &'a C,
+}
+
+/// A database-scoped transport for BigQuery's job collection.
+#[derive(Clone)]
+pub(crate) struct JobClient {
+    credentials: Credentials,
+    http: RestClient,
+    /// The prefix every job URL is built on. See [`projects_prefix`].
+    projects: Arc<str>,
+    /// Retry schedules. See [`RetryDelays`].
+    service_delays: RetryDelays,
+    prompt_delays: RetryDelays,
+    poll_delays: RetryDelays,
+    /// Where to look for a job submitted without a location. See [`Self::insert`].
+    dataset_locations: Option<DatasetLocations>,
+}
+
+impl JobClient {
+    /// Builds a lightweight wrapper around the database's shared credentials and HTTP pool.
+    pub(crate) fn new(
+        credentials: Credentials,
+        configured_endpoint: Option<&str>,
+        http: RestClient,
+    ) -> Self {
+        Self {
+            credentials,
+            http,
+            projects: projects_prefix(configured_endpoint),
+            service_delays: RetryDelays::SERVICE,
+            prompt_delays: RetryDelays::PROMPT,
+            poll_delays: RetryDelays::POLL,
+            dataset_locations: None,
+        }
+    }
+
+    /// Lets an ambiguous submission without a location look for its job in the locations of
+    /// [`JobRequest::locatable_in`]'s datasets.
+    pub(crate) fn with_dataset_locations(mut self, locations: DatasetLocations) -> Self {
+        self.dataset_locations = Some(locations);
+        self
+    }
+
+    /// An anonymous client on `endpoint` whose retries wait a millisecond.
+    #[cfg(test)]
+    pub(crate) fn for_test(endpoint: &str) -> Self {
+        Self::new(
+            google_cloud_auth::credentials::anonymous::Builder::new().build(),
+            Some(endpoint),
+            crate::rest::client::rest_client("job client test").unwrap(),
+        )
+        .with_flat_delays(Duration::from_millis(1))
+    }
+
+    /// Replaces every retry schedule with one flat, `delay`-bounded one. See
+    /// [`RetryDelays::flat`].
+    #[cfg(test)]
+    pub(crate) fn with_flat_delays(mut self, delay: Duration) -> Self {
+        self.service_delays = RetryDelays::flat(delay);
+        self.prompt_delays = RetryDelays::flat(delay);
+        self.poll_delays = RetryDelays::flat(delay);
+        self
+    }
+
+    /// Submits one JSON job and returns the response document for the caller's own projection.
+    ///
+    /// A real job is registered for cancellation before the first POST. Retries resend the same
+    /// body and job ID, so a lost response cannot duplicate the job: BigQuery answers the replay
+    /// with 409, and fetching that job reconciles it as the original submission. A dry run creates
+    /// no job, so there is nothing to reconcile: its 409 is about what the job would write, such as
+    /// a `CREATE TABLE` of an existing table.
+    ///
+    /// A real job without a location runs where BigQuery infers, as `jobs.query` does, and the
+    /// answer names that location. See [`InferredSubmission`].
+    pub(crate) async fn insert(
+        &self,
+        operation: Option<&Operation>,
+        request: &JobRequest,
+        what: &str,
+    ) -> Result<bytes::Bytes> {
+        // A dry run creates no job, so only a real submission names one.
+        let mut job = if request.dry_run {
+            format!("dry-run {what} job")
+        } else {
+            format!("{what} job {}", job_name(&request.reference))
+        };
+        if let Some(destination) = &request.destination {
+            write!(job, " into {destination}").expect("writing to a String cannot fail");
+        }
+        if !request.dry_run && request.reference.location.is_none() {
+            let submission = InferredSubmission {
+                client: self.clone(),
+                operation: operation.cloned(),
+                reference: request.reference.clone(),
+                body: request.body.clone(),
+                datasets: request.datasets.clone(),
+                what: what.to_owned(),
+                job,
+                start: RequestStart::default(),
+                submitted_at: SystemTime::now(),
+            };
+            return submission.insert().await;
+        }
+        if !request.dry_run
+            && let Some(operation) = operation
+        {
+            operation.register_provisional_job(&request.reference)?;
+        }
+        let url = self.jobs_url(&request.reference);
+        // `send` words transport failures from `send_context`; a rejection is the service's
+        // verdict on the job.
+        let send_context = format!("submit the BigQuery {job}");
+        let error_context = format!("BigQuery rejected the {job}");
+        // Whether an attempt may have created the job: one that may have reached BigQuery, which
+        // an attempt still minting its token has not, and that BigQuery did not refuse. A
+        // submission that stops without one withdraws its identity rather than confirming it.
+        let start = RequestStart::default();
+        let mut may_exist = false;
+        for attempt in 1..=MAX_ATTEMPTS {
+            let response = send(
+                operation,
+                &self.credentials,
+                &self.http,
+                Request::post_json(&url, request.body.clone(), &send_context)
+                    .with_start_signal(&start),
+            )
+            .await;
+            may_exist |= start.started() && !refused(&response);
+            let (class, failure) = match response {
+                Ok((reqwest::StatusCode::CONFLICT, body)) if !request.dry_run => {
+                    let failure =
+                        service_error(&error_context, reqwest::StatusCode::CONFLICT, &body);
+                    confirm_submission(operation, request)?;
+                    return self
+                        .reconcile_submission(operation, &request.reference, what, failure)
+                        .await;
+                }
+                Err(failure) if failure.status == Status::Cancelled => {
+                    // A cancel that raced job visibility may have received 404; confirming the
+                    // identity now that the submission has stopped gives it one more try, and the
+                    // operation suppresses a duplicate cancel.
+                    settle_submission(operation, request, may_exist);
+                    return Err(failure);
+                }
+                answer => match classify(answer, &error_context) {
+                    Ok(body) => {
+                        confirm_submission(operation, request)?;
+                        return Ok(body);
+                    }
+                    Err(rejected) => rejected,
+                },
+            };
+            if class == RetryClass::Final
+                || (attempt == MAX_ATTEMPTS && (request.dry_run || !may_exist))
+            {
+                if !may_exist {
+                    settle_submission(operation, request, false);
+                }
+                return Err(failure);
+            }
+            if attempt == MAX_ATTEMPTS {
+                confirm_submission(operation, request)?;
+                return self
+                    .reconcile_submission(operation, &request.reference, what, failure)
+                    .await;
+            }
+            diag!(
+                Debug,
+                "retrying an ambiguous BigQuery job submission with the same job ID {} after \
+                 attempt {attempt} ({:?})",
+                request.reference.job_id,
+                failure.status
+            );
+            if let Err(failure) =
+                cancellation::sleep(operation, self.service_delays.delay(class, attempt)).await
+            {
+                if failure.status == Status::Cancelled {
+                    // A POST before this backoff may have been accepted, and a visibility-raced
+                    // cancel then gets its one post-confirmation generation.
+                    settle_submission(operation, request, may_exist);
+                }
+                return Err(failure);
+            }
+        }
+        unreachable!("the bounded insert loop returns on its final attempt")
+    }
+
+    /// Submits one encoded `jobs.query` request, replaying the exact request ID and body after an
+    /// ambiguous transport failure.
+    ///
+    /// BigQuery answers a replay of a submission that created a job with 409 `duplicate` naming
+    /// that job, not with its results, so a replay's 409 is the job to read instead. A first
+    /// attempt's 409 is a request ID collision and stays an error.
+    ///
+    /// A 403 `responseTooLarge` (a result row over 20 MiB) also comes from a query that ran and
+    /// kept its job, so it is replayed once to name that job, whose rows only Storage Read can
+    /// return.
+    ///
+    /// Not operation-gated: the caller races it against cancellation and, if cancellation wins,
+    /// detaches a continuation that registers any job reference in the answer.
+    pub(crate) async fn query(
+        &self,
+        project_id: &str,
+        body: bytes::Bytes,
+        start: &RequestStart,
+    ) -> Result<QueryAnswer> {
+        let url = format!("{}/{}/queries", self.projects, query_component(project_id));
+        // A transport failure is a failure to submit; an error document is BigQuery rejecting the
+        // query.
+        let send_context = "submit the BigQuery jobs.query request";
+        let error_context = "BigQuery rejected the query";
+        let mut replayed_too_large = false;
+        for attempt in 1..=MAX_ATTEMPTS {
+            let request =
+                Request::post_json(&url, body.clone(), send_context).with_start_signal(start);
+            let response = send(None, &self.credentials, &self.http, request).await;
+            if attempt > 1
+                && let Ok((reqwest::StatusCode::CONFLICT, body)) = &response
+                && let Some(job) = duplicate_in(body, project_id)
+            {
+                return Ok(QueryAnswer::Replayed(job));
+            }
+            let (class, mut failure) = match classify(response, error_context) {
+                Ok(body) => return Ok(QueryAnswer::Response(body)),
+                Err(rejected) => rejected,
+            };
+            if !replayed_too_large
+                && attempt < MAX_ATTEMPTS
+                && failure_reason(&failure) == Some("responseTooLarge")
+            {
+                replayed_too_large = true;
+                continue;
+            }
+            if class == RetryClass::Final || attempt == MAX_ATTEMPTS {
+                // A stopped query (at its job timeout, for example) was accepted, not rejected.
+                if failure_reason(&failure) == Some("stopped")
+                    && let Some(rest) = failure.message.strip_prefix(error_context)
+                {
+                    failure.message = format!("BigQuery stopped the query{rest}");
+                }
+                return Err(failure);
+            }
+            diag!(
+                Debug,
+                "retrying an ambiguous BigQuery jobs.query submission with the same request ID \
+                 after attempt {attempt} ({:?})",
+                failure.status
+            );
+            tokio::time::sleep(self.service_delays.delay(class, attempt)).await;
+        }
+        unreachable!("the bounded jobs.query loop returns on its final attempt")
+    }
+
+    /// Long-polls completion or fetches one sequential result page.
+    ///
+    /// Every call requests integer-microsecond timestamps, as the row decoder expects. A
+    /// metadata-only completion passes zero `max_results` so the service serializes no rows.
+    pub(crate) async fn get_query_results(
+        &self,
+        operation: Option<&Operation>,
+        reference: &JobReference,
+        page_token: Option<&str>,
+        max_results: u32,
+        read: QueryResultsRead,
+    ) -> Result<bytes::Bytes> {
+        let url = self.query_results_url(reference, page_token, max_results);
+        let send_context = format!("get the BigQuery {read}");
+        let error_context = format!("failed to get the BigQuery {read}");
+        let plan = Retry {
+            attempts: MAX_ATTEMPTS,
+            delays: self.service_delays,
+            existing_job: true,
+            error_context: &error_context,
+            job_id: Some(&reference.job_id),
+            retrying: "retrying a transient BigQuery jobs.getQueryResults failure",
+            invisible: None,
+        };
+        let mut failure = match self
+            .retrying(operation, plan, &mut || Request::get(&url, &send_context))
+            .await
+        {
+            Ok(body) => return Ok(body),
+            Err(failure) => failure,
+        };
+        // BigQuery maps a failed job's `errorResult` onto every read of its results, so a
+        // completion read rejected with a job-only reason reports the job's failure.
+        if matches!(read, QueryResultsRead::Completion)
+            && failure_reason(&failure).is_some_and(|reason| JOB_VERDICT_REASONS.contains(&reason))
+            && let Some(rest) = failure.message.strip_prefix(error_context.as_str())
+        {
+            failure.message = format!("BigQuery query job {} failed{rest}", job_name(reference));
+        }
+        Err(failure)
+    }
+
+    /// Polls one job. A failed read says nothing about the job and a 404 means it is not yet
+    /// visible, so both are retried on [`RetryDelays::POLL`].
+    pub(crate) async fn poll(
+        &self,
+        operation: Option<&Operation>,
+        reference: &JobReference,
+        what: &str,
+    ) -> Result<bytes::Bytes> {
+        let url = self.job_url(reference, "");
+        let send_context = format!("poll the BigQuery {what} job {}", job_name(reference));
+        let plan = Retry {
+            attempts: MAX_ATTEMPTS,
+            delays: self.poll_delays,
+            existing_job: true,
+            error_context: &format!("failed to {send_context}"),
+            job_id: Some(&reference.job_id),
+            retrying: "retrying a transient BigQuery jobs.get poll",
+            invisible: None,
+        };
+        self.retrying(operation, plan, &mut || Request::get(&url, &send_context))
+            .await
+    }
+
+    /// Lists the most recent child job of a script or procedure job; `jobs.list` sorts newest
+    /// first. The full projection, because the minimal one omits `statementType` and
+    /// `transactionInfo`. Needs `bigquery.jobs.list`, which running queries does not.
+    pub(crate) async fn latest_child_job(
+        &self,
+        operation: Option<&Operation>,
+        parent: &JobReference,
+    ) -> Result<bytes::Bytes> {
+        let url = format!(
+            "{}?parentJobId={}&maxResults=1&projection=full",
+            self.jobs_url(parent),
+            query_component(&parent.job_id)
+        );
+        let send_context = format!("list the child jobs of BigQuery job {}", job_name(parent));
+        let plan = Retry {
+            attempts: MAX_ATTEMPTS,
+            delays: self.poll_delays,
+            existing_job: false,
+            error_context: &format!("failed to {send_context}"),
+            job_id: Some(&parent.job_id),
+            retrying: "retrying a transient BigQuery jobs.list failure",
+            invisible: None,
+        };
+        self.retrying(operation, plan, &mut || Request::get(&url, &send_context))
+            .await
+    }
+
+    /// Requests cancellation of one exact job, ungated: a remote cancel is issued because the
+    /// local operation was cancelled, so that same signal cannot stop it.
+    pub(crate) async fn cancel(&self, reference: &JobReference, what: &str) -> Result<()> {
+        let url = self.job_url(reference, "/cancel");
+        let send_context = format!("cancel the BigQuery {what} job");
+        let plan = Retry {
+            attempts: MAX_ATTEMPTS,
+            delays: self.prompt_delays,
+            existing_job: true,
+            error_context: &format!("failed to {send_context}"),
+            job_id: Some(&reference.job_id),
+            retrying: "retrying a transient BigQuery jobs.cancel failure",
+            invisible: None,
+        };
+        self.retrying(None, plan, &mut || Request::post_empty(&url, &send_context))
+            .await
+            .map(|_| ())
+    }
+
+    /// Fetches a job whose submission answer was ambiguous, retrying through propagation delay
+    /// and transient failures. If the job never appears, the original submission failure is
+    /// returned; any other final failure is returned as is, since the outcome is still unknown.
+    pub(crate) async fn reconcile_submission(
+        &self,
+        operation: Option<&Operation>,
+        reference: &JobReference,
+        what: &str,
+        original_failure: adbc_core::error::Error,
+    ) -> Result<bytes::Bytes> {
+        self.fetch_submitted(operation, reference, what, Some(original_failure))
+            .await
+    }
+
+    /// [`Self::reconcile_submission`], reporting `invisible` when the job never appears, or the
+    /// last `NOT_FOUND` when there is none.
+    async fn fetch_submitted(
+        &self,
+        operation: Option<&Operation>,
+        reference: &JobReference,
+        what: &str,
+        invisible: Option<adbc_core::error::Error>,
+    ) -> Result<bytes::Bytes> {
+        let url = self.job_url(reference, "");
+        let send_context = format!(
+            "reconcile the submission of BigQuery {what} job {}",
+            job_name(reference)
+        );
+        let plan = Retry {
+            attempts: MAX_RECONCILIATION_ATTEMPTS,
+            delays: self.prompt_delays,
+            existing_job: true,
+            error_context: &format!("failed to {send_context}"),
+            job_id: Some(&reference.job_id),
+            retrying: "a BigQuery job submission is not yet reconcilable",
+            invisible,
+        };
+        self.retrying(operation, plan, &mut || Request::get(&url, &send_context))
+            .await
+    }
+
+    /// One bounded send/[`classify`]/retry loop, each backoff gated by `operation`.
+    /// [`JobClient::insert`] has its own loop because it also transitions the cancellation
+    /// identity between attempts.
+    /// The borrowed request factory shares this async state machine across REST endpoints.
+    async fn retrying<'r>(
+        &self,
+        operation: Option<&Operation>,
+        plan: Retry<'_>,
+        request: &mut (dyn FnMut() -> Request<'r> + Send),
+    ) -> Result<bytes::Bytes> {
+        let mut invisible = plan.invisible;
+        for attempt in 1..=plan.attempts {
+            let response = send(operation, &self.credentials, &self.http, request()).await;
+            let (rejected, failure) = match classify(response, plan.error_context) {
+                Ok(body) => return Ok(body),
+                Err(rejected) => rejected,
+            };
+            // A 404 for an accepted job is propagation delay; only `existing_job` callers know
+            // one was accepted.
+            let invisible_job = plan.existing_job && failure.status == Status::NotFound;
+            let class = if invisible_job {
+                RetryClass::Transient
+            } else if plan.existing_job && failure.vendor_code == 400 {
+                // On an existing job, a 400 is the job's own failure mapped onto the read, so a
+                // repeat only repeats the verdict. The Go client also retries these reasons only
+                // on submission.
+                RetryClass::Final
+            } else {
+                rejected
+            };
+            if class == RetryClass::Final {
+                return Err(failure);
+            }
+            if attempt == plan.attempts {
+                // A job that never became visible was not accepted; report the original
+                // submission failure.
+                return Err(match invisible.take() {
+                    Some(original) if invisible_job => original,
+                    _ => failure,
+                });
+            }
+            diag!(
+                Debug,
+                "{} after attempt {attempt} ({:?}; job {})",
+                plan.retrying,
+                failure.status,
+                plan.job_id.unwrap_or("not yet assigned")
+            );
+            cancellation::sleep(operation, plan.delays.delay(class, attempt)).await?;
+        }
+        unreachable!("the bounded retry loop returns on its final attempt")
+    }
+
+    fn jobs_url(&self, reference: &JobReference) -> String {
+        format!(
+            "{}/{}/jobs",
+            self.projects,
+            query_component(&reference.project_id)
+        )
+    }
+
+    fn job_url(&self, reference: &JobReference, suffix: &str) -> String {
+        let mut url = format!(
+            "{}/{}/jobs/{}{}",
+            self.projects,
+            query_component(&reference.project_id),
+            query_component(&reference.job_id),
+            suffix
+        );
+        append_parameter(&mut url, '?', "location", reference.location.as_deref());
+        url
+    }
+
+    fn query_results_url(
+        &self,
+        reference: &JobReference,
+        page_token: Option<&str>,
+        max_results: u32,
+    ) -> String {
+        let mut url = format!(
+            "{}/{}/queries/{}?maxResults={max_results}&timeoutMs={QUERY_COMPLETION_WAIT_MS}&formatOptions.useInt64Timestamp=true",
+            self.projects,
+            query_component(&reference.project_id),
+            query_component(&reference.job_id),
+        );
+        append_parameter(&mut url, '&', "location", reference.location.as_deref());
+        append_parameter(&mut url, '&', "pageToken", page_token);
+        url
+    }
+}
+
+/// Parameters of one [`JobClient::retrying`] loop.
+struct Retry<'a> {
+    /// Total attempts, including the first.
+    attempts: u32,
+    /// How the attempts are spaced. See [`RetryDelays`].
+    delays: RetryDelays,
+    /// The loop addresses a job known to be accepted, so a 404 means not yet visible and a 400
+    /// is final.
+    existing_job: bool,
+    /// How a rejected attempt is reported: "failed to cancel the BigQuery copy job".
+    error_context: &'a str,
+    /// The job the loop is about, for the retry trace. `jobs.query` has none yet.
+    job_id: Option<&'a str>,
+    /// The retry trace message.
+    retrying: &'static str,
+    /// The failure to report instead when every attempt found no such job. See
+    /// [`JobClient::reconcile_submission`].
+    invisible: Option<adbc_core::error::Error>,
+}
+
+impl std::fmt::Debug for JobClient {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("JobClient")
+            .field("projects", &self.projects)
+            .finish_non_exhaustive()
+    }
+}
+
+fn confirm_submission(operation: Option<&Operation>, request: &JobRequest) -> Result<()> {
+    if !request.dry_run
+        && let Some(operation) = operation
+    {
+        operation.register_job(&request.reference)?;
+    }
+    Ok(())
+}
+
+/// Whether `response` refuses a submission outright, so it created no job: a 4xx other than 409
+/// (the job exists) and 408 (the request may have been read whole). A 5xx is ambiguous.
+fn refused(response: &Result<(reqwest::StatusCode, bytes::Bytes)>) -> bool {
+    let Ok((status, _)) = response else {
+        return false;
+    };
+    status.is_client_error()
+        && *status != reqwest::StatusCode::CONFLICT
+        && *status != reqwest::StatusCode::REQUEST_TIMEOUT
+}
+
+/// Ends a stopped submission's provisional identity: confirmed when the job may exist, and
+/// otherwise recorded as finished, so neither a cancel's retry nor the operation's end sends a
+/// `jobs.cancel` that could only answer 404.
+fn settle_submission(operation: Option<&Operation>, request: &JobRequest, may_exist: bool) {
+    if request.dry_run {
+        return;
+    }
+    if let Some(operation) = operation {
+        let _ = if may_exist {
+            operation.register_job(&request.reference)
+        } else {
+            operation.register_completed_job(&request.reference)
+        };
+    }
+}
+
+/// A real `jobs.insert` without a location, which BigQuery runs where the data it reads or writes
+/// is. Its answer names that location, and every later request about the job carries it.
+///
+/// When the answer is lost, the job is found without a new submission, stopping at the first
+/// step that works:
+///
+/// 1. The retries replay the identical request, whose 409 names the job as
+///    `project:location.job`. Job IDs are unique per location, and the identical request infers
+///    the same location.
+/// 2. `jobs.get` without a location, which finds a job in the `US` or `EU` multi-region.
+/// 3. `jobs.get` in the location of each [`JobRequest::locatable_in`] dataset.
+/// 4. `jobs.list` of the caller's recent jobs across regions, matching the exact job ID.
+///
+/// Otherwise BigQuery may still run the job, and the failure names it.
+///
+/// The submission owns its state and no request waits on the caller's operation, so a cancelled
+/// caller can leave it to finish in the background: only its answer can say where the job to
+/// cancel is. A cancelled submission is never sent again, since that could only start a job to
+/// cancel.
+struct InferredSubmission {
+    client: JobClient,
+    /// Read only to stop resubmitting once the caller is cancelled.
+    operation: Option<Operation>,
+    reference: JobReference,
+    body: bytes::Bytes,
+    datasets: Vec<DatasetKey>,
+    what: String,
+    /// The job as [`JobClient::insert`] names it.
+    job: String,
+    /// Set once a submission may have reached BigQuery.
+    start: RequestStart,
+    /// Bounds the jobs.list search even if submission retries take a long time.
+    submitted_at: SystemTime,
+}
+
+/// Why an [`InferredSubmission`] has no job with a known location.
+struct Unlocated {
+    failure: adbc_core::error::Error,
+    /// Whether BigQuery may have accepted the job, which may then still run.
+    job_may_exist: bool,
+}
+
+impl Unlocated {
+    fn unknown(failure: adbc_core::error::Error) -> Self {
+        Self {
+            failure,
+            job_may_exist: true,
+        }
+    }
+}
+
+/// The job's identity with its location, and the job resource that named it.
+type Located = std::result::Result<(JobReference, bytes::Bytes), Unlocated>;
+
+impl InferredSubmission {
+    /// Submits the job for a caller waiting under its operation.
+    async fn insert(self) -> Result<bytes::Bytes> {
+        let Some(operation) = self.operation.clone() else {
+            return self
+                .run()
+                .await
+                .map(|(_, body)| body)
+                .map_err(|unlocated| unlocated.failure);
+        };
+        // Until the location is known, a cancel addresses the job without one, which reaches a
+        // job in the US or EU multi-region. The located identity replaces it.
+        operation.register_provisional_job(&self.reference)?;
+        let start = self.start.clone();
+        let reference = self.reference.clone();
+        let what = self.what.clone();
+        let mut running = Box::pin(self.run());
+        tokio::select! {
+            biased;
+            () = operation.cancelled() => {
+                if start.started() {
+                    let operation = operation.clone();
+                    let task: DetachedTask = Box::pin(async move {
+                        match running.await {
+                            // Registration sees the cancelled operation and cancels the job.
+                            Ok((located, _)) => {
+                                let _ = operation.register_job(&located);
+                            }
+                            // Service error messages may contain SQL, so only the status.
+                            Err(unlocated) if unlocated.job_may_exist => diag!(
+                                Warn,
+                                "the cancelled BigQuery {what} job {} may keep running and \
+                                 billing: the driver could not recover the submitted job \
+                                 (status {:?})",
+                                job_name(&reference),
+                                unlocated.failure.status
+                            ),
+                            Err(_) => {}
+                        }
+                    });
+                    tokio::spawn(task);
+                } else {
+                    let _ = operation.register_completed_job(&reference);
+                }
+                Err(operation.cancelled_error())
+            }
+            located = &mut running => {
+                let (located, body) = located.map_err(|unlocated| {
+                    if !unlocated.job_may_exist {
+                        let _ = operation.register_completed_job(&reference);
+                    }
+                    unlocated.failure
+                })?;
+                operation.register_job(&located)?;
+                Ok(body)
+            }
+        }
+    }
+
+    async fn run(self) -> Located {
+        let url = self.client.jobs_url(&self.reference);
+        let send_context = format!("submit the BigQuery {}", self.job);
+        let error_context = format!("BigQuery rejected the {}", self.job);
+        let mut attempt = 0;
+        // As in `JobClient::insert`; a 409 says the job exists.
+        let mut may_exist = false;
+        let ambiguous = loop {
+            attempt += 1;
+            let request = Request::post_json(&url, self.body.clone(), &send_context)
+                .with_start_signal(&self.start);
+            let response = send(None, &self.client.credentials, &self.client.http, request).await;
+            may_exist |= self.start.started() && !refused(&response);
+            let (class, failure) = match response {
+                Ok((reqwest::StatusCode::CONFLICT, body)) => {
+                    let failure =
+                        service_error(&error_context, reqwest::StatusCode::CONFLICT, &body);
+                    let Some(located) = duplicate(&body, &self.reference) else {
+                        break failure;
+                    };
+                    // The job exists there, so one that never appears there is still the
+                    // original submission's failure.
+                    return match self
+                        .client
+                        .reconcile_submission(None, &located, &self.what, failure)
+                        .await
+                    {
+                        Ok(body) => found(&located, body),
+                        Err(failure) => Err(Unlocated::unknown(failure)),
+                    };
+                }
+                answer => match classify(answer, &error_context) {
+                    Ok(body) => {
+                        return match located_by(&self.reference, &body, ACCEPTED) {
+                            Ok(located) => Ok((located, body)),
+                            // Accepted, but the answer does not say where.
+                            Err(failure) => self.locate(failure).await,
+                        };
+                    }
+                    Err(rejected) => rejected,
+                },
+            };
+            if class == RetryClass::Final {
+                return Err(Unlocated {
+                    failure,
+                    job_may_exist: may_exist,
+                });
+            }
+            if attempt == MAX_ATTEMPTS || self.cancelled() {
+                break failure;
+            }
+            diag!(
+                Debug,
+                "retrying an ambiguous BigQuery job submission without a location, with the same \
+                 job ID {}, after attempt {attempt} ({:?})",
+                self.reference.job_id,
+                failure.status
+            );
+            tokio::time::sleep(self.client.service_delays.delay(class, attempt)).await;
+            if self.cancelled() {
+                break failure;
+            }
+        };
+        if !may_exist {
+            return Err(Unlocated {
+                failure: ambiguous,
+                job_may_exist: false,
+            });
+        }
+        self.locate(ambiguous).await
+    }
+
+    fn cancelled(&self) -> bool {
+        self.operation.as_ref().is_some_and(Operation::is_cancelled)
+    }
+
+    /// Finds a job that BigQuery may have accepted, at steps 2–4 of [`InferredSubmission`].
+    async fn locate(&self, original: adbc_core::error::Error) -> Located {
+        match self
+            .client
+            .fetch_submitted(None, &self.reference, &self.what, None)
+            .await
+        {
+            Ok(body) => return found(&self.reference, body),
+            Err(failure) if failure.status == Status::NotFound => {}
+            Err(failure) => return Err(Unlocated::unknown(failure)),
+        }
+        if let Some(locations) = &self.client.dataset_locations {
+            let mut searched = Vec::with_capacity(self.datasets.len());
+            for dataset in &self.datasets {
+                let location = match locations.get(None, dataset).await {
+                    Ok(location) => location,
+                    Err(failure) => {
+                        diag!(
+                            Debug,
+                            "could not look for BigQuery job {} in the location of dataset {}.{} \
+                             (status {:?})",
+                            job_name(&self.reference),
+                            dataset.0,
+                            dataset.1,
+                            failure.into_error("").status
+                        );
+                        continue;
+                    }
+                };
+                // The lookup without a location already searched the multi-regions.
+                if location.eq_ignore_ascii_case("US")
+                    || location.eq_ignore_ascii_case("EU")
+                    || searched.contains(&location)
+                {
+                    continue;
+                }
+                let candidate = JobReference::new(
+                    &self.reference.project_id,
+                    Some(&location),
+                    self.reference.job_id.clone(),
+                );
+                searched.push(location);
+                match self
+                    .client
+                    .fetch_submitted(None, &candidate, &self.what, None)
+                    .await
+                {
+                    Ok(body) => return found(&candidate, body),
+                    Err(failure) if failure.status == Status::NotFound => {}
+                    Err(failure) => return Err(Unlocated::unknown(failure)),
+                }
+            }
+        }
+        let mut failure = match self.locate_by_listing().await {
+            Ok(Some((reference, body))) => return Ok((reference, body)),
+            Ok(None) => original,
+            Err(failure) => failure,
+        };
+        append_remedy(
+            &mut failure,
+            &format!(
+                "BigQuery may still run job {}; recovery did not complete; \
+                 check the job before running it again, or set {}",
+                job_name(&self.reference),
+                BigQueryDatabaseOption::Location.as_str()
+            ),
+        );
+        Err(Unlocated::unknown(with_job_link(
+            failure,
+            Some(&self.reference),
+        )))
+    }
+
+    async fn locate_by_listing(&self) -> Result<Option<(JobReference, bytes::Bytes)>> {
+        let mut reference = self.reference.clone();
+        tokio::time::timeout(JOB_SEARCH_TIMEOUT, self.search_recent_jobs(&mut reference))
+            .await
+            .unwrap_or_else(|_| {
+                Err(error(
+                    format!(
+                        "BigQuery job location search deadline exceeded after {} s",
+                        JOB_SEARCH_TIMEOUT.as_secs()
+                    ),
+                    Status::Timeout,
+                ))
+            })
+            .map_err(|failure| with_job_link(failure, Some(&reference)))
+    }
+
+    /// Listing one's own jobs needs no additional IAM permission and no location. Keep the
+    /// search independent of local cancellation: finding the reference lets us cancel remotely.
+    async fn search_recent_jobs(
+        &self,
+        resolved: &mut JobReference,
+    ) -> Result<Option<(JobReference, bytes::Bytes)>> {
+        let earliest = self
+            .submitted_at
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .saturating_sub(JOB_SEARCH_CLOCK_SKEW)
+            .as_millis();
+        let base = format!(
+            "{}?allUsers=false&projection=minimal&maxResults=100&minCreationTime={earliest}",
+            self.client.jobs_url(&self.reference)
+        );
+        let send_context = format!(
+            "find the location of BigQuery job {}",
+            job_name(&self.reference)
+        );
+        let mut pages = 0;
+        for scan in 1..=MAX_RECONCILIATION_ATTEMPTS {
+            let mut page_token = String::new();
+            loop {
+                if pages == MAX_JOB_SEARCH_PAGES {
+                    return Err(error(
+                        format!("failed to {send_context}: jobs.list exceeded the page limit"),
+                        Status::IO,
+                    ));
+                }
+                pages += 1;
+                let url = if page_token.is_empty() {
+                    base.clone()
+                } else {
+                    format!("{base}&pageToken={}", query_component(&page_token))
+                };
+                let plan = Retry {
+                    attempts: MAX_ATTEMPTS,
+                    delays: self.client.prompt_delays,
+                    existing_job: false,
+                    error_context: &format!("failed to {send_context}"),
+                    job_id: Some(&self.reference.job_id),
+                    retrying: "retrying a transient BigQuery jobs.list failure",
+                    invisible: None,
+                };
+                let body = self
+                    .client
+                    .retrying(None, plan, &mut || Request::get(&url, &send_context))
+                    .await?;
+                let page: RecentJobs = decode_json(&body, "the BigQuery jobs.list response")?;
+                for job in page.jobs {
+                    let Some(reference) = job.job_reference else {
+                        continue;
+                    };
+                    if reference.job_id != self.reference.job_id
+                        || !matches_project(&self.reference.project_id, &reference.project_id)
+                    {
+                        continue;
+                    }
+                    let located = self
+                        .reference
+                        .confirm(Some(&reference), "the BigQuery jobs.list response")?;
+                    if located.location.is_none() {
+                        continue;
+                    }
+                    *resolved = located;
+                    // A subsequent jobs.get failure must not prevent cancelling the job whose
+                    // identity we now know. Registration also handles an already-cancelled caller.
+                    if let Some(operation) = &self.operation {
+                        let _ = operation.register_job(resolved);
+                    }
+                    let body = self
+                        .client
+                        .fetch_submitted(None, resolved, &self.what, None)
+                        .await?;
+                    return found(resolved, body)
+                        .map(Some)
+                        .map_err(|unlocated| unlocated.failure);
+                }
+                page_token = page.next_page_token;
+                if page_token.is_empty() {
+                    break;
+                }
+            }
+            // A just-created job, or a temporarily unreachable region, may be absent from a
+            // complete listing. Retry the scan without ever resubmitting the cancelled job.
+            if scan < MAX_RECONCILIATION_ATTEMPTS {
+                tokio::time::sleep(self.client.prompt_delays.delay(RetryClass::Transient, scan))
+                    .await;
+            }
+        }
+        Ok(None)
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecentJobs {
+    #[serde(default)]
+    jobs: Vec<ListedJob>,
+    #[serde(default)]
+    next_page_token: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListedJob {
+    #[serde(default)]
+    job_reference: Option<JobReference>,
+}
+
+/// How an accepted submission's answer is named in errors.
+const ACCEPTED: &str = "the BigQuery jobs.insert response";
+
+/// `candidate`, which a fetched job resource `body` describes, with the location it names.
+fn found(candidate: &JobReference, body: bytes::Bytes) -> Located {
+    located_by(candidate, &body, "the BigQuery jobs.get response")
+        .map(|located| (located, body))
+        .map_err(Unlocated::unknown)
+}
+
+/// The identity `body`, a job resource for `requested`, gives the job, which must name its
+/// location.
+fn located_by(requested: &JobReference, body: &[u8], response: &str) -> Result<JobReference> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Job {
+        #[serde(default)]
+        job_reference: Option<JobReference>,
+    }
+    let job: Job = decode_json(body, response)?;
+    let located = requested.confirm(job.job_reference.as_ref(), response)?;
+    if located.location.is_none() {
+        return Err(invalid_data(format!(
+            "{response} names no location for job {}",
+            job_name(&located)
+        )));
+    }
+    Ok(located)
+}
+
+/// The job in `project_id` a 409 says already exists, with its location.
+///
+/// BigQuery names it only in the message, as `Already Exists: Job project:location.job`, so any
+/// other wording names no job.
+fn duplicate_in(body: &[u8], project_id: &str) -> Option<JobReference> {
+    let message = reason_message(body, "duplicate")?;
+    let (returned_project, job) = message
+        .strip_prefix("Already Exists: Job ")?
+        .rsplit_once(':')?;
+    if !matches_project(project_id, returned_project) {
+        return None;
+    }
+    let (location, job_id) = job.split_once('.')?;
+    let valid = |part: &str, also: u8| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == also)
+    };
+    (valid(location, b'-') && valid(job_id, b'_'))
+        .then(|| JobReference::new(returned_project, Some(location), job_id.to_owned()))
+}
+
+/// [`duplicate_in`], when the 409 names exactly `reference`'s job.
+fn duplicate(body: &[u8], reference: &JobReference) -> Option<JobReference> {
+    duplicate_in(body, &reference.project_id).filter(|job| job.job_id == reference.job_id)
+}
+
+/// Appends `{separator}{name}={value}` (`separator` is `?` or `&`) when `value` is non-empty.
+fn append_parameter(url: &mut String, separator: char, name: &str, value: Option<&str>) {
+    if let Some(value) = value.filter(|value| !value.is_empty()) {
+        write!(url, "{separator}{name}={}", query_component(value))
+            .expect("writing to a String cannot fail");
+    }
+}
+
+#[cfg(test)]
+mod tests;

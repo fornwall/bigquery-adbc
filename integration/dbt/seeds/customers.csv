@@ -1,0 +1,5 @@
+customer_id,customer_name,region,signup_date,is_active
+1,Alice Andersson,north,2026-01-01,true
+2,Bob Berg,south,2026-01-02,true
+3,Carol Chen,east,2026-01-03,false
+4,Diego Diaz,north,2026-01-04,true

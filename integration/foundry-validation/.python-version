@@ -1,0 +1,2 @@
+# DuckDB has no free-threaded support: importing it warns, and this suite treats warnings as errors.
+3.15+gil

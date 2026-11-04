@@ -1,0 +1,124 @@
+diff --git a/c/validation/adbc_validation.h b/c/validation/adbc_validation.h
+index e8d4a9b..76c949d 100644
+--- a/c/validation/adbc_validation.h
++++ b/c/validation/adbc_validation.h
+@@ -191,6 +191,19 @@ class DriverQuirks {
+     return out;
+   }
+ 
++  /// \brief Return a multiplier for the canonical temporal ingest values.
++  ///
++  /// This lets drivers preserve exact round trips when a backend's temporal
++  /// resolution is coarser than the Arrow input type. The returned value must
++  /// be positive and small enough that multiplying it by 42 fits in int64_t.
++  virtual int64_t IngestTemporalValueMultiplier(ArrowType type,
++                                                enum ArrowTimeUnit unit) const {
++    return 1;
++  }
++
++  /// \brief Whether a backend stores null lists as empty lists.
++  virtual bool ingest_null_lists_as_empty() const { return false; }
++
+   /// \brief Whether bulk ingest is supported
+   virtual bool supports_bulk_ingest(const char* mode) const { return true; }
+ 
+diff --git a/c/validation/adbc_validation_statement.cc b/c/validation/adbc_validation_statement.cc
+index 95ef804..f3fe8f3 100644
+--- a/c/validation/adbc_validation_statement.cc
++++ b/c/validation/adbc_validation_statement.cc
+@@ -17,8 +17,11 @@
+ 
+ #include "adbc_validation.h"
+ 
++#include <cctype>
+ #include <cstring>
++#include <limits>
+ #include <string>
++#include <string_view>
+ #include <utility>
+ #include <vector>
+ 
+@@ -212,9 +215,15 @@ void StatementTest::TestSqlIngestType(SchemaField field,
+     ASSERT_EQ(values.size(), reader.array->length);
+     ASSERT_EQ(1, reader.array->n_children);
+ 
++    auto expected_values = values;
++    if (field.type == NANOARROW_TYPE_LIST && quirks()->ingest_null_lists_as_empty()) {
++      for (auto& value : expected_values) {
++        if (!value.has_value()) value.emplace();
++      }
++    }
+     if (CanCompareIngestValues(field.type, round_trip_field.type)) {
+       ASSERT_NO_FATAL_FAILURE(
+-          CompareArray<CType>(reader.array_view->children[0], values));
++          CompareArray<CType>(reader.array_view->children[0], expected_values));
+     }
+ 
+     ASSERT_NO_FATAL_FAILURE(reader.Next());
+@@ -372,13 +381,26 @@ void StatementTest::TestSqlIngestTemporalType(const char* timezone) {
+     GTEST_SKIP();
+   }
+ 
+-  ASSERT_THAT(quirks()->DropTable(&connection, "bulk_ingest", &error),
+-              IsOkStatus(&error));
++  std::string table_name =
++      std::string("bulk_ingest_") + ArrowTypeString(type) + "_" + std::to_string(TU);
++  if (timezone != nullptr) {
++    table_name += "_";
++    for (const char raw_character : std::string_view(timezone)) {
++      const auto character = static_cast<unsigned char>(raw_character);
++      table_name += std::isalnum(character) ? raw_character : '_';
++    }
++  }
++
++  ASSERT_THAT(quirks()->DropTable(&connection, table_name, &error), IsOkStatus(&error));
+ 
+   Handle<struct ArrowSchema> schema;
+   Handle<struct ArrowArray> array;
+   struct ArrowError na_error;
+-  const std::vector<std::optional<int64_t>> values = {std::nullopt, -42, 0, 42};
++  const int64_t value_multiplier = quirks()->IngestTemporalValueMultiplier(type, TU);
++  ASSERT_GT(value_multiplier, 0);
++  ASSERT_LE(value_multiplier, std::numeric_limits<int64_t>::max() / 42);
++  const std::vector<std::optional<int64_t>> values = {
++      std::nullopt, -42 * value_multiplier, 0, 42 * value_multiplier};
+ 
+   // much of this code is shared with TestSqlIngestType with minor
+   // changes to allow for various time units to be tested
+@@ -391,7 +413,7 @@ void StatementTest::TestSqlIngestTemporalType(const char* timezone) {
+ 
+   ASSERT_THAT(AdbcStatementNew(&connection, &statement, &error), IsOkStatus(&error));
+   ASSERT_THAT(AdbcStatementSetOption(&statement, ADBC_INGEST_OPTION_TARGET_TABLE,
+-                                     "bulk_ingest", &error),
++                                     table_name.c_str(), &error),
+               IsOkStatus(&error));
+   ASSERT_THAT(AdbcStatementBind(&statement, &array.value, &schema.value, &error),
+               IsOkStatus(&error));
+@@ -404,7 +426,7 @@ void StatementTest::TestSqlIngestTemporalType(const char* timezone) {
+ 
+   std::string select_query = quirks()->RewriteSql(
+       "StatementTest::TestSqlIngestTemporalType::select-bulk-ingest",
+-      "SELECT * FROM " + quirks()->QuoteIdentifier("bulk_ingest") + " ORDER BY " +
++      "SELECT * FROM " + quirks()->QuoteIdentifier(table_name) + " ORDER BY " +
+           quirks()->QuoteIdentifier("col") + " ASC NULLS FIRST");
+   ASSERT_THAT(AdbcStatementSetSqlQuery(&statement, select_query.c_str(), &error),
+               IsOkStatus(&error));
+diff --git a/c/validation/adbc_validation_connection.cc b/c/validation/adbc_validation_connection.cc
+index 7e1e8217d..3c523f705 100644
+--- a/c/validation/adbc_validation_connection.cc
++++ b/c/validation/adbc_validation_connection.cc
+@@ -588,2 +588,5 @@ void ConnectionTest::TestMetadataGetObjectsTables() {
+       {nullptr, true}, {"bulk_%", true}, {"asdf%", false}};
++  // A table matching the negative filter may exist outside the test namespace.
++  const std::string catalog = quirks()->catalog();
++  const std::string db_schema = quirks()->db_schema();
+   for (const auto& expected : test_cases) {
+@@ -596,4 +599,6 @@ void ConnectionTest::TestMetadataGetObjectsTables() {
+     StreamReader reader;
+-    ASSERT_THAT(AdbcConnectionGetObjects(&connection, ADBC_OBJECT_DEPTH_TABLES, nullptr,
+-                                         nullptr, expected.first, nullptr, nullptr,
++    ASSERT_THAT(AdbcConnectionGetObjects(&connection, ADBC_OBJECT_DEPTH_TABLES,
++                                         catalog.empty() ? nullptr : catalog.c_str(),
++                                         db_schema.empty() ? nullptr : db_schema.c_str(),
++                                         expected.first, nullptr, nullptr,
+                                          &reader.stream.value, &error),

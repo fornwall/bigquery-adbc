@@ -1,0 +1,77 @@
+// Copyright (c) 2025 ADBC Drivers Contributors
+// Modified for bigquery-adbc, 2026.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//         http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// part: metadata
+
+[setup]
+drop = "test_range_datetime"
+
+[tags]
+show-arrow-type-parameters = true
+sql-type-name = "RANGE<DATETIME>"
+field-type-name = "RANGE<DATETIME>"
+
+// part: setup_query
+
+CREATE TABLE test_range_datetime (
+    idx INT64,
+    res RANGE<DATETIME>
+);
+
+INSERT INTO test_range_datetime (idx, res) VALUES
+    (0, NULL),
+    (1, RANGE<DATETIME> '[UNBOUNDED, UNBOUNDED)'),
+    (2, RANGE<DATETIME> '[UNBOUNDED, 2020-12-31 09:01:23.456789)'),
+    (3, RANGE<DATETIME> '[2020-01-01 00:01:02.345678, UNBOUNDED)'),
+    (4, RANGE<DATETIME> '[2020-01-01 00:01:02.345678, 2020-12-31 09:01:23.456789)'),
+    (5, RANGE<DATETIME> '[0001-01-01 00:00:00.000000, 9999-12-31 23:59:59.999999)');
+
+// part: query
+
+SELECT res FROM test_range_datetime ORDER BY idx
+
+// part: expected_schema
+
+{
+    "format": "+s",
+    "children": [
+        {
+            "name": "res",
+            "format": "+s",
+            "flags": ["nullable"],
+            "children": [
+                {
+                    "name": "start",
+                    "format": "tsu:",
+                    "flags": ["nullable"]
+                },
+                {
+                    "name": "end",
+                    "format": "tsu:",
+                    "flags": ["nullable"]
+                }
+            ]
+        }
+    ]
+}
+
+// part: expected
+
+{"res": null}
+{"res": {"start": null, "end": null}}
+{"res": {"start": null, "end": 1609405283456789}}
+{"res": {"start": 1577836862345678, "end": null}}
+{"res": {"start": 1577836862345678, "end": 1609405283456789}}
+{"res": {"start": -62135596800000000, "end": 253402300799999999}}

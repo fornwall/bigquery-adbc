@@ -1,0 +1,83 @@
+# A separate workspace for cargo-fuzz's profile and sanitizer flags. It does not inherit the root
+# `[patch.crates-io]`, so the patches below repeat it.
+[package]
+name = "bigquery-adbc-fuzz"
+version = "0.0.0"
+license = "Apache-2.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+# The driver's library is imported as `adbc_driver_bigquery`, which machete does not match.
+[package.metadata.cargo-machete]
+ignored = ["bigquery-adbc"]
+
+[dependencies]
+arrow-array = "60.1.0"
+arrow-schema = "60.1.0"
+libfuzzer-sys = "0.4.13"
+
+[dependencies.bigquery-adbc]
+path = ".."
+default-features = false
+features = ["fuzz-shim"]
+
+[patch.crates-io]
+# Keep all Arrow crates on one snapshot, including the Google client's target-gated dependencies.
+arrow = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-arith = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-array = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-buffer = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-cast = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-cmp = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-data = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-ipc = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-ord = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-row = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-schema = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-select = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow-string = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+
+[workspace]
+
+[profile.release]
+debug = true
+# A wrapping length or offset computation in a decoder is a finding, not an optimization.
+overflow-checks = true
+
+[[bin]]
+name = "ipc_schema"
+path = "fuzz_targets/ipc_schema.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ipc_batch"
+path = "fuzz_targets/ipc_batch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ipc_session"
+path = "fuzz_targets/ipc_session.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ipc_lz4"
+path = "fuzz_targets/ipc_lz4.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rest_rows"
+path = "fuzz_targets/rest_rows.rs"
+test = false
+doc = false
+bench = false

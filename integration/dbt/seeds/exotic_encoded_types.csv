@@ -1,0 +1,4 @@
+row_id,payload,document,location
+1,wP/u,"{""state"":""ready"",""nested"":{""active"":true}}",POINT(-122.4194 37.7749)
+2,AAEA/w==,"[1,""two"",null]","LINESTRING(0 0, 1 1)"
+3,,,

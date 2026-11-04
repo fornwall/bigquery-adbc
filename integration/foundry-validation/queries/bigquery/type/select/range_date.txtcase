@@ -1,0 +1,77 @@
+// Copyright (c) 2025 ADBC Drivers Contributors
+// Modified for bigquery-adbc, 2026.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//         http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// part: metadata
+
+[setup]
+drop = "test_range_date"
+
+[tags]
+show-arrow-type-parameters = true
+sql-type-name = "RANGE<DATE>"
+field-type-name = "RANGE<DATE>"
+
+// part: setup_query
+
+CREATE TABLE test_range_date (
+    idx INT64,
+    res RANGE<DATE>
+);
+
+INSERT INTO test_range_date (idx, res) VALUES
+    (0, NULL),
+    (1, RANGE<DATE> '[UNBOUNDED, UNBOUNDED)'),
+    (2, RANGE<DATE> '[UNBOUNDED, 2021-01-02)'),
+    (3, RANGE<DATE> '[2020-01-01, UNBOUNDED)'),
+    (4, RANGE<DATE> '[2020-01-01, 2021-01-02)'),
+    (5, RANGE<DATE> '[0001-01-01, 9999-12-31)');
+
+// part: query
+
+SELECT res FROM test_range_date ORDER BY idx
+
+// part: expected_schema
+
+{
+    "format": "+s",
+    "children": [
+        {
+            "name": "res",
+            "format": "+s",
+            "flags": ["nullable"],
+            "children": [
+                {
+                    "name": "start",
+                    "format": "tdD",
+                    "flags": ["nullable"]
+                },
+                {
+                    "name": "end",
+                    "format": "tdD",
+                    "flags": ["nullable"]
+                }
+            ]
+        }
+    ]
+}
+
+// part: expected
+
+{"res": null}
+{"res": {"start": null, "end": null}}
+{"res": {"start": null, "end": 18629}}
+{"res": {"start": 18262, "end": null}}
+{"res": {"start": 18262, "end": 18629}}
+{"res": {"start": -719162, "end": 2932896}}

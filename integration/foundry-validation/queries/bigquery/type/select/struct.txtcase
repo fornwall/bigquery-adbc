@@ -1,0 +1,87 @@
+// Copyright (c) 2025 ADBC Drivers Contributors
+// Modified for bigquery-adbc, 2026.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//         http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// part: metadata
+
+[setup]
+drop = "test_struct"
+
+[tags]
+sql-type-name = "STRUCT"
+field-type-name = "STRUCT<`a` BOOL, `b` INT64, `c` STRING, `d` ARRAY<INT64>>"
+
+// part: setup_query
+
+CREATE TABLE test_struct (
+    idx INT64,
+    res STRUCT<a BOOL, b INT64, c STRING, d ARRAY<INT64>>
+);
+
+INSERT INTO test_struct (idx, res) VALUES
+    (0, NULL),
+    (1, (NULL, CAST(NULL AS INT64), NULL, NULL)),
+    (2, (FALSE, CAST(NULL AS INT64), 'foobar', [1, 2]));
+
+// part: query
+
+SELECT res FROM test_struct ORDER BY idx
+
+// part: expected_schema
+
+{
+    "format": "+s",
+    "children": [
+        {
+            "name": "res",
+            "format": "+s",
+            "flags": ["nullable"],
+            "children": [
+                {
+                    "name": "a",
+                    "format": "b",
+                    "flags": ["nullable"]
+                },
+                {
+                    "name": "b",
+                    "format": "l",
+                    "flags": ["nullable"]
+                },
+                {
+                    "name": "c",
+                    "format": "u",
+                    "flags": ["nullable"]
+                },
+                {
+                    "name": "d",
+                    "format": "+l",
+                    "flags": ["nullable"],
+                    "children": [
+                        {
+                            "name": "item",
+                            "format": "l",
+                            "flags": ["nullable"]
+                        }
+                    ]
+                }
+            ]
+        }
+    ]
+}
+
+// part: expected
+
+{"res": null}
+{"res": {"a": null, "b": null, "c": null, "d": []}}
+{"res": {"a": false, "b": null, "c": "foobar", "d": [1, 2]}}

@@ -1,0 +1,86 @@
+// Copyright (c) 2025 ADBC Drivers Contributors
+// Modified for bigquery-adbc, 2026.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//         http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// part: metadata
+
+[setup]
+drop = "test_geography"
+
+[tags]
+sql-type-name = "GEOGRAPHY"
+field-type-name = "GEOGRAPHY"
+
+// part: setup_query
+
+CREATE TABLE test_geography (
+    idx INT64,
+    res GEOGRAPHY
+);
+
+INSERT INTO test_geography (idx, res) VALUES
+    (0, ST_GEOGFROMTEXT('POINT EMPTY')),
+    (1, ST_GEOGFROMTEXT('LINESTRING EMPTY')),
+    (2, ST_GEOGFROMTEXT('POLYGON EMPTY')),
+    (3, ST_GEOGFROMTEXT('MULTIPOINT EMPTY')),
+    (4, ST_GEOGFROMTEXT('MULTILINESTRING EMPTY')),
+    (5, ST_GEOGFROMTEXT('MULTIPOLYGON EMPTY')),
+    (6, ST_GEOGFROMTEXT('GEOMETRYCOLLECTION EMPTY')),
+    (7, ST_GEOGFROMTEXT('POINT(1 2)')),
+    (8, ST_GEOGFROMTEXT('LINESTRING(1 2, 3 4)')),
+    (9, ST_GEOGFROMTEXT('POLYGON((1 2, 3 4, 5 6, 1 2))')),
+    (10, ST_GEOGFROMTEXT('MULTIPOINT(1 2, 3 4)')),
+    (11, ST_GEOGFROMTEXT('MULTILINESTRING((1 2, 3 4), (5 6, 7 8))')),
+    (12, ST_GEOGFROMTEXT('MULTIPOLYGON(((1 2, 3 4, 5 6, 1 2)), ((7 8, 9 10, 11 12, 7 8)))')),
+    (13, ST_GEOGFROMTEXT('GEOMETRYCOLLECTION(POINT(1 2), LINESTRING(3 4, 5 6))')),
+    (14, NULL);
+
+// part: query
+
+SELECT res FROM test_geography ORDER BY idx
+
+// part: expected_schema
+
+{
+    "format": "+s",
+    "children": [
+        {
+            "name": "res",
+            "format": "u",
+            "flags": ["nullable"],
+            "metadata": {
+                "ARROW:extension:name": "geoarrow.wkt",
+                "ARROW:extension:metadata": "{\"crs\":\"EPSG:4326\",\"crs_type\":\"authority_code\",\"edges\":\"spherical\"}"
+            }
+        }
+    ]
+}
+
+// part: expected
+
+{"res": "GEOMETRYCOLLECTION EMPTY"}
+{"res": "GEOMETRYCOLLECTION EMPTY"}
+{"res": "GEOMETRYCOLLECTION EMPTY"}
+{"res": "GEOMETRYCOLLECTION EMPTY"}
+{"res": "GEOMETRYCOLLECTION EMPTY"}
+{"res": "GEOMETRYCOLLECTION EMPTY"}
+{"res": "GEOMETRYCOLLECTION EMPTY"}
+{"res": "POINT(1 2)"}
+{"res": "LINESTRING(1 2, 3 4)"}
+{"res": "POLYGON((1 2, 3 4, 5 6, 1 2))"}
+{"res": "MULTIPOINT(1 2, 3 4)"}
+{"res": "MULTILINESTRING((1 2, 3 4), (5 6, 7 8))"}
+{"res": "MULTIPOLYGON(((1 2, 3 4, 5 6, 1 2)), ((7 8, 9 10, 11 12, 7 8)))"}
+{"res": "GEOMETRYCOLLECTION(POINT(1 2), LINESTRING(3 4, 5 6))"}
+{"res": null}

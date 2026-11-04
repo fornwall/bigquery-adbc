@@ -1,0 +1,26 @@
+/.adbc-validation-build*/
+/target/
+# cargo-fuzz output. Corpus inputs added by local runs show up as untracked files.
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/coverage/
+
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+*.py[cod]
+
+/logs/
+
+/.venv-build/
+/.venv-wheel-test/
+/.venv/
+/dist/
+/wheelhouse/
+/python/build/
+/python/dist/
+/python/.venv/
+
+.claude/

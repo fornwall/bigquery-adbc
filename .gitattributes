@@ -1,0 +1,6 @@
+# Generated files are compared with their source byte for byte, so every platform checks out LF.
+* text=auto eol=lf
+
+# Fuzz seeds and Arrow IPC fixtures are exact bytes, even when they look like text.
+fuzz/corpus/** binary
+*.arrow binary

@@ -1,0 +1,14 @@
+version: 2
+
+snapshots:
+  - name: customers_snapshot
+    columns:
+      - name: dbt_scd_id
+        data_tests:
+          - unique:
+              config:
+                tags: [snapshot]
+          - not_null:
+              config:
+                tags: [snapshot]
+

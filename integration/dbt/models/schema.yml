@@ -1,0 +1,157 @@
+version: 2
+
+models:
+  - name: stg_customers
+    columns:
+      - name: customer_id
+        data_tests: [not_null, unique]
+      - name: region
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [north, south, east]
+
+  - name: stg_orders
+    columns:
+      - name: order_id
+        data_tests: [not_null, unique]
+      - name: customer_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_customers')
+                field: customer_id
+      - name: revenue_state
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [recognized, lost, open]
+
+  - name: fct_orders
+    columns:
+      - name: order_id
+        data_tests: [not_null, unique]
+      - name: customer_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customers')
+                field: customer_id
+      - name: order_date
+        data_tests: [not_null]
+      - name: item_count
+        data_tests: [positive]
+      - name: gross_amount
+        data_tests: [non_negative]
+      - name: discount_amount
+        data_tests: [non_negative]
+      - name: order_total
+        data_tests: [non_negative]
+      - name: line_items
+        data_tests: [not_null]
+
+  - name: dim_customers
+    columns:
+      - name: customer_id
+        data_tests: [not_null, unique]
+      - name: customer_name
+        data_tests: [not_null]
+      - name: region
+        data_tests: [not_null]
+      - name: order_count
+        data_tests: [non_negative]
+      - name: completed_order_count
+        data_tests: [non_negative]
+      - name: lifetime_value
+        data_tests: [non_negative]
+
+  - name: customer_order_rankings
+    columns:
+      - name: customer_id
+        data_tests: [not_null]
+      - name: order_id
+        data_tests: [not_null, unique]
+      - name: recency_rank
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [1, 2]
+                quote: false
+
+  - name: incremental_order_totals
+    description: Incremental order totals.
+    columns:
+      - name: order_id
+        description: Surrogate order key, documented through the column metadata update.
+        data_tests: [not_null, unique]
+      - name: customer_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_customers')
+                field: customer_id
+      - name: order_total
+        data_tests: [non_negative]
+      - name: loaded_at
+        data_tests: [not_null]
+      - name: load_wave
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [1, 2]
+                quote: false
+
+  - name: daily_revenue
+    columns:
+      - name: order_date
+        data_tests: [not_null, unique]
+      - name: completed_orders
+        data_tests: [non_negative]
+      - name: recognized_revenue
+        data_tests: [non_negative]
+      - name: booked_revenue
+        data_tests: [non_negative]
+
+  - name: typed_features
+    columns:
+      - name: id
+        data_type: int64
+        constraints:
+          - type: not_null
+          - type: primary_key
+            warn_unenforced: false
+        data_tests: [not_null, unique]
+      - name: amount
+        data_type: numeric(20, 4)
+      - name: region
+        data_type: string
+      - name: is_active
+        data_type: bool
+      - name: signup_date
+        data_type: date
+      - name: recorded_at
+        data_type: timestamp
+      - name: ids
+        data_type: array<int64>
+      - name: label
+        data_type: struct<key int64, name string>
+
+  - name: typed_feature_children
+    columns:
+      - name: parent_id
+        data_type: int64
+        constraints:
+          - type: foreign_key
+            to: ref('typed_features')
+            to_columns: [id]
+            warn_unenforced: false
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('typed_features')
+                field: id
+      - name: note
+        data_type: string
+        data_tests: [not_null]

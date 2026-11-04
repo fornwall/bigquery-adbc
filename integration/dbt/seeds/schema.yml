@@ -1,0 +1,163 @@
+version: 2
+
+seeds:
+  - name: customers
+    description: Seeded customer dimension.
+    config:
+      persist_docs:
+        relation: true
+      column_types:
+        signup_date: date
+    columns:
+      - name: customer_id
+        data_tests: [not_null, unique]
+      - name: customer_name
+        data_tests: [not_null]
+      - name: region
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [north, south, east]
+      - name: signup_date
+        data_tests: [not_null]
+      - name: is_active
+        data_tests: [not_null]
+
+  - name: orders
+    config:
+      column_types:
+        order_id: int64
+        customer_id: int64
+        ordered_at: timestamp
+        status: string
+        shipping_amount: numeric
+    columns:
+      - name: order_id
+        data_tests: [not_null, unique]
+      - name: customer_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('customers')
+                field: customer_id
+      - name: ordered_at
+        data_tests: [not_null]
+      - name: status
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [completed, cancelled, pending]
+      - name: shipping_amount
+        data_tests:
+          - not_null
+          - non_negative
+
+  - name: order_items
+    config:
+      column_types:
+        order_id: int64
+        line_number: int64
+        sku: string
+        quantity: int64
+        unit_price: numeric
+        discount_amount: numeric
+    columns:
+      - name: order_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('orders')
+                field: order_id
+      - name: line_number
+        data_tests: [not_null]
+      - name: sku
+        data_tests: [not_null]
+      - name: quantity
+        data_tests:
+          - not_null
+          - positive
+      - name: unit_price
+        data_tests:
+          - not_null
+          - non_negative
+      - name: discount_amount
+        data_tests:
+          - not_null
+          - non_negative
+
+  - name: exotic_wide_types
+    description: Pipe-delimited seed covering parameterized decimals and civil-time types.
+    config:
+      delimiter: "|"
+      quote_columns: true
+      column_types:
+        row_id: int64
+        label: string
+        event_date: date
+        event_datetime: datetime
+        event_time: time
+        event_ts: timestamp
+        precise_amount: "numeric(20,4)"
+        huge_amount: "bignumeric"
+        ratio: float64
+        flag: boolean
+    columns:
+      - name: row_id
+        data_tests: [not_null, unique]
+      - name: event_date
+        data_tests: [not_null]
+      - name: precise_amount
+        data_tests: [not_null]
+      - name: huge_amount
+        data_tests: [not_null]
+
+  - name: exotic_empty
+    description: Header-only seed covering the empty-CSV create-table path.
+    config:
+      column_types:
+        row_id: int64
+        label: string
+
+  - name: exotic_csv_edges
+    description: >-
+      Pipe-delimited lexical edge cases covering quoted delimiters and quotes, Unicode,
+      null versus empty strings, percentage floats and timezone normalization.
+    config:
+      delimiter: "|"
+      column_types:
+        row_id: int64
+        label: string
+        optional_label: string
+        literal_null: string
+        signed_value: int64
+        percent_ratio: float64
+        event_ts: timestamp
+    columns:
+      - name: row_id
+        data_tests: [not_null, unique]
+      - name: literal_null
+        data_tests: [not_null]
+      - name: signed_value
+        data_tests: [not_null]
+      - name: percent_ratio
+        data_tests: [not_null]
+      - name: event_ts
+        data_tests: [not_null]
+
+  - name: exotic_encoded_types
+    description: >-
+      Seed whose BYTES, JSON and GEOGRAPHY columns BigQuery decodes from Base64, JSON and WKT
+      text, with a row of nulls.
+    config:
+      column_types:
+        row_id: int64
+        payload: bytes
+        document: json
+        location: geography
+    columns:
+      - name: row_id
+        data_tests: [not_null, unique]

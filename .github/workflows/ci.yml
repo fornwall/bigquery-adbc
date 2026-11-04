@@ -1,0 +1,208 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel superseded pull request runs; retain every main-branch run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  rust:
+    name: Rust ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-26.04
+          - macos-26
+          - windows-2025
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # rust-toolchain.toml pins the channel and the rustfmt/clippy components.
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets --all-features
+
+      - name: Clippy (default features, as the driver ships)
+        run: cargo clippy --locked --all-targets
+
+      # The separate fuzz workspace needs its own check; linking libFuzzer is unnecessary.
+      - name: Fuzz targets compile
+        if: runner.os == 'Linux'
+        run: cargo check --locked --manifest-path fuzz/Cargo.toml
+
+      # Live BigQuery tests are ignored by default.
+      - name: Test
+        run: cargo test --locked --all-features --no-fail-fast
+
+      - name: Verify dependency license bundle
+        if: runner.os == 'Linux'
+        run: python3 tools/generate_licenses.py --check
+
+      - name: Documentation
+        run: cargo doc --locked --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  # Compile and enumerate the pinned C++ validation suite without credentials.
+  # Check patch applicability, the test count, and the coverage baseline.
+  adbc-validation-drift:
+    name: ADBC validation drift
+    # Harness drift is platform-independent; the suite supports Linux and macOS.
+    runs-on: ubuntu-26.04
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      # ubuntu-26.04 ships CMake and a C++20 GCC; the harness needs nothing else.
+      - name: Show the toolchain versions
+        run: |
+          cmake --version
+          c++ --version
+
+      - name: Check the validation harness for drift
+        env:
+          BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT: offline-validation-project
+          BIGQUERY_ADBC_TEST_TARGET: clients
+        run: scripts/run-one-live-test.sh suite_matches_coverage_baseline
+
+  python-lint:
+    name: Python lint
+    runs-on: ubuntu-26.04
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Also caches uv's download cache, keyed on every uv.lock and pyproject.toml.
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.6"
+
+      # Configuration and locked tool versions live under python/.
+      - name: Lint, format, and type-check
+        run: scripts/run-python-lint.sh
+
+  # Exercise stdlib compatibility on the oldest and newest supported Python versions.
+  python-tests:
+    name: Python tests (${{ matrix.python-version }})
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.11"
+          - "3.15"
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.6"
+
+      - name: Offline Python tests
+        env:
+          BIGQUERY_ADBC_WHEEL_PYTHON: ${{ matrix.python-version }}
+        run: scripts/run-offline-python-tests.sh
+
+  # Build from the sdist, then test the installed wheel with the released driver manager.
+  # This catches missing source files and undeclared runtime dependencies.
+  python-package:
+    name: Python sdist and wheel
+    runs-on: ubuntu-26.04
+    env:
+      # Share the Cargo cache with builds from extracted source distributions.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.6"
+
+      - name: Install the pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build the source distribution
+        run: uv build --sdist --out-dir dist python
+
+      # The checkout is fresh, so dist/ holds exactly the one sdist built above.
+      - name: Build a wheel from the source distribution
+        run: |
+          uv build --wheel --out-dir wheelhouse dist/*.tar.gz
+          . scripts/lib/built-wheel.sh
+          wheel=$(built_wheel wheelhouse)
+          echo "WHEEL=$wheel" >> "$GITHUB_ENV"
+
+      # Use only declared dependencies and pytest, as a fresh installation would.
+      - name: Install the wheel with the released adbc-driver-manager
+        run: |
+          uv venv .venv-wheel-test
+          uv pip install --python .venv-wheel-test/bin/python \
+            "${WHEEL}[dbapi]" \
+            pytest
+          uv pip check --python .venv-wheel-test/bin/python
+          uv pip list --python .venv-wheel-test/bin/python
+
+      # Import the installed package; wheel structure is checked by the build backend.
+      - name: Run the installed-package suite
+        run: |
+          .venv-wheel-test/bin/python -m pytest -q -p no:cacheprovider \
+            python/tests/test_installed_wheel.py
+
+  # ubuntu-26.04 includes ShellCheck.
+  shell-lint:
+    name: Shell scripts
+    runs-on: ubuntu-26.04
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Follow sourced helpers, and lint them separately too.
+      - name: ShellCheck
+        run: |
+          shellcheck --version
+          shellcheck -x --severity=style scripts/*.sh scripts/lib/*.sh

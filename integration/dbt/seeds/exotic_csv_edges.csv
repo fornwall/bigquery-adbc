@@ -1,0 +1,4 @@
+row_id|label|optional_label|literal_null|signed_value|percent_ratio|event_ts
+1|"pipe | value"||NULL| 42 |10%|2026-01-10 10:00:00-05:00
+2|""|"quoted ""value"""|null|-7|-0.5|2026-01-11 23:59:59+09:00
+3|Grüße 東京 👩🏽‍💻|plain|Null|0|0%|2026-01-12 00:00:00+00
