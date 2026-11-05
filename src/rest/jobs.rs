@@ -595,7 +595,7 @@ impl JobClient {
             delays: self.service_delays,
             existing_job: true,
             error_context: &error_context,
-            job_id: Some(&reference.job_id),
+            job_id: &reference.job_id,
             retrying: "retrying a transient BigQuery jobs.getQueryResults failure",
             invisible: None,
         };
@@ -632,7 +632,7 @@ impl JobClient {
             delays: self.poll_delays,
             existing_job: true,
             error_context: &format!("failed to {send_context}"),
-            job_id: Some(&reference.job_id),
+            job_id: &reference.job_id,
             retrying: "retrying a transient BigQuery jobs.get poll",
             invisible: None,
         };
@@ -659,7 +659,7 @@ impl JobClient {
             delays: self.poll_delays,
             existing_job: false,
             error_context: &format!("failed to {send_context}"),
-            job_id: Some(&parent.job_id),
+            job_id: &parent.job_id,
             retrying: "retrying a transient BigQuery jobs.list failure",
             invisible: None,
         };
@@ -677,7 +677,7 @@ impl JobClient {
             delays: self.prompt_delays,
             existing_job: true,
             error_context: &format!("failed to {send_context}"),
-            job_id: Some(&reference.job_id),
+            job_id: &reference.job_id,
             retrying: "retrying a transient BigQuery jobs.cancel failure",
             invisible: None,
         };
@@ -719,7 +719,7 @@ impl JobClient {
             delays: self.prompt_delays,
             existing_job: true,
             error_context: &format!("failed to {send_context}"),
-            job_id: Some(&reference.job_id),
+            job_id: &reference.job_id,
             retrying: "a BigQuery job submission is not yet reconcilable",
             invisible,
         };
@@ -773,7 +773,7 @@ impl JobClient {
                 "{} after attempt {attempt} ({:?}; job {})",
                 plan.retrying,
                 failure.status,
-                plan.job_id.unwrap_or("not yet assigned")
+                plan.job_id
             );
             cancellation::sleep(operation, plan.delays.delay(class, attempt)).await?;
         }
@@ -829,8 +829,8 @@ struct Retry<'a> {
     existing_job: bool,
     /// How a rejected attempt is reported: "failed to cancel the BigQuery copy job".
     error_context: &'a str,
-    /// The job the loop is about, for the retry trace. `jobs.query` has none yet.
-    job_id: Option<&'a str>,
+    /// The job the loop is about, for the retry trace.
+    job_id: &'a str,
     /// The retry trace message.
     retrying: &'static str,
     /// The failure to report instead when every attempt found no such job. See
@@ -1202,7 +1202,7 @@ impl InferredSubmission {
                     delays: self.client.prompt_delays,
                     existing_job: false,
                     error_context: &format!("failed to {send_context}"),
-                    job_id: Some(&self.reference.job_id),
+                    job_id: &self.reference.job_id,
                     retrying: "retrying a transient BigQuery jobs.list failure",
                     invisible: None,
                 };

@@ -145,7 +145,7 @@ async fn open_reader(
         ORDERED_MAX_STREAM_COUNT
     };
     let read_client = clients.read_client(&runtime).await?;
-    let session = match create_session(
+    let session = match create_read_session(
         &read_client,
         &clients,
         &operation,
@@ -277,7 +277,9 @@ fn session_refusal(source: &GoogleError) -> Option<SessionRefusal> {
     }
 }
 
-async fn create_session(
+/// Creates the read session. The inner error is a refusal the caller falls back to REST on; the
+/// outer one fails the read.
+async fn create_read_session(
     client: &Read,
     clients: &Arc<ClientState>,
     operation: &Option<Operation>,
