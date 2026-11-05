@@ -435,9 +435,8 @@ impl JobClient {
         // verdict on the job.
         let send_context = format!("submit the BigQuery {job}");
         let error_context = format!("BigQuery rejected the {job}");
-        // Whether an attempt may have created the job: one that may have reached BigQuery, which
-        // an attempt still minting its token has not, and that BigQuery did not refuse. A
-        // submission that stops without one withdraws its identity rather than confirming it.
+        // A submission that stops with no attempt that may have created the job withdraws its
+        // identity rather than confirming it.
         let start = RequestStart::default();
         let mut may_exist = false;
         for attempt in 1..=MAX_ATTEMPTS {
@@ -449,7 +448,7 @@ impl JobClient {
                     .with_start_signal(&start),
             )
             .await;
-            may_exist |= start.started() && !refused(&response);
+            may_exist |= may_have_created(&start, &response);
             let (class, failure) = match response {
                 Ok((reqwest::StatusCode::CONFLICT, body)) if !request.dry_run => {
                     let failure =
@@ -728,9 +727,17 @@ impl JobClient {
     }
 
     /// One bounded send/[`classify`]/retry loop, each backoff gated by `operation`.
-    /// [`JobClient::insert`] has its own loop because it also transitions the cancellation
-    /// identity between attempts.
     /// The borrowed request factory shares this async state machine across REST endpoints.
+    ///
+    /// The submission loops stay separate from this one and each other, because what each does
+    /// around an attempt is its purpose:
+    ///
+    /// - [`JobClient::insert`] moves the cancellation identity through every outcome, and
+    ///   reconciles an exhausted submission that may have created its job.
+    /// - [`InferredSubmission::run`] sends and sleeps ungated, so that it can outlive a cancelled
+    ///   caller, stops resubmitting once cancelled, and takes the job's location from a 409.
+    /// - [`JobClient::query`] sends and sleeps ungated, reads a replay's 409 as the job to read,
+    ///   and repeats a `responseTooLarge` once without a backoff.
     async fn retrying<'r>(
         &self,
         operation: Option<&Operation>,
@@ -856,15 +863,22 @@ fn confirm_submission(operation: Option<&Operation>, request: &JobRequest) -> Re
     Ok(())
 }
 
-/// Whether `response` refuses a submission outright, so it created no job: a 4xx other than 409
-/// (the job exists) and 408 (the request may have been read whole). A 5xx is ambiguous.
-fn refused(response: &Result<(reqwest::StatusCode, bytes::Bytes)>) -> bool {
-    let Ok((status, _)) = response else {
-        return false;
-    };
-    status.is_client_error()
-        && *status != reqwest::StatusCode::CONFLICT
-        && *status != reqwest::StatusCode::REQUEST_TIMEOUT
+/// Whether the submission attempt answered by `response` may have created the job.
+///
+/// It did not if no attempt reached BigQuery, which one still minting its token has not, or if
+/// BigQuery refused it outright: a 4xx other than 409 (the job exists) and 408 (the request may
+/// have been read whole). A 5xx is ambiguous. `start` spans the submission's attempts, so a later
+/// attempt that fails before reaching BigQuery errs towards the job existing.
+fn may_have_created(
+    start: &RequestStart,
+    response: &Result<(reqwest::StatusCode, bytes::Bytes)>,
+) -> bool {
+    let refused = response.as_ref().is_ok_and(|(status, _)| {
+        status.is_client_error()
+            && *status != reqwest::StatusCode::CONFLICT
+            && *status != reqwest::StatusCode::REQUEST_TIMEOUT
+    });
+    start.started() && !refused
 }
 
 /// Ends a stopped submission's provisional identity: confirmed when the job may exist, and
@@ -1002,14 +1016,13 @@ impl InferredSubmission {
         let send_context = format!("submit the BigQuery {}", self.job);
         let error_context = format!("BigQuery rejected the {}", self.job);
         let mut attempt = 0;
-        // As in `JobClient::insert`; a 409 says the job exists.
         let mut may_exist = false;
         let ambiguous = loop {
             attempt += 1;
             let request = Request::post_json(&url, self.body.clone(), &send_context)
                 .with_start_signal(&self.start);
             let response = send(None, &self.client.credentials, &self.client.http, request).await;
-            may_exist |= self.start.started() && !refused(&response);
+            may_exist |= may_have_created(&self.start, &response);
             let (class, failure) = match response {
                 Ok((reqwest::StatusCode::CONFLICT, body)) => {
                     let failure =
