@@ -49,7 +49,9 @@ struct CachedParameterSchema {
     schema: Schema,
 }
 
-/// An ADBC statement associated with a BigQuery connection.
+/// An ADBC statement: GoogleSQL text or a bulk ingest, with its bound data and options.
+///
+/// Created by [`Connection::new_statement`](adbc_core::Connection::new_statement).
 pub struct BigQueryStatement {
     /// A snapshot of the connection's context, which statement options shadow. Its current
     /// catalog and schema are refreshed from `namespace` on each use.

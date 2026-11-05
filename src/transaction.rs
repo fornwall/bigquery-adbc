@@ -1,4 +1,5 @@
-//! Shared ADBC transaction state used by a connection and its statements.
+//! ADBC manual-commit transactions over BigQuery sessions: the state a connection shares with its
+//! statements, and the `BEGIN`, `COMMIT` and `ROLLBACK` statements that move it.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;

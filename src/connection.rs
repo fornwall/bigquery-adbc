@@ -1,4 +1,5 @@
-//! ADBC connection object.
+//! The ADBC connection: metadata calls, the current catalog and schema, transactions, and
+//! partition reads.
 
 mod arrow;
 mod info;
@@ -51,7 +52,9 @@ use crate::types::schema::convert_schema;
 use table_metadata::{DatasetScan, ScannedTable, TableScan, names_no_table, table_metadata_error};
 use table_schema::{resolve_table_reference, table_schema_metadata};
 
-/// An ADBC connection backed by the official Google Cloud BigQuery client.
+/// An ADBC connection: a current catalog and schema, transaction state, and the metadata calls.
+///
+/// Connections from one [`BigQueryDatabase`](crate::BigQueryDatabase) share its clients.
 #[derive(Debug)]
 pub struct BigQueryConnection {
     /// The connection-scoped execution state each new statement snapshots at creation, except for

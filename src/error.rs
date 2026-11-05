@@ -1,3 +1,8 @@
+//! Driver errors: building an ADBC [`Error`] with its status, message, SQLSTATE and details.
+//!
+//! [`status`] maps service failures to ADBC statuses, [`credentials`] explains why a credential
+//! failed, and [`options`] words option refusals.
+
 use std::ffi::c_char;
 use std::fmt::Write as _;
 

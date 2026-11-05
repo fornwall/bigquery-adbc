@@ -1,7 +1,7 @@
 //! The BigQuery-specific option keys.
 //!
 //! One variant per option, with its canonical spelling (what the driver reads back), the legacy
-//! aliases the Go driver and the fork send, and the ADBC value kind
+//! aliases the Go driver and its dbt-labs fork send, and the ADBC value kind
 //! ([`OptionKind`](super::OptionKind)) it is set with. Enumerated values live in
 //! [`super::values`].
 
@@ -171,8 +171,8 @@ string_enum! {
         /// Overrides the BigQuery Storage API endpoint, shared by the Read and Write halves of
         /// that API.
         ///
-        /// The `storage_read_api_endpoint` alias names only the Read half, but the fork that
-        /// spells it that way overrides both, so this driver does too.
+        /// The `storage_read_api_endpoint` alias names only the Read half, but the dbt-labs fork
+        /// of the Go driver, which spells it that way, overrides both, so this driver does too.
         StorageEndpoint => (
             "bigquery.storage_endpoint",
             [
@@ -298,7 +298,7 @@ string_enum! {
     /// BigQuery-specific statement option keys.
     ///
     /// The `adbc.bigquery.*` keys are vendor extensions dbt-core 2.0 drives rather than options
-    /// typed by hand; they are documented in the repository's `DBT-CORE.md`.
+    /// typed by hand; they are documented in the repository's `docs/DBT-CORE.md`.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum BigQueryStatementOption {
         /// A JSON object mapping each view to the datasets it is granted read access to, which
@@ -325,8 +325,10 @@ string_enum! {
             [],
             String
         ),
+        /// The ID of the Dataproc Serverless batch to create; unset lets Dataproc name it.
+        ///
         /// Shared with `adbc.bigquery.notebook_execute_job.*`, which sends it as the notebook
-        /// execution job's display name. Selects no operation on its own.
+        /// execution job's display name, so it selects no operation on its own.
         CreateBatchBatchId => ("adbc.bigquery.create_batch.batch_id", [], String),
         /// The YAML document describing the Dataproc Serverless batch to create.
         CreateBatchBatchYml => ("adbc.bigquery.create_batch.batch_yml", [], String),
@@ -454,7 +456,7 @@ string_enum! {
         ),
         /// The Cloud Storage bucket a notebook execution job reads its notebook from.
         ///
-        /// Misspelled `gsc` in both dbt-core 2.0 and the fork; reproduced verbatim.
+        /// Misspelled `gsc` in both dbt-core 2.0 and the dbt-labs fork; reproduced verbatim.
         NotebookExecuteJobGscBucket => (
             "adbc.bigquery.notebook_execute_job.gsc_bucket",
             [],
@@ -462,7 +464,7 @@ string_enum! {
         ),
         /// The Cloud Storage object path a notebook execution job reads its notebook from.
         ///
-        /// Misspelled `gsc` in both dbt-core 2.0 and the fork; reproduced verbatim.
+        /// Misspelled `gsc` in both dbt-core 2.0 and the dbt-labs fork; reproduced verbatim.
         NotebookExecuteJobGscPath => ("adbc.bigquery.notebook_execute_job.gsc_path", [], String),
         /// The file name of the notebook a notebook execution job runs.
         NotebookExecuteJobModelFileName => (

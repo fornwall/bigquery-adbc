@@ -76,23 +76,29 @@ string_enum! {
     /// accepts both spellings.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub enum BigQueryAuthenticationType {
+        /// Application Default Credentials. The default.
         #[default]
         Default => (
             "auth_bigquery",
             ["adbc.bigquery.sql.auth_type.auth_bigquery"]
         ),
+        /// Application Default Credentials, selected by name.
         ApplicationDefault => (
             "app_default_credentials",
             ["adbc.bigquery.sql.auth_type.app_default_credentials"]
         ),
+        /// A JSON credential document read from the file `bigquery.auth.credentials` names.
         JsonCredentialFile => (
             "json_credential_file",
             ["adbc.bigquery.sql.auth_type.json_credential_file"]
         ),
+        /// A JSON credential document passed as the value of `bigquery.auth.credentials`.
         JsonCredentialString => (
             "json_credential_string",
             ["adbc.bigquery.sql.auth_type.json_credential_string"]
         ),
+        /// An OAuth client and refresh token, from `bigquery.auth.client_id`,
+        /// `bigquery.auth.client_secret` and `bigquery.auth.refresh_token`.
         UserAuthentication => (
             "user_authentication",
             ["adbc.bigquery.sql.auth_type.user_authentication"]
@@ -108,6 +114,7 @@ string_enum! {
             "temporary_access_token",
             ["adbc.bigquery.sql.auth_type.temporary_access_token"]
         ),
+        /// No credentials, for an emulator or a mock.
         Anonymous => (
             "anonymous",
             ["adbc.bigquery.sql.auth_type.anonymous"]
@@ -127,9 +134,13 @@ string_enum! {
     /// configuration error rather than authenticating as an unintended identity.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum BigQueryCredentialsType {
+        /// A service-account key.
         ServiceAccount => ("service_account", []),
+        /// OAuth user credentials, as `gcloud auth application-default login` writes them.
         AuthorizedUser => ("authorized_user", []),
+        /// A source credential and the service account it impersonates.
         ImpersonatedServiceAccount => ("impersonated_service_account", []),
+        /// A Workload Identity Federation configuration.
         ExternalAccount => ("external_account", []),
     }
     into OptionValue => |value| OptionValue::String(value.as_str().to_owned());

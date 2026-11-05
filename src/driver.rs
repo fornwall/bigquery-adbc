@@ -74,7 +74,7 @@ impl Driver for BigQueryDriver {
     }
 }
 
-/// BigQuery configuration and one generation of lazily-created clients.
+/// An ADBC database: BigQuery configuration and one generation of lazily-created clients.
 ///
 /// Connections share the generation's clients and connection pools. A client-affecting option
 /// discards the generation, and the next connection builds a new one from the configuration;
