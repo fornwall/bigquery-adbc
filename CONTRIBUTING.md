@@ -33,7 +33,7 @@ built from this checkout's locked dependencies and pinned Rust toolchain. The Py
 `BIGQUERY_ADBC_BUILD_LIBRARY` override has the same provenance requirement.
 
 After changing `Cargo.toml`, `Cargo.lock`, or the pinned Rust version, regenerate the checked-in
-bundle:
+bundle. A change to this crate's own version alone needs no regeneration:
 
 ```sh
 python3 tools/generate_licenses.py

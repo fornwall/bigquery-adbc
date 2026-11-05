@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import tomllib
 from pathlib import Path
 
 LICENSE_FILES = ("LICENSE", "NOTICE", "licenses/THIRD_PARTY_LICENSES.txt", "licenses/RUST-STD.html")
 BUNDLE_FILES = ("THIRD_PARTY_LICENSES.txt", "RUST-STD.html")
 REGENERATE = "Run python3 tools/generate_licenses.py from the repository checkout."
+# Both Cargo.toml and Cargo.lock spell the crate's version this way. Releases change only this,
+# and it cannot affect which notices the bundle needs.
+CRATE_VERSION = re.compile(r'^(name = "bigquery-adbc"\nversion = )"[^"]*"$', re.MULTILINE)
 
 
 def text_hash(path: Path) -> str:
@@ -17,9 +21,14 @@ def text_hash(path: Path) -> str:
     return hashlib.sha256(path.read_text(encoding="utf-8").encode()).hexdigest()
 
 
+def input_hash(path: Path) -> str:
+    text = CRATE_VERSION.sub(r"\1", path.read_text(encoding="utf-8"))
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 def bundle_inputs(root: Path) -> dict[str, str]:
     paths = [root / "Cargo.toml", root / "Cargo.lock"]
-    inputs = {path.relative_to(root).as_posix(): text_hash(path) for path in paths}
+    inputs = {path.relative_to(root).as_posix(): input_hash(path) for path in paths}
     with (root / "rust-toolchain.toml").open("rb") as source:
         # The sdist omits development components from this file.
         inputs["rust-toolchain"] = tomllib.load(source)["toolchain"]["channel"]

@@ -376,6 +376,28 @@ def test_license_bundle_rejects_changed_dependency_inputs(license_checkout: Path
         validate_bundle(license_checkout)
 
 
+def test_license_bundle_ignores_the_crate_version(license_checkout: Path) -> None:
+    version = cargo_version(REPOSITORY_ROOT / "Cargo.toml")
+    for document in ("Cargo.lock", "Cargo.toml"):
+        path = license_checkout / document
+        text = path.read_text(encoding="utf-8")
+        crate = 'name = "bigquery-adbc"\nversion = '
+        bumped = text.replace(f'{crate}"{version}"', f'{crate}"99.0.0"')
+        assert bumped != text
+        path.write_text(bumped, encoding="utf-8")
+    validate_bundle(license_checkout)
+
+
+def test_license_bundle_rejects_a_changed_dependency_version(license_checkout: Path) -> None:
+    path = license_checkout / "Cargo.lock"
+    text = path.read_text(encoding="utf-8")
+    changed = text.replace('name = "adbc_core"\nversion = "', 'name = "adbc_core"\nversion = "9', 1)
+    assert changed != text
+    path.write_text(changed, encoding="utf-8")
+    with pytest.raises(RuntimeError, match="license bundle is stale"):
+        validate_bundle(license_checkout)
+
+
 def test_license_bundle_rejects_changed_toolchain(license_checkout: Path) -> None:
     (license_checkout / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "other"\n')
     with pytest.raises(RuntimeError, match="license bundle is stale"):
