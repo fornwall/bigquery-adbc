@@ -140,7 +140,7 @@ string_enum! {
         AuthorizedUser => ("authorized_user", []),
         /// A source credential and the service account it impersonates.
         ImpersonatedServiceAccount => ("impersonated_service_account", []),
-        /// A Workload Identity Federation configuration.
+        /// A Workload or Workforce Identity Federation configuration.
         ExternalAccount => ("external_account", []),
     }
     into OptionValue => |value| OptionValue::String(value.as_str().to_owned());

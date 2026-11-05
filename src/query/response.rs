@@ -14,6 +14,9 @@ use crate::rows::{RestRow, RestRows};
 /// Small response envelopes can be decoded without handing work to the blocking pool.
 pub(super) const INLINE_RESULT_BYTES: usize = 4 * 1024;
 
+/// The most rows a complete result can hold and still skip the buffered pipeline.
+pub(super) const INLINE_RESULT_ROWS: usize = 32;
+
 /// One completed response page plus every summary field any query endpoint may return.
 ///
 /// The same projection decodes `jobs.query` and `jobs.getQueryResults`: absent fields remain
@@ -390,7 +393,7 @@ pub(super) struct QueryPage {
 }
 
 /// Rows per REST response that carries rows: the first `jobs.query` page and every
-/// `jobs.getQueryResults` page. BigQuery also ends a page at about 10 MiB.
+/// `jobs.getQueryResults` page. BigQuery also ends a page at about 10 MB.
 ///
 /// A page costs a round trip plus serialization time per row, so larger pages read faster, but a
 /// first page whose rows Storage Read then reads again is wasted: uncapped, `jobs.query` returned

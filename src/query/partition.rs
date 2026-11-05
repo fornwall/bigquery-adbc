@@ -12,6 +12,8 @@ use crate::identifiers::ProjectIdentifier;
 use crate::pipeline::QueryResultOptions;
 use crate::rest::jobs::JobReference;
 
+/// The prefix of every partition descriptor. Its last byte is the format version, so a descriptor
+/// in another layout is refused rather than misread.
 const PARTITION_MAGIC: &[u8; 8] = b"SQBQJOB\x02";
 
 /// Bits of the result options flag byte.

@@ -12,7 +12,9 @@ use crate::cancellation::Operation;
 use crate::clients::DatasetKey;
 use crate::diag::diag;
 use crate::error::{driver_defect, error, invalid_state};
-use crate::query::{ExecutionContext, QueryContext, QueryDefaults, create_session, execute_update};
+use crate::query::{
+    ExecutionContext, QueryContext, QueryDefaults, create_session, execute_driver_statement,
+};
 use crate::rest::retry::retryable_failure;
 
 #[derive(Debug, Default)]
@@ -746,7 +748,7 @@ impl<'a> TransactionContext<'a> {
     }
 
     fn execute(&self, operation: Option<&Operation>, session_id: &str, sql: &str) -> Result<()> {
-        execute_update(
+        execute_driver_statement(
             &self.context.runtime,
             &self.context.state,
             self.context.billing_project_id.as_ref(),

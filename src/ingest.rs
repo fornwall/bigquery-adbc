@@ -16,7 +16,7 @@ use crate::cancellation::Operation;
 use crate::clients::ClientState;
 use crate::error::{error, invalid_argument, not_implemented};
 use crate::identifiers::{ProjectIdentifier, write_quoted_identifier};
-use crate::query::{QueryContext, QueryDefaults, execute_update};
+use crate::query::{QueryContext, QueryDefaults, execute_driver_statement};
 use crate::rest::metadata::{MetadataClient, MetadataError, Table, TableId, TableView};
 use crate::rest::model::TableSchema;
 use crate::rest::rejection::service_error;
@@ -526,7 +526,7 @@ fn run_ingest_ddl(
     if let Some(operation) = operation {
         operation.check().map_err(labelled)?;
     }
-    execute_update(
+    execute_driver_statement(
         context.runtime,
         context.state,
         context.billing_project_id,

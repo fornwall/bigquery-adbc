@@ -144,7 +144,7 @@ pub(super) fn reader_from_rest_query(
     // Only a terminal page proves that all rows are resident; totalRows may be stale. Bound
     // both rows and encoded bytes so a wide single row still uses the buffered pipeline.
     if page.page_token.is_none()
-        && page.rows.len() <= 32
+        && page.rows.len() <= response::INLINE_RESULT_ROWS
         && page.encoded_len <= response::INLINE_RESULT_BYTES
     {
         return Ok(resident_reader(

@@ -195,7 +195,7 @@ pub(crate) fn read_query_partition(
 }
 
 /// Runs a statement the driver issues itself (session control, ingest DDL) for its effect.
-pub(crate) fn execute_update(
+pub(crate) fn execute_driver_statement(
     runtime: &SharedRuntime,
     state: &ClientState,
     billing_project_id: Option<&ProjectIdentifier>,

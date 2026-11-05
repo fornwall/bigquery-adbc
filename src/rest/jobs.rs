@@ -1162,8 +1162,8 @@ impl InferredSubmission {
             .map_err(|failure| with_job_link(failure, Some(&reference)))
     }
 
-    /// Listing one's own jobs needs no additional IAM permission and no location. Keep the
-    /// search independent of local cancellation: finding the reference lets us cancel remotely.
+    /// Listing needs `bigquery.jobs.list` but no location. Keep the search independent of local
+    /// cancellation: finding the reference lets us cancel remotely.
     async fn search_recent_jobs(
         &self,
         resolved: &mut JobReference,
