@@ -4,8 +4,8 @@
     "THIRD_PARTY_LICENSES.txt": "ca7ed09f5bbc877d7e042106c7c402aa3eff3d59a12c8958abeb5882519c1855"
   },
   "inputs": {
-    "Cargo.lock": "1cc3a86ef09d6af77af5b167126fe4f412dc0b4d0bcd2a4865ce211f0dc04dd5",
-    "Cargo.toml": "f28852bd19ea12d3c0e83069a5648b901386a8c23001a079e8dcc21c07e0c08a",
+    "Cargo.lock": "a43c49a6b4d8ef439d37b0a4eefc7a621fdba5308e1151db09c5e28c6f70630a",
+    "Cargo.toml": "2b5a65e4da6c67d48d9b3438b0a42181147aca0d20c49fe8c3aa4a61d95dbac9",
     "rust-toolchain": "1.99.1"
   },
   "packages": [
