@@ -567,7 +567,7 @@ impl DbtStatementState {
         statement
             .transaction
             .require_autocommit("table metadata updates")?;
-        let destination = statement
+        let table = statement
             .query_options
             .destination_table
             .as_ref()
@@ -581,7 +581,7 @@ impl DbtStatementState {
             .cancellation
             .run(|operation| {
                 self.table_mutation
-                    .execute(statement.context, destination, operation)
+                    .execute(statement.context, table, operation)
             })
             .map(|()| 0)
     }

@@ -103,11 +103,11 @@ impl TableMutationOptions {
     pub(crate) fn execute(
         &self,
         context: &ExecutionContext,
-        destination: &QualifiedTableName,
+        table: &QualifiedTableName,
         operation: &Operation,
     ) -> Result<()> {
         let client = context.state.metadata_client(&context.runtime)?;
-        let table = destination.id();
+        let table = table.id();
         if self.descriptions.is_some() || self.policy_tags.is_some() {
             self.execute_column_metadata(context, &client, table, operation)?;
         }
