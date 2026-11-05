@@ -19,7 +19,7 @@ use crate::rest::metadata::TableId;
 use crate::rest::model::TableSchema;
 use crate::rest::rejection::service_error;
 use crate::rest::request::{Request, multipart_related_file, send};
-use crate::rest::url::query_component;
+use crate::rest::url::escape_url_component;
 
 /// The job's name in error messages.
 const WHAT: &str = "CSV load";
@@ -45,7 +45,7 @@ pub(crate) fn execute_csv_load(
             let endpoint = configuration.endpoints.bigquery();
             let url = format!(
                 "{endpoint}/upload/bigquery/v2/projects/{}/jobs?uploadType=multipart",
-                query_component(&request.reference().project_id)
+                escape_url_component(&request.reference().project_id)
             );
             let boundary = format!("adbc_csv_boundary_{}", request.reference().job_id);
             let body = multipart_related_file(

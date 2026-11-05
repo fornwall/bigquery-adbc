@@ -29,7 +29,7 @@ use crate::rest::projects_prefix;
 use crate::rest::rejection::{reason_message, service_error};
 use crate::rest::request::{Request, RequestStart, send};
 use crate::rest::retry::{MAX_ATTEMPTS, RetryClass, RetryDelays, classify};
-use crate::rest::url::query_component;
+use crate::rest::url::escape_url_component;
 use crate::runtime::DetachedTask;
 
 /// The server-side wait for a query whose job reference is already registered.
@@ -527,7 +527,11 @@ impl JobClient {
         body: bytes::Bytes,
         start: &RequestStart,
     ) -> Result<QueryAnswer> {
-        let url = format!("{}/{}/queries", self.projects, query_component(project_id));
+        let url = format!(
+            "{}/{}/queries",
+            self.projects,
+            escape_url_component(project_id)
+        );
         // A transport failure is a failure to submit; an error document is BigQuery rejecting the
         // query.
         let send_context = "submit the BigQuery jobs.query request";
@@ -650,7 +654,7 @@ impl JobClient {
         let url = format!(
             "{}?parentJobId={}&maxResults=1&projection=full",
             self.jobs_url(parent),
-            query_component(&parent.job_id)
+            escape_url_component(&parent.job_id)
         );
         let send_context = format!("list the child jobs of BigQuery job {}", job_name(parent));
         let plan = Retry {
@@ -791,7 +795,7 @@ impl JobClient {
         format!(
             "{}/{}/jobs",
             self.projects,
-            query_component(&reference.project_id)
+            escape_url_component(&reference.project_id)
         )
     }
 
@@ -799,8 +803,8 @@ impl JobClient {
         let mut url = format!(
             "{}/{}/jobs/{}{}",
             self.projects,
-            query_component(&reference.project_id),
-            query_component(&reference.job_id),
+            escape_url_component(&reference.project_id),
+            escape_url_component(&reference.job_id),
             suffix
         );
         append_parameter(&mut url, '?', "location", reference.location.as_deref());
@@ -816,8 +820,8 @@ impl JobClient {
         let mut url = format!(
             "{}/{}/queries/{}?maxResults={max_results}&timeoutMs={QUERY_COMPLETION_WAIT_MS}&formatOptions.useInt64Timestamp=true",
             self.projects,
-            query_component(&reference.project_id),
-            query_component(&reference.job_id),
+            escape_url_component(&reference.project_id),
+            escape_url_component(&reference.job_id),
         );
         append_parameter(&mut url, '&', "location", reference.location.as_deref());
         append_parameter(&mut url, '&', "pageToken", page_token);
@@ -1209,7 +1213,7 @@ impl InferredSubmission {
                 let url = if page_token.is_empty() {
                     base.clone()
                 } else {
-                    format!("{base}&pageToken={}", query_component(&page_token))
+                    format!("{base}&pageToken={}", escape_url_component(&page_token))
                 };
                 let plan = Retry {
                     attempts: MAX_ATTEMPTS,
@@ -1347,7 +1351,7 @@ fn duplicate(body: &[u8], reference: &JobReference) -> Option<JobReference> {
 /// Appends `{separator}{name}={value}` (`separator` is `?` or `&`) when `value` is non-empty.
 fn append_parameter(url: &mut String, separator: char, name: &str, value: Option<&str>) {
     if let Some(value) = value.filter(|value| !value.is_empty()) {
-        write!(url, "{separator}{name}={}", query_component(value))
+        write!(url, "{separator}{name}={}", escape_url_component(value))
             .expect("writing to a String cannot fail");
     }
 }

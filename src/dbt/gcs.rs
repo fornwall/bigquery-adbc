@@ -13,7 +13,7 @@ use crate::rest::jobs::next_identity;
 use crate::rest::json::encode_json;
 use crate::rest::rejection::service_error;
 use crate::rest::request::{Request, multipart_related, send};
-use crate::rest::url::query_component;
+use crate::rest::url::escape_url_component;
 
 /// The operation's name in error messages.
 const OPERATION: &str = "Cloud Storage object write";
@@ -56,8 +56,8 @@ impl GcsWriteOptions {
         let url = format!(
             "{endpoint}/upload/storage/v1/b/{}/o?uploadType=multipart&name={}\
              &projection=full&alt=json&prettyPrint=false",
-            query_component(bucket),
-            query_component(object_name),
+            escape_url_component(bucket),
+            escape_url_component(object_name),
         );
         let metadata = encode_json(
             &serde_json::json!({"bucket": bucket, "name": object_name}),

@@ -209,9 +209,9 @@ pub(crate) fn with_job_link(mut failure: Error, reference: Option<&JobReference>
     };
     let suffix = format!(
         "{JOB_LINK_PREFIX}{}&j=bq:{}:{}&page=queryresults)",
-        crate::rest::url::query_component(&reference.project_id),
-        crate::rest::url::query_component(location),
-        crate::rest::url::query_component(&reference.job_id),
+        crate::rest::url::escape_url_component(&reference.project_id),
+        crate::rest::url::escape_url_component(location),
+        crate::rest::url::escape_url_component(&reference.job_id),
     );
     if !failure.message.ends_with(&suffix) {
         failure.message.push_str(&suffix);

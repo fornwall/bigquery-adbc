@@ -30,7 +30,7 @@ use crate::rest::projects_prefix;
 use crate::rest::rejection::{precondition_error, service_error, service_failure};
 use crate::rest::request::{Request, send};
 use crate::rest::retry::{MAX_ATTEMPTS, RetryClass, RetryDelays, retry_class};
-use crate::rest::url::query_component;
+use crate::rest::url::escape_url_component;
 
 /// The `project.dataset` pair a dataset request names, serialized as a `DatasetReference`.
 #[derive(Clone, Copy, Debug, serde::Serialize)]
@@ -298,8 +298,8 @@ impl MetadataClient {
         format!(
             "{}/{}/datasets/{}",
             self.projects,
-            query_component(dataset.project_id),
-            query_component(dataset.dataset_id)
+            escape_url_component(dataset.project_id),
+            escape_url_component(dataset.dataset_id)
         )
     }
 
@@ -307,7 +307,7 @@ impl MetadataClient {
         format!(
             "{}/tables/{}",
             self.dataset_url(table.dataset()),
-            query_component(table.table_id)
+            escape_url_component(table.table_id)
         )
     }
 
@@ -345,7 +345,7 @@ impl MetadataClient {
             format!(
                 "{}/{}/datasets{}",
                 self.projects,
-                query_component(project_id),
+                escape_url_component(project_id),
                 listing_query(max_results, page_token)
             ),
             DATASET_LIST_FIELDS,
@@ -672,7 +672,7 @@ impl MetadataClient {
 /// Appends an encoded Google API partial-response selector to a URL with or without a query.
 fn response_fields(mut url: String, fields: &str) -> String {
     let separator = if url.contains('?') { '&' } else { '?' };
-    write!(url, "{separator}fields={}", query_component(fields))
+    write!(url, "{separator}fields={}", escape_url_component(fields))
         .expect("writing to a String cannot fail");
     url
 }
@@ -690,10 +690,10 @@ fn listing_query(max_results: Option<u32>, page_token: &str) -> String {
     match (max_results, page_token) {
         (None, "") => String::new(),
         (Some(max_results), "") => format!("?maxResults={max_results}"),
-        (None, token) => format!("?pageToken={}", query_component(token)),
+        (None, token) => format!("?pageToken={}", escape_url_component(token)),
         (Some(max_results), token) => format!(
             "?maxResults={max_results}&pageToken={}",
-            query_component(token)
+            escape_url_component(token)
         ),
     }
 }

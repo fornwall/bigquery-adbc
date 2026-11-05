@@ -3,7 +3,7 @@ use adbc_core::options::OptionStatement;
 use adbc_core::{Connection as _, Statement as _};
 use serde_json::json;
 
-use crate::rest::url::query_component as escape;
+use crate::rest::url::escape_url_component as escape;
 use crate::test_support::driver::{test_connection_with, test_statement};
 use crate::test_support::errors::assert_message;
 use crate::test_support::http::capture_requests;

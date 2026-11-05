@@ -17,7 +17,7 @@ use crate::rest::json::decode_json;
 use crate::rest::rejection::service_rejection;
 use crate::rest::request::{Request, send};
 use crate::rest::retry::{MAX_ATTEMPTS, RetryClass, RetryDelays, classify};
-use crate::rest::url::path_component;
+use crate::rest::url::escape_resource_path;
 
 #[cfg(test)]
 mod tests;
@@ -318,7 +318,7 @@ impl<'a> LroPoller<'a> {
 
 /// Builds a URL from a resource name validated at the option or response boundary.
 pub(super) fn resource_url(endpoint: &str, name: &str, suffix: &str) -> String {
-    format!("{endpoint}/v1/{}{suffix}", path_component(name))
+    format!("{endpoint}/v1/{}{suffix}", escape_resource_path(name))
 }
 
 /// Reads a resource name, rejecting segments that URL parsing would normalize away.

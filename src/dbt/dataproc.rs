@@ -28,7 +28,7 @@ use crate::query::ExecutionContext;
 use crate::rest::jobs::next_identity;
 use crate::rest::json::encode_json;
 use crate::rest::request::Request;
-use crate::rest::url::query_component;
+use crate::rest::url::escape_url_component;
 
 /// Poll from 1 s to 10 s; Spark jobs often run for minutes or hours.
 const INITIAL_POLL_DELAY: Duration = Duration::from_secs(1);
@@ -146,7 +146,7 @@ impl DataprocOptions {
                 let collection = match batch_id {
                     Some(batch_id) => format!(
                         "/batches?batchId={}&requestId={request_id}",
-                        query_component(batch_id)
+                        escape_url_component(batch_id)
                     ),
                     None => format!("/batches?requestId={request_id}"),
                 };
@@ -179,8 +179,8 @@ impl DataprocOptions {
             &|endpoint, request_id| {
                 let url = format!(
                     "{endpoint}/v1/projects/{}/regions/{}/jobs:submitAsOperation",
-                    query_component(project),
-                    query_component(region)
+                    escape_url_component(project),
+                    escape_url_component(region)
                 );
                 // `SubmitJobRequest` binds `projectId` and `region` to the path with `body: "*"`,
                 // so the body is the request minus those fields: the `Job` under a `job` key,
@@ -321,9 +321,9 @@ impl RunningOperation {
                 // dot segment must not redirect the cancel.
                 return format!(
                     "{endpoint}/v1/projects/{}/regions/{}/jobs/{}:cancel",
-                    query_component(project),
-                    query_component(region),
-                    query_component(job_id),
+                    escape_url_component(project),
+                    escape_url_component(region),
+                    escape_url_component(job_id),
                 );
             }
         }

@@ -8,7 +8,7 @@ use serde_json::json;
 
 use super::job_outcome;
 use crate::BigQueryStatementOption as Key;
-use crate::rest::url::path_component as escape;
+use crate::rest::url::escape_resource_path as escape;
 use crate::test_support::credentials::TEST_PRIVATE_KEY;
 use crate::test_support::driver::{test_connection_with, test_statement};
 use crate::test_support::errors::assert_message;

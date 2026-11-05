@@ -1,11 +1,11 @@
 //! Resource-path and individual-component escaping.
 
-use super::{path_component, query_component};
+use super::{escape_resource_path, escape_url_component};
 
 #[test]
 fn both_escapes_keep_a_value_from_reshaping_the_url_it_is_placed_in() {
-    for (value, as_path, as_query) in [
-        // A resource name is a path of segments; a query value is one opaque value.
+    for (value, as_path, as_component) in [
+        // A resource name is a path of segments; a component is one opaque value.
         (
             "projects/p/locations/eu",
             "projects/p/locations/eu",
@@ -20,7 +20,7 @@ fn both_escapes_keep_a_value_from_reshaping_the_url_it_is_placed_in() {
         // A space and a `+`, which a form-encoded reader would otherwise read as each other.
         ("a b", "a%20b", "a%20b"),
         ("a+b", "a%2Bb", "a%2Bb"),
-        // A BigQuery job or dataset name is written with these, and only a query value has to
+        // A BigQuery job or dataset name is written with these, and only a component has to
         // escape them: `project:location.job` survives a path unchanged.
         ("p:EU.job_1", "p:EU.job_1", "p%3AEU.job_1"),
         ("a,b;c@d", "a,b;c@d", "a%2Cb%3Bc%40d"),
@@ -40,11 +40,15 @@ fn both_escapes_keep_a_value_from_reshaping_the_url_it_is_placed_in() {
         // Escaping leaves dots unchanged; resource validation rejects dot segments separately.
         ("../secret", "../secret", "..%2Fsecret"),
     ] {
-        assert_eq!(path_component(value).to_string(), as_path, "path: {value}");
         assert_eq!(
-            query_component(value).to_string(),
-            as_query,
-            "query: {value}"
+            escape_resource_path(value).to_string(),
+            as_path,
+            "path: {value}"
+        );
+        assert_eq!(
+            escape_url_component(value).to_string(),
+            as_component,
+            "component: {value}"
         );
     }
 }
