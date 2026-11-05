@@ -9,7 +9,7 @@ backend-path = ["."]
 [project]
 name = "bigquery-adbc"
 dynamic = ["version"]
-description = "Python bindings for the BigQuery ADBC driver"
+description = "Arrow-native BigQuery access for Python: a Rust ADBC driver with a DB-API 2.0 interface"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
@@ -19,6 +19,7 @@ license-files = ["LICENSE", "NOTICE", "licenses/THIRD_PARTY_LICENSES.txt", "lice
 authors = [
     { name = "Fredrik Fornwall" },
 ]
+keywords = ["adbc", "arrow", "bigquery", "database", "dbapi", "google-cloud", "sql"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -32,6 +33,8 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3.15",
+    "Programming Language :: Rust",
+    "Topic :: Database",
     "Topic :: Database :: Front-Ends",
     "Typing :: Typed",
 ]
@@ -52,8 +55,10 @@ pandas = [
 
 [project.urls]
 Homepage = "https://github.com/fornwall/bigquery-adbc"
+Documentation = "https://github.com/fornwall/bigquery-adbc/blob/main/docs/REFERENCE.md"
 Repository = "https://github.com/fornwall/bigquery-adbc"
 Issues = "https://github.com/fornwall/bigquery-adbc/issues"
+Changelog = "https://github.com/fornwall/bigquery-adbc/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
