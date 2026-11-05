@@ -15,6 +15,9 @@
 //! Google Cloud Application Default Credentials (ADC) unless the URI or authentication-type option
 //! selects JSON credentials, OAuth user credentials, or anonymous access for an emulator or mock.
 //!
+//! `examples/query.rs` is a complete program, and `docs/ARCHITECTURE.md` describes how the code
+//! fits together.
+//!
 //! [`OptionDatabase::Uri`]: adbc_core::options::OptionDatabase::Uri
 
 // Proving the Storage Read pipeline's outermost spawned future `Send` overflows the default
