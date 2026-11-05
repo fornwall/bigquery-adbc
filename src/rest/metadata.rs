@@ -87,11 +87,12 @@ impl std::fmt::Display for TableId<'_> {
 pub(crate) enum TableView {
     /// The type and names of an exact object, which no listing supplied.
     Type,
-    /// The schema needed to validate or update an ingest target.
+    /// The schema alone, which a dbt-core 2.0 column metadata update rewrites.
     Schema,
     /// Constraints explicitly requested at ADBC table depth, without column schemas.
     Constraints,
-    /// The schema and constraints an ADBC `get_objects` column listing reports.
+    /// The schema and constraints an ADBC `get_objects` column listing reports, with the type an
+    /// ingest checks its target against.
     Basic,
     /// The storage statistics `get_statistics` reports, and nothing else.
     StorageStats,

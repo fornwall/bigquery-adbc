@@ -136,9 +136,9 @@ async fn execute_jobs_query(
 
 /// Fetches the job of a completed query whose responses never named its statement type, which
 /// happens when the initial `jobs.query` answer precedes execution, or a replay's 409 stood in
-/// for its lost or refused answer:
-/// `jobs.getQueryResults` carries neither the statement type nor the session, and the
-/// transaction and session bookkeeping need both. The job also serves the result's metadata.
+/// for its lost or refused answer: `jobs.getQueryResults` carries neither the statement type nor
+/// the session, and the transaction and session bookkeeping need both. The job also serves the
+/// result's metadata.
 ///
 /// Best effort, since the query already ran: only cancellation propagates.
 async fn describe_unnamed_statement(

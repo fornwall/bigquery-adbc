@@ -313,7 +313,7 @@ impl TransactionState {
         true
     }
 
-    /// Starts beginning the transaction active in `ended` again, after BigQuery refused the first
+    /// Moves the transaction active in `ended` back to starting, after BigQuery refused the first
     /// query of the statement that began it because the session had ended. `None` once another
     /// statement has been handed the transaction, which then ended with whatever it ran.
     fn begin_replacing(&self, ended: &str) -> Option<QueryStart<'_>> {

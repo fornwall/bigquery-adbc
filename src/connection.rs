@@ -120,11 +120,11 @@ impl BigQueryConnection {
 
     /// The single catalog the metadata listings enumerate, or `None` when they list nothing.
     ///
-    /// A wildcard-free filter enumerates that project, current or not (G75); a foreign project
-    /// is first probed with a one-item dataset listing so an absent
-    /// one yields no catalog rather than an empty one. A wildcard filter, or none, considers only
-    /// the current project (G34): discovering visible projects needs the Resource Manager API.
-    /// The current project is [`Self::name_catalog`], the one `adbc.connection.catalog` reads back.
+    /// A wildcard-free filter enumerates that project, current or not (G75); a foreign project is
+    /// first probed with a one-item dataset listing so an absent one yields no catalog rather than
+    /// an empty one. A wildcard filter, or none, considers only the current project (G34):
+    /// discovering visible projects needs the Resource Manager API. The current project is
+    /// [`Self::name_catalog`], the one `adbc.connection.catalog` reads back.
     fn metadata_catalog(
         &self,
         operation: &Operation,

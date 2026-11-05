@@ -83,7 +83,7 @@ impl RecordBatchReader for ResidentReader {
     }
 }
 
-/// Buffers rows from the compact direct REST pager through the same ordered conversion pipeline.
+/// Converts the pager's rows in parallel and delivers the batches to `sink` in result order.
 pub(super) async fn buffer_rest_query_results(
     mut pager: QueryPager,
     sink: ResultSink,

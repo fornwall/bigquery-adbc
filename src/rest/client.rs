@@ -42,10 +42,10 @@ const MEDIA_RESPONSE_BODY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The most response-body bytes a request on each budget may buffer.
 ///
-/// Responses are buffered whole, and the result-conversion permits in `src/pipeline.rs` charge
-/// bytes only once resident, so these limits are the only bound on buffered size. Both are far
-/// above any valid response: BigQuery caps a `jobs.query`/`jobs.getQueryResults` page at 10 MB,
-/// and a media upload returns one resource document.
+/// Responses are buffered whole, and the byte budget in `src/pipeline.rs` charges only decoded
+/// batches, so these limits are the only bound on buffered size. Both are far above any valid
+/// response: BigQuery caps a `jobs.query`/`jobs.getQueryResults` page at 10 MB, and a media upload
+/// returns one resource document.
 const REQUEST_RESPONSE_LIMIT: usize = 64 << 20;
 const MEDIA_RESPONSE_LIMIT: usize = 8 << 20;
 

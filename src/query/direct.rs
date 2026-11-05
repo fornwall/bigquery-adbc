@@ -39,7 +39,7 @@ use super::response::{
 use super::transaction_end::ended_transaction;
 use super::{QueryContext, QueryResultMode, StatementQueryContext, StatementQueryOptions};
 
-/// The upstream default: three reissues after the initial execution.
+/// How many times a query may run again after its initial execution (G47).
 const MAX_JOB_REISSUES: usize = 3;
 
 #[derive(Debug)]

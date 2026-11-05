@@ -904,7 +904,8 @@ fn settle_submission(operation: Option<&Operation>, request: &JobRequest, may_ex
 /// cancel.
 struct InferredSubmission {
     client: JobClient,
-    /// Read only to stop resubmitting once the caller is cancelled.
+    /// The caller's operation, which no request waits on. It stops resubmission once cancelled,
+    /// and learns the job's identity as soon as a listing finds it.
     operation: Option<Operation>,
     reference: JobReference,
     body: bytes::Bytes,

@@ -98,7 +98,7 @@ pub(crate) struct DatabaseConfig {
     pub(crate) user_agent: Option<Arc<str>>,
 }
 
-/// One clonable credential value and the endpoints paired with it.
+/// One cloneable credential value and the endpoints paired with it.
 ///
 /// `Credentials::clone` shares the provider and token cache, so every client built from this
 /// value shares one credential state instead of loading ADC again.

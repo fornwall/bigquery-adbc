@@ -203,7 +203,7 @@ pub(crate) fn required_output<T>(dst: *mut T, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Share error formatting across [`required_output`] and [`write_out`] instantiations.
+/// The error for a required pointer argument that is null, shared by every generic caller.
 #[cold]
 #[inline(never)]
 pub(crate) fn missing_argument(name: &str) -> Error {

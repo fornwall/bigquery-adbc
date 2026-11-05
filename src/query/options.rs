@@ -50,7 +50,8 @@ pub(crate) struct StatementQueryOptions {
     pub(crate) dry_run: bool,
 }
 
-/// Ordering makes authorized-view option output deterministic.
+/// A fully qualified table an option names: usually a destination, but also a table copy's source
+/// or an authorized view. Ordering makes authorized-view option output deterministic.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct DestinationTable {
     project_id: ProjectIdentifier,

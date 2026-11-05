@@ -19,8 +19,7 @@ use crate::transaction::TransactionState;
 #[derive(Clone, Debug)]
 pub(crate) struct ExecutionContext {
     pub(crate) runtime: SharedRuntime,
-    /// Shared clients, per-project Storage Read availability, and the dataset locations dbt-core
-    /// 2.0 seeds and copies looked up.
+    /// Shared clients, per-project Storage Read availability, and cached dataset locations.
     pub(crate) state: Arc<ClientState>,
     pub(crate) billing_project_id: Option<ProjectIdentifier>,
     pub(crate) current_catalog: Option<ProjectIdentifier>,
@@ -60,7 +59,7 @@ impl ExecutionContext {
     }
 }
 
-/// Execution context shared by user statements and internal control queries.
+/// Execution context of a query the driver issues itself (session control, ingest DDL).
 #[derive(Clone, Copy)]
 pub(crate) struct QueryContext<'a> {
     pub(crate) defaults: QueryDefaults<'a>,
@@ -74,12 +73,12 @@ pub(crate) struct QueryContext<'a> {
 pub(crate) struct StatementQueryContext<'a> {
     pub(crate) execution: &'a ExecutionContext,
     pub(crate) session_id: Option<&'a str>,
-    /// Required for user statements; internal control queries may have no operation.
     pub(crate) operation: &'a Operation,
     pub(crate) options: &'a StatementQueryOptions,
     /// Updated when the caller's SQL commits or rolls back a transaction.
     pub(crate) transaction: &'a TransactionState,
-    /// Progress reported by query responses. Internal control queries have no progress sink.
+    /// Where query responses publish progress. `None` for the parameter rows a reader runs while
+    /// it is drained, which leave the first job's progress in place.
     pub(crate) progress: Option<&'a ExecutionProgress>,
 }
 
