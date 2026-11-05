@@ -67,8 +67,8 @@ DRIVER_LOG_LEVEL = "ADBC_DRIVER_BIGQUERY_LOG_LEVEL"
 # both of. The macro explicitly disables Storage Read for its REST pagination statement, then
 # uses default routing for a separate result that also requires pagination.
 READ_PATH_EVENTS = (
-    re.compile(r"\[bigquery\] DEBUG fetching further REST pages of BigQuery job "),
-    re.compile(r"\[bigquery\] DEBUG reading BigQuery job \S+ through Storage Read"),
+    re.compile(r"\[bigquery-adbc\] DEBUG fetching further REST pages of BigQuery job "),
+    re.compile(r"\[bigquery-adbc\] DEBUG reading BigQuery job \S+ through Storage Read"),
 )
 PYTHON_MODEL_ALIAS = "exotic_python_model"
 PYTHON_MODEL_UNIQUE_ID = f"model.bigquery_adbc_integration.{PYTHON_MODEL_ALIAS}"
@@ -174,7 +174,7 @@ def driver_warnings(stderr: str) -> list[str]:
     return [
         line
         for line in stderr.splitlines()
-        if re.search(r"\[bigquery\] (?:WARN|ERROR) ", line)
+        if re.search(r"\[bigquery-adbc\] (?:WARN|ERROR) ", line)
     ]
 
 

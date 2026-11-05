@@ -458,15 +458,23 @@ describes. Its errors carry structured details and, for `invalidQuery` and `acce
 `42000`; Go errors carry only a status and message. Both drivers end a failed job's message with
 `(Query: <console URL>)`.
 
-### G86. Opt-in diagnostics are plain text on stderr, and `warn` selects warnings
+### G86. Diagnostics use timestamped plain text and a fixed stderr sink
 
-Both drivers read `ADBC_DRIVER_BIGQUERY_LOG_LEVEL` and log nothing when it is unset. This driver
-reads it once per process and writes `[bigquery] LEVEL message` lines to stderr
-([diagnostics](REFERENCE.md#diagnostics)); Go reads it at every `AdbcDatabaseInit` and writes slog
-JSON lines to stderr, or to a temporary file with `ADBC_DRIVER_BIGQUERY_LOG_SINK=tempfile`. In Go,
-`warn` selects errors only, because of an empty `case` in arrow-adbc's driver template, and its
-events are failed job cancels and Storage Write stream closes, plus credential choice, ingest steps
-and retries at `debug`.
+Both drivers read `ADBC_DRIVER_BIGQUERY_LOG_LEVEL` and accept `error`, `warn`/`warning`, `info`
+and `debug`. This driver reads it once per process, disables diagnostics when it is unset or
+empty, and writes `TIMESTAMP [bigquery-adbc] LEVEL message` lines to stderr. Timestamps are UTC
+in RFC 3339 format with millisecond precision ([diagnostics](REFERENCE.md#diagnostics)).
+
+Go reads the variable at every `AdbcDatabaseInit` and writes timestamped slog JSON lines to
+stderr, or to a temporary file with `ADBC_DRIVER_BIGQUERY_LOG_SINK=tempfile`. Its current
+[C wrapper](https://github.com/adbc-drivers/bigquery/blob/5f836152af0103f04c8e0770a7830f4e3535404f/go/pkg/driver.go#L232)
+selects warnings correctly for both `warn` and `warning`. An unset or empty value retains
+driverbase's [default error-level stderr logger](https://github.com/adbc-drivers/driverbase-go/blob/5cee18f5413f/driverbase/logging.go#L33).
+Native Go callers can also supply a custom slog logger through `DatabaseLogging.SetLogger`;
+this driver has no logger injection API or configurable sink.
+
+Go's events include failed job cancels and Storage Write stream closes, plus credential choice,
+ingest steps and retries at `debug`.
 
 ## Transactions and sessions
 

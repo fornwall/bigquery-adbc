@@ -14,14 +14,34 @@ from unittest import mock
 
 from run import (
     EPHEMERAL_UNIQUE_ID,
+    READ_PATH_EVENTS,
     assert_nodes_ran,
     assert_python_model_submission,
     checked_phase_command,
     dbt_command,
+    driver_warnings,
     failing_dbt_command,
 )
 
 import benchmark
+
+
+class DriverDiagnosticsTest(unittest.TestCase):
+    def test_timestamped_driver_events_are_recognized(self) -> None:
+        prefix = "2026-11-05T14:23:45.123Z [bigquery-adbc] "
+        paths = [
+            prefix + "DEBUG fetching further REST pages of BigQuery job project.US.job-1",
+            prefix + "DEBUG reading BigQuery job project.US.job-2 through Storage Read",
+        ]
+        warnings = [
+            prefix + "WARN reading BigQuery results over REST: Storage Read unavailable",
+            prefix + "ERROR failed operation",
+        ]
+        stderr = "\n".join(["dbt output", *paths, *warnings])
+        self.assertEqual(driver_warnings(stderr), warnings)
+        for event, line in zip(READ_PATH_EVENTS, paths, strict=True):
+            with self.subTest(line=line):
+                self.assertIsNotNone(event.search(line))
 
 
 class BenchmarkDriverSelectionTest(unittest.TestCase):

@@ -707,9 +707,16 @@ created with `isCaseInsensitive`: there, `EVENTS` finds and reports `events` (G5
 
 The driver writes diagnostics to standard error only if `ADBC_DRIVER_BIGQUERY_LOG_LEVEL` is set
 when the process creates its first driver, which the C API does at the first `AdbcDatabaseInit`.
-Values are case-insensitive: `error`, `warn` (or `warning`), `info` and `debug`; any other value is
-reported once. Each event is one `[bigquery] LEVEL message` line on file descriptor 2, so Jupyter
-shows them in the kernel's console, not the cell.
+Values are case-insensitive: `error`, `warn` (or `warning`), `info` and `debug`; an empty value
+disables diagnostics, and any other value is reported once. Each event is one
+`TIMESTAMP [bigquery-adbc] LEVEL message` line on file descriptor 2. The timestamp is UTC in
+RFC 3339 format with milliseconds, for example:
+
+```text
+2026-11-05T14:23:45.123Z [bigquery-adbc] DEBUG reading BigQuery job project.US.job-1 through Storage Read
+```
+
+Jupyter shows these lines in the kernel's console, not the cell.
 
 | Level | Events |
 | --- | --- |

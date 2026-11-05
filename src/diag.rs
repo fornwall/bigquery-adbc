@@ -3,8 +3,9 @@
 //! Some events have no ADBC caller to report to, such as a Storage Read fallback, a failed
 //! background cancel or a retried request. They are written here only when the process sets
 //! [`LOG_LEVEL`] (the variable and values the Go driver reads), which is read once per process.
-//! Each event is one `[bigquery] LEVEL message` line. A site whose service error text could echo
-//! SQL, such as a failed job cancel, reports only the status.
+//! Each event is one `TIMESTAMP [bigquery-adbc] LEVEL message` line, with a UTC timestamp at
+//! millisecond precision. A site whose service error text could echo SQL, such as a failed job
+//! cancel, reports only the status.
 //!
 //! This is not a `tracing` subscriber: the driver's `tracing` is private to the shared library,
 //! and raising its compile-time cap would link every dependency's events too (see
@@ -15,6 +16,9 @@ use std::io::Write as _;
 use std::sync::OnceLock;
 #[cfg(test)]
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::types::temporal::{SECONDS_PER_DAY, civil_from_days};
 
 /// The environment variable selecting the most verbose level written.
 const LOG_LEVEL: &str = "ADBC_DRIVER_BIGQUERY_LOG_LEVEL";
@@ -52,7 +56,7 @@ fn configured() -> Option<Level> {
         let parsed = value.to_str().and_then(parse);
         if parsed.is_none() && !value.is_empty() {
             write_line(format_args!(
-                "[bigquery] ignoring {LOG_LEVEL}={}: expected debug, info, warn or error\n",
+                "WARN ignoring {LOG_LEVEL}={}: expected debug, info, warn or error",
                 value.to_string_lossy()
             ));
         }
@@ -92,7 +96,7 @@ pub(crate) fn write(level: Level, message: Arguments<'_>) {
             return;
         }
     }
-    write_line(format_args!("[bigquery] {} {message}\n", level.name()));
+    write_line(format_args!("{} {message}", level.name()));
 }
 
 /// The number of [`capture`] calls in progress, and the events since the first of them began.
@@ -150,7 +154,27 @@ pub(crate) fn capture<R>(run: impl FnOnce() -> R) -> (R, Vec<String>) {
 /// Format the whole line first so one write keeps it intact among other threads' output. Write
 /// failures are ignored; diagnostics must never fail the operation they describe.
 fn write_line(line: Arguments<'_>) {
-    let _ = std::io::stderr().write_all(line.to_string().as_bytes());
+    let _ = std::io::stderr().write_all(format_line(SystemTime::now(), line).as_bytes());
+}
+
+fn format_line(timestamp: SystemTime, line: Arguments<'_>) -> String {
+    // Diagnostics must not panic even if the system clock exceeds i64 epoch milliseconds.
+    let millis = match timestamp.duration_since(UNIX_EPOCH) {
+        Ok(elapsed) => i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX),
+        Err(before) => {
+            -i64::try_from(before.duration().as_nanos().div_ceil(1_000_000)).unwrap_or(i64::MAX)
+        }
+    };
+    let seconds = millis.div_euclid(1_000);
+    let (year, month, day) = civil_from_days(seconds.div_euclid(SECONDS_PER_DAY));
+    let second_of_day = seconds.rem_euclid(SECONDS_PER_DAY);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z [bigquery-adbc] {line}\n",
+        second_of_day / 3_600,
+        second_of_day % 3_600 / 60,
+        second_of_day % 60,
+        millis.rem_euclid(1_000),
+    )
 }
 
 /// Writes a diagnostic event: `diag!(Warn, "format {}", args)`.
@@ -166,7 +190,37 @@ pub(crate) use diag;
 
 #[cfg(test)]
 mod tests {
-    use super::{CaptureGuard, Level, Mutex, lock_captured, parse};
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use super::{CaptureGuard, Level, Mutex, format_line, lock_captured, parse};
+
+    #[test]
+    fn event_lines_include_utc_milliseconds_and_the_driver_name() {
+        for (timestamp, expected) in [
+            (UNIX_EPOCH, "1970-01-01T00:00:00.000Z"),
+            (
+                UNIX_EPOCH + Duration::from_millis(951_827_696_789),
+                "2000-02-29T12:34:56.789Z",
+            ),
+            (
+                UNIX_EPOCH + Duration::from_millis(1_767_225_599_999),
+                "2025-12-31T23:59:59.999Z",
+            ),
+            (
+                UNIX_EPOCH + Duration::from_millis(1_767_225_600_000),
+                "2026-01-01T00:00:00.000Z",
+            ),
+            (
+                UNIX_EPOCH - Duration::from_nanos(1),
+                "1969-12-31T23:59:59.999Z",
+            ),
+        ] {
+            assert_eq!(
+                format_line(timestamp, format_args!("WARN retrying job {}", "job-1")),
+                format!("{expected} [bigquery-adbc] WARN retrying job job-1\n"),
+            );
+        }
+    }
 
     #[test]
     fn a_panicking_capture_releases_its_registration() {
