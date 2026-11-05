@@ -99,6 +99,41 @@ fn a_job_timeout_is_a_final_timeout_and_a_remote_cancel_stays_cancelled() {
     }
 }
 
+/// `JobClient::retrying` has no cancellation arm of its own: it relies on a cancelled attempt
+/// classifying as final, with the failure as raised.
+#[test]
+fn a_cancelled_attempt_is_final_and_keeps_its_failure() {
+    assert_eq!(
+        retry_class(None, None, Status::Cancelled),
+        RetryClass::Final
+    );
+    let cancelled = crate::error::error("the statement was cancelled", Status::Cancelled);
+    let (class, failure) =
+        super::classify(Err(cancelled), "BigQuery rejected the job").unwrap_err();
+    assert_eq!(class, RetryClass::Final);
+    assert_eq!(failure.status, Status::Cancelled);
+    assert_eq!(failure.message, "the statement was cancelled");
+}
+
+/// Only a 400 or 403 is refined by its reason, so no body can make a 409 retryable. A dry run
+/// depends on this: its 409 is about what the job would write, and repeats on every attempt.
+#[test]
+fn a_conflict_is_final_whatever_its_body_says() {
+    for body in [
+        r#"{"error":{"errors":[{"reason":"duplicate","message":"Already Exists"}]}}"#,
+        r#"{"error":{"errors":[{"reason":"rateLimitExceeded","message":"slow down"}]}}"#,
+        r#"{"error":{"errors":[{"reason":"backendError","message":"later"}]}}"#,
+        r#"{"error":{"message":"no entries"}}"#,
+        "not a Google API error",
+        "",
+    ] {
+        let answer = Ok((reqwest::StatusCode::CONFLICT, bytes::Bytes::from(body)));
+        let (class, failure) = super::classify(answer, "BigQuery rejected the job").unwrap_err();
+        assert_eq!(class, RetryClass::Final, "{body}");
+        assert_eq!(failure.status, Status::AlreadyExists, "{body}");
+    }
+}
+
 /// Pins the documented schedule numbers. Each maximum must be reached within the four retries,
 /// or it bounds nothing, and the total window must stay bounded because the loops have an
 /// attempt count but no deadline.

@@ -425,16 +425,30 @@ impl JobClient {
             };
             return submission.insert().await;
         }
-        if !request.dry_run
-            && let Some(operation) = operation
-        {
-            operation.register_provisional_job(&request.reference)?;
-        }
         let url = self.jobs_url(&request.reference);
         // `send` words transport failures from `send_context`; a rejection is the service's
         // verdict on the job.
         let send_context = format!("submit the BigQuery {job}");
         let error_context = format!("BigQuery rejected the {job}");
+        if request.dry_run {
+            let plan = Retry {
+                attempts: MAX_ATTEMPTS,
+                delays: self.service_delays,
+                existing_job: false,
+                error_context: &error_context,
+                job_id: "none",
+                retrying: "retrying a transient BigQuery dry-run jobs.insert failure",
+                invisible: None,
+            };
+            return self
+                .retrying(operation, plan, &mut || {
+                    Request::post_json(&url, request.body.clone(), &send_context)
+                })
+                .await;
+        }
+        if let Some(operation) = operation {
+            operation.register_provisional_job(&request.reference)?;
+        }
         // A submission that stops with no attempt that may have created the job withdraws its
         // identity rather than confirming it.
         let start = RequestStart::default();
@@ -450,10 +464,10 @@ impl JobClient {
             .await;
             may_exist |= may_have_created(&start, &response);
             let (class, failure) = match response {
-                Ok((reqwest::StatusCode::CONFLICT, body)) if !request.dry_run => {
+                Ok((reqwest::StatusCode::CONFLICT, body)) => {
                     let failure =
                         service_error(&error_context, reqwest::StatusCode::CONFLICT, &body);
-                    confirm_submission(operation, request)?;
+                    confirm_submission(operation, &request.reference)?;
                     return self
                         .reconcile_submission(operation, &request.reference, what, failure)
                         .await;
@@ -462,27 +476,25 @@ impl JobClient {
                     // A cancel that raced job visibility may have received 404; confirming the
                     // identity now that the submission has stopped gives it one more try, and the
                     // operation suppresses a duplicate cancel.
-                    settle_submission(operation, request, may_exist);
+                    settle_submission(operation, &request.reference, may_exist);
                     return Err(failure);
                 }
                 answer => match classify(answer, &error_context) {
                     Ok(body) => {
-                        confirm_submission(operation, request)?;
+                        confirm_submission(operation, &request.reference)?;
                         return Ok(body);
                     }
                     Err(rejected) => rejected,
                 },
             };
-            if class == RetryClass::Final
-                || (attempt == MAX_ATTEMPTS && (request.dry_run || !may_exist))
-            {
+            if class == RetryClass::Final || (attempt == MAX_ATTEMPTS && !may_exist) {
                 if !may_exist {
-                    settle_submission(operation, request, false);
+                    settle_submission(operation, &request.reference, false);
                 }
                 return Err(failure);
             }
             if attempt == MAX_ATTEMPTS {
-                confirm_submission(operation, request)?;
+                confirm_submission(operation, &request.reference)?;
                 return self
                     .reconcile_submission(operation, &request.reference, what, failure)
                     .await;
@@ -500,7 +512,7 @@ impl JobClient {
                 if failure.status == Status::Cancelled {
                     // A POST before this backoff may have been accepted, and a visibility-raced
                     // cancel then gets its one post-confirmation generation.
-                    settle_submission(operation, request, may_exist);
+                    settle_submission(operation, &request.reference, may_exist);
                 }
                 return Err(failure);
             }
@@ -733,8 +745,8 @@ impl JobClient {
     /// One bounded send/[`classify`]/retry loop, each backoff gated by `operation`.
     /// The borrowed request factory shares this async state machine across REST endpoints.
     ///
-    /// The submission loops stay separate from this one and each other, because what each does
-    /// around an attempt is its purpose:
+    /// A dry run creates no job, so it uses this loop. The loops that may create one stay
+    /// separate from it and each other, because what each does around an attempt is its purpose:
     ///
     /// - [`JobClient::insert`] moves the cancellation identity through every outcome, and
     ///   reconciles an exhausted submission that may have created its job.
@@ -840,7 +852,7 @@ struct Retry<'a> {
     existing_job: bool,
     /// How a rejected attempt is reported: "failed to cancel the BigQuery copy job".
     error_context: &'a str,
-    /// The job the loop is about, for the retry trace.
+    /// The job the loop is about, for the retry trace, or `none` for a dry run.
     job_id: &'a str,
     /// The retry trace message.
     retrying: &'static str,
@@ -858,11 +870,9 @@ impl std::fmt::Debug for JobClient {
     }
 }
 
-fn confirm_submission(operation: Option<&Operation>, request: &JobRequest) -> Result<()> {
-    if !request.dry_run
-        && let Some(operation) = operation
-    {
-        operation.register_job(&request.reference)?;
+fn confirm_submission(operation: Option<&Operation>, reference: &JobReference) -> Result<()> {
+    if let Some(operation) = operation {
+        operation.register_job(reference)?;
     }
     Ok(())
 }
@@ -888,15 +898,12 @@ fn may_have_created(
 /// Ends a stopped submission's provisional identity: confirmed when the job may exist, and
 /// otherwise recorded as finished, so neither a cancel's retry nor the operation's end sends a
 /// `jobs.cancel` that could only answer 404.
-fn settle_submission(operation: Option<&Operation>, request: &JobRequest, may_exist: bool) {
-    if request.dry_run {
-        return;
-    }
+fn settle_submission(operation: Option<&Operation>, reference: &JobReference, may_exist: bool) {
     if let Some(operation) = operation {
         let _ = if may_exist {
-            operation.register_job(&request.reference)
+            operation.register_job(reference)
         } else {
-            operation.register_completed_job(&request.reference)
+            operation.register_completed_job(reference)
         };
     }
 }

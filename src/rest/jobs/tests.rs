@@ -1809,6 +1809,44 @@ fn a_dry_run_cancelled_in_flight_sends_no_remote_cancel() {
     assert!(cancels.stop().is_empty());
 }
 
+/// A cancel on the last attempt ends a dry run the same way: nothing is left to look for or cancel.
+#[test]
+fn a_dry_run_cancelled_on_its_last_attempt_sends_nothing_more() {
+    let runtime = new_runtime().unwrap();
+    let (cancel_endpoint, cancels) = capture_requests_until_stopped(vec![(200, json!({}))]);
+    let (cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
+    let handle = OperationCancelHandle(cancellation);
+    let mut attempt = 0;
+    let (endpoint, captured) = capture_requests_responding(MAX_ATTEMPTS, move |_| {
+        attempt += 1;
+        if attempt == MAX_ATTEMPTS {
+            handle.try_cancel().unwrap();
+        }
+        Some((503, error_body("backendError", "later")))
+    });
+
+    let failure = runtime
+        .block_on(JobClient::for_test(&endpoint).insert(
+            Some(&operation),
+            &request("dry", None, true),
+            "dry run",
+        ))
+        .unwrap_err();
+    operation.finish();
+
+    assert_eq!(failure.status, Status::Cancelled);
+    let captured = captured.join().unwrap();
+    assert_eq!(captured.len(), MAX_ATTEMPTS);
+    assert!(
+        captured
+            .iter()
+            .all(|request| request.line.starts_with("POST "))
+    );
+    // A cancel for a registered job is sent in the background as soon as it is registered.
+    thread::sleep(Duration::from_millis(200));
+    assert!(cancels.stop().is_empty());
+}
+
 /// An operation cancelled before its submission sends neither the job nor a cancel for it.
 #[test]
 fn a_submission_under_an_already_cancelled_operation_sends_nothing() {
