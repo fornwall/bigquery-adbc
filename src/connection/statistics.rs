@@ -77,8 +77,7 @@ pub(crate) struct TableStatistic {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum StatisticValue {
     Int64(i64),
-    /// Only the row count of a table with a streaming buffer, which adbc.h types as float64
-    /// because it is approximate.
+    /// An approximate row count, which adbc.h types as float64.
     Float64(f64),
 }
 

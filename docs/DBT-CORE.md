@@ -483,8 +483,9 @@ For `method: oauth-secrets` with a refresh token, both drivers send the requeste
 OAuth refresh field `scope`. Refreshed tokens can use a subset of the original consent grant;
 refresh cannot add consent. This also applies to authorized-user JSON and ADC.
 
-[`scripts/reproduce-up99.rs`](../scripts/reproduce-up99.rs) checks through Google's `tokeninfo`
-endpoint that the pinned SDK's token has exactly the requested `cloud-platform` scope.
+[`scripts/check-oauth-scope-narrowing.rs`](../scripts/check-oauth-scope-narrowing.rs) checks
+through Google's `tokeninfo` endpoint that the pinned SDK's token has exactly the requested
+`cloud-platform` scope.
 
 Sources: [dbt profile scopes](https://github.com/dbt-labs/dbt/blob/301b305e063fc305ff3e46cb9497c1f606e3b2fa/crates/dbt-auth/src/bigquery/mod.rs#L314-L368),
 [fork refresh request](https://github.com/dbt-labs/bigquery-adbc/blob/9499ba31235a85d11045422ab6037b5d26c9113b/go/connection.go#L1638-L1645),

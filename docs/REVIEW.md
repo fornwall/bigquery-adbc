@@ -98,7 +98,8 @@ failure behavior of each ingest mode.
 ## Emulator coverage
 
 The emulator is a local stand-in for BigQuery. Its
-[opt-in runner](../CONTRIBUTING.md#bigquery-emulator) supports the Rust and Python DBAPI suites. The other client integration runners and ignored FFI live tests have not been adapted.
+[opt-in runner](../CONTRIBUTING.md#bigquery-emulator) supports the Rust and Python DBAPI suites.
+The other client integration runners and ignored FFI live tests have not been adapted.
 
 `storage_read_matches_rest_for_every_mapped_type` and
 `storage_read_matches_rest_for_parameterized_decimals` can fail in the concurrent Rust suite if the

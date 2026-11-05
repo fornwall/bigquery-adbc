@@ -228,8 +228,8 @@ string_enum! {
             ["adbc.bigquery.sql.impersonate.scopes"],
             String
         ),
-        /// The service account to impersonate; required as soon as any other impersonation
-        /// option is configured.
+        /// The service account to impersonate; required when delegates or a lifetime are
+        /// configured. Scopes alone do not enable impersonation.
         ImpersonationTargetPrincipal => (
             "bigquery.impersonate.target_principal",
             ["adbc.bigquery.sql.impersonate.target_principal"],

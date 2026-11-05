@@ -1,4 +1,4 @@
-//! Live OAuth endpoint contract behind UP-99; no BigQuery resources are needed.
+//! Live contract for narrowing OAuth scopes on refresh; no BigQuery resources are needed.
 
 use std::collections::BTreeSet;
 use std::time::Duration;

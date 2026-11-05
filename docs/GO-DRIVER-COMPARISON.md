@@ -6,9 +6,9 @@ reference implementation, in Go's default `bigquery.query.job_creation_mode=requ
 cover its opt-in mode). The dbt-labs fork of the Go driver,
 [`dbt-labs/bigquery-adbc`](https://github.com/dbt-labs/bigquery-adbc), which
 [dbt-core 2.0](DBT-CORE.md), dbt Labs' Rust engine, can load, usually behaves like Go; its own
-differences are in [DBT-CORE.md](DBT-CORE.md). "The fork" means this repository, and "driverbase"
-means [`driverbase-go`](https://github.com/adbc-drivers/driverbase-go), the library the Go driver
-builds on.
+differences are in [DBT-CORE.md](DBT-CORE.md). "The fork" means `dbt-labs/bigquery-adbc`, and
+"driverbase" means [`driverbase-go`](https://github.com/adbc-drivers/driverbase-go), the library the
+Go driver builds on.
 
 An option described as refused returns `NOT_IMPLEMENTED` with the reason when set and
 `NOT_FOUND` when read. Entry IDs are stable references used by the other guides.

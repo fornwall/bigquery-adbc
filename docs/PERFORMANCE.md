@@ -490,8 +490,7 @@ dbt `2.0.9` ran the default 13-model, 26-test workload (50,000 base rows, eight 
 datasets) on `example-project` in `US`. The host was Linux x86-64 on an AMD Ryzen 9 7950X3D; this
 driver's release library used the pinned Rust `1.99.1` and locked dependencies. Three rounds
 alternated dbt's opt-in [Foundry driver](DBT-CORE.md#installing) `0.21.0.dev+dbt0.1.5` and this
-driver, before the metadata change
-below:
+driver, before the metadata change below:
 
 | Driver | Median wall | Range | Median jobs/s | Median warehouse span |
 | --- | ---: | ---: | ---: | ---: |

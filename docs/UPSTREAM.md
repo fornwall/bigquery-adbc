@@ -50,14 +50,14 @@ cannot show whether the service is fixed. Unmerged fixes are under
 | UP-86 | Seed and copy job IDs missing from `run_results.json` | `dbt-labs/dbt` | Local finding | None |
 | UP-87 | `adbc_clone` drops autocommit and the backend | ADBC Python driver manager | Local finding | None |
 | UP-88 | A transient token failure is served from cache for 10 s | `google-cloud-auth` | SDK limitation; no workaround | None |
-| UP-89 | Array decimal elements read at the full scale | BigQuery Storage Write | Local finding; driver rescales | None |
-| UP-90 | `ARRAY<TIMESTAMP>` appends fail | BigQuery Storage Write | Local finding; driver refuses up front | None |
+| UP-89 | Array decimal elements read at the full scale | BigQuery Storage Write | Service status unknown; driver rescales | None |
+| UP-90 | `ARRAY<TIMESTAMP>` appends fail | BigQuery Storage Write | Service status unknown; driver refuses up front | None |
 | UP-91 | Removed `persist_docs` policy tags are never cleared | `dbt-labs/dbt` | Local finding; no driver workaround | None |
 | UP-92 | DB-API type objects answer `!=` with `True` | ADBC Python driver manager | Local finding; package wraps them | None |
 | UP-93 | Storage Write appends take no request options | `google-cloud-bigquery` | SDK limitation; no workaround | None |
 | UP-94 | Padded empty HTTP/2 DATA frames end the connection | `h2` | Open; candidate fix unmerged; gzip left off | [#961](https://github.com/hyperium/h2/issues/961), [#972](https://github.com/hyperium/h2/pull/972) |
 | UP-95 | `adbc_ingest` keeps an earlier call's catalog and schema | ADBC Python driver manager | Local finding; documented workaround | None |
-| UP-96 | Arrow appends refuse flexible column names | BigQuery Storage Write | Local finding; driver refuses up front | None |
+| UP-96 | Arrow appends refuse flexible column names | BigQuery Storage Write | Service status unknown; driver refuses up front | None |
 | [UP-100](#up-100-sdk-token-exchanges-follow-redirects) | Token exchanges follow redirects | `google-cloud-auth` | Local finding; no SDK policy option | None |
 
 ## Git snapshot candidates

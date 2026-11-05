@@ -11,7 +11,7 @@ serde_json = "=1.0.154"
 tokio = { version = "=1.54.1", features = ["rt", "time"] }
 ---
 
-//! Run: cargo +nightly -Zscript scripts/reproduce-up99.rs
+//! Run: cargo +nightly -Zscript scripts/check-oauth-scope-narrowing.rs
 //!
 //! Requires authorized-user ADC from `gcloud auth application-default login`, granting
 //! cloud-platform and at least one other scope. Honors GOOGLE_APPLICATION_CREDENTIALS and
@@ -139,7 +139,7 @@ async fn reproduce(adc: Value) -> Result<(), String> {
     if sdk != singular {
         return Err("the SDK token did not have exactly the requested scope subset".into());
     }
-    println!("UP-99 fixed: singular scope and the SDK narrow the token; plural scopes does not.");
+    println!("Singular scope and the SDK narrow the token; plural scopes does not.");
     Ok(())
 }
 

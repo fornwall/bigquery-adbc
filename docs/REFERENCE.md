@@ -66,7 +66,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Credentials default to Application Default Credentials (ADC); run
+[`examples/query.rs`](../examples/query.rs) is the same program, taking the project and query as
+arguments. Credentials default to Application Default Credentials (ADC); run
 `gcloud auth application-default login` once, or see [connection URIs](#connection-uris) and
 [database options](#database-options). `execute()` returns a `RecordBatchReader` whose schema is
 available before the first batch.
