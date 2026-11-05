@@ -11,7 +11,7 @@ use crate::BigQueryStatementOption;
 use crate::cancellation::Cancellation;
 use crate::error::{driver_defect, invalid_argument, invalid_state, wrong_option_type};
 use crate::options::{bytes_value, enum_value, integer_value, string_value};
-use crate::query::{DestinationTable, ExecutionContext, QueryDefaults, StatementQueryOptions};
+use crate::query::{ExecutionContext, QualifiedTableName, QueryDefaults, StatementQueryOptions};
 use crate::statement::OptionOnlyOutcome;
 use crate::statement::sql_text::{has_no_statement, skip_comments};
 use crate::transaction::TransactionState;
@@ -314,12 +314,12 @@ impl DbtStatementState {
                 .table_copy
                 .source
                 .as_ref()
-                .map(DestinationTable::as_option_value),
+                .map(QualifiedTableName::as_option_value),
             BigQueryStatementOption::CopyTableDestination => self
                 .table_copy
                 .destination
                 .as_ref()
-                .map(DestinationTable::as_option_value),
+                .map(QualifiedTableName::as_option_value),
             BigQueryStatementOption::CopyTableWriteDisposition => {
                 Some(self.table_copy.write_disposition.as_str().to_owned())
             }

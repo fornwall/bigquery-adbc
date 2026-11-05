@@ -13,7 +13,7 @@ use crate::rest::metadata::{DatasetId, TableId};
 use crate::rest::model::{JobOptions, QueryParameter};
 use crate::{BigQueryCreateDisposition, BigQueryQueryPriority, BigQueryWriteDisposition};
 
-use super::DestinationTable;
+use super::QualifiedTableName;
 use super::QueryResultMode;
 #[cfg(test)]
 use super::plan::QueryIdentity;
@@ -42,7 +42,7 @@ impl QueryPlan {
             request.locatable_in(
                 self.destination_table
                     .iter()
-                    .map(DestinationTable::dataset_key)
+                    .map(QualifiedTableName::dataset_key)
                     .chain(self.default_dataset.iter().map(QueryDefaultDataset::key)),
             )
         } else {
@@ -183,7 +183,7 @@ impl<'a> QueryJob<'a> {
     fn new(plan: &'a QueryPlan) -> Self {
         Self {
             query: QueryFields::new(plan),
-            destination_table: plan.destination_table.as_ref().map(DestinationTable::id),
+            destination_table: plan.destination_table.as_ref().map(QualifiedTableName::id),
             create_disposition: (plan.create_disposition != BigQueryCreateDisposition::default())
                 .then_some(plan.create_disposition.as_str()),
             write_disposition: (plan.write_disposition != BigQueryWriteDisposition::default())

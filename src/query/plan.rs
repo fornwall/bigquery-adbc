@@ -17,7 +17,7 @@ use crate::rest::jobs::next_identity;
 use crate::rest::metadata::DatasetId;
 use crate::{BigQueryCreateDisposition, BigQueryQueryPriority, BigQueryWriteDisposition};
 
-use super::{DestinationTable, QueryDefaults, StatementQueryOptions};
+use super::{QualifiedTableName, QueryDefaults, StatementQueryOptions};
 
 /// How the plan is submitted to BigQuery, which its [`QueryIdentity`] already decides: a
 /// `jobs.query` request ID or a `jobs.insert` job ID.
@@ -103,7 +103,7 @@ pub(super) struct QueryPlan {
     pub(super) location: Option<Arc<str>>,
     pub(super) session_id: Option<Arc<str>>,
     pub(super) parameters: Option<QueryParameters>,
-    pub(super) destination_table: Option<DestinationTable>,
+    pub(super) destination_table: Option<QualifiedTableName>,
     pub(super) create_disposition: BigQueryCreateDisposition,
     pub(super) write_disposition: BigQueryWriteDisposition,
     pub(super) maximum_bytes_billed: i64,

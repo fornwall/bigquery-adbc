@@ -2,15 +2,15 @@ use adbc_core::error::Status;
 
 use crate::{BigQueryDatabaseOption, BigQueryStatementOption};
 
-use super::DestinationTable;
+use super::QualifiedTableName;
 
 /// Parses `value` as the destination table option.
 fn parse(
     value: &str,
     default_project_id: Option<&crate::identifiers::ProjectIdentifier>,
     default_dataset_id: Option<&str>,
-) -> adbc_core::error::Result<DestinationTable> {
-    DestinationTable::parse_option(
+) -> adbc_core::error::Result<QualifiedTableName> {
+    QualifiedTableName::parse_option(
         BigQueryStatementOption::DestinationTable.as_str(),
         value,
         default_project_id,

@@ -12,7 +12,7 @@ use super::jobs::{
 };
 use crate::cancellation::Operation;
 use crate::error::job_name;
-use crate::query::{DestinationTable, ExecutionContext, StatementQueryOptions};
+use crate::query::{ExecutionContext, QualifiedTableName, StatementQueryOptions};
 use crate::rest::client::RestClient;
 use crate::rest::jobs::{JobClient, JobReference, JobRequest};
 use crate::rest::metadata::TableId;
@@ -27,7 +27,7 @@ const WHAT: &str = "CSV load";
 pub(crate) fn execute_csv_load(
     execution: &ExecutionContext,
     options: &StatementQueryOptions,
-    destination: &DestinationTable,
+    destination: &QualifiedTableName,
     operation: &Operation,
     csv: CsvSeedFile,
     schema: &TableSchema,
@@ -135,7 +135,7 @@ async fn submit_csv_load(
 
 fn build_load_request(
     options: &StatementQueryOptions,
-    destination: &DestinationTable,
+    destination: &QualifiedTableName,
     schema: &TableSchema,
     delimiter: &str,
     reference: JobReference,

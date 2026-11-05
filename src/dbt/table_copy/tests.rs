@@ -11,7 +11,7 @@ use crate::cancellation::{Cancellation, Operation};
 use crate::clients::ClientState;
 use crate::config::ServiceEndpointKind;
 use crate::dbt::jobs::{decode_job, validate_completed, wait_for_submitted};
-use crate::query::{DestinationTable, StatementQueryOptions};
+use crate::query::{QualifiedTableName, StatementQueryOptions};
 use crate::rest::jobs::{JobClient, JobReference};
 use crate::runtime::{SharedRuntime, new_runtime};
 use crate::test_support::driver::{test_connection_at, test_statement, test_statement_at};
@@ -20,8 +20,8 @@ use crate::test_support::http::{CapturedRequest, capture_requests, capture_reque
 use crate::test_support::options::{assert_string_option, option_string, set_option};
 use crate::{BigQueryCreateDisposition, BigQueryStatementOption, BigQueryWriteDisposition};
 
-fn table(value: &str) -> DestinationTable {
-    DestinationTable::parse_option(
+fn table(value: &str) -> QualifiedTableName {
+    QualifiedTableName::parse_option(
         BigQueryStatementOption::CopyTableSource.as_str(),
         value,
         None,

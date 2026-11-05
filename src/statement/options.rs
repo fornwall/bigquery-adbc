@@ -22,7 +22,7 @@ use crate::options::{
     integer_value, json_object_value, string_value,
 };
 use crate::parameters::ParameterMode;
-use crate::query::DestinationTable;
+use crate::query::QualifiedTableName;
 
 use super::BigQueryStatement;
 use super::operations::StatementMode;
@@ -337,7 +337,7 @@ impl BigQueryStatement {
                     .query_options
                     .destination_table
                     .as_ref()
-                    .map(DestinationTable::as_option_value));
+                    .map(QualifiedTableName::as_option_value));
             }
             // The defaults a query resolves names against, the connection's included.
             BigQueryStatementOption::DefaultProjectId => {

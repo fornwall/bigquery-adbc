@@ -42,7 +42,7 @@ use plan::QueryJobCreation;
 use reader::reader_from_rest_query;
 
 pub(crate) use context::{ExecutionContext, QueryContext, StatementQueryContext};
-pub(crate) use options::{DestinationTable, QueryDefaults, StatementQueryOptions};
+pub(crate) use options::{QualifiedTableName, QueryDefaults, StatementQueryOptions};
 pub(crate) use progress::ExecutionProgress;
 pub(crate) use rest_buffer::empty_reader;
 

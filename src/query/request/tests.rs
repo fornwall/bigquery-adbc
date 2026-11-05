@@ -7,7 +7,7 @@ use crate::rest::model::{QueryParameter, QueryParameterType, QueryParameterValue
 use crate::{BigQueryCreateDisposition, BigQueryQueryPriority, BigQueryWriteDisposition};
 
 use super::super::plan::{QueryIdentity, QueryJobCreation, QueryPlan, QueryRoute};
-use crate::query::{DestinationTable, QueryDefaults, StatementQueryOptions};
+use crate::query::{QualifiedTableName, QueryDefaults, StatementQueryOptions};
 use crate::test_support::errors::assert_message_omits;
 use crate::test_support::http::job_reference;
 use crate::test_support::identifiers::project;
@@ -183,7 +183,7 @@ fn jobs_query_preserves_every_shared_option_and_required_job_mode() {
 
 #[test]
 fn every_job_only_option_selects_jobs_insert_but_required_job_mode_does_not() {
-    let destination = DestinationTable::parse_option(
+    let destination = QualifiedTableName::parse_option(
         crate::BigQueryStatementOption::DestinationTable.as_str(),
         "destination-project.destination_dataset.destination_table",
         None,
@@ -238,7 +238,7 @@ fn every_job_only_option_selects_jobs_insert_but_required_job_mode_does_not() {
 fn jobs_insert_is_the_exact_compact_job_envelope() {
     let options = StatementQueryOptions {
         destination_table: Some(
-            DestinationTable::parse_option(
+            QualifiedTableName::parse_option(
                 crate::BigQueryStatementOption::DestinationTable.as_str(),
                 "destination-project.destination_dataset.destination_table",
                 None,

@@ -13,7 +13,7 @@ use crate::BigQueryStatementOption;
 use crate::cancellation::Operation;
 use crate::error::{error, option_value_json};
 use crate::options::json_object_value;
-use crate::query::{DestinationTable, ExecutionContext};
+use crate::query::{ExecutionContext, QualifiedTableName};
 use crate::rest::metadata::{MetadataClient, TableId, TableView};
 use crate::rest::model::{PolicyTagList, TableFieldSchema, TableSchema};
 use crate::types::{BigQueryType, folded_name};
@@ -103,7 +103,7 @@ impl TableMutationOptions {
     pub(crate) fn execute(
         &self,
         context: &ExecutionContext,
-        destination: &DestinationTable,
+        destination: &QualifiedTableName,
         operation: &Operation,
     ) -> Result<()> {
         let client = context.state.metadata_client(&context.runtime)?;

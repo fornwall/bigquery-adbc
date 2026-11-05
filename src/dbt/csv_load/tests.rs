@@ -12,7 +12,7 @@ use crate::cancellation::{Cancellation, OperationCancelHandle};
 use crate::clients::ClientState;
 use crate::config::ServiceEndpointKind;
 use crate::dbt::jobs::{LoadOrCopyJob, decode_job, validate_completed};
-use crate::query::{DestinationTable, StatementQueryOptions};
+use crate::query::{QualifiedTableName, StatementQueryOptions};
 use crate::rest::client::rest_client;
 use crate::rest::jobs::{JobClient, JobReference};
 use crate::rest::model::{TableFieldSchema, TableSchema};
@@ -22,8 +22,8 @@ use crate::test_support::errors::assert_message;
 use crate::test_support::http::{capture_requests, capture_requests_gated};
 use crate::{BigQueryCreateDisposition, BigQueryWriteDisposition};
 
-fn destination() -> DestinationTable {
-    DestinationTable::parse_option(
+fn destination() -> QualifiedTableName {
+    QualifiedTableName::parse_option(
         crate::BigQueryStatementOption::DestinationTable.as_str(),
         "example-project.sq_scratch.seed",
         None,

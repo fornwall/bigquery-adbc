@@ -14,7 +14,7 @@ use crate::diag::diag;
 use crate::error::{invalid_argument, option_value_json};
 use crate::identifiers::ProjectIdentifier;
 use crate::identifiers::validate_dataset_id;
-use crate::query::{DestinationTable, ExecutionContext};
+use crate::query::{ExecutionContext, QualifiedTableName};
 use crate::rest::json::{encode_failure, encode_json};
 use crate::rest::metadata::{DatasetId, MetadataClient, TableId};
 use crate::rest::model::TableReference;
@@ -25,7 +25,7 @@ use crate::rest::retry::retryable_failure;
 /// Both levels are sorted and deduplicated, so requests and read-back are deterministic and a
 /// repeated entry is sent once. Sorted vectors rather than B-trees: a payload holds a handful of
 /// entries, and the B-tree insert and drop code costs kilobytes of binary.
-pub(crate) type ViewAuthorizations = Vec<(DestinationTable, Vec<SourceDataset>)>;
+pub(crate) type ViewAuthorizations = Vec<(QualifiedTableName, Vec<SourceDataset>)>;
 
 /// A dataset whose tables an authorized view is granted read access to.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -108,7 +108,7 @@ const MAX_GRANT_ROUNDS: u32 = 3;
 async fn authorize(
     client: &MetadataClient,
     operation: &Operation,
-    view: &DestinationTable,
+    view: &QualifiedTableName,
     dataset: DatasetId<'_>,
 ) -> Result<()> {
     let view_name = view.as_option_value();
@@ -216,7 +216,7 @@ pub(crate) fn parse_view_authorizations(
     };
     let mut views = ViewAuthorizations::new();
     for (view_name, datasets) in object {
-        let view = DestinationTable::parse_option(
+        let view = QualifiedTableName::parse_option(
             BigQueryStatementOption::AuthorizeViewToDatasets.as_str(),
             &view_name,
             default_project_id,

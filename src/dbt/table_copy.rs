@@ -13,7 +13,7 @@ use super::jobs::{
 use super::missing_option;
 use crate::cancellation::Operation;
 use crate::error::not_implemented;
-use crate::query::{DestinationTable, ExecutionContext, StatementQueryOptions};
+use crate::query::{ExecutionContext, QualifiedTableName, StatementQueryOptions};
 use crate::rest::jobs::{JobReference, JobRequest};
 use crate::rest::metadata::TableId;
 use crate::{BigQueryStatementOption, BigQueryWriteDisposition};
@@ -21,8 +21,8 @@ use crate::{BigQueryStatementOption, BigQueryWriteDisposition};
 /// A table copy configured on an ADBC statement by dbt-core 2.0.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TableCopyOptions {
-    pub(crate) source: Option<DestinationTable>,
-    pub(crate) destination: Option<DestinationTable>,
+    pub(crate) source: Option<QualifiedTableName>,
+    pub(crate) destination: Option<QualifiedTableName>,
     /// Defaults to `WRITE_EMPTY`, independently of the SQL query's write disposition.
     pub(crate) write_disposition: BigQueryWriteDisposition,
 }
@@ -79,8 +79,8 @@ impl TableCopyOptions {
     fn build_job(
         &self,
         options: &StatementQueryOptions,
-        source: &DestinationTable,
-        destination: &DestinationTable,
+        source: &QualifiedTableName,
+        destination: &QualifiedTableName,
         reference: JobReference,
     ) -> Result<JobRequest> {
         let configuration = JobConfiguration::new(

@@ -12,7 +12,7 @@ use super::table_copy::CopyConfiguration;
 use crate::BigQueryDatabaseOption;
 use crate::cancellation::Operation;
 use crate::error::{append_remedy, error, job_error, job_name};
-use crate::query::{DestinationTable, ExecutionContext, StatementQueryOptions};
+use crate::query::{ExecutionContext, QualifiedTableName, StatementQueryOptions};
 use crate::rest::jobs::{JobClient, JobReference, next_identity};
 use crate::rest::json::decode_json;
 use crate::rest::metadata::DatasetId;
@@ -27,7 +27,7 @@ use crate::rest::model::{JobOptions, JobStatus};
 pub(super) fn in_job_location<T>(
     context: &ExecutionContext,
     operation: &Operation,
-    destination: &DestinationTable,
+    destination: &QualifiedTableName,
     kind: &str,
     what: &str,
     submit: impl FnOnce(JobReference) -> Result<T>,
@@ -53,7 +53,7 @@ pub(super) fn in_job_location<T>(
 fn dataset_location(
     context: &ExecutionContext,
     operation: &Operation,
-    destination: &DestinationTable,
+    destination: &QualifiedTableName,
     what: &str,
 ) -> Result<Arc<str>> {
     let dataset = DatasetId {

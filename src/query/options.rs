@@ -1,4 +1,4 @@
-//! Query defaults, statement options and destination-table references.
+//! Query defaults, statement options and qualified table names.
 
 use std::sync::Arc;
 
@@ -19,11 +19,11 @@ pub(crate) struct QueryDefaults<'a> {
 
 impl QueryDefaults<'_> {
     /// Resolves a table option against these defaults; an empty value clears it.
-    pub(crate) fn table_option(self, key: &str, value: &str) -> Result<Option<DestinationTable>> {
+    pub(crate) fn table_option(self, key: &str, value: &str) -> Result<Option<QualifiedTableName>> {
         if value.is_empty() {
             return Ok(None);
         }
-        DestinationTable::parse_option(key, value, self.catalog, self.db_schema).map(Some)
+        QualifiedTableName::parse_option(key, value, self.catalog, self.db_schema).map(Some)
     }
 }
 
@@ -32,7 +32,7 @@ impl QueryDefaults<'_> {
 pub(crate) struct StatementQueryOptions {
     pub(crate) default_project_id: Option<ProjectIdentifier>,
     pub(crate) default_dataset_id: Option<Arc<str>>,
-    pub(crate) destination_table: Option<DestinationTable>,
+    pub(crate) destination_table: Option<QualifiedTableName>,
     /// Effective creation behavior, omitted from query requests at its default so it does not
     /// select the `jobs.insert` path.
     pub(crate) create_disposition: BigQueryCreateDisposition,
@@ -50,16 +50,17 @@ pub(crate) struct StatementQueryOptions {
     pub(crate) dry_run: bool,
 }
 
-/// A fully qualified table an option names: usually a destination, but also a table copy's source
-/// or an authorized view. Ordering makes authorized-view option output deterministic.
+/// A validated `project.dataset.table` name set through an option: a destination, a table copy's
+/// source, or an authorized view. [`Self::id`] borrows it as the [`TableId`] a request carries.
+/// Ordering makes authorized-view option output deterministic.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct DestinationTable {
+pub(crate) struct QualifiedTableName {
     project_id: ProjectIdentifier,
     dataset_id: Arc<str>,
     table_id: Arc<str>,
 }
 
-impl DestinationTable {
+impl QualifiedTableName {
     /// Parses a `[[project.]dataset.]table` reference set through `key`. Errors name `key`, so a
     /// copy endpoint is never reported as a bad destination table.
     ///
@@ -81,7 +82,7 @@ impl DestinationTable {
             || dataset_id.is_some_and(str::is_empty)
             || project_id.is_some_and(str::is_empty)
         {
-            return Err(invalid_destination_table(key));
+            return Err(invalid_table_reference(key));
         }
 
         let project_id = match project_id {
@@ -90,7 +91,7 @@ impl DestinationTable {
             }
             None => default_project_id
                 .cloned()
-                .ok_or_else(|| missing_destination_default(key, MissingDefault::Project))?,
+                .ok_or_else(|| missing_table_default(key, MissingDefault::Project))?,
         };
         let dataset_id = match dataset_id {
             Some(dataset_id) => {
@@ -101,7 +102,7 @@ impl DestinationTable {
                 dataset_id
             }
             None => default_dataset_id
-                .ok_or_else(|| missing_destination_default(key, MissingDefault::Dataset))?,
+                .ok_or_else(|| missing_table_default(key, MissingDefault::Dataset))?,
         };
         validate_table_id(&format!("the table ID in BigQuery option {key}"), table_id)?;
         Ok(Self {
@@ -146,7 +147,7 @@ enum MissingDefault {
     Dataset,
 }
 
-fn missing_destination_default(key: &str, missing: MissingDefault) -> adbc_core::error::Error {
+fn missing_table_default(key: &str, missing: MissingDefault) -> adbc_core::error::Error {
     let (name, form, statement_option, database_option) = match missing {
         MissingDefault::Project => (
             "project",
@@ -169,7 +170,7 @@ fn missing_destination_default(key: &str, missing: MissingDefault) -> adbc_core:
     ))
 }
 
-fn invalid_destination_table(key: &str) -> adbc_core::error::Error {
+fn invalid_table_reference(key: &str) -> adbc_core::error::Error {
     invalid_argument(format!(
         "BigQuery option {key} is not a table reference; expected table, dataset.table, or project.dataset.table"
     ))

@@ -318,7 +318,7 @@ fn a_lost_destination_insert_without_location_is_found_in_the_destination_datase
     let plan = plan_at(
         StatementQueryOptions {
             destination_table: Some(
-                crate::query::DestinationTable::parse_option(
+                crate::query::QualifiedTableName::parse_option(
                     BigQueryStatementOption::DestinationTable.as_str(),
                     "project.dataset.destination",
                     None,
@@ -441,7 +441,7 @@ fn non_dry_insert_requires_and_uses_the_exact_caller_job_id() {
 fn destination_insert_requests_no_rows_and_drops_an_unexpected_page() {
     let plan = plan(StatementQueryOptions {
         destination_table: Some(
-            crate::query::DestinationTable::parse_option(
+            crate::query::QualifiedTableName::parse_option(
                 BigQueryStatementOption::DestinationTable.as_str(),
                 "project.dataset.destination",
                 None,
