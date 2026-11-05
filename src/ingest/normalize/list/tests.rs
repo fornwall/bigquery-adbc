@@ -105,3 +105,38 @@ fn rejects_canonical_list_offset_overflow() {
         assert_eq!(error.status, Status::InvalidData);
     }
 }
+
+#[test]
+fn rewriting_null_list_windows_rebases_only_the_addressed_values() {
+    use arrow_array::cast::AsArray;
+    use arrow_buffer::{NullBuffer, OffsetBuffer};
+    use arrow_schema::{DataType, Field};
+
+    let item = Arc::new(Field::new("item", DataType::Int64, false));
+    let list = ListArray::new(
+        item.clone(),
+        OffsetBuffer::new(vec![0, 2, 2, 4, 5].into()),
+        Arc::new(Int64Array::from(vec![10, 11, 12, 13, 14])),
+        Some(NullBuffer::from(vec![true, false, true, true])),
+    );
+    for (start, expected_offsets, expected_values) in [
+        (0, vec![0, 2, 2], vec![10, 11]),
+        (1, vec![0, 0, 2], vec![12, 13]),
+    ] {
+        let column: ArrayRef = Arc::new(list.slice(start, 2));
+        let normalized = super::normalize_list_column(
+            &column,
+            column.as_list::<i32>(),
+            &item,
+            &super::ValueSite::column("values", 0),
+        )
+        .unwrap();
+        let normalized = normalized.as_list::<i32>();
+        assert_eq!(normalized.null_count(), 0);
+        assert_eq!(normalized.value_offsets(), expected_offsets);
+        assert_eq!(
+            normalized.values().as_primitive::<Int64Type>().values(),
+            expected_values.as_slice()
+        );
+    }
+}

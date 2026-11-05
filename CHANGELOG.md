@@ -14,6 +14,9 @@ changes.
 
 ### Changed
 
+- Storage Write validation reuses sliced list offsets unless the list needs normalization,
+  avoiding offset-buffer copies for canonical arrays.
+
 - Diagnostics lines start with a UTC timestamp and are tagged `[bigquery-adbc]`.
 - An empty `ADBC_DRIVER_BIGQUERY_LOG_LEVEL` disables diagnostics.
 

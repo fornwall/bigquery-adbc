@@ -39,10 +39,14 @@ pub(super) fn normalize_list_column(
             |index| offset_value_range(array, array.value_offsets(), index, field_name),
         );
     }
-    let (offsets, child) = list_value_window(array, field_name)?;
+    let (start, child) = list_value_window(array, field_name)?;
     // The child holds every entry's values end to end, so a rejection below this point is
     // located by the offsets that address them rather than by an index into the child.
-    let values = normalize_column(&child, item, &site.list_elements(offsets.as_ref()))?;
+    let values = normalize_column(
+        &child,
+        item,
+        &site.list_elements(array.value_offsets(), start),
+    )?;
     // NULL lists become empty arrays. Reuse unchanged lists, but compare the item field too:
     // normalization may attach decimal metadata without changing its physical values.
     let normalized = if array.null_count() == 0
@@ -51,6 +55,20 @@ pub(super) fn normalize_list_column(
     {
         column.clone()
     } else {
+        // Validation preserves the original offsets. Only a changed child or list needs offsets
+        // rebased onto the child window, so unchanged request windows allocate no offset copy.
+        let offsets = if start == 0 {
+            array.offsets().clone()
+        } else {
+            let first = array.offsets().first();
+            OffsetBuffer::new(ScalarBuffer::from(
+                array
+                    .value_offsets()
+                    .iter()
+                    .map(|offset| offset - first)
+                    .collect::<Vec<i32>>(),
+            ))
+        };
         Arc::new(
             ListArray::try_new(item.clone(), offsets, values, None).map_err(|source| {
                 error(
@@ -77,30 +95,21 @@ fn nulls_hide_values(array: &ListArray) -> bool {
         .any(|(index, (start, end))| array.is_null(index) && start != end)
 }
 
-/// The slice of a list's child array that its offsets actually address, together with those
-/// offsets rebased onto it.
+/// The slice of a list's child array that its offsets actually address, and its starting index.
 ///
 /// Arrow slices a `ListArray` by slicing only its offset and null buffers; `values()` still
 /// returns the whole child. Checks and rebuilds must see only the window, or a NULL element or
 /// out-of-calendar date outside this batch would be reported against it. An unsliced list keeps
 /// both buffers, so the common case copies nothing.
-fn list_value_window(array: &ListArray, field_name: &str) -> Result<(OffsetBuffer<i32>, ArrayRef)> {
+fn list_value_window(array: &ListArray, field_name: &str) -> Result<(usize, ArrayRef)> {
     let offsets = array.value_offsets();
     let first = offsets.first().copied().unwrap_or(0);
     let start = usize_list_offset(first, field_name)?;
     let end = usize_list_offset(offsets.last().copied().unwrap_or(0), field_name)?;
     if start == 0 && end == array.values().len() {
-        return Ok((array.offsets().clone(), array.values().clone()));
+        return Ok((start, array.values().clone()));
     }
-    Ok((
-        OffsetBuffer::new(ScalarBuffer::from(
-            offsets
-                .iter()
-                .map(|offset| offset - first)
-                .collect::<Vec<i32>>(),
-        )),
-        array.values().slice(start, end - start),
-    ))
+    Ok((start, array.values().slice(start, end - start)))
 }
 
 /// BigQuery arrays hold no NULL elements, so a normalized list's child values must carry none.
@@ -123,7 +132,7 @@ fn reject_null_list_elements(column: &ArrayRef, site: &ValueSite<'_>) -> Result<
     let Some(element) = (start..end).find(|&index| values.is_null(index)) else {
         return Ok(());
     };
-    let row = site.list_elements(offsets).row(element);
+    let row = site.list_elements(offsets, 0).row(element);
     Err(error(
         format!(
             "BigQuery ingest list field {field_name:?} contains a NULL array element at row \
@@ -244,7 +253,7 @@ where
     } else {
         // The gathered child no longer addresses anything the caller handed over, so only the
         // offsets built alongside it can put an element back on its batch row.
-        normalize_column(&values, item, &site.list_elements(&normalized_offsets))?
+        normalize_column(&values, item, &site.list_elements(&normalized_offsets, 0))?
     };
 
     let normalized = ListArray::try_new(

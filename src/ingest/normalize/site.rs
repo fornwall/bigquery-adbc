@@ -17,6 +17,7 @@ pub(super) struct ValueSite<'a> {
 #[derive(Clone, Copy)]
 struct ListEntries<'a> {
     offsets: &'a [i32],
+    first_element: usize,
     list: &'a ValueSite<'a>,
 }
 
@@ -30,17 +31,18 @@ impl<'a> ValueSite<'a> {
         }
     }
 
-    /// The elements of this list, addressed by `offsets`, which must index the same child array
-    /// as the reported element indexes: the caller's child, a sliced list's window, or a gathered
-    /// child.
+    /// The elements of this list, addressed by `offsets`. Reported element indexes start at
+    /// `first_element` in that child: zero for the full or gathered child, or the start of its
+    /// validation window. Keeping that origin avoids rebasing offsets just to locate failures.
     ///
     /// The elements keep the list's own name, because `"item"` names nothing a caller bound.
-    pub(super) fn list_elements(&'a self, offsets: &'a [i32]) -> Self {
+    pub(super) fn list_elements(&'a self, offsets: &'a [i32], first_element: usize) -> Self {
         Self {
             name: self.name,
             first_row: self.first_row,
             elements_of: Some(ListEntries {
                 offsets,
+                first_element,
                 list: self,
             }),
         }
@@ -61,12 +63,17 @@ impl<'a> ValueSite<'a> {
     /// A binary search finds the last offset not past `index`. Empty entries repeat an offset, and
     /// the search steps over them to the entry that holds the element.
     pub(super) fn row(&self, index: usize) -> usize {
-        let Some(ListEntries { offsets, list }) = self.elements_of else {
+        let Some(ListEntries {
+            offsets,
+            first_element,
+            list,
+        }) = self.elements_of
+        else {
             return self.first_row + index;
         };
         // Offsets are `i32` and an index is a `usize`; both fit `i64`, so the comparison needs no
         // fallible conversion. A `usize` past `i64::MAX` cannot index any array Arrow built.
-        let index = i64::try_from(index).unwrap_or(i64::MAX);
+        let index = i64::try_from(first_element.saturating_add(index)).unwrap_or(i64::MAX);
         let entry = offsets
             .partition_point(|&offset| i64::from(offset) <= index)
             .saturating_sub(1);

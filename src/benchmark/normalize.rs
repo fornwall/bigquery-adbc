@@ -26,6 +26,8 @@ pub enum NormalizeKind {
     LargeOffsets,
     /// Sliced lists hide child values behind null entries and require gathering.
     ListGather,
+    /// Sliced canonical lists validate only their addressed DATE or TIMESTAMP values.
+    ListWindow,
     /// Dictionary keys contain ascending runs separated by null runs.
     DictionaryRuns,
     /// Scattered dictionary keys with four nulls per 32 rows.
@@ -69,6 +71,7 @@ impl NormalizeFixture {
                 NormalizeKind::Coercing => coercing_normalize_column(index, row_count),
                 NormalizeKind::LargeOffsets => large_offset_normalize_column(index, row_count),
                 NormalizeKind::ListGather => list_gather_normalize_column(index, row_count),
+                NormalizeKind::ListWindow => list_window_normalize_column(index, row_count),
                 NormalizeKind::DictionaryRuns
                 | NormalizeKind::DictionaryScattered
                 | NormalizeKind::DictionaryAlternating => {
@@ -235,6 +238,20 @@ fn calendar_normalize_column(index: usize, row_count: usize) -> (ArrayRef, Field
     };
     let field = Field::new(format!("column_{index}"), column.data_type().clone(), false);
     (column, field)
+}
+
+fn list_window_normalize_column(index: usize, row_count: usize) -> (ArrayRef, Field) {
+    let (values, _) = calendar_normalize_column(index, (row_count + 2) * 2);
+    let item = Arc::new(Field::new("item", values.data_type().clone(), false));
+    let list = ListArray::new(
+        item,
+        OffsetBuffer::from_lengths(std::iter::repeat_n(2, row_count + 2)),
+        values,
+        None,
+    )
+    .slice(1, row_count);
+    let field = Field::new(format!("column_{index}"), list.data_type().clone(), false);
+    (Arc::new(list), field)
 }
 
 fn canonical_normalize_column(index: usize, row_count: usize) -> (ArrayRef, Field) {

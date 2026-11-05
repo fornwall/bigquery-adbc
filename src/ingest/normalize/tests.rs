@@ -445,8 +445,9 @@ fn a_sliced_list_is_judged_only_by_the_values_its_offsets_address() {
         None,
     );
     let sliced = Arc::new(list.slice(1, 1)) as ArrayRef;
-    let (batch, schema) = single_column_batch("days", sliced);
-    normalize_batch(batch, schema).unwrap();
+    let (batch, schema) = single_column_batch("days", sliced.clone());
+    let normalized = normalize_batch(batch, schema).unwrap();
+    assert!(Arc::ptr_eq(normalized.column(0), &sliced));
 
     // A NULL element inside the window is still rejected, at its slice-relative row.
     let list = ListArray::from_iter_primitive::<Int64Type, _, _>(vec![
@@ -462,6 +463,40 @@ fn a_sliced_list_is_judged_only_by_the_values_its_offsets_address() {
         error.message,
         "BigQuery ingest list field \"values\" contains a NULL array element at row 1; a \
          BigQuery array cannot contain NULL"
+    );
+}
+
+#[test]
+fn nested_sliced_list_validation_preserves_batch_row_locations() {
+    use arrow_buffer::OffsetBuffer;
+
+    // Empty entries repeat offsets at both levels. Only the final date is invalid within the
+    // selected outer window; the earlier invalid date belongs to a different batch window.
+    let dates: ArrayRef = Arc::new(Date32Array::from(vec![3_000_000, 0, 3_000_000]));
+    let inner: ArrayRef = Arc::new(ListArray::new(
+        Arc::new(ArrowField::new("item", ArrowDataType::Date32, false)),
+        OffsetBuffer::new(vec![0, 1, 1, 2, 3].into()),
+        dates,
+        None,
+    ));
+    let records: ArrayRef = Arc::new(StructArray::new(
+        vec![ArrowField::new("days", inner.data_type().clone(), false)].into(),
+        vec![inner],
+        None,
+    ));
+    let outer = ListArray::new(
+        Arc::new(ArrowField::new("item", records.data_type().clone(), false)),
+        OffsetBuffer::new(vec![0, 1, 1, 3, 4].into()),
+        records,
+        None,
+    );
+    let (batch, schema) = single_column_batch("records", Arc::new(outer.slice(1, 3)));
+    let error = super::normalize_rows(batch, schema, 100).unwrap_err();
+    assert_eq!(error.status, Status::InvalidData);
+    assert_eq!(
+        error.message,
+        "Arrow date ingest field \"days\" contains an out-of-range value at row 102; \
+         BigQuery supports years 1 to 9999"
     );
 }
 

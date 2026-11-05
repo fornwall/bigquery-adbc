@@ -40,7 +40,8 @@ preparation, network I/O and server time are outside every measured region.
   to a single CPU when measuring scheduling costs.
 - `normalize` runs 2-column (`narrow`) and 16-column (`wide`) batches at 1 and 1,024 rows:
   `canonical` (value validation only), `calendar` (Date32 and TimestampMicrosecond), `nested` (the
-  calendar columns under three struct levels), `coercing` (Int32 to Int64, LargeUtf8 to Utf8) and
+  calendar columns under three struct levels), `list-window` (sliced DATE/TIMESTAMP lists, also
+  at 65,536 rows), `coercing` (Int32 to Int64, LargeUtf8 to Utf8) and
   `list-gather` (sliced lists with values hidden behind NULL entries). `large-offsets` narrows
   sliced LargeUtf8 and LargeBinary arrays containing NULL, empty, ASCII and non-ASCII values,
   including an additional 65,536-row case. Dictionary fixtures cover ascending and scattered
@@ -454,6 +455,34 @@ independently of the chunk encoder's existing request limits.
 
 Large sliced BYTES/LIST coverage is checked against the independent `arrow-ipc` reader, including
 null and empty entries and slice lengths around loop tails.
+
+### Validating sliced list windows
+
+Canonical sliced lists validate only the child values their offsets address. Validation keeps the
+original offsets and translates error locations by the child window's origin; offsets are copied
+and rebased only when normalization must rebuild the list. Nested lists and NULL-list rewrites
+retain their row locations and values.
+
+One paired run of `normalize`, pinned to CPU 3 with Rust 1.99.1 on a Ryzen 9 7950X3D, measured
+these `list-window` cases. Each time is the harness median of seven samples; other builds were
+running, so timings are indicative. Allocations are requested bytes, not peak RSS.
+
+| Columns / rows | Before, ns | After, ns | Allocation calls before → after | Requested bytes before → after |
+| --- | ---: | ---: | ---: | ---: |
+| 2 / 1,024 | 2,168 | 886 | 6 → 2 | 8,536 → 224 |
+| 16 / 1,024 | 17,065 | 6,909 | 48 → 16 | 68,288 → 1,792 |
+| 2 / 65,536 | 133,329 | 47,117 | 6 → 2 | 524,632 → 224 |
+| 16 / 65,536 | 1,001,822 | 370,984 | 48 → 16 | 4,197,056 → 1,792 |
+
+The wide 65,536-row fixture avoids 4,195,264 requested bytes per normalization. The remaining
+allocations describe child slices; this measures validation, excluding IPC, transport and BigQuery.
+
+```sh
+cargo bench --locked --features benchmark --bench normalize --no-run --message-format=json
+# Run the reported executable, then compare its list-window rows with the preceding version.
+taskset -c 3 <normalize-executable>
+cargo test --locked --lib ingest::normalize::
+```
 
 ### Offset validation for sliced Storage Write batches
 

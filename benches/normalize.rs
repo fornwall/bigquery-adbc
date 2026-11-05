@@ -16,6 +16,7 @@ fn main() {
             ("coercing", NormalizeKind::Coercing),
             ("large-offsets", NormalizeKind::LargeOffsets),
             ("list-gather", NormalizeKind::ListGather),
+            ("list-window", NormalizeKind::ListWindow),
             ("decimal-precision", NormalizeKind::DecimalPrecision),
             ("decimal-scale", NormalizeKind::DecimalScale),
             ("dictionary-runs", NormalizeKind::DictionaryRuns),
@@ -29,6 +30,7 @@ fn main() {
                 && !matches!(
                     kind,
                     NormalizeKind::LargeOffsets
+                        | NormalizeKind::ListWindow
                         | NormalizeKind::DecimalPrecision
                         | NormalizeKind::DecimalScale
                         | NormalizeKind::DictionaryRuns
