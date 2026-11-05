@@ -1,7 +1,9 @@
 # Performance
 
-Microbenchmarks measure REST-to-Arrow decoding, ingest normalization, and Storage API IPC encoding
-and decoding. A separate live dbt benchmark measures complete `dbt build` runs. Binary size is in
+Measurements of the driver's hot paths and how to reproduce them, for contributors changing those
+paths and evaluators comparing drivers. Microbenchmarks measure REST-to-Arrow decoding, ingest
+normalization, and Storage API IPC encoding and decoding. A separate live benchmark measures
+complete `dbt build` runs of [dbt-core 2.0](DBT-CORE.md). Binary size is in
 [BINARY-SIZE.md](BINARY-SIZE.md).
 
 The live-test project ID is anonymized as `example-project` here and in the saved measurement
@@ -487,7 +489,8 @@ sliced output.
 dbt `2.0.9` ran the default 13-model, 26-test workload (50,000 base rows, eight threads, fresh
 datasets) on `example-project` in `US`. The host was Linux x86-64 on an AMD Ryzen 9 7950X3D; this
 driver's release library used the pinned Rust `1.99.1` and locked dependencies. Three rounds
-alternated dbt's opt-in Foundry `0.21.0.dev+dbt0.1.5` and this driver, before the metadata change
+alternated dbt's opt-in [Foundry driver](DBT-CORE.md#installing) `0.21.0.dev+dbt0.1.5` and this
+driver, before the metadata change
 below:
 
 | Driver | Median wall | Range | Median jobs/s | Median warehouse span |
@@ -585,8 +588,8 @@ cargo test --locked --all-features disabling_wildcards_keeps_unfiltered_dataset_
 
 [Upstream dbt commit `7f6844449`](https://github.com/dbt-labs/dbt/commit/7f6844449b13b920dc9ea4da49806d1d835f718b)
 enables literal filters best-effort in `crates/dbt-adapter/src/engine/adbc.rs` on upstream `main`;
-the `2.0.9` binary lacks it. This driver accepts the option. The canonical
-`0.21.0.dev+dbt0.21.19` and opt-in Foundry `0.21.0.dev+dbt0.1.5` libraries return
+the `2.0.9` binary lacks it. This driver accepts the option. The
+[canonical](DBT-CORE.md#installing) `0.21.0.dev+dbt0.21.19` and opt-in Foundry `0.21.0.dev+dbt0.1.5` libraries return
 `NOT_IMPLEMENTED` for `disable_wildcards` and `skip_table_metadata`. Caller configuration and
 driver support must both be present; a driver-wide dataset cache or changing default ADBC
 wildcard semantics is unnecessary.
@@ -750,8 +753,8 @@ cargo test --locked --lib arrow_ipc_bigquery::writer::tests::
 
 ## Foundry validation build cache
 
-The [Foundry suite](../integration/foundry-validation/README.md) reuses the checkout's Cargo
-`target/` by default. It still builds and installs a new wheel each time; Cargo checks whether
+The [Driver Foundry validation suite](../integration/foundry-validation/README.md) reuses the
+checkout's Cargo `target/` by default. It still builds and installs a new wheel each time; Cargo checks whether
 native code needs rebuilding.
 `CARGO_TARGET_DIR` selects a different cache.
 

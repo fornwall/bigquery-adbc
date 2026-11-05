@@ -1,7 +1,9 @@
 # Driver reference
 
-Options, Arrow type mappings, and driver behavior. For installation and a first query, see the
-[README](../README.md).
+Options, Arrow type mappings and driver behavior, for developers using this
+[ADBC][adbc-spec] driver from C, Python or Rust. For installation and a first query, see the
+[README](../README.md). `G<n>` and `UP-<n>` IDs point to entries in the
+[Go driver comparison][go-comparison] and [UPSTREAM.md](UPSTREAM.md).
 
 - [Rust API](#rust-api)
 - [Connection URIs](#connection-uris)
@@ -114,7 +116,7 @@ for the effective configuration.
 | Namespace | Contents |
 | --- | --- |
 | `bigquery.*` | The driver's own option keys. Use these. |
-| `adbc.bigquery.sql.*` | Go-compatible aliases for most `bigquery.*` keys and some values; `adbc.bigquery.sql.api_endpoint`, which dbt-core 2.0 sends, also aliases `bigquery.endpoint`. Getters return canonical values; errors name the key as the caller spelled it. |
+| `adbc.bigquery.sql.*` | Go-compatible aliases for most `bigquery.*` keys and some values; `adbc.bigquery.sql.api_endpoint`, which [dbt-core 2.0](#dbt-core-20) sends, also aliases `bigquery.endpoint`. Getters return canonical values; errors name the key as the caller spelled it. |
 | `adbc.bigquery.*` (no `sql`) | dbt-core 2.0 option-only operations with no `bigquery.*` equivalent; see [DBT-CORE.md](DBT-CORE.md). |
 
 [Standard ADBC options](#standard-adbc-options) are also accepted. Use one spelling per option
@@ -169,7 +171,7 @@ and `bigquery.bulk_ingest.compression` (G15, G28, G29 and G87 in the
 | `bigquery.auth.external_account.request_data` | Required form-encoded POST body for the identity provider, sent unchanged; the response's `access_token` is exchanged. Write-only. |
 | `bigquery.auth.external_account.impersonation_url` | Optional `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/<principal>:generateAccessToken` URL. Custom impersonation endpoints are rejected. |
 | `bigquery.auth.external_account.subject_token_type` | `urn:ietf:params:oauth:token-type:jwt` (default), or `urn:ietf:params:oauth:token-type:access_token` for a provider that returns an opaque token. |
-| `bigquery.auth.external_account.token_url` | Security Token Service endpoint; default `https://sts.googleapis.com/v1/token` with the credential's universe domain substituted. Subject to the [endpoint rules](#endpoint-overrides). |
+| `bigquery.auth.external_account.token_url` | Security Token Service (STS) endpoint; default `https://sts.googleapis.com/v1/token` with the credential's universe domain substituted. Subject to the [endpoint rules](#endpoint-overrides). |
 | `bigquery.auth.quota_project` | Project ID or number sent as `x-goog-user-project`. An explicit value overrides `GOOGLE_CLOUD_QUOTA_PROJECT` with ADC; when unset, ADC keeps its normal environment and credential-file precedence. |
 | `bigquery.auth.scopes` | Comma-separated base OAuth scopes. Without an impersonation layer, unset falls back to `bigquery.impersonate.scopes`, then the credential default (`https://www.googleapis.com/auth/cloud-platform` except that user credentials preserve their consent grant). User credentials can request a subset of their original consent grant; see [authentication scopes](#authentication-scopes). Rejected with `temporary_access_token` and `anonymous`, which mint no token. |
 | `bigquery.impersonate.target_principal` | Target service account email; required when delegates or a lifetime is set. Scopes alone do not enable impersonation. Only ASCII letters, digits and `@ . - _` are allowed. |

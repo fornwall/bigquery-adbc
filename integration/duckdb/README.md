@@ -3,7 +3,7 @@
 This suite drives `bigquery-adbc` through the
 [`adbc` DuckDB community extension](https://duckdb.org/community_extensions/extensions/adbc)
 ([source](https://github.com/columnar-tech/duckdb-adbc-client)), so a third-party client controls
-the ADBC calls.
+the ADBC calls. It is for contributors checking the driver against that client.
 
 | Extension surface | Driver surface it drives |
 | --- | --- |

@@ -1,10 +1,14 @@
 # Go driver comparison
 
-Differences between this driver and the active [Go BigQuery ADBC
-driver](https://github.com/adbc-drivers/bigquery/tree/main/go), the reference implementation, in
-Go's default `bigquery.query.job_creation_mode=required` (G87 and G88 cover its opt-in mode). The
-dbt-labs fork of the Go driver, [`dbt-labs/bigquery-adbc`](https://github.com/dbt-labs/bigquery-adbc),
-usually behaves like Go; its own differences are in [DBT-CORE.md](DBT-CORE.md).
+For anyone moving from the Go driver or comparing the two: the differences between this driver and
+the active [Go BigQuery ADBC driver](https://github.com/adbc-drivers/bigquery/tree/main/go), the
+reference implementation, in Go's default `bigquery.query.job_creation_mode=required` (G87 and G88
+cover its opt-in mode). The dbt-labs fork of the Go driver,
+[`dbt-labs/bigquery-adbc`](https://github.com/dbt-labs/bigquery-adbc), which
+[dbt-core 2.0](DBT-CORE.md), dbt Labs' Rust engine, can load, usually behaves like Go; its own
+differences are in [DBT-CORE.md](DBT-CORE.md). "The fork" means this repository, and "driverbase"
+means [`driverbase-go`](https://github.com/adbc-drivers/driverbase-go), the library the Go driver
+builds on.
 
 An option described as refused returns `NOT_IMPLEMENTED` with the reason when set and
 `NOT_FOUND` when read. Entry IDs are stable references used by the other guides.
@@ -118,7 +122,7 @@ the same types, and a `Float32` or `Float16` parameter binds as its exact value 
 Storage Write uses the database's configured credentials, impersonation, quota project and
 `bigquery.storage_endpoint`, like every other client. Go creates its Storage Write client without
 options, so with `bigquery.bulk_ingest.method=storage_write` (G2) it authenticates with ambient
-Application Default Credentials against `bigquerystorage.googleapis.com`, whatever those options
+Application Default Credentials (ADC) against `bigquerystorage.googleapis.com`, whatever those options
 say.
 
 ### G71. `replace` ingestion avoids a separate table deletion

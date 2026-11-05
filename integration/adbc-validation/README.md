@@ -1,8 +1,9 @@
 # ADBC C++ validation suite
 
-This harness runs Apache Arrow ADBC's C++ validation suite against the driver's C ABI. The ADBC
-driver manager loads the Rust `cdylib` through `AdbcDriverBigqueryInit`, so the suite exercises the
-ABI, the Arrow C Data and Stream interfaces, error ownership, and release callbacks.
+This harness, for contributors, runs Apache Arrow ADBC's C++ validation suite against the driver's
+C ABI. The ADBC driver manager loads the Rust `cdylib` through `AdbcDriverBigqueryInit`, so the
+suite exercises the ABI, the Arrow C Data and Stream interfaces, error ownership, and release
+callbacks.
 
 ## Requirements
 

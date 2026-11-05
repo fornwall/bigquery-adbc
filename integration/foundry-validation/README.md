@@ -1,8 +1,11 @@
 # Driver Foundry validation
 
-This project runs the pinned [`adbc-drivers/validation`](https://github.com/adbc-drivers/validation)
+[Driver Foundry](https://github.com/adbc-drivers) is a collection of vendor- and community-built
+ADBC drivers, including the Go BigQuery driver, with a shared validation suite. This project, for
+contributors, runs the pinned [`adbc-drivers/validation`](https://github.com/adbc-drivers/validation)
 suite against an installed `bigquery-adbc` wheel. The native library is always found through the
-package's public `driver_path()` API.
+package's public `driver_path()` API. dbt's `bigquery_foundry` driver channel is a separate thing;
+see [DBT-CORE.md](../../docs/DBT-CORE.md#installing).
 
 ## Running
 

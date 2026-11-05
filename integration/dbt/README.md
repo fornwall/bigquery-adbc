@@ -1,9 +1,10 @@
 # dbt 2.0 integration project
 
-This project runs dbt-core 2.0 (pinned to `dbt 2.0.11`) against BigQuery with Application Default
-Credentials (ADC). It uses this repository's driver by default, or dbt's canonical `bigquery`
-driver for comparison. [KNOWN_ISSUES.md](KNOWN_ISSUES.md) lists the current issues the
-suite pins.
+This project, for contributors, runs [dbt-core 2.0](../../docs/DBT-CORE.md), dbt Labs' Rust engine
+(pinned to `dbt 2.0.11`), against BigQuery with Application Default Credentials (ADC). It uses this
+repository's driver by default, or dbt's canonical `bigquery` driver, its
+[default channel](../../docs/DBT-CORE.md#installing), for comparison.
+[KNOWN_ISSUES.md](KNOWN_ISSUES.md) lists the current issues the suite pins.
 
 ## Coverage
 
@@ -94,7 +95,7 @@ which this driver keeps and the canonical driver drops.
 | `DBT_BIGQUERY_GCS_BUCKET` | `<project>-adbc-scratch` | Writable bucket for the python model upload. |
 | `DBT_BIGQUERY_COMPUTE_REGION` | `us-central1` | Dataproc region of the python-model submission. |
 | `DBT_BIGQUERY_DATAPROC_CLUSTER` | `bigquery-adbc-integration-absent-cluster` | Cluster the submission targets; keep it nonexistent. |
-| `DBT_FOUNDRY_DRIVER_VERSION` | the pinned dbt version's | Foundry driver version to stage; set it for another dbt 2.0 build. |
+| `DBT_FOUNDRY_DRIVER_VERSION` | the pinned dbt version's | [Foundry driver](../../docs/DBT-CORE.md#installing) version to stage; set it for another dbt 2.0 build. |
 
 The profile sets `quota_project` to the integration project, because Cloud Storage bills requests
 to the credentials' quota project. It requests only the `cloud-platform` OAuth scope used by the
@@ -102,8 +103,8 @@ suite's Google Cloud services. dbt's default scope list also requests Drive acce
 `gcloud auth application-default login` credentials do not grant; requesting it makes token
 refresh fail with `invalid_scope`.
 A local-driver run builds the release library, stages it in a
-project-local dbt cache under the Foundry channel, and checks dbt's resolution log and the library
-hash; the global dbt cache is not modified. dbt runs with the project as its working directory,
+project-local dbt cache under the [Foundry channel](../../docs/DBT-CORE.md#installing), and checks
+dbt's resolution log and the library hash; the global dbt cache is not modified. dbt runs with the project as its working directory,
 because dbt passes seed paths relative to it.
 
 Successful runs delete their datasets, including the `_authorized_source` companion and the

@@ -1,6 +1,7 @@
 # Known limitations and validation gaps
 
-Open limitations and missing test coverage. User-facing behavior is documented in the
+Open limitations and missing test coverage, for evaluators deciding whether the driver fits and
+contributors looking for gaps. User-facing behavior is documented in the
 [driver reference](REFERENCE.md).
 
 ## Limitations
@@ -42,7 +43,8 @@ failure behavior of each ingest mode.
 
 - Authorized-view grants compare project spellings literally. BigQuery stores numeric view
   project numbers as canonical IDs, so repeating a grant with a numeric view project can append
-  duplicate ACL entries, as in the dbt-labs fork. Use the canonical project ID in the view name.
+  duplicate ACL entries, as in the [dbt-labs fork](DBT-CORE.md). Use the canonical project ID in the
+  view name.
 - The discrete `bigquery.auth.external_account.*` options cannot configure workforce pools, which
   need a workforce user project; use a complete credential document in
   `bigquery.auth.credentials` with `bigquery.auth_type=json_credential_string`.
@@ -87,15 +89,16 @@ failure behavior of each ingest mode.
 - Exact metadata filters in a dataset created with `isCaseInsensitive` have mock coverage only
   ([case matching](GO-DRIVER-COMPARISON.md#g56-metadata-filter-patterns-are-matched-case-sensitively),
   [dataset lookup](GO-DRIVER-COMPARISON.md#g74-default-metadata-patterns-cannot-take-an-exact-dataset-lookup-for-a-name-containing-_)).
-- Foundry's live `test_get_statistics` checks only `row_count >= 0`
+- The [Driver Foundry suite](../integration/foundry-validation/README.md)'s live
+  `test_get_statistics` checks only `row_count >= 0`
   ([UP-38](UPSTREAM.md#up-38-driver-foundry-assumes-approximate-statistics-are-immediately-current)).
-- Foundry's two scratch datasets share a project, so its catalog tests do not cover switching
+- That suite's two scratch datasets share a project, so its catalog tests do not cover switching
   projects. The separate Python `test_current_catalog_and_schema_changes` covers that path.
 
 ## Emulator coverage
 
-The [opt-in runner](../CONTRIBUTING.md#bigquery-emulator) supports the Rust and Python DBAPI
-suites. The other client integration runners and ignored FFI live tests have not been adapted.
+The emulator is a local stand-in for BigQuery. Its
+[opt-in runner](../CONTRIBUTING.md#bigquery-emulator) supports the Rust and Python DBAPI suites. The other client integration runners and ignored FFI live tests have not been adapted.
 
 `storage_read_matches_rest_for_every_mapped_type` and
 `storage_read_matches_rest_for_parameterized_decimals` can fail in the concurrent Rust suite if the

@@ -1,9 +1,10 @@
 # Release binary size
 
 The driver is a `cdylib` loaded into another process, so file size and mapped code are release
-constraints. This file records the size of the stripped release library, how to reproduce it, and
-the measured choices that keep it small. Judge a change by whole-artifact bytes: several changes
-here cut `.text` and still grew the file.
+constraints. This file is for contributors changing dependencies or the build profile. It records
+the size of the stripped release library, how to reproduce it, and the measured choices that keep
+it small. Judge a change by whole-artifact bytes: several changes here cut `.text` and still grew
+the file.
 
 Each measurement describes the tree it was made on, not necessarily the current checkout. Use the
 commands below to measure the library you intend to distribute.
@@ -65,14 +66,15 @@ use, and every shipped and tested build of the shared library runs
 | `.got` | 1,816 |
 
 The shipped x86-64 Linux wheel is smaller by the
-[ICF and path remapping](#the-linux-wheel-folds-code-and-remaps-paths) its build adds.
+[identical code folding (ICF) and path remapping](#the-linux-wheel-folds-code-and-remaps-paths) its
+build adds.
 
 ## Release builds compile logging out
 
 `tracing` and `log` are built with `release_max_level_off`. Nothing in the library installs a
 subscriber or logger, and its copies of both crates are private to the shared library, so every
 dependency event went to a no-op dispatcher. The size is per callsite, in `h2`, `hyper`, `tonic`,
-`reqwest`, `rustls` and gax's transports:
+`reqwest`, `rustls` and the transports of `google-cloud-gax` (gax):
 
 | `tracing` cap | `log` cap | Artifact | Delta |
 | --- | --- | ---: | ---: |

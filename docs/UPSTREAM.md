@@ -1,9 +1,11 @@
 # Upstream issues
 
 Issues in dependencies, services and test suites that affect this driver or need a local
-workaround. An entry stays until the driver, or the client environments it supports, adopt an
-upstream fix. Entries with no linked issue or PR are local findings. Differences from the Go
-driver are in [GO-DRIVER-COMPARISON.md](GO-DRIVER-COMPARISON.md).
+workaround, for contributors tracking upstream fixes and users who run into one. An entry stays
+until the driver, or the client environments it supports, adopt an upstream fix. Entries with no
+linked issue or PR are local findings. Differences from the Go driver are in
+[GO-DRIVER-COMPARISON.md](GO-DRIVER-COMPARISON.md). dbt-core 2.0 and the older Python dbt Core are
+described in [DBT-CORE.md](DBT-CORE.md).
 
 The findings apply to these revisions:
 
@@ -11,7 +13,7 @@ The findings apply to these revisions:
 | --- | --- | --- |
 | Google Cloud Rust | [`5a2297f`](https://github.com/googleapis/google-cloud-rust/commit/5a2297f47973775e925ce49d37971b03ce358fba) | Cargo pin; BigQuery 0.19.0, auth 1.18.0. |
 | Apache Arrow ADBC | [`aa2c1c2`](https://github.com/apache/arrow-adbc/commit/aa2c1c2496d287e111d70d382e5d9af07568488b) | Rust, C++ validation and Python integration pins. Python packaging allows `adbc-driver-manager>=1.13,<2`. |
-| Driver Foundry validation | [`5db1f44`](https://github.com/adbc-drivers/validation/commit/5db1f44782f4868c5ae9e89d6ac9812ca6e1758c) | Integration pin. |
+| [Driver Foundry](https://github.com/adbc-drivers) validation | [`5db1f44`](https://github.com/adbc-drivers/validation/commit/5db1f44782f4868c5ae9e89d6ac9812ca6e1758c) | Integration pin. |
 | `h2` | 0.4.20 and [`e64c166`](https://github.com/hyperium/h2/commit/e64c1662ebb14794fc19cbcbb5b5dd0f67925f27) | Cargo uses 0.4.20; upstream `master` at this commit has UP-94. |
 | dbt | [`b601ffe`](https://github.com/dbt-labs/dbt/commit/b601ffe469be8404e70b5e20f0ea0babc35ba6a8) | External client, not a Cargo dependency. |
 
@@ -131,8 +133,8 @@ encodes the `start` and `end` children in BigQuery's packed civil-time form
 
 ADBC's list ingest tests require null lists to read back as null, but BigQuery
 [stores null arrays as empty](https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/data-types#nulls_and_the_array_type).
-`validation-quirks.patch` adds `ingest_null_lists_as_empty()`; the fork PR proposes a
-`NullListForm` quirk instead.
+`validation-quirks.patch` adds `ingest_null_lists_as_empty()`; the `fornwall/arrow-adbc` PR proposes
+a `NullListForm` quirk instead.
 
 ## UP-38: Driver Foundry assumes approximate statistics are immediately current
 
@@ -203,7 +205,7 @@ exercise real AWS federation.
 ## UP-77: dbt-core 2.0 re-nests dotted `persist_docs` paths before sending them
 
 [`update_columns_descriptions`](https://github.com/dbt-labs/dbt/blob/b601ffe469be8404e70b5e20f0ea0babc35ba6a8/crates/dbt-adapter/src/adapter/adapter_impl.rs#L2708)
-in dbt-core re-nests dotted column paths to their top-level column, so nested descriptions and
+in dbt-core 2.0 re-nests dotted column paths to their top-level column, so nested descriptions and
 policy tags are never sent, without a warning. The driver applies
 dotted paths at any depth; `integration/dbt/run.py` fails once they arrive.
 
@@ -224,7 +226,7 @@ rejects the option. The relation parser ignores the returned schema name.
 ## UP-79: an unrecognized BigQuery table type panics the dbt process
 
 [`RelationType::from_adapter_type`](https://github.com/dbt-labs/dbt/blob/b601ffe469be8404e70b5e20f0ea0babc35ba6a8/crates/dbt-schemas/src/dbt_types.rs#L43)
-in dbt-core panics on an unrecognized BigQuery table type, under an upstream `TODO` to
+in dbt-core 2.0 panics on an unrecognized BigQuery table type, under an upstream `TODO` to
 return an error. The driver reports any type outside the five that `GetTableTypes` advertises
 as `TABLE` (`src/connection/table_metadata.rs`).
 
@@ -257,7 +259,7 @@ around it.
 
 ## UP-86: dbt-core 2.0 drops a seed's and a table copy's job ID
 
-dbt-core's `load_dataframe` and `copy_table` discard the result batch whose `BIGQUERY:query_id`
+dbt-core 2.0's `load_dataframe` and `copy_table` discard the result batch whose `BIGQUERY:query_id`
 carries the job ID, so seed and `copy_partitions` nodes have no `job_id` in `run_results.json`.
 The driver already reports the ID ([DBT-CORE.md](DBT-CORE.md#result-metadata)).
 
@@ -295,10 +297,10 @@ about 130 s of retries, the driver refuses such an ingest with `NOT_IMPLEMENTED`
 
 ## UP-91: dbt-core 2.0 never clears a removed `persist_docs` policy tag
 
-`update_columns_descriptions` in dbt-core sends policy tags only for columns whose YAML lists at
+`update_columns_descriptions` in dbt-core 2.0 sends policy tags only for columns whose YAML lists at
 least one tag name, and leaves every other column out of
 `adbc.bigquery.table.update_columns_policy_tags`. A column whose tags were removed from its YAML
-keeps them in BigQuery, where dbt Core's `update_columns` sends an empty list and clears them. The
+keeps them in BigQuery, where Python dbt Core's `update_columns` sends an empty list and clears them. The
 driver changes only the columns the payload names, so it cannot tell a removed tag from an untagged
 column.
 

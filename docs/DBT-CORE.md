@@ -1,12 +1,19 @@
 # Using this driver with dbt-core 2.0
 
-dbt-core 2.0, dbt Labs' Rust engine, runs BigQuery through an ADBC driver whose option keys follow
-`dbt-labs/bigquery-adbc`, dbt Labs' fork of the Go driver. This driver accepts those keys as
-aliases and implements the fork's option-only operations. It covers the ordinary dbt workflows,
-but switching drivers is not regression-free; see the [migration review](#migration-review).
-dbt's keys are defined in `crates/dbt-adbc/src/bigquery.rs` in `dbt-labs/dbt`. Option semantics
-are in [REFERENCE.md](REFERENCE.md#options), and differences the fork shares with the Go driver
-are in [GO-DRIVER-COMPARISON.md](GO-DRIVER-COMPARISON.md).
+For dbt users who want to run this driver in place of the one dbt downloads. dbt-core 2.0 is dbt
+Labs' Rust engine: the `dbt 2.x` binary, with source in
+[`dbt-labs/dbt`](https://github.com/dbt-labs/dbt). "dbt Core" without the version means the older
+Python engine, which does not use ADBC.
+
+dbt-core 2.0 runs BigQuery through an ADBC driver whose option keys follow
+[`dbt-labs/bigquery-adbc`](https://github.com/dbt-labs/bigquery-adbc), dbt Labs' fork of the Go
+driver, called the fork here. This driver accepts those keys as aliases and implements the fork's
+option-only operations. It covers the ordinary dbt workflows, but switching drivers is not
+regression-free; see the [migration review](#migration-review). dbt's keys are defined in
+`crates/dbt-adbc/src/bigquery.rs` in `dbt-labs/dbt`. Option semantics are in
+[REFERENCE.md](REFERENCE.md#options). Differences the fork shares with the Go driver are the `G<n>`
+entries in [GO-DRIVER-COMPARISON.md](GO-DRIVER-COMPARISON.md), and `UP-<n>` entries are in
+[UPSTREAM.md](UPSTREAM.md).
 
 | dbt feature | Driver path | Section |
 | --- | --- | --- |
@@ -29,11 +36,12 @@ into `~/.cache/com.getdbt/adbc/<arch>-<os>/` on Linux (honoring `XDG_CACHE_HOME`
 `~/Library/Caches/com.getdbt/adbc/` on macOS, and verify a checksum only when downloading, so a
 library already cached under the expected name is loaded as is.
 
-dbt has two BigQuery channels: the default `bigquery`, built from `dbt-labs/arrow-adbc`, and the
-opt-in `bigquery_foundry`, built from `dbt-labs/bigquery-adbc` and selected by
-`DBT_ADBC_BIGQUERY_USE_FOUNDRY=1`. This driver mirrors the Foundry option surface. Cache it under
-the Foundry file name your dbt build expects (dbt 2.0.11 expects `0.21.0.dev+dbt0.1.11`); on x86-64
-Linux:
+dbt has two BigQuery channels: the default `bigquery`, called the canonical driver here, built from
+`dbt-labs/arrow-adbc`, and the opt-in `bigquery_foundry`, called the Foundry driver, built from the
+fork and selected by `DBT_ADBC_BIGQUERY_USE_FOUNDRY=1`. The Go driver the fork comes from belongs to
+[Driver Foundry](https://github.com/adbc-drivers), a collection of vendor- and community-built ADBC
+drivers. This driver mirrors the Foundry option surface. Cache it under the Foundry file name your
+dbt build expects (dbt 2.0.11 expects `0.21.0.dev+dbt0.1.11`); on x86-64 Linux:
 
 ```sh
 cargo rustc --release --locked --lib --crate-type cdylib
@@ -67,7 +75,7 @@ same suffix, except `api_endpoint` (`bigquery.endpoint`) and `auth_credentials`
 
 dbt sets `impersonate.scopes` on every connection, so scopes alone do not trigger impersonation.
 Without an impersonation layer, they configure base credentials, including service-account keys
-and ADC, unless `bigquery.auth.scopes` overrides them (G76). With a target, they configure the
+and Application Default Credentials (ADC), unless `bigquery.auth.scopes` overrides them (G76). With a target, they configure the
 impersonated token while its source retains default scopes unless explicitly overridden.
 Discrete external-account credentials also use dbt's scopes before any impersonation layer.
 Token exchanges and the driver's direct HTTPS requests honor
@@ -82,9 +90,10 @@ while the active Go reference driver silently uses ADC instead
 The fork keeps Go's static token with an explicit impersonation lifetime
 ([G89](GO-DRIVER-COMPARISON.md#g89-impersonated-credentials-refresh-even-with-an-explicit-lifetime)).
 
-For `external-oauth-wif`, the driver POSTs the profile's `token_endpoint.request_data` unchanged as
-a form body to `token_endpoint.request_url`, and exchanges the response's `access_token` at
-Google's Security Token Service as a JWT subject token for `workload_pool_provider_path`, optionally
+For `external-oauth-wif` (Workload Identity Federation, WIF), the driver POSTs the profile's
+`token_endpoint.request_data` unchanged as a form body to `token_endpoint.request_url`, and
+exchanges the response's `access_token` at Google's Security Token Service (STS) as a JWT subject
+token for `workload_pool_provider_path`, optionally
 impersonating `service_account_impersonation_url`. The
 [`bigquery.auth.external_account.*` options](REFERENCE.md#database-options) change the token type
 and STS endpoint; for other token sources, pass a complete external-account credential document as
