@@ -28,6 +28,8 @@ changes.
 
 ### Fixed
 
+- Dataset-location `ExecuteSchema` invalidates prior statement results, including unread bound
+  parameter rows.
 - Native archives package an explicitly supplied library under the filename expected by the
   bundled driver manifest, even when the source file has a different name.
 - The REST conversion window counts retained row and nested-value allocations, including spare

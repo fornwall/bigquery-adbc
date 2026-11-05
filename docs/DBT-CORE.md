@@ -264,8 +264,8 @@ JSON and an empty `project` or `dataset` are `INVALID_ARGUMENT`, as is a value t
 URL path segment.
 
 As a read it runs with `adbc.connection.autocommit` disabled. `execute` reports the row count,
-`execute_update` reports `-1` as a query does, `execute_schema` returns the schema without a request,
-and `execute_partitions` is `INVALID_STATE`.
+`execute_update` reports `-1` as a query does. `execute_schema` returns the schema without a request
+and invalidates prior statement results. `execute_partitions` is `INVALID_STATE`.
 
 dbt 2.0.11 does not send this option: it runs `adapter.get_dataset_location` as an
 `INFORMATION_SCHEMA.SCHEMATA` query, which is ordinary SQL here. dbt's main branch sends it from

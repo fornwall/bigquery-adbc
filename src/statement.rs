@@ -441,14 +441,16 @@ impl Statement for BigQueryStatement {
         self.progress.reset();
         self.refresh_namespace();
         if let Some(operation) = self.active_option_only_operation() {
-            return operation.result_schema().ok_or_else(|| {
+            let schema = operation.result_schema().ok_or_else(|| {
                 invalid_state(format!(
                     "a BigQuery {} statement returns no rows, so it has no result schema; clear \
                      {} to describe a SQL query instead",
                     operation.subject(),
                     operation.selecting_options(),
                 ))
-            });
+            })?;
+            self.cancellation.begin().finish();
+            return Ok(schema);
         }
         let sql = require_sql(self.sql.as_ref(), "describe")?;
         self.refuse_session_creation()?;

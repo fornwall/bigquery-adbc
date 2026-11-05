@@ -1188,6 +1188,56 @@ fn prepare_without_a_query_is_refused_and_supersedes_nothing() {
     earlier.check().unwrap();
 }
 
+#[test]
+fn option_only_execute_schema_cancels_unread_parameter_rows() {
+    let (endpoint, requests) = capture_requests(vec![(
+        200,
+        json!({
+            "jobComplete": true,
+            "statementType": "SELECT",
+            "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
+            "rows": [{"f": [{"v": "1"}]}],
+            "totalRows": "1"
+        }),
+    )]);
+    let mut statement = test_statement_at(&endpoint);
+    statement.set_sql_query("SELECT ? AS answer").unwrap();
+    statement.bind(int64_column("value", vec![1, 2])).unwrap();
+    let mut reader = statement.execute().unwrap();
+
+    set_option(
+        &mut statement,
+        BigQueryStatementOption::GetDatasetLocation,
+        r#"{"project":"data-project","dataset":"analytics"}"#,
+    );
+    assert_eq!(
+        statement.execute_schema().unwrap().field(0).name(),
+        "location"
+    );
+
+    let ArrowError::ExternalError(source) = reader.next().unwrap().unwrap_err() else {
+        panic!("the invalidated reader must report cancellation");
+    };
+    assert_eq!(
+        source.downcast_ref::<Error>().unwrap().status,
+        Status::Cancelled
+    );
+    assert!(reader.next().is_none());
+    assert_eq!(requests.join().unwrap().len(), 1);
+}
+
+#[test]
+fn option_only_execute_schema_refusal_keeps_the_previous_operation() {
+    let mut statement = test_statement();
+    set_option(&mut statement, OptionStatement::TargetTable, "events");
+    let earlier = statement.cancellation.begin();
+    assert_eq!(
+        statement.execute_schema().unwrap_err().status,
+        Status::InvalidState
+    );
+    earlier.check().unwrap();
+}
+
 /// The parameter schema costs one dry run per configuration, not one per call: a driver manager
 /// that asks before every execute would otherwise double the latency of every query.
 #[test]
