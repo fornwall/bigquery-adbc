@@ -49,11 +49,6 @@ jobs:
       - name: Clippy (default features, as the driver ships)
         run: cargo clippy --locked --all-targets
 
-      # The separate fuzz workspace needs its own check; linking libFuzzer is unnecessary.
-      - name: Fuzz targets compile
-        if: runner.os == 'Linux'
-        run: cargo check --locked --manifest-path fuzz/Cargo.toml
-
       # Live BigQuery tests are ignored by default.
       - name: Test
         run: cargo test --locked --all-features --no-fail-fast
@@ -75,6 +70,61 @@ jobs:
           BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT: offline-validation-project
           BIGQUERY_ADBC_TEST_TARGET: clients
         run: scripts/run-one-live-test.sh suite_matches_coverage_baseline
+
+  safety:
+    name: ${{ matrix.check }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [miri, fuzz]
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2026-11-05
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned nightly
+        run: rustup toolchain install --profile minimal --component miri,rust-src
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.check }}
+          workspaces: |
+            . -> target
+            fuzz -> target
+
+      - name: Miri
+        if: matrix.check == 'miri'
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks
+        run: >-
+          cargo miri test --locked --lib ffi:: --
+          --skip ffi::roundtrip --skip a_connection_validating_its_catalog
+
+      - name: Fuzz
+        if: matrix.check == 'fuzz'
+        run: |
+          cargo install cargo-fuzz --version 0.13.2 --locked
+          # cargo-fuzz has no --locked flag; validate the lockfile before building and check for drift.
+          cargo fetch --locked --manifest-path fuzz/Cargo.toml
+          targets=$(cargo fuzz list)
+          test -n "$targets"
+          for target in $targets; do
+            cargo fuzz run "$target" -- -max_total_time=60
+          done
+          git diff --exit-code -- fuzz/Cargo.lock
+
+      - name: Upload fuzz failures
+        if: failure() && matrix.check == 'fuzz'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
 
   # Exercise stdlib compatibility on the oldest and newest supported Python versions.
   python-tests:

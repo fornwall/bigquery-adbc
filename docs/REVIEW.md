@@ -91,8 +91,6 @@ failure behavior of each ingest mode.
   ([UP-38](UPSTREAM.md#up-38-driver-foundry-assumes-approximate-statistics-are-immediately-current)).
 - Foundry's two scratch datasets share a project, so its catalog tests do not cover switching
   projects. The separate Python `test_current_catalog_and_schema_changes` covers that path.
-- CI type-checks the fuzz targets but runs neither fuzzing nor Miri
-  ([fuzzing and Miri](../CONTRIBUTING.md#fuzzing-and-miri)).
 
 ## Emulator coverage
 

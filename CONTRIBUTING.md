@@ -138,8 +138,10 @@ missing safety sections; `clippy.toml` enables documentation checks on private i
 
 After changing Arrow IPC parsing or REST row decoding, run the affected fuzz targets; after
 changing the FFI layer, run its tests under Miri. Both need a nightly toolchain, and fuzzing also
-needs [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz). CI only type-checks the fuzz
-targets.
+needs [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz). On every pull request and push to
+`main`, CI runs the filtered Miri suite below and each fuzz target for 60 seconds with AddressSanitizer.
+The two jobs run in parallel with 30-minute timeouts and a nightly pinned in
+[ci.yml](.github/workflows/ci.yml); CI saves crash inputs as the `fuzz-artifacts` artifact.
 
 ```sh
 (cd fuzz && cargo +nightly fuzz run ipc_batch -- -max_total_time=60)
@@ -147,7 +149,7 @@ targets.
 (cd fuzz && cargo +nightly fuzz run ipc_session -- -max_total_time=60)
 (cd fuzz && cargo +nightly fuzz run ipc_lz4 -- -max_total_time=60)
 (cd fuzz && cargo +nightly fuzz run rest_rows -- -max_total_time=60)
-MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-ignore-leaks" cargo +nightly miri test --lib ffi:: -- \
+MIRIFLAGS="-Zmiri-disable-isolation -Zmiri-ignore-leaks" cargo +nightly miri test --locked --lib ffi:: -- \
   --skip ffi::roundtrip --skip a_connection_validating_its_catalog
 ```
 
