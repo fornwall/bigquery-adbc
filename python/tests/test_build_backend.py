@@ -229,6 +229,14 @@ def test_sdist_carries_the_license_files_setuptools_will_look_for(sdist_archive:
     assert metadata.get_all("License-File", []) == list(LICENSE_FILES)
 
 
+def test_sdist_license_files_resolve_from_pkg_info(sdist_archive: Path) -> None:
+    # PyPI rejects an upload whose License-File is missing relative to PKG-INFO; twine does not.
+    with tarfile.open(sdist_archive) as archive:
+        metadata = BytesParser(policy=policy.default).parsebytes(_archive_file(archive, "PKG-INFO"))
+        for document in metadata.get_all("License-File", []):
+            assert _archive_file(archive, document) == (PYTHON_ROOT / document).read_bytes()
+
+
 def test_sdist_rust_toolchain_is_trimmed_to_a_build(sdist_archive: Path) -> None:
     with tarfile.open(sdist_archive) as archive:
         staged = tomllib.loads(_archive_file(archive, "rust-toolchain.toml").decode("utf-8"))
@@ -260,6 +268,9 @@ def test_sdist_excludes_development_environment_and_tool_caches(
     source = tmp_path / "source"
     source.mkdir()
     shutil.copy2(PYTHON_ROOT / "pyproject.toml", source / "pyproject.toml")
+    (source / "licenses").mkdir()
+    for document in LICENSE_FILES:
+        (source / document).touch()
     for cache in (".venv", ".ruff_cache", "tests/.pytest_cache"):
         directory = source / cache / "0.1"
         directory.mkdir(parents=True)

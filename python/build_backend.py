@@ -116,8 +116,12 @@ def build_sdist(sdist_directory, config_settings=None):
 def _stage_sdist(root: Path) -> None:
     """Stage the Cargo package at the sdist root and this Python project below it."""
 
-    for filename in ("Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "NOTICE"):
+    for filename in ("Cargo.toml", "Cargo.lock", "README.md"):
         shutil.copy2(REPOSITORY_ROOT / filename, root / filename)
+    # License-File entries resolve against PKG-INFO at this root, and PyPI rejects a missing one.
+    (root / "licenses").mkdir()
+    for document in LICENSE_FILES:
+        shutil.copy2(HERE / document, root / document)
     # Cargo resolves every declared target's source path when parsing the manifest,
     # including benches and tools that are not built into the wheel.
     for directory in ("src", "benches", "tools"):
