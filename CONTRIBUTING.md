@@ -277,6 +277,8 @@ The archive contains the library, the `bigquery-adbc.toml` driver manifest, `LIC
 library, and `--wheel path/to/wheel` packages the library inside a wheel for this platform; either
 must have been built from this checkout's locked dependencies and pinned Rust toolchain. The Python
 wheel's `BIGQUERY_ADBC_BUILD_LIBRARY` override has the same provenance requirement.
+The archive uses the platform's driver filename to match the manifest, even if the `--library`
+input has a different name.
 
 After changing `Cargo.toml`, `Cargo.lock`, or the pinned Rust version, regenerate the checked-in
 bundle. A change to this crate's own version alone needs no regeneration:

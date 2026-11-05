@@ -85,7 +85,7 @@ def package_library(root: Path, library: Path, output: Path) -> Path:
     version = cargo_version(root / "Cargo.toml")
     name = f"bigquery-adbc-{version}-{platform}-{binary.architecture}"
     filename = name + (".zip" if binary.format == "pe" else ".tar.gz")
-    files = {library.name: library}
+    files = {native_library_name(): library}
     files.update((path, root / "python" / path) for path in (*LICENSE_FILES, "licenses/manifest.json"))
     output.mkdir(parents=True, exist_ok=True)
     # Keep the temporary archive on the destination filesystem for atomic replacement.

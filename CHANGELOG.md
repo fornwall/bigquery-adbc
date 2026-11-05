@@ -28,6 +28,8 @@ changes.
 
 ### Fixed
 
+- Native archives package an explicitly supplied library under the filename expected by the
+  bundled driver manifest, even when the source file has a different name.
 - The REST conversion window counts retained row and nested-value allocations, including spare
   capacity, so uneven pages with a few wide rows no longer evade its memory accounting.
 

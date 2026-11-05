@@ -485,12 +485,25 @@ def test_missing_dependency_license_requires_review(tmp_path: Path) -> None:
         generate_licenses.package_documents(package, {})
 
 
-@pytest.mark.parametrize(("binary_format", "filename"), [("elf", "driver.so"), ("pe", "driver.dll")])
-def test_native_archives_carry_complete_licenses(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, binary_format: str, filename: str
+@pytest.mark.parametrize(
+    ("system", "binary_format", "platform_key", "filename"),
+    [
+        ("Linux", "elf", "linux_amd64", "libadbc_driver_bigquery.so"),
+        ("Darwin", "macho", "macos_amd64", "libadbc_driver_bigquery.dylib"),
+        ("Windows", "pe", "windows_amd64", "adbc_driver_bigquery.dll"),
+    ],
+)
+def test_native_archives_carry_manifest_library_and_complete_licenses(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    system: str,
+    binary_format: str,
+    platform_key: str,
+    filename: str,
 ) -> None:
-    library = tmp_path / filename
+    library = tmp_path / "custom-driver-build"
     library.write_bytes(b"native fixture")
+    monkeypatch.setattr(_build_support.platform, "system", lambda: system)
     monkeypatch.setattr(package_native, "validate_native_library", lambda path: None)
     monkeypatch.setattr(package_native, "inspect_native_binary", lambda path: NativeBinaryInfo(binary_format, "x86_64"))
     result = package_native.package_library(REPOSITORY_ROOT, library, tmp_path / "output")
@@ -505,19 +518,15 @@ def test_native_archives_carry_complete_licenses(
                 assert source is not None
                 contents[member.name.split("/", 1)[1]] = source.read()
     assert contents[filename] == b"native fixture"
+    assert library.name not in contents
     for document in (*LICENSE_FILES, "licenses/manifest.json"):
         assert contents[document] == (PYTHON_ROOT / document).read_bytes()
     manifest = tomllib.loads(contents[package_native.MANIFEST_NAME].decode())
     assert manifest["version"] == cargo_version(REPOSITORY_ROOT / "Cargo.toml")
-
-
-def test_driver_manifest_names_what_the_archives_ship() -> None:
-    manifest = tomllib.loads(package_native.MANIFEST.format(version="1"))
     assert manifest["Driver"]["entrypoint"] in _build_support._REQUIRED_SYMBOLS
     shared = manifest["Driver"]["shared"]
     assert set(shared) == {"linux_amd64", "linux_arm64", "macos_amd64", "macos_arm64", "windows_amd64"}
-    libraries = {PureWindowsPath(path).name for path in shared.values()}
-    assert libraries == {library for _, library in _build_support._HOST_LIBRARIES.values()}
+    assert PureWindowsPath(shared[platform_key]).name == filename
 
 
 def test_native_archives_can_take_the_library_from_a_wheel(tmp_path: Path) -> None:
