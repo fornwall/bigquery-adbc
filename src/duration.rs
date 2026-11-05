@@ -1,5 +1,7 @@
 //! Go-style duration parsing with a 12-hour impersonation lifetime limit, and ASCII formatting.
 
+use std::fmt::Write as _;
+
 use adbc_core::error::Result;
 
 use crate::error::invalid_argument;
@@ -111,32 +113,26 @@ pub(crate) fn format_go_duration(duration: std::time::Duration) -> String {
             }
         }
     }
-    let seconds = nanos / 1_000_000_000;
-    let fraction = nanos % 1_000_000_000;
-    if seconds >= 3_600 {
-        return format!(
+    let seconds = duration.as_secs();
+    let mut formatted = if seconds >= 3_600 {
+        format!(
             "{}h{}m{}",
             seconds / 3_600,
             seconds % 3_600 / 60,
-            format_duration_seconds(seconds % 60, fraction),
-        );
+            seconds % 60
+        )
+    } else if seconds >= 60 {
+        format!("{}m{}", seconds / 60, seconds % 60)
+    } else {
+        seconds.to_string()
+    };
+    let fraction = duration.subsec_nanos();
+    if fraction != 0 {
+        write!(formatted, ".{fraction:09}").expect("writing to a String cannot fail");
+        formatted.truncate(formatted.trim_end_matches('0').len());
     }
-    if seconds >= 60 {
-        return format!(
-            "{}m{}",
-            seconds / 60,
-            format_duration_seconds(seconds % 60, fraction)
-        );
-    }
-    format_duration_seconds(seconds, fraction)
-}
-
-fn format_duration_seconds(seconds: u128, fraction: u128) -> String {
-    if fraction == 0 {
-        return format!("{seconds}s");
-    }
-    let value = format!("{seconds}.{fraction:09}");
-    format!("{}s", value.trim_end_matches('0'))
+    formatted.push('s');
+    formatted
 }
 
 #[cfg(test)]
