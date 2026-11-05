@@ -94,6 +94,7 @@ fn destination_projects_keep_their_spelling_for_server_validation() {
         "short",
         "project.with.dots",
         "example.com:project",
+        "analytics.example.com:project",
     ] {
         let table = parse(&format!("{value}.dataset.table"), None, None).unwrap();
         assert_eq!(table.project_id().as_str(), value);
@@ -199,14 +200,14 @@ fn an_invalid_component_names_the_option_the_half_and_the_rule() {
 /// table-name characters, which exclude `$`.
 #[test]
 fn a_partition_decorator_survives_the_table_check() {
-    assert_eq!(
-        parse(
-            "dataset.table$20240101",
-            Some(&project("the-project")),
-            None
-        )
-        .unwrap()
-        .table_id(),
-        "table$20240101"
-    );
+    for value in [
+        "dataset.table$20240101",
+        "analytics.example.com:project.dataset.table$20240101",
+    ] {
+        let default_project = project("analytics.example.com:project");
+        let table = parse(value, Some(&default_project), None).unwrap();
+        assert_eq!(table.project_id().as_str(), "analytics.example.com:project");
+        assert_eq!(table.dataset_id(), "dataset");
+        assert_eq!(table.table_id(), "table$20240101");
+    }
 }

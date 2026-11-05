@@ -106,6 +106,44 @@ fn copy_job_carries_both_endpoints_and_the_statement_job_options() {
 }
 
 #[test]
+fn domain_scoped_copy_endpoints_reach_the_job_configuration() {
+    let (endpoint, captured) = capture_copy_with_echoed_reference();
+    let mut statement = test_statement_at(&endpoint);
+    set_option(
+        &mut statement,
+        BigQueryStatementOption::CopyTableSource,
+        "analytics.example.com:source.raw.events$20240101",
+    );
+    set_option(
+        &mut statement,
+        BigQueryStatementOption::CopyTableDestination,
+        "example.org:destination.marts.events$20240101",
+    );
+    assert_eq!(statement.execute_update().unwrap(), Some(5));
+
+    let requests = captured.join().unwrap();
+    let job = &requests[0].body;
+    assert_eq!(job["jobReference"]["projectId"], "fixture-project");
+    let copy = &job["configuration"]["copy"];
+    assert_eq!(
+        copy["sourceTable"],
+        json!({
+            "projectId": "analytics.example.com:source",
+            "datasetId": "raw",
+            "tableId": "events$20240101",
+        })
+    );
+    assert_eq!(
+        copy["destinationTable"],
+        json!({
+            "projectId": "example.org:destination",
+            "datasetId": "marts",
+            "tableId": "events$20240101",
+        })
+    );
+}
+
+#[test]
 fn copy_job_defaults_to_a_non_destructive_disposition() {
     let copy = options(
         "example-project.sq_scratch.source",

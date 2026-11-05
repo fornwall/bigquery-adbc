@@ -499,6 +499,14 @@ project validity to BigQuery, accepting numeric and legacy domain-scoped project
 driver applies only the structural resource-name checks in G20. It also preserves the domain's
 dots when splitting destination tables, copy endpoints and authorized-view references.
 
+The fork's [domain-scoped table-reference fix](https://github.com/dbt-labs/bigquery-adbc/commit/b13496dc92b5f46cbf73a534e8b1c5c590f339c4)
+supports the same `example.com:project.dataset.table` form. Unit and mock tests check the project,
+dataset and table fields sent for destinations, copies and authorized views, including multi-label
+domains and partition decorators.
+This driver's parsing remains deliberately broader: the final two dots separate dataset and table, and
+BigQuery validates the remaining project spelling; the fork rejects extra dot-separated parts
+after the domain's colon.
+
 BigQuery can return a canonical project ID for a request made with a project number. The driver
 adopts that identity for subsequent job requests, retaining exact job-ID and location checks;
 responses for a different named project or a different project number are still rejected.

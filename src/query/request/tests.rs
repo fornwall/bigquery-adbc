@@ -235,6 +235,32 @@ fn every_job_only_option_selects_jobs_insert_but_required_job_mode_does_not() {
 }
 
 #[test]
+fn domain_scoped_destination_projects_reach_the_job_configuration() {
+    let options = StatementQueryOptions {
+        destination_table: Some(
+            QualifiedTableName::parse_option(
+                crate::BigQueryStatementOption::DestinationTable.as_str(),
+                "analytics.example.com:project.dataset.table$20240101",
+                None,
+                None,
+            )
+            .unwrap(),
+        ),
+        ..StatementQueryOptions::default()
+    };
+    let job = simple_plan(&options).jobs_insert_body().unwrap();
+    assert_eq!(job["jobReference"]["projectId"], "billing-project");
+    assert_eq!(
+        job["configuration"]["query"]["destinationTable"],
+        json!({
+            "projectId": "analytics.example.com:project",
+            "datasetId": "dataset",
+            "tableId": "table$20240101",
+        })
+    );
+}
+
+#[test]
 fn jobs_insert_is_the_exact_compact_job_envelope() {
     let options = StatementQueryOptions {
         destination_table: Some(

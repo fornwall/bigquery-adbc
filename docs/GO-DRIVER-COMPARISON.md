@@ -739,6 +739,8 @@ domain-scoped IDs. Local checks only keep each identifier a nonempty resource-na
 `/`, `\`, ASCII control characters, `.` and `..` are refused with `INVALID_ARGUMENT`; an empty
 option value clears the option. Go stores these values unchecked. Qualified table options split
 at the final two dots so a domain-scoped project's dots remain in the project component.
+The dbt-labs fork also supports domain-scoped references; its stricter component counting and
+the corresponding regression coverage are described in [DBT-CORE.md](DBT-CORE.md#8-project-identifiers-are-validated-by-bigquery).
 `GetInfo` omits the XDBC maximum catalog-name length rather than applying the modern project-ID
 limit to all project forms.
 
