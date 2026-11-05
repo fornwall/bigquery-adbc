@@ -273,7 +273,8 @@ The command builds the release cdylib with locked dependencies, checks its ADBC 
 writes a platform-named archive in `dist/` (`.tar.gz` on Linux/macOS, `.zip` on Windows).
 The archive contains the library, `LICENSE`, `NOTICE`, and `licenses/` with the dependency
 texts, Rust standard-library notices, and a source inventory. `--output-dir` selects another
-directory. `--library /absolute/path/to/library` packages an existing library; it must have been
+directory. `--library /absolute/path/to/library` packages an existing library, and
+`--wheel path/to/wheel` packages the library inside a wheel for this platform; either must have been
 built from this checkout's locked dependencies and pinned Rust toolchain. The Python wheel's
 `BIGQUERY_ADBC_BUILD_LIBRARY` override has the same provenance requirement.
 
@@ -303,16 +304,21 @@ to new source material or replace review of unusual license terms.
 
 ## Releasing
 
-Pushing a `vX.Y.Z` tag runs the [wheel workflow](.github/workflows/wheels.yml), which publishes the
-wheels and source distribution to PyPI once CI and every platform build have passed on the tagged
-commit. CI builds and tests a wheel from the same source archive that gets published. The tag must
-match the `version` in `Cargo.toml`, the package's single version source. Move the
-[changelog](CHANGELOG.md)'s unreleased entries under the new version first:
+Pushing a `vX.Y.Z` tag runs the [wheel workflow](.github/workflows/wheels.yml). Once CI and every
+platform build have passed on the tagged commit, it creates a GitHub release and then publishes the
+wheels and source distribution to PyPI. CI builds and tests a wheel from the same source archive
+that gets published. The tag must match the `version` in `Cargo.toml`, the package's single version
+source. Move the [changelog](CHANGELOG.md)'s unreleased entries under the new version first:
 
 ```sh
 git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
+
+The GitHub release carries a [native archive](#distribution-packaging) for each platform, built from
+the library in that platform's tested wheel, and a `SHA256SUMS` file. Its notes are the version's
+changelog section, so the workflow stops before publishing anything if that section is missing, and
+links in changelog entries must be absolute.
 
 PyPI never accepts a version twice, so a bad release needs a new version; re-running the workflow
 only finishes an interrupted upload. Publishing uses

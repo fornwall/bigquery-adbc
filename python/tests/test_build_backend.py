@@ -509,6 +509,24 @@ def test_native_archives_carry_complete_licenses(
         assert contents[document] == (PYTHON_ROOT / document).read_bytes()
 
 
+def test_native_archives_can_take_the_library_from_a_wheel(tmp_path: Path) -> None:
+    filename = _build_support.native_library_name()
+    wheel = tmp_path / "driver.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr(f"{_build_support.PACKAGE}/{filename}", b"native fixture")
+    library = package_native.library_from_wheel(wheel, tmp_path)
+    assert library.name == filename
+    assert library.read_bytes() == b"native fixture"
+
+
+def test_native_archives_reject_a_wheel_without_the_library(tmp_path: Path) -> None:
+    wheel = tmp_path / "driver.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("other/file", b"")
+    with pytest.raises(RuntimeError, match="does not contain"):
+        package_native.library_from_wheel(wheel, tmp_path)
+
+
 def test_built_wheel_preserves_dependency_licenses(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     library = tmp_path / _build_support.native_library_name()
     header = bytearray(20)

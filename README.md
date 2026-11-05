@@ -103,7 +103,10 @@ the [Python guide](python/README.md) for more on the package.
 
 ## C and C++
 
-Build the shared library from the repository root:
+Each [GitHub release](https://github.com/fornwall/bigquery-adbc/releases) has an archive of the
+shared library for Linux x86-64 and AArch64 (glibc 2.28 or newer), macOS x86-64 and arm64, and
+Windows x86-64, with a `SHA256SUMS` file. To build the library yourself, run this from the
+repository root:
 
 ```sh
 cargo rustc --release --locked --lib --crate-type cdylib
