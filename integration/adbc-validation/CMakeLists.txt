@@ -133,6 +133,15 @@ else()
                                 -Wsign-conversion -Werror)
 endif()
 
+# Compiled with the suite so the example tracks the pinned driver manager.
+add_executable(query_example ../../examples/query.c)
+target_link_libraries(query_example PRIVATE adbc_driver_manager_shared)
+target_include_directories(query_example SYSTEM
+                           PRIVATE "${arrow_adbc_SOURCE_DIR}/c/include")
+if(NOT MSVC)
+  target_compile_options(query_example PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 include(GoogleTest)
 enable_testing()
 gtest_discover_tests(bigquery_validation)

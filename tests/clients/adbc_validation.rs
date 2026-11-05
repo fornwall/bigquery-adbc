@@ -239,7 +239,12 @@ fn build_harness() -> Harness {
         Command::new("cmake")
             .arg("--build")
             .arg(&build_directory)
-            .args(["--target", "bigquery_validation", "--parallel"]),
+            .args([
+                "--target",
+                "bigquery_validation",
+                "query_example",
+                "--parallel",
+            ]),
     );
 
     let binary = build_directory.join("bigquery_validation");
