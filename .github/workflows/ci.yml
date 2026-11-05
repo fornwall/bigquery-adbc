@@ -3,19 +3,17 @@ name: CI
 on:
   pull_request:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Cancel superseded pull request runs; retain every main-branch run. The prefix is literal because
-# in a wheels.yml call github.workflow names the caller, and sharing its group is a deadlock.
+# Only PR runs share a group; reusable CI must not share its caller's group.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -28,10 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-26.04
-          - macos-26
-          - windows-2025
+        os: [ubuntu-26.04, macos-26, windows-2025]
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,11 +35,12 @@ jobs:
 
       # rust-toolchain.toml pins the channel and the rustfmt/clippy components.
       - name: Install the pinned toolchain
-        run: rustup show active-toolchain || rustup toolchain install
+        run: rustup toolchain install
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Format
+        if: runner.os == 'Linux'
         run: cargo fmt --all --check
 
       - name: Clippy
@@ -67,56 +63,18 @@ jobs:
         run: python3 tools/generate_licenses.py --check
 
       - name: Documentation
+        if: runner.os == 'Linux'
         run: cargo doc --locked --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
 
-  # Compile and enumerate the pinned C++ validation suite without credentials.
-  # Check patch applicability, the test count, and the coverage baseline.
-  adbc-validation-drift:
-    name: ADBC validation drift
-    # Harness drift is platform-independent; the suite supports Linux and macOS.
-    runs-on: ubuntu-26.04
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install the pinned toolchain
-        run: rustup show active-toolchain || rustup toolchain install
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-
-      # ubuntu-26.04 ships CMake and a C++20 GCC; the harness needs nothing else.
-      - name: Show the toolchain versions
-        run: |
-          cmake --version
-          c++ --version
-
-      - name: Check the validation harness for drift
+      # Compile and enumerate the pinned C++ suite without BigQuery credentials.
+      - name: ADBC validation drift
+        if: runner.os == 'Linux'
         env:
           BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT: offline-validation-project
           BIGQUERY_ADBC_TEST_TARGET: clients
         run: scripts/run-one-live-test.sh suite_matches_coverage_baseline
-
-  python-lint:
-    name: Python lint
-    runs-on: ubuntu-26.04
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      # Also caches uv's download cache, keyed on every uv.lock and pyproject.toml.
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        with:
-          version: "0.13.6"
-
-      # Configuration and locked tool versions live under python/.
-      - name: Lint, format, and type-check
-        run: scripts/run-python-lint.sh
 
   # Exercise stdlib compatibility on the oldest and newest supported Python versions.
   python-tests:
@@ -125,9 +83,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version:
-          - "3.11"
-          - "3.15"
+        python-version: ["3.11", "3.15"]
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -141,6 +97,12 @@ jobs:
       # The DuckDB suites pin `3.15+gil`, a request uv can satisfy but will not download.
       - name: Install the Python version the DuckDB suites pin
         run: uv python install 3.15
+
+      - name: Python and shell lint
+        if: matrix.python-version == '3.15'
+        run: |
+          scripts/run-python-lint.sh
+          shellcheck -x --severity=style scripts/*.sh scripts/lib/*.sh
 
       - name: Offline Python tests
         env:
@@ -166,49 +128,37 @@ jobs:
           version: "0.13.6"
 
       - name: Install the pinned toolchain
-        run: rustup show active-toolchain || rustup toolchain install
+        run: rustup toolchain install
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
-      - name: Build the source distribution
-        run: uv build --sdist --out-dir dist python
-
-      # The checkout is fresh, so dist/ holds exactly the one sdist built above.
-      - name: Build a wheel from the source distribution
-        run: |
-          uv build --wheel --out-dir wheelhouse dist/*.tar.gz
-          . scripts/lib/built-wheel.sh
-          wheel=$(built_wheel wheelhouse)
-          echo "WHEEL=$wheel" >> "$GITHUB_ENV"
+      # uv builds the wheel from the sdist by default.
+      - name: Build the source distribution and wheel
+        run: uv build --out-dir dist python
 
       # Use only declared dependencies and pytest, as a fresh installation would.
-      - name: Install the wheel with the released adbc-driver-manager
+      - name: Test the installed wheel with the released adbc-driver-manager
         run: |
+          . scripts/lib/built-wheel.sh
+          wheel=$(built_wheel dist)
           uv venv .venv-wheel-test
           uv pip install --python .venv-wheel-test/bin/python \
-            "${WHEEL}[dbapi]" \
-            pytest
+            "${wheel}[dbapi]" pytest
           uv pip check --python .venv-wheel-test/bin/python
-          uv pip list --python .venv-wheel-test/bin/python
-
-      # Import the installed package; wheel structure is checked by the build backend.
-      - name: Run the installed-package suite
-        run: |
           .venv-wheel-test/bin/python -m pytest -q -p no:cacheprovider \
             python/tests/test_installed_wheel.py
 
-  # ubuntu-26.04 includes ShellCheck.
-  shell-lint:
-    name: Shell scripts
-    runs-on: ubuntu-26.04
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      # Follow sourced helpers, and lint them separately too.
-      - name: ShellCheck
+      # Also reject non-release tags selected through workflow_dispatch.
+      - name: Check the release tag matches the package version
+        if: github.ref_type == 'tag'
         run: |
-          shellcheck --version
-          shellcheck -x --severity=style scripts/*.sh scripts/lib/*.sh
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test -f "dist/bigquery_adbc-${GITHUB_REF_NAME#v}.tar.gz"
+
+      - name: Upload the tested source distribution
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bigquery-adbc-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error

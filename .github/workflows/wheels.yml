@@ -17,10 +17,8 @@ on:
       - "tools/**"
   push:
     # Pull requests already cover branch pushes. GitHub ignores path filters for tag pushes.
-    branches:
-      - main
-    tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
+    branches: [main]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
     paths: *wheel-inputs
   workflow_dispatch:
 
@@ -28,8 +26,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: wheels-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   build-wheels:
@@ -54,7 +52,7 @@ jobs:
       # and install it through cibuildwheel's before-all command in python/pyproject.toml.
       - name: Install the pinned Rust toolchain on the host
         if: runner.os != 'Linux'
-        run: rustup show active-toolchain || rustup toolchain install
+        run: rustup toolchain install
 
       - name: Build, repair, and test the wheel
         uses: pypa/cibuildwheel@f9b966cfadf4109556cadc5bb39ddb72d0ce664e # v4.3.5
@@ -70,35 +68,7 @@ jobs:
           path: wheelhouse/*.whl
           if-no-files-found: error
 
-  build-sdist:
-    name: sdist
-    runs-on: ubuntu-26.04
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        with:
-          version: "0.13.6"
-
-      - name: Build the source distribution
-        run: uv build --sdist --out-dir dist python
-
-      # Cargo.toml is the single version source, so this also covers the wheels.
-      - name: Check the tag matches the package version
-        if: github.ref_type == 'tag'
-        run: test -f "dist/bigquery_adbc-${GITHUB_REF_NAME#v}.tar.gz"
-
-      - name: Upload source distribution
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: bigquery-adbc-sdist
-          path: dist/*.tar.gz
-          if-no-files-found: error
-
-  # Calling CI tests the tagged commit itself, which need not have reached main.
+  # Test the tagged commit itself and upload its tested sdist for publishing.
   ci:
     name: CI
     if: github.ref_type == 'tag'
@@ -109,10 +79,7 @@ jobs:
   publish:
     name: Publish to PyPI
     if: github.ref_type == 'tag'
-    needs:
-      - build-sdist
-      - build-wheels
-      - ci
+    needs: [build-wheels, ci]
     runs-on: ubuntu-26.04
     environment:
       name: pypi

@@ -60,7 +60,8 @@ to new source material or replace review of unusual license terms.
 
 Pushing a `vX.Y.Z` tag runs the [wheel workflow](.github/workflows/wheels.yml), which publishes the
 wheels and source distribution to PyPI once CI and every platform build have passed on the tagged
-commit. The tag must match the `version` in `Cargo.toml`, the package's single version source:
+commit. CI builds and tests a wheel from the same source archive that gets published. The tag must
+match the `version` in `Cargo.toml`, the package's single version source:
 
 ```sh
 git tag v0.1.0
