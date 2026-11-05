@@ -1,0 +1,55 @@
+name: Bug report
+description: Something in the driver does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Remove credentials, project names you consider private, and row data before posting.
+        Report vulnerabilities [privately](https://github.com/fornwall/bigquery-adbc/security/advisories/new) instead.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: A short query, Arrow schema or program that shows the problem.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: Error output
+      description: >-
+        The full error. Setting `ADBC_DRIVER_BIGQUERY_LOG_LEVEL=debug` before the first connection
+        can add useful detail.
+      render: text
+  - type: input
+    id: driver-version
+    attributes:
+      label: Driver version
+      description: A PyPI version, or a git revision for a source build.
+      placeholder: 0.1.1
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: Client and driver manager
+      description: The client and its version, and the ADBC driver manager version.
+      placeholder: Python 3.13, adbc-driver-manager 1.13
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Ubuntu 26.04, x86-64
+    validations:
+      required: true
