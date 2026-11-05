@@ -76,6 +76,14 @@ not publish.
 
 ## Local checks
 
+### GitHub Actions
+
+After editing workflows, run [actionlint](https://github.com/rhysd/actionlint):
+
+```sh
+go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+```
+
 ### Rust
 
 From the repository root:

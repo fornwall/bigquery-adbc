@@ -98,11 +98,12 @@ jobs:
       - name: Install the Python version the DuckDB suites pin
         run: uv python install 3.15
 
-      - name: Python and shell lint
+      - name: Python, shell, and workflow lint
         if: matrix.python-version == '3.15'
         run: |
           scripts/run-python-lint.sh
           shellcheck -x --severity=style scripts/*.sh scripts/lib/*.sh
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
 
       - name: Offline Python tests
         env:
