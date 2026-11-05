@@ -2,7 +2,8 @@
 
 `bigquery-adbc` gives Python columnar access to Google BigQuery, through a DB-API 2.0 interface or
 the low-level ADBC API. Results arrive as Arrow, and bulk ingestion streams Arrow to the BigQuery
-Storage Write API. The wheels bundle a native Rust driver, so there is nothing else to install.
+Storage Write API. The wheels bundle the native Rust driver; a Rust toolchain is needed only when
+building from source.
 Requires Python 3.11 or newer.
 
 This project is experimental and AI-generated, and has not seen real-world use.

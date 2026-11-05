@@ -37,28 +37,19 @@ result readers receive batches from tasks running on it.
 2. `src/query` submits the query. Ordinary queries use `jobs.query`, which lets short queries
    return their rows without creating a job. Dry runs and options that need a job use
    `jobs.insert`. Submission, polling and recovery after a lost response are in `src/query/direct`.
-3. `src/query/reader.rs` picks where the rows come from once the query completes. A result that
-   fits in the first response is decoded from REST JSON. A paginated result, or a row too large
-   for REST, is read through Storage Read. If Storage Read is disabled or unavailable, the driver
-   pages through REST instead.
+3. Once the query completes, `src/query/reader.rs` selects a reader from its first result page.
+   A complete page is decoded from REST JSON. A continuation token or a row too large for REST
+   selects Storage Read. If Storage Read is disabled or a permitted fallback applies, the driver
+   pages through REST instead; a row over REST's limit still fails. The
+   [reference](REFERENCE.md#reading-large-results-through-the-storage-read-api) lists fallback
+   conditions.
 4. Both paths produce the same Arrow schema. `src/types/schema.rs` derives it from BigQuery's REST
    schema. `src/rows` decodes JSON rows against it, and `src/storage_read` reshapes Arrow batches
-   into it, so a client cannot tell which path served a query.
+   into it.
 5. `src/pipeline.rs` hands batches from the asynchronous producers to the synchronous Arrow
-   reader, with bounds on buffered batches and bytes. Dropping the reader cancels the work. Small
-   complete results skip it and convert lazily.
-
-```mermaid
-flowchart LR
-    submit["Submit<br/>src/query"] --> done{"Complete in<br/>first response?"}
-    done -- yes --> json["Decode JSON rows<br/>src/rows"]
-    done -- no --> session["Open read session<br/>src/storage_read"]
-    session --> ipc["Decode Arrow IPC<br/>src/arrow_ipc_bigquery"]
-    ipc --> reshape["Reshape to the<br/>canonical schema"]
-    json --> arrow["Arrow reader"]
-    reshape --> pipeline["Bounded delivery<br/>src/pipeline.rs"]
-    pipeline --> arrow
-```
+   reader, with budgets for buffered batches and bytes. Dropping the reader cancels the work.
+   Complete pages of at most 32 rows and 4 KiB skip the pipeline and convert on the first read;
+   empty results need no conversion.
 
 `src/arrow_ipc_bigquery` is a small Arrow IPC codec covering only what BigQuery sends and accepts,
 including LZ4 frames. It replaces the general-purpose `arrow-ipc` crate to keep the library small
@@ -98,12 +89,16 @@ then writes through the Storage Write API:
 - **Library size matters.** The driver is loaded into other processes, so dependencies and their
   features are chosen deliberately, and `Cargo.toml` sets an optimization level per dependency.
   [BINARY-SIZE.md](BINARY-SIZE.md) records the measurements.
-- **Unsafe code stays in `src/ffi`.** The crate denies `unsafe_code` everywhere else. Every entry
-  point catches panics and turns them into ADBC errors.
+- **Unsafe code stays in the `ffi` module.** The crate denies `unsafe_code` everywhere else. The
+  export layer catches panics before they cross the C ABI and reports them as ADBC errors.
 - **Errors never echo credentials or row contents.** Credentials can arrive under any option key,
   so option errors leave values out.
-- **Memory stays bounded.** Result delivery limits buffered bytes and batches, and ingestion
-  converts one request-sized window at a time.
+- **Backpressure limits queued work.** Result readers have separate budgets for completed
+  batches and pending REST conversion inputs; each allows one oversized batch to proceed.
+  Response pages, conversions in progress and batches returned to the caller are outside the
+  completed-batch budget, so it is not a process memory limit. Ingestion converts one
+  request-sized window at a time. See the
+  [buffering rules](REFERENCE.md#reading-large-results-through-the-storage-read-api).
 
 ## Tests
 

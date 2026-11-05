@@ -10,43 +10,15 @@
 
 An [Arrow Database Connectivity (ADBC)](https://arrow.apache.org/adbc/current/format/specification.html)
 driver for Google BigQuery, written in Rust. One native library gives Python, C, C++ and Rust
-programs, and ADBC clients such as DuckDB and dbt, columnar access to BigQuery with no Go or Java
-runtime in the process.
-
-```python
-from bigquery_adbc import dbapi
-
-with dbapi.connect("bigquery:///my-project", autocommit=True) as connection:
-    with connection.cursor() as cursor:
-        cursor.execute("""
-            SELECT word, SUM(word_count) AS total
-            FROM `bigquery-public-data.samples.shakespeare`
-            GROUP BY word ORDER BY total DESC LIMIT 3
-        """)
-        print(cursor.fetch_arrow_table())
-```
-
-## Highlights
-
-- **Arrow in and out.** Large results stream over the BigQuery Storage Read API as LZ4-compressed
-  Arrow. Bulk ingestion streams Arrow through the Storage Write API. Small results use REST and
-  come back with the same schema and values.
-- **Small and self-contained.** The Linux x86-64 library is about 8.4 MiB, against 43 MiB for the
-  stripped Go driver ([measurements](docs/GO-DRIVER-COMPARISON.md#artifact-size)). PyPI wheels
-  cover Linux, macOS and Windows, with one wheel per platform for every supported Python version.
-- **Fast under dbt.** A live 13-model, 26-test `dbt build` took a median 8.6 s, against 23.9 s with
-  dbt's opt-in Go driver ([method and caveats](docs/PERFORMANCE.md#live-dbt-workload)).
-- **Careful at the C boundary.** The compiler confines unsafe Rust to [`src/ffi/`](src/ffi.rs),
-  panics are caught before they reach the ABI, and CI runs Miri and fuzzers on every build.
-- **Errors that say what to do.** Failures carry ADBC statuses, SQLSTATEs and structured details.
-  A misspelled option gets a "did you mean", and missing credentials name the fix.
+programs, and ADBC clients such as DuckDB and dbt, columnar access to BigQuery. Python wheels
+bundle the library for Linux, macOS and Windows.
 
 ## Status
 
 The driver supports the ADBC 1.0 and 1.1 C interfaces and GoogleSQL:
 
-- Queries and scripts with Arrow results, read over REST or, for large results, the BigQuery
-  Storage Read API.
+- Queries and scripts with Arrow results. Complete result pages are decoded from REST JSON;
+  paginated results use the BigQuery Storage Read API when available.
 - Query parameters bound from Arrow, positional (`?`) or named (`@name`).
 - Bulk ingestion through the BigQuery Storage Write API, in all four ADBC ingest modes.
 - Metadata: `GetObjects`, `GetTableSchema`, `GetTableTypes`, `GetStatistics` and `GetInfo`.
@@ -58,6 +30,10 @@ Legacy SQL, load jobs for ADBC bulk ingestion, incremental execution and tempora
 are not supported. dbt CSV seeds use a separate [load-job path](docs/DBT-CORE.md#csv-seeds).
 See the [known limitations](docs/LIMITATIONS.md) and the
 [differences from the Go driver](docs/GO-DRIVER-COMPARISON.md), the reference implementation.
+
+For measured library sizes and dbt timings, see [binary size](docs/BINARY-SIZE.md) and
+[performance](docs/PERFORMANCE.md#live-dbt-workload). Those results describe the recorded builds
+and workloads, not performance guarantees.
 
 ## Quickstart
 
