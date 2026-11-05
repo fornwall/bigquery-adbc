@@ -14,6 +14,9 @@ changes.
 
 ### Changed
 
+- The native library shares transaction-control and connection-cleanup task machinery to reduce
+  binary size.
+
 - Storage Write validation reuses sliced list offsets unless the list needs normalization,
   avoiding offset-buffer copies for canonical arrays.
 

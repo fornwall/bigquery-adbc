@@ -109,6 +109,7 @@ least the `warn` cap, 44,800 bytes more.
 | `ffi::handle::dispatch` takes `&mut dyn FnMut`; metadata column builders take `&mut dyn Iterator`; three metadata paths lose a type parameter | -86,120 |
 | Cancellation retry and Dataproc submission take `dyn` closures | -4,712; -2,144 |
 | Spawned futures boxed as task types Tokio already instantiates (`DetachedTask`, `ProducerTask`) | -15,328; -12,640; -8,064 |
+| Session creation, transaction control and asynchronous connection cleanup share one boxed blocking-task type | -16,880 |
 | Boxing that shares no existing instantiation grows the file: `tables.get` fan-out task, `Operation::wait` | +1,504; +5,856 |
 | Per-package `opt-level`: control-plane crates at `"z"`, the HTTP and TLS stream glue at `"s"`, data-path crates at 3. Versus no per-package levels; versus the same crates at 14 `"z"` and 56 `"s"` | -1,177,480; -67,168 |
 | No overflow checks in dependencies except the four `arrow-*` crates whose arithmetic feeds `unsafe` indexing | -105,256 |
@@ -131,6 +132,36 @@ The data-path crates at `opt-level` 3 are this crate, `arrow-*`, `serde_json`, `
 moving it to `"z"` too would save 9,216 bytes. Measure a new entry with a paired build. A
 root-package override (`[profile.release.package.bigquery-adbc]`) silently disables `strip = true`
 and ships a 15 MB library; the `"*"` spelling does not.
+
+### Shared transaction blocking tasks
+
+`DriverRuntime::spawn_detached_blocking` takes `Box<dyn FnOnce() + Send>`, so session creation,
+`BEGIN`/`COMMIT`/`ROLLBACK` control and connection cleanup share Tokio's blocking-task machinery.
+The existing channels still carry results and preserve cancellation cleanup. This adds one
+closure allocation per dispatched control or cleanup task; query submission and row conversion
+keep their existing task types.
+
+A paired build of `0d223a6` and the same tree with only this change in `src/runtime.rs`,
+`src/transaction.rs` and `src/connection/transactions.rs` measured:
+
+| Metric | Before | Shared task | Delta |
+| --- | ---: | ---: | ---: |
+| Stripped artifact bytes | 8,859,344 | 8,842,464 | -16,880 (-0.19%) |
+| `.text` | 6,469,958 | 6,458,566 | -11,392 |
+| `.eh_frame` | 760,052 | 758,908 | -1,144 |
+
+Both builds used Rust 1.99.1, default features, `x86_64-unknown-linux-gnu`, the checked-in
+release profile and the same scratch source path. Symbols were retained for inspection, then
+both libraries were stripped with the same tool. Reproduce on each tree with:
+
+```sh
+CARGO_PROFILE_RELEASE_STRIP=none CARGO_TARGET_DIR=target/size-review \
+  cargo rustc --locked --release --lib --crate-type cdylib
+llvm-strip --strip-all -o target/size-review/driver-stripped.so \
+  target/size-review/release/libadbc_driver_bigquery.so
+stat -c '%s' target/size-review/driver-stripped.so
+llvm-size -A target/size-review/driver-stripped.so
+```
 
 ### Shared option-name matching
 
@@ -180,6 +211,7 @@ wheel links with GNU ld, which has no `--icf`, so an override keeps only the rem
 | `-Wl,--no-eh-frame-hdr` | -168,208 | A caught panic aborts the host. |
 | Sharing the complete enum-value rejection, with the wrong-type formatter out of line | +928 | Grows the file. |
 | Marking five error-conversion boundaries cold and out of line | +256 | Within path/metadata noise. |
+| Marking eight credential rejection formatters and three option refusal constructors cold and out of line | +1,000 | `.text` falls by 1,088 bytes, but unwind metadata grows. |
 | Sharing option-typo search over static name slices | +32 | Cuts `.text` by 1,472 bytes, but the static name-table relocations offset the saving. |
 | Stack-pinning `Operation::wait`'s input behind a helper taking `Pin<&mut (dyn Future<Output = T> + Send)>` | +1,624 | The virtual polling boundary grows the file even without boxing, and the awaited futures must be `Send`. |
 | Also erasing that output to `()` through a borrowed `Option`, as the synchronous runtime bridge does | +11,592 | As above, and their results must be `Send` too. |

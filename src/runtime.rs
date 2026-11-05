@@ -48,6 +48,13 @@ impl DriverRuntime {
         output.expect("the erased future stores its output before it completes")
     }
 
+    /// Share Tokio's blocking-task machinery across session-control and cleanup tasks.
+    /// Session-control tasks report their outcomes through their own channels.
+    pub(crate) fn spawn_detached_blocking(&self, work: Box<dyn FnOnce() + Send>) {
+        let runtime: &Runtime = self;
+        runtime.spawn_blocking(work);
+    }
+
     fn block_on_erased(&self, future: Pin<&mut dyn Future<Output = ()>>) {
         let runtime: &Runtime = self;
         block_in_place(|| runtime.block_on(future));

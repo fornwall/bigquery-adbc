@@ -108,9 +108,11 @@ impl Drop for BigQueryConnection {
         };
         if tokio::runtime::Handle::try_current().is_ok() {
             let context = self.context.clone();
-            self.context.runtime.spawn_blocking(move || {
-                Self::release_session(&context, &release);
-            });
+            self.context
+                .runtime
+                .spawn_detached_blocking(Box::new(move || {
+                    Self::release_session(&context, &release);
+                }));
         } else {
             Self::release_session(&self.context, &release);
         }

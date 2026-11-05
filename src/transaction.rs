@@ -658,21 +658,23 @@ impl<'a> TransactionContext<'a> {
             .zip(self.defaults.db_schema)
             .map(|(project_id, dataset_id)| (project_id.clone(), Arc::from(dataset_id)));
         let (created, mut receiver) = oneshot::channel();
-        self.context.runtime.spawn_blocking(move || {
-            let location = context
-                .location
-                .clone()
-                .or_else(|| dataset_location(&context, &default_dataset?));
-            let session = create_session(
-                &context.runtime,
-                &context.state,
-                context.billing_project_id.as_ref(),
-                location.as_deref(),
-            );
-            if let Err(Ok(session_id)) = created.send(session) {
-                TransactionContext::new(&context, context.defaults()).abort(&session_id);
-            }
-        });
+        self.context
+            .runtime
+            .spawn_detached_blocking(Box::new(move || {
+                let location = context
+                    .location
+                    .clone()
+                    .or_else(|| dataset_location(&context, &default_dataset?));
+                let session = create_session(
+                    &context.runtime,
+                    &context.state,
+                    context.billing_project_id.as_ref(),
+                    location.as_deref(),
+                );
+                if let Err(Ok(session_id)) = created.send(session) {
+                    TransactionContext::new(&context, context.defaults()).abort(&session_id);
+                }
+            }));
         match self.context.runtime.block_on(operation.wait(&mut receiver)) {
             Ok(Ok(session)) => session,
             Ok(Err(_)) => Err(driver_defect(format_args!(
@@ -701,15 +703,17 @@ impl<'a> TransactionContext<'a> {
         let context = self.context.clone();
         let session_id = session_id.clone();
         let (finished, receiver) = oneshot::channel();
-        self.context.runtime.spawn_blocking(move || {
-            let outcome = TransactionContext::new(&context, context.defaults()).execute(
-                None,
-                &session_id,
-                sql,
-            );
-            // The caller stopped waiting at the deadline and reports the outcome as unknown.
-            let _ = finished.send(outcome);
-        });
+        self.context
+            .runtime
+            .spawn_detached_blocking(Box::new(move || {
+                let outcome = TransactionContext::new(&context, context.defaults()).execute(
+                    None,
+                    &session_id,
+                    sql,
+                );
+                // The caller stopped waiting at the deadline and reports the outcome as unknown.
+                let _ = finished.send(outcome);
+            }));
         // The timer is created inside the runtime, which it needs.
         match self
             .context
