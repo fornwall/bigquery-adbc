@@ -58,7 +58,7 @@ Update the relevant documentation with behavior changes:
 | [docs/GO-DRIVER-COMPARISON.md](docs/GO-DRIVER-COMPARISON.md) | All differences from the Go driver, including bugs, missing features, and deliberate differences. Also record behavior inherited by the dbt-labs fork from Go here. |
 | [docs/DBT-CORE.md](docs/DBT-CORE.md) | Behavior specific to the `dbt-labs/bigquery-adbc` fork. |
 | [docs/UPSTREAM.md](docs/UPSTREAM.md) | Relevant issues in dependencies only. Submit upstream fixes when practical. |
-| [docs/REVIEW.md](docs/REVIEW.md) | Open limitations and validation gaps; keep completed work in git history. |
+| [docs/LIMITATIONS.md](docs/LIMITATIONS.md) | Open limitations and validation gaps; keep completed work in git history. |
 
 Support performance and binary-size claims with measurements and reproducible commands in
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) or [docs/BINARY-SIZE.md](docs/BINARY-SIZE.md).

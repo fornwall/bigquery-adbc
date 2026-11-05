@@ -6,7 +6,7 @@ Storage Write API. The wheels bundle a native Rust driver, so there is nothing e
 Requires Python 3.11 or newer.
 
 This project is experimental and AI-generated, and has not seen real-world use.
-See the [known limitations](https://github.com/fornwall/bigquery-adbc/blob/main/docs/REVIEW.md).
+See the [known limitations](https://github.com/fornwall/bigquery-adbc/blob/main/docs/LIMITATIONS.md).
 
 ## Install
 

@@ -243,7 +243,7 @@ cleanup connections. A missing or invalid endpoint fails configuration. These va
 only the Rust and Python test suites; applications use the driver's endpoint options. The C++,
 Foundry, DuckDB and dbt integration runners still require Google Cloud.
 
-Other tests can fail on [emulator gaps or missing fixtures](docs/REVIEW.md#emulator-coverage);
+Other tests can fail on [emulator gaps or missing fixtures](docs/LIMITATIONS.md#emulator-coverage);
 they retain their BigQuery assertions. Credential, IAM and Cloud Storage tests refuse emulator
 mode. Emulator tests do not validate Google Cloud IAM, quotas or billing behavior.
 
@@ -259,7 +259,7 @@ The active [Go driver](https://github.com/adbc-drivers/bigquery/tree/main/go) is
 implementation. Document behavior in [REFERENCE.md](docs/REFERENCE.md), differences from Go in
 [GO-DRIVER-COMPARISON.md](docs/GO-DRIVER-COMPARISON.md), dbt-labs fork behavior in
 [DBT-CORE.md](docs/DBT-CORE.md), dependency issues in [UPSTREAM.md](docs/UPSTREAM.md), and open
-limitations in [REVIEW.md](docs/REVIEW.md).
+limitations in [LIMITATIONS.md](docs/LIMITATIONS.md).
 
 ## Distribution packaging
 

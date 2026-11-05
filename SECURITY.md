@@ -20,6 +20,6 @@ how to reproduce it, and remove real credentials and private data.
 - **Decoding server responses:** memory unsafety, crashes or unbounded resource use when decoding
   malformed Arrow IPC or REST JSON.
 
-Behavior described in the [known limitations](docs/REVIEW.md) or as an open exposure in the
+Behavior described in the [known limitations](docs/LIMITATIONS.md) or as an open exposure in the
 endpoint rules is not a vulnerability, unless its impact is worse than documented. Report a
 dependency's vulnerability to that project, unless the driver's use of the dependency causes it.

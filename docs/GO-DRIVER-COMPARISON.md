@@ -884,7 +884,7 @@ defects return `INVALID_ARGUMENT`, naming the column where possible; the stateme
 rejected inputs are released, as adbc.h requires. Imported values then undergo Arrow's full
 validation. These checks still require
 valid producer-owned memory: the C Data Interface carries no allocation lengths, so the driver
-cannot prove buffer capacity or make arbitrary pointers safe ([native API limitations](REVIEW.md#native-api)).
+cannot prove buffer capacity or make arbitrary pointers safe ([native API limitations](LIMITATIONS.md#native-api)).
 
 Required output pointers are checked for null before any request. A null handle returns
 `INVALID_ARGUMENT` where Go returns `INVALID_STATE`; rows that are null as a whole are rejected,
