@@ -1,8 +1,27 @@
 # Contributing
 
-For bug reports, include the driver revision, operating system, client and driver-manager
-versions, a minimal query or Arrow schema, and the error. Remove credentials and private data.
-Report vulnerabilities privately, as described in [SECURITY.md](SECURITY.md).
+Thanks for taking a look at bigquery-adbc. Bug reports, fixes and improvements are welcome. The
+project is experimental and has a single maintainer, so please open an issue before starting
+anything large.
+
+For bug reports, use the [issue form](https://github.com/fornwall/bigquery-adbc/issues/new/choose),
+and remove credentials and private data. Report vulnerabilities privately, as described in
+[SECURITY.md](SECURITY.md).
+
+## Getting started
+
+Install [Rust](https://rustup.rs/); `rust-toolchain.toml` selects the pinned toolchain on the first
+build. Python changes also need [uv](https://docs.astral.sh/uv/). The offline test suite needs no
+Google Cloud account or credentials:
+
+```sh
+git clone https://github.com/fornwall/bigquery-adbc
+cd bigquery-adbc
+cargo test --locked --all-features
+```
+
+[ARCHITECTURE.md](docs/ARCHITECTURE.md) explains how the code fits together, and
+[`examples/`](examples) has a small program for each supported language.
 
 ## Building
 
@@ -15,64 +34,6 @@ cargo rustc --release --locked --lib --crate-type cdylib
 ```
 
 The integration runners below build the library or a wheel themselves.
-
-## Distribution packaging
-
-Build native release archives with the same license bundle as the Python wheels:
-
-```sh
-uv run --project python --locked python tools/package_native.py
-```
-
-The command builds the release cdylib with locked dependencies, checks its ADBC exports, and
-writes a platform-named archive in `dist/` (`.tar.gz` on Linux/macOS, `.zip` on Windows).
-The archive contains the library, `LICENSE`, `NOTICE`, and `licenses/` with the dependency
-texts, Rust standard-library notices, and a source inventory. `--output-dir` selects another
-directory. `--library /absolute/path/to/library` packages an existing library; it must have been
-built from this checkout's locked dependencies and pinned Rust toolchain. The Python wheel's
-`BIGQUERY_ADBC_BUILD_LIBRARY` override has the same provenance requirement.
-
-After changing `Cargo.toml`, `Cargo.lock`, or the pinned Rust version, regenerate the checked-in
-bundle. A change to this crate's own version alone needs no regeneration:
-
-```sh
-python3 tools/generate_licenses.py
-python3 tools/generate_licenses.py --check
-```
-
-Generation uses locked Cargo metadata for the five release targets, traversing normal and build
-dependencies, including nested license/notice files and leading source copyright notices.
-It conservatively includes build dependencies and platform-specific components; it is not a list
-of code proven to survive linking. Identical texts are stored once and referenced by hash.
-The compiler's `COPYRIGHT-library.html` supplies the Rust standard-library notices. Generation
-needs the pinned compiler and dependency sources (Cargo may download them); packaging validates
-the checked-in input and content hashes without running the generator or accessing the network.
-Source distributions include the bundle and regeneration tools.
-
-Review licensing when adding dependencies. A missing license text fails generation: add a
-reviewed copy under `tools/license-sources/` and record its exact upstream revision and URL in
-`sources.json` when the published crate omits it. Existing supplements are checked against the
-crate's Cargo VCS metadata. CI regenerates and compares the bundle, and package builds reject
-stale or damaged copies. These checks preserve collected notices; they do not establish rights
-to new source material or replace review of unusual license terms.
-
-## Releasing
-
-Pushing a `vX.Y.Z` tag runs the [wheel workflow](.github/workflows/wheels.yml), which publishes the
-wheels and source distribution to PyPI once CI and every platform build have passed on the tagged
-commit. CI builds and tests a wheel from the same source archive that gets published. The tag must
-match the `version` in `Cargo.toml`, the package's single version source:
-
-```sh
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-PyPI never accepts a version twice, so a bad release needs a new version; re-running the workflow
-only finishes an interrupted upload. Publishing uses
-[Trusted Publishing](https://docs.pypi.org/trusted-publishers/) from the `pypi` GitHub environment,
-which only `v*` tags can deploy to; no token is stored. Other tag forms, including pre-releases, do
-not publish.
 
 ## Local checks
 
@@ -111,8 +72,8 @@ scripts/run-python-lint.sh
 scripts/run-offline-python-tests.sh
 ```
 
-The [Python guide](python/README.md#local-tests) covers individual suites and loading a local
-driver build. Offline unit tests for the dbt runner live in
+The [Python development guide](python/DEVELOPMENT.md#local-tests) covers individual suites and
+loading a local driver build. Offline unit tests for the dbt runner live in
 [`tests/harness/test_dbt_runner.py`](tests/harness/test_dbt_runner.py); the dbt integration project
 and live runner are in [`integration/dbt/`](integration/dbt/README.md).
 
@@ -177,8 +138,8 @@ Application Default Credentials (ADC); configure these with
 
 Every integration suite, including Rust, Python, C++ validation, Foundry, DuckDB, dbt and
 its benchmarks, requires `BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT`. There is no project
-default: missing or empty values fail before cloud access. The old `ADBC_BIGQUERY_PROJECT` and
-`DBT_BIGQUERY_PROJECT` variables and the active gcloud project do not select the test project.
+default: missing or empty values fail before cloud access, and the active gcloud project does not
+select the test project.
 
 ```sh
 export BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT=my-test-project
@@ -230,7 +191,7 @@ These runners cover other credential types:
 
 The account names default to `bigquery-adbc-integration` and `bigquery-adbc-no-readsession`
 in the selected project; set the account variables to use different service accounts.
-Client integration suites have their own guides: [Python](python/README.md#local-tests),
+Client integration suites have their own guides: [Python](python/DEVELOPMENT.md#local-tests),
 [ADBC C++ validation](integration/adbc-validation/README.md),
 [Driver Foundry](integration/foundry-validation/README.md), [dbt](integration/dbt/README.md), and
 [DuckDB](integration/duckdb/README.md). `cargo test --locked --test clients -- --ignored` runs the
@@ -239,8 +200,8 @@ as `duckdb`, to run one. `PYTEST_ADDOPTS` passes options to the pytest suites.
 
 ## BigQuery emulator
 
-The Rust `tests/bigquery/` and Python DBAPI suites can opt into a local BigQuery emulator, such as
-[smallquery](https://github.com/fornwall/smallquery). Real BigQuery remains the default.
+The Rust `tests/bigquery/` and Python DBAPI suites can opt into a local BigQuery emulator. Real
+BigQuery remains the default.
 Start a fresh emulator and run six existing smoke tests covering queries, dry runs, nested
 results, parameters, Storage Read and Storage Write:
 
@@ -299,3 +260,62 @@ implementation. Document behavior in [REFERENCE.md](docs/REFERENCE.md), differen
 [GO-DRIVER-COMPARISON.md](docs/GO-DRIVER-COMPARISON.md), dbt-labs fork behavior in
 [DBT-CORE.md](docs/DBT-CORE.md), dependency issues in [UPSTREAM.md](docs/UPSTREAM.md), and open
 limitations in [REVIEW.md](docs/REVIEW.md).
+
+## Distribution packaging
+
+Build native release archives with the same license bundle as the Python wheels:
+
+```sh
+uv run --project python --locked python tools/package_native.py
+```
+
+The command builds the release cdylib with locked dependencies, checks its ADBC exports, and
+writes a platform-named archive in `dist/` (`.tar.gz` on Linux/macOS, `.zip` on Windows).
+The archive contains the library, `LICENSE`, `NOTICE`, and `licenses/` with the dependency
+texts, Rust standard-library notices, and a source inventory. `--output-dir` selects another
+directory. `--library /absolute/path/to/library` packages an existing library; it must have been
+built from this checkout's locked dependencies and pinned Rust toolchain. The Python wheel's
+`BIGQUERY_ADBC_BUILD_LIBRARY` override has the same provenance requirement.
+
+After changing `Cargo.toml`, `Cargo.lock`, or the pinned Rust version, regenerate the checked-in
+bundle. A change to this crate's own version alone needs no regeneration:
+
+```sh
+python3 tools/generate_licenses.py
+python3 tools/generate_licenses.py --check
+```
+
+Generation uses locked Cargo metadata for the five release targets, traversing normal and build
+dependencies, including nested license/notice files and leading source copyright notices.
+It conservatively includes build dependencies and platform-specific components; it is not a list
+of code proven to survive linking. Identical texts are stored once and referenced by hash.
+The compiler's `COPYRIGHT-library.html` supplies the Rust standard-library notices. Generation
+needs the pinned compiler and dependency sources (Cargo may download them); packaging validates
+the checked-in input and content hashes without running the generator or accessing the network.
+Source distributions include the bundle and regeneration tools.
+
+Review licensing when adding dependencies. A missing license text fails generation: add a
+reviewed copy under `tools/license-sources/` and record its exact upstream revision and URL in
+`sources.json` when the published crate omits it. Existing supplements are checked against the
+crate's Cargo VCS metadata. CI regenerates and compares the bundle, and package builds reject
+stale or damaged copies. These checks preserve collected notices; they do not establish rights
+to new source material or replace review of unusual license terms.
+
+## Releasing
+
+Pushing a `vX.Y.Z` tag runs the [wheel workflow](.github/workflows/wheels.yml), which publishes the
+wheels and source distribution to PyPI once CI and every platform build have passed on the tagged
+commit. CI builds and tests a wheel from the same source archive that gets published. The tag must
+match the `version` in `Cargo.toml`, the package's single version source. Move the
+[changelog](CHANGELOG.md)'s unreleased entries under the new version first:
+
+```sh
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+PyPI never accepts a version twice, so a bad release needs a new version; re-running the workflow
+only finishes an interrupted upload. Publishing uses
+[Trusted Publishing](https://docs.pypi.org/trusted-publishers/) from the `pypi` GitHub environment,
+which only `v*` tags can deploy to; no token is stored. Other tag forms, including pre-releases, do
+not publish.

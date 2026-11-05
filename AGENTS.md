@@ -1,8 +1,9 @@
 # Agent guide
 
 This is a Rust ADBC driver for BigQuery, with a C interface and Python packaging.
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and validation commands, and
-[docs/REFERENCE.md](docs/REFERENCE.md) for public behavior and options.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and validation commands,
+[docs/REFERENCE.md](docs/REFERENCE.md) for public behavior and options, and
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the code fits together.
 
 ## Implementation rules
 
@@ -51,7 +52,9 @@ Update the relevant documentation with behavior changes:
 
 | File | What belongs there |
 | --- | --- |
+| [CHANGELOG.md](CHANGELOG.md) | User-visible changes, under Unreleased until a release. |
 | [docs/REFERENCE.md](docs/REFERENCE.md) | Public options, type mappings, and driver behavior. |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Code structure and data flow; update it when modules change roles. |
 | [docs/GO-DRIVER-COMPARISON.md](docs/GO-DRIVER-COMPARISON.md) | All differences from the Go driver, including bugs, missing features, and deliberate differences. Also record behavior inherited by the dbt-labs fork from Go here. |
 | [docs/DBT-CORE.md](docs/DBT-CORE.md) | Behavior specific to the `dbt-labs/bigquery-adbc` fork. |
 | [docs/UPSTREAM.md](docs/UPSTREAM.md) | Relevant issues in dependencies only. Submit upstream fixes when practical. |

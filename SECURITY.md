@@ -1,7 +1,7 @@
 # Security policy
 
 bigquery-adbc is an experimental project with a single maintainer, and there is no guaranteed
-response time. Nothing has been released, so only the latest `main` is supported.
+response time. Only the latest release and `main` are supported.
 
 ## Reporting a vulnerability
 
