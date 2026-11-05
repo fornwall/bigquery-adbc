@@ -9,6 +9,53 @@ use super::{
 use crate::rest::request::{Request, send};
 use crate::test_support::errors::assert_message;
 
+#[test]
+fn redirects_cannot_replay_requests_at_another_endpoint() {
+    use std::io::Write as _;
+
+    use crate::test_support::http::{
+        accept, capture_requests_until_stopped, loopback_listener, read_captured_request,
+    };
+
+    let runtime = crate::runtime::new_runtime().unwrap();
+    let client =
+        super::build_client("redirect test", reqwest::Client::builder().no_proxy()).unwrap();
+    let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
+    for status in [301, 302, 303, 307, 308] {
+        let (target, redirected) =
+            capture_requests_until_stopped(vec![(200, serde_json::json!({}))]);
+        let listener = loopback_listener();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut stream = accept(&listener, None).unwrap();
+            let request = read_captured_request(&mut stream).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 {status} Redirect\r\nLocation: {target}/untrusted\r\n\
+                 Content-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            request
+        });
+        let result = runtime.block_on(send(
+            None,
+            &credentials,
+            &client,
+            Request::post_json(
+                &endpoint,
+                r#"{"query":"SELECT 'private data'"}"#,
+                "run query",
+            ),
+        ));
+        let original = server.join().unwrap();
+        let redirected = redirected.stop();
+        assert!(redirected.is_empty(), "HTTP {status} followed a redirect");
+        assert_eq!(original.sql(), "SELECT 'private data'");
+        assert_eq!(result.unwrap().0.as_u16(), status);
+    }
+}
+
 /// HTTP/2 prior knowledge matches production's ALPN without test certificates. A refused stream,
 /// which reqwest may replay for any method, primes the pool as HTTP/2; the server then holds both
 /// concurrent responses until it has seen both streams, which HTTP/1.1 could not carry on one

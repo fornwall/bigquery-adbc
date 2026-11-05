@@ -708,6 +708,10 @@ with no equivalent in Go: it uses a URI host as its endpoint and hands documents
 library unchecked, and the fork inherits both. dbt sets no URI, but the fork passes on a document
 naming an emulator or proxy, which is refused here.
 
+Driver-issued REST requests refuse HTTP redirects, keeping SQL and upload bodies at the configured
+endpoint. Go inherits its HTTP client's default redirect policy. SDK OAuth and STS exchanges remain
+an exception here ([UP-100](UPSTREAM.md#up-100-sdk-token-exchanges-follow-redirects)).
+
 ### G15. The batch-count result buffer option is not exposed
 
 `bigquery.query.result_buffer_size` and its alias `adbc.bigquery.sql.query.result_buffer_size` are

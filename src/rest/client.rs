@@ -259,6 +259,8 @@ pub(crate) fn user_agent(caller: Option<&str>) -> Cow<'static, str> {
 /// shared connection (UP-94).
 fn build_client(what: &str, builder: reqwest::ClientBuilder) -> Result<RestClient> {
     builder
+        // Redirects can replay SQL and upload bodies outside the configured endpoint.
+        .redirect(reqwest::redirect::Policy::none())
         // Google API hosts negotiate HTTP/2 via ALPN. An adaptive receive window lets a large
         // result page use the available bandwidth without reserving a large window for every
         // small control-plane response on the shared connection.

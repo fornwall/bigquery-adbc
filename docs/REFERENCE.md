@@ -661,10 +661,11 @@ not checked.
 `bigquery.allow_untrusted_endpoint` must be set as a database option; a URI cannot relax any of
 these checks (G13 in the [Go driver comparison][go-comparison]).
 
-These checks cover the initial configured URL. The bundled auth library follows redirects during
-OAuth and STS exchanges; a 307/308 response can replay the credential-bearing body to another
-host ([UP-100](UPSTREAM.md#up-100-sdk-token-exchanges-follow-redirects)). Only the driver's custom
-external-account identity-provider request explicitly refuses redirects.
+Driver-issued REST requests and the custom external-account identity-provider request refuse
+redirects. The bundled auth library still follows redirects during OAuth and STS exchanges;
+a 307/308 response can replay the credential-bearing body to another host
+([UP-100](UPSTREAM.md#up-100-sdk-token-exchanges-follow-redirects)). Endpoint checks cover only the
+initial URL for those exchanges.
 
 ### Table statistics
 

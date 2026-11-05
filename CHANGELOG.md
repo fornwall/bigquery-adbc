@@ -28,6 +28,8 @@ changes.
 
 ### Fixed
 
+- REST requests refuse redirects, preventing query and upload bodies from being forwarded beyond
+  the configured endpoint.
 - Ingest rejects equal or reversed RANGE bounds before an invalid first batch can create or
   replace the target table.
 - `GetObjects` reports repeated columns as non-nullable in both XDBC nullability fields.
