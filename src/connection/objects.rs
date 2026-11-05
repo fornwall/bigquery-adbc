@@ -174,23 +174,17 @@ fn build_columns(columns: &[&ObjectColumn]) -> Result<StructArray> {
                     && BigQueryType::from_rest(&column.field.r#type) == Some(BigQueryType::Bytes)
             })
     }));
-    let nullable = int16_column(
-        &mut columns
-            .iter()
-            .map(|column| i16::from(column.is_nullable())),
-    );
+    let nullable = int16_column(&mut columns.iter().map(|column| i16::from(column.is_nullable())));
     let defaults = optional_string_column(
         &mut columns
             .iter()
             .map(|column| column.field.default_value_expression.as_deref()),
     );
-    let is_nullable = string_column(&mut columns.iter().map(|column| {
-        if column.is_nullable() {
-            "YES"
-        } else {
-            "NO"
-        }
-    }));
+    let is_nullable = string_column(
+        &mut columns
+            .iter()
+            .map(|column| if column.is_nullable() { "YES" } else { "NO" }),
+    );
     // Known false rather than null: GoogleSQL has no identity or autoincrement columns.
     let is_autoincrement = boolean_column(&mut std::iter::repeat_n(false, columns.len()));
     let is_generated = boolean_column(
