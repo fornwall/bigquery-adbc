@@ -61,8 +61,9 @@ Measuring a change:
   `BENCH_COUNT=wide/convert/1024 perf stat -e instructions:u <binary>` runs that case 1,000 times.
   Process counts include fixture setup, input preparation and harness overhead. A `convert` count
   includes decoding its input, so subtract the matching `decode` count. Counts miss memory traffic,
-  so confirm with pinned timings: converting a column at a time ran fewer instructions and was
-  still slower (see the [historical optimization notes](#historical-optimization-notes)).
+  so confirm with pinned timings: converting REST rows a column at a time ran fewer instructions
+  in `wide/convert/1024` and was still slower (see
+  [rejected optimizations](#rejected-optimizations)).
 - Check timings as well as allocations. Several changes below cut time with bit-identical
   allocation counts.
 - The 1,024-row `coercing` cases sit in a ±12% code-alignment band: changing only an unrelated
@@ -78,8 +79,8 @@ Figures describe the code and workload measured, not necessarily the current che
 figure is the code preceding the change described, which this tree no longer contains, so the
 [benchmark commands](#reproducing) reproduce only the "after" side, in the rows each section names.
 Rerun both versions on the same machine when evaluating a change, and record the toolchain and CPU
-with new results. Earlier microbenchmark snapshots and optimization notes are collected under
-[historical measurements](#historical-measurements).
+with new results. Approaches that did not help are listed under
+[rejected optimizations](#rejected-optimizations).
 
 Native comparisons used Rust 1.99.1, locked dependencies and the release profile on Linux x86-64;
 timed ones ran on an AMD Ryzen 9 7950X3D, pinned to CPU 3 unless a section says otherwise. They
@@ -639,7 +640,8 @@ rereading the whole result. A REST page took a round trip plus about 20 µs per 
 The first completed response's continuation token selects Storage Read before any rows are
 delivered. A first page's average row width cannot rule out a later row exceeding REST's row
 limit. Complete first responses still use REST, and explicit disabling or an unavailable
-Storage Read session retains REST fallback.
+Storage Read session retains REST fallback. Selecting by total row count is a
+[rejected optimization](#rejected-optimizations).
 
 Measured against `example-project` in `US`, Linux x86-64, AMD Ryzen 9 7950X3D, Rust 1.99.1,
 `adbc_driver_manager` 1.12.0, and PyArrow 26.0.0. Both builds used the default features and the
@@ -802,102 +804,25 @@ Use `--collect-only` and the offline fixture-lint checks for discovery and fixtu
 `-k` selections for focused live validation. The complete suite still validates the committed
 collection and skip baselines; see the [Foundry guide](../integration/foundry-validation/README.md).
 
-## Historical measurements
+## Rejected optimizations
 
-The observations below come from early development, without recorded CPU models. They are retained
-as development notes, not a current baseline or reproducible evidence for the exact deltas.
-Use the [benchmark commands](#reproducing) for a new comparison. The three tables report
-nanoseconds per call at 1,024 rows; ranges span medians from separate runs.
+Approaches that were tried and did not help, kept so they are not retried without a new reason.
+These are notes rather than reproducible evidence: the rejected code is not in this tree, so
+reopening one means rebuilding it and measuring as described under [Reproducing](#reproducing).
 
-### REST result pages
-
-Minimum of the per-run medians over six runs pinned to one CPU:
-
-| Shape | Decode ns | Decode allocs / bytes | Convert ns | Convert allocs / bytes |
-| --- | ---: | ---: | ---: | ---: |
-| narrow | 154,155 | 1,033 / 114,656 | 33,113 | 15 / 29,980 |
-| wide | 1,015,025 | 1,035 / 573,728 | 256,084 | 108 / 239,032 |
-| typed | 1,178,872 | 4,107 / 681,440 | 478,866 | 78 / 237,854 |
-
-JSON decoding takes more CPU time than Arrow conversion in these cases. These measurements
-exclude the network; they do not establish the bottleneck for a live workload.
-
-### Ingest normalization
-
-| Case | Narrow ns | Wide ns | Narrow allocs / bytes | Wide allocs / bytes |
-| --- | ---: | ---: | ---: | ---: |
-| canonical | 999 | 10,139 | 0 | 0 |
-| calendar | 473–474 | 3,569–3,577 | 0 | 0 |
-| nested | 553 | 4,196 | 0 | 0 |
-| coercing | 1,934–1,939 | 15,457–15,460 | 7 / 12,716 | 51 / 101,664 |
-| list-gather | 14,266 | 117,775 | 35 / 108,184 | 273 / 865,472 |
-
-### Storage API IPC
-
-| Shape | Decode ns | Allocs / bytes | LZ4 decode ns | Allocs / bytes | Encode ns | Allocs / bytes |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| scalar | 2,063–2,073 | 9 / 616 | 5,817–5,829 | 17 / 22,476 | 587–593 | 3 / 22,024 |
-| nested | 4,814–4,836 | 24 / 2,368 | 12,263–12,379 | 34 / 50,016 | 1,124–1,163 | 7 / 48,344 |
-| deep | 19,916–19,950 | 66 / 6,192 | 50,445–50,682 | 80 / 208,328 | 3,639–3,654 | 15 / 203,592 |
-
-Uncompressed decode and encode allocate per array tree, so their counts are the same at one row.
-
-### Historical optimization notes
-
-These comparisons were recorded during development; their raw samples were not preserved.
-
-- The shipped library is built as a `cdylib` alone, so the release profile's fat LTO applies;
-  Cargo skips LTO for a target that also builds an `rlib`. Benchmark binaries without and with LTO,
-  minimum of eight alternating pinned `rest_rows` runs and three for the others: REST decode
-  169,155→153,840 ns narrow, 1,121,309→990,884 wide, 1,298,238→1,180,924 typed; deep IPC decode
-  23,212→20,557; canonical normalization 1,828→899 narrow and 12,610→7,378 wide. Other cases stayed
-  within noise.
-- REST scalar parsers read cell bytes instead of re-validating them as UTF-8: convert
-  60,977→56,357 ns narrow, 456,559→421,331 wide, 765,902→723,166 typed.
-- STRING, JSON and GEOGRAPHY cells are appended as bytes, and each column is checked as UTF-8 once
-  rather than per cell: convert instructions 670,000→483,000 narrow, 4.93M→3.48M wide.
-- Rows convert in order, and a scalar cell reaches a small per-type column through one virtual
-  call rather than two large match functions; an array's elements append as one run: convert
-  37,081→34,284 ns narrow, 278,739→256,084 wide, 572,669→478,866 typed. Converting a column at a
-  time cut wide convert instructions 28% but took 370,086 ns, because regrouping cells by column
-  moves the page through memory again.
-- Short REST strings are stored inline in the cell value: wide decode allocations 17,419→1,035
-  and about 9% less decode CPU.
-- Each row's cell vector is sized from the previous row: decode requested bytes fall 33–41%.
-- Decimal digits accumulate 18 at a time, and temporal and decimal spellings split on bytes: typed
-  convert 1,109,392→756,485 ns.
-- BYTES cells decode into a per-column scratch buffer: typed allocations 1,094→72.
-- REST builders reserve for the actual batch size: wide one-row requested bytes 242,520→13,368.
-- A flat per-page cell slab was rejected: it removed about 1,000 allocations per page, but typed
-  decode slowed 1.9% and convert 3.6%, and requested bytes rose 14–92%.
-- Row pages over 4 KiB decode on the blocking pool to keep synchronous JSON parsing off
-  runtime workers. No large-page timing is recorded here.
-- Already-canonical batches and unchanged nested structs are reused: canonical wide allocations
-  3→0; nested wide 48→0 and 4,695→4,196 ns.
-- Validators fold over value slices without an early exit, so they vectorize: canonical narrow
-  3,182→999 ns, wide 21,411→10,139 ns.
-- Calendar validation compares integer bounds: calendar wide 143,848–144,069→3,569–3,577 ns.
-- Sliced lists gather from their original children: list-gather wide allocations 321→273 and
-  requested bytes 933,952→865,472, with no established speedup.
-- The IPC reader keeps nested children as validated `ArrayData`, and the writer skips empty
-  validity buffers: deep decode allocations 139→66, deep encode 40→15.
-- LZ4 frames decode in place rather than through `lz4_flex::frame::FrameDecoder`: deep LZ4 decode
-  171,214–173,133→57,588–59,245 ns, scalar requested bytes 542,792→18,504.
-- Every response that carries rows asks for at most 100,000, `jobs.query`'s first page included,
-  so Storage Read does not reread a 350,000-row first page: see
-  [result pages and Storage Read](#result-pages-and-storage-read).
-- Complete first responses stay on REST. A total-count rule reread 100,000 narrow rows that the
-  first response already held, 3.9–4.2 s against 2.8–3.4 s over REST. A continuation token
-  selects Storage Read before any rows are delivered, because the first page cannot predict a
-  later row exceeding REST's size limit; its cost for small paginated results is
-  [measured separately](#choosing-storage-read-for-every-paginated-result).
-- Storage Write appends queue on the stream up to 30 MB or 1,000 requests: 200 batches of 1,024
-  rows took 2.8–2.9 s, against 11.8–11.9 s with at most three queued requests, over a residential
-  uplink (`scripts/run-one-live-test.sh bulk_ingests_many_small_batches --nocapture`).
-- A stream's first append, sent alone while a new table may still be invisible, aims for 1 MB
-  rather than a full request: one 500,000-row batch (15 MB) took 5.0–5.3 s against 5.6–6.1 s, in
-  alternating release runs of that test changed to one such batch.
-- Every REST request sends `prettyPrint=false`, since Google APIs indent JSON by default: a
-  10,000-row `jobs.getQueryResults` page of `bigquery-public-data.samples.shakespeare` shrank from
-  2,082,574 to 632,318 bytes, and `rest_rows` pages re-indented with `serde_json::to_string_pretty`
-  cost 39–52% more decode instructions.
+- Converting REST rows a column at a time ran fewer instructions than converting them in row order
+  in `wide/convert/1024`, and took longer, because regrouping cells by column moves the page
+  through memory again. The decoder produces one cell vector per row, which is why the cells need
+  regrouping.
+- A flat per-page cell slab, in place of a cell vector per row, removed about one allocation per
+  row, but typed decode and convert slowed slightly and requested bytes rose.
+- Selecting Storage Read by total row count reread rows that a complete first response already
+  held: 100,000 narrow rows took longer that way than staying on REST.
+- Allowing at most three queued Storage Write requests took much longer for 200 batches of 1,024
+  rows over a residential uplink, because that left the stream waiting on round trips. Appends
+  queue up to 30 MB or 1,000 requests instead.
+  `scripts/run-one-live-test.sh bulk_ingests_many_small_batches --nocapture` prints the elapsed
+  time for that workload.
+- A full-sized first Storage Write append took longer for one 500,000-row batch than aiming for
+  1 MB. That append is sent alone while a new table may still be invisible, so the rest of the
+  upload waits on its round trip.
