@@ -23,6 +23,37 @@ from _native_wheel import inspect_native_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# A driver's name is its manifest's file name, so this name can be installed beside another
+# BigQuery driver's `bigquery.toml`.
+MANIFEST_NAME = "bigquery-adbc.toml"
+MANIFEST = r"""# ADBC driver manifest for the BigQuery driver. Install this file in a directory the driver
+# manager searches to load the driver by name, as `bigquery-adbc`:
+# https://arrow.apache.org/adbc/current/format/driver_manifests.html
+#
+# Edit `Driver.shared` if the library is elsewhere. A path must be absolute or on the dynamic
+# loader's search path; it is not resolved relative to this file.
+
+manifest_version = 1
+
+name = 'BigQuery ADBC driver'
+version = '{version}'
+license = 'Apache-2.0'
+url = 'https://github.com/fornwall/bigquery-adbc'
+
+[ADBC]
+version = '1.1.0'
+
+[Driver]
+entrypoint = 'AdbcDriverBigqueryInit'
+
+[Driver.shared]
+linux_amd64 = '/usr/local/lib/libadbc_driver_bigquery.so'
+linux_arm64 = '/usr/local/lib/libadbc_driver_bigquery.so'
+macos_amd64 = '/usr/local/lib/libadbc_driver_bigquery.dylib'
+macos_arm64 = '/usr/local/lib/libadbc_driver_bigquery.dylib'
+windows_amd64 = 'C:\Program Files\ADBC\Drivers\adbc_driver_bigquery.dll'
+"""
+
 
 def library_from_wheel(wheel: Path, directory: Path) -> Path:
     """Extract the driver from ``wheel`` into ``directory``."""
@@ -51,13 +82,17 @@ def package_library(root: Path, library: Path, output: Path) -> Path:
     }
     if (platform, binary.architecture) not in supported:
         raise RuntimeError(f"No reviewed license bundle for {platform}/{binary.architecture}")
-    name = f"bigquery-adbc-{cargo_version(root / 'Cargo.toml')}-{platform}-{binary.architecture}"
+    version = cargo_version(root / "Cargo.toml")
+    name = f"bigquery-adbc-{version}-{platform}-{binary.architecture}"
     filename = name + (".zip" if binary.format == "pe" else ".tar.gz")
     files = {library.name: library}
     files.update((path, root / "python" / path) for path in (*LICENSE_FILES, "licenses/manifest.json"))
     output.mkdir(parents=True, exist_ok=True)
     # Keep the temporary archive on the destination filesystem for atomic replacement.
     with tempfile.TemporaryDirectory(prefix="bigquery-adbc-native-", dir=output) as directory:
+        manifest = Path(directory) / MANIFEST_NAME
+        manifest.write_text(MANIFEST.format(version=version), encoding="utf-8", newline="\n")
+        files[MANIFEST_NAME] = manifest
         temporary = Path(directory) / filename
         if binary.format == "pe":
             with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:

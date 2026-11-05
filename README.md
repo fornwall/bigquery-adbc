@@ -134,6 +134,38 @@ reference C driver manager never unloads drivers. The
 [C++ validation harness](integration/adbc-validation/README.md) shows how this repository loads and
 tests the library.
 
+### Loading by name
+
+Each release archive also has `bigquery-adbc.toml`, a
+[driver manifest](https://arrow.apache.org/adbc/current/format/driver_manifests.html) that lets ADBC
+clients load the driver by name instead of by path. It expects the library in `/usr/local/lib` on
+Linux and macOS, and in `C:\Program Files\ADBC\Drivers` on Windows. For any other location, edit
+`Driver.shared`: a path must be absolute or on the dynamic loader's search path, because it is not
+resolved relative to the manifest.
+
+Install the manifest in `~/.config/adbc/drivers` on Linux,
+`~/Library/Application Support/ADBC/Drivers` on macOS, or `%LOCALAPPDATA%\ADBC\Drivers` on Windows.
+On Linux:
+
+```sh
+sudo cp libadbc_driver_bigquery.so /usr/local/lib/
+mkdir -p ~/.config/adbc/drivers
+cp bigquery-adbc.toml ~/.config/adbc/drivers/
+```
+
+Then set `driver` to `bigquery-adbc`. The C driver manager looks for manifests only when asked to,
+so in C either set `driver` to the manifest's path or include `<arrow-adbc/adbc_driver_manager.h>`
+and enable the lookup first:
+
+```c
+AdbcDriverManagerDatabaseSetLoadFlags(&database, ADBC_LOAD_FLAG_DEFAULT, &error);
+AdbcDatabaseSetOption(&database, "driver", "bigquery-adbc", &error);
+```
+
+A driver's name is its manifest's file name, so this one can be installed beside a different
+`bigquery` driver. To also select it from a `bigquery://` URI with no `driver` option, install the
+manifest as `bigquery.toml` instead.
+
 ## Rust
 
 The C ABI and the Python package are the supported interfaces. The Rust crate is available only

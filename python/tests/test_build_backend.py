@@ -10,7 +10,7 @@ import tomllib
 import zipfile
 from email import policy
 from email.parser import BytesParser
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 from packaging.markers import Marker
@@ -507,6 +507,17 @@ def test_native_archives_carry_complete_licenses(
     assert contents[filename] == b"native fixture"
     for document in (*LICENSE_FILES, "licenses/manifest.json"):
         assert contents[document] == (PYTHON_ROOT / document).read_bytes()
+    manifest = tomllib.loads(contents[package_native.MANIFEST_NAME].decode())
+    assert manifest["version"] == cargo_version(REPOSITORY_ROOT / "Cargo.toml")
+
+
+def test_driver_manifest_names_what_the_archives_ship() -> None:
+    manifest = tomllib.loads(package_native.MANIFEST.format(version="1"))
+    assert manifest["Driver"]["entrypoint"] in _build_support._REQUIRED_SYMBOLS
+    shared = manifest["Driver"]["shared"]
+    assert set(shared) == {"linux_amd64", "linux_arm64", "macos_amd64", "macos_arm64", "windows_amd64"}
+    libraries = {PureWindowsPath(path).name for path in shared.values()}
+    assert libraries == {library for _, library in _build_support._HOST_LIBRARIES.values()}
 
 
 def test_native_archives_can_take_the_library_from_a_wheel(tmp_path: Path) -> None:

@@ -9,7 +9,8 @@ changes.
 
 - Runnable examples for C, Python and Rust in `examples/`.
 - GitHub releases carry the shared library for Linux x86-64 and AArch64, macOS x86-64 and arm64, and
-  Windows x86-64, with SHA-256 checksums.
+  Windows x86-64, with SHA-256 checksums. Each archive has a driver manifest for loading the driver
+  by name.
 
 ### Changed
 
