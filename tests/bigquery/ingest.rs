@@ -1286,7 +1286,7 @@ fn bulk_ingests_into_an_explicit_namespace_with_create_append() {
 
 /// A producer of small batches (DuckDB, a streaming reader) sends one append per batch. Hundreds
 /// of them are queued on the stream at once rather than a few, and every row lands exactly once.
-/// The elapsed time it prints is the measurement in docs/PERFORMANCE.md.
+/// docs/PERFORMANCE.md times this workload with the elapsed time it prints.
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn bulk_ingests_many_small_batches() {

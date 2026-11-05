@@ -91,8 +91,7 @@ impl RestValue {
     /// The cell's text as raw bytes, without the UTF-8 check [`Self::as_str`] repeats.
     ///
     /// Both variants were copied from a `&str`, so the bytes are valid; a STRING column checks
-    /// its bytes once for the whole column instead. A per-cell UTF-8 check is a significant share
-    /// of REST row decoding.
+    /// its bytes once for the whole column instead.
     pub(crate) fn as_bytes(&self) -> Option<&[u8]> {
         match self {
             Self::String(value) => Some(value.as_bytes()),

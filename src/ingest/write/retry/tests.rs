@@ -130,8 +130,8 @@ fn a_replayed_append_that_landed_is_a_success_not_a_failure() {
 }
 
 /// The pipeline is bounded by the bytes its queued payloads pin, not by a handful of requests:
-/// a few requests' worth of small appends would leave the stream waiting on round trips (2,048-row
-/// batches ingested 3.5 times slower). Its first append is always admitted.
+/// a few requests' worth of small appends would leave the stream waiting on round trips. Its first
+/// append is always admitted.
 #[test]
 fn the_append_pipeline_is_bounded_by_queued_bytes_and_requests() {
     const LARGE: usize = 9_000_000;

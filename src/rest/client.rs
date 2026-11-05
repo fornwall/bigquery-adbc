@@ -113,8 +113,7 @@ impl RestClient {
     /// Starts one request with the deadline selected by that request's shape.
     ///
     /// Every request asks for compact JSON. Google APIs indent theirs unless sent
-    /// `prettyPrint=false`, which made a 10,000-row page 3.3 times larger to receive, buffer and
-    /// decode.
+    /// `prettyPrint=false`, which makes every response larger to receive, buffer and decode.
     pub(super) fn request(
         &self,
         method: reqwest::Method,
