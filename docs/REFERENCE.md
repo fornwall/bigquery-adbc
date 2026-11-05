@@ -706,6 +706,10 @@ BigQuery refuses with HTTP 403 `accessDenied` or no reason; other failures, and 
 the dataset walk itself or of `GetTableSchema`, are reported (G62 and G72 in the
 [Go driver comparison][go-comparison]).
 
+`GetObjects` reports `REQUIRED` and `REPEATED` columns as non-nullable in `xdbc_nullable` and
+`xdbc_is_nullable`. A repeated column can be empty, but cannot contain a NULL array. Omitted modes
+default to nullable.
+
 Schema and table filters match case-sensitively. A filter without wildcards is looked up directly
 and reports the name BigQuery resolves it to, which differs from the filter only in a dataset
 created with `isCaseInsensitive`: there, `EVENTS` finds and reports `events` (G56 and G74 in the

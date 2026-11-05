@@ -28,6 +28,7 @@ changes.
 
 ### Fixed
 
+- `GetObjects` reports repeated columns as non-nullable in both XDBC nullability fields.
 - Dataset-location `ExecuteSchema` invalidates prior statement results, including unread bound
   parameter rows.
 - Native archives package an explicitly supplied library under the filename expected by the

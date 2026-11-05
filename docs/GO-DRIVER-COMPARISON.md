@@ -518,6 +518,11 @@ and reference scopes are null, as the ADBC schema asks. Go fills unknown sizes a
 zero, puts an Arrow type ID in `xdbc_data_type`, and sets the `xdbc_scope_*` fields to the column's
 own table.
 
+Both XDBC nullability fields report `REPEATED` columns as non-nullable, since BigQuery
+[arrays can be empty but cannot be NULL](https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/data-definition-language#column_name_and_column_schema).
+Go checks only `Required` and reports repeated columns as nullable; the dbt-labs fork inherits
+that behavior.
+
 ### G34. Metadata listings with no configured catalog return an empty result
 
 A connection can open without a project and set `adbc.connection.catalog` later; until then only a

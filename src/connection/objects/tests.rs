@@ -82,6 +82,37 @@ fn builds_complete_get_objects_hierarchy() {
     assert!(reader.next().is_none());
 }
 
+#[test]
+fn column_nullability_distinguishes_repeated_from_nullable() {
+    let columns = ["", "NULLABLE", "REQUIRED", "REPEATED"]
+        .into_iter()
+        .map(|mode| ObjectColumn {
+            field: field_mode("value", "INTEGER", mode),
+            ordinal_position: 1,
+            type_name: "INT64".to_owned(),
+        })
+        .collect();
+    let mut reader = objects_reader(&[project_catalog(Some(vec![dataset_schema(Some(vec![
+        ObjectTable {
+            name: "records".to_owned(),
+            table_type: "TABLE".to_owned(),
+            columns: Some(columns),
+            constraints: None,
+        },
+    ]))]))])
+    .unwrap();
+    let batch = reader.next().unwrap().unwrap();
+    let columns = child_structs(child_structs(child_structs(batch.column(1)).column(1)).column(2));
+    let nullable = typed::<Int16Array>(columns.column(8));
+    for (row, expected) in [true, true, false, false].into_iter().enumerate() {
+        assert_eq!(nullable.value(row), i16::from(expected));
+        assert_eq!(
+            string_at(columns.column(13), row),
+            if expected { "YES" } else { "NO" }
+        );
+    }
+}
+
 /// An empty `fk_catalog` or `fk_db_schema` would make a consumer resolve `""."dataset"."table"`
 /// instead of falling back to the current catalog or schema.
 #[test]

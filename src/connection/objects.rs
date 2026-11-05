@@ -51,6 +51,13 @@ pub(crate) struct ObjectColumn {
     pub(crate) type_name: String,
 }
 
+impl ObjectColumn {
+    fn is_nullable(&self) -> bool {
+        // A repeated column can be empty, but cannot contain a NULL array.
+        !matches!(self.field.mode.as_str(), "REQUIRED" | "REPEATED")
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ObjectConstraint {
     pub(crate) name: Option<String>,
@@ -170,7 +177,7 @@ fn build_columns(columns: &[&ObjectColumn]) -> Result<StructArray> {
     let nullable = int16_column(
         &mut columns
             .iter()
-            .map(|column| i16::from(column.field.mode != "REQUIRED")),
+            .map(|column| i16::from(column.is_nullable())),
     );
     let defaults = optional_string_column(
         &mut columns
@@ -178,10 +185,10 @@ fn build_columns(columns: &[&ObjectColumn]) -> Result<StructArray> {
             .map(|column| column.field.default_value_expression.as_deref()),
     );
     let is_nullable = string_column(&mut columns.iter().map(|column| {
-        if column.field.mode == "REQUIRED" {
-            "NO"
-        } else {
+        if column.is_nullable() {
             "YES"
+        } else {
+            "NO"
         }
     }));
     // Known false rather than null: GoogleSQL has no identity or autoincrement columns.
