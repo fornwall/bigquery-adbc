@@ -18,7 +18,7 @@ are in [GO-DRIVER-COMPARISON.md](GO-DRIVER-COMPARISON.md).
 | `persist_docs` | Column schema and table description patches | [Column metadata](#column-metadata) |
 | `copy_partitions` on `insert_overwrite` | Copy job | [Table copy](#table-copy) |
 | `grant_access_to` | Dataset access-list patch | [Authorized views](#authorized-views) |
-| `adapter.get_dataset_location` | `datasets.get`, once dbt sends the option | [Dataset location](#dataset-location) |
+| `adapter.get_dataset_location` | `datasets.get`, on dbt builds that send the option | [Dataset location](#dataset-location) |
 | Python models | Cloud Storage upload, then Dataproc or Vertex AI | [Python models](#python-models) |
 
 ## Installing
@@ -40,7 +40,7 @@ cargo rustc --release --locked --lib --crate-type cdylib
 dbt_driver_dir="${XDG_CACHE_HOME:-$HOME/.cache}/com.getdbt/adbc/x86_64-manylinux_2_17-linux-gnu"
 mkdir -p "$dbt_driver_dir"
 cp target/release/libadbc_driver_bigquery.so \
-  "$dbt_driver_dir/libadbc_driver_bigquery_foundry-0.21.0.dev+dbt0.1.5.so"
+  "$dbt_driver_dir/libadbc_driver_bigquery_foundry-0.21.0.dev+dbt0.1.11.so"
 DBT_ADBC_BIGQUERY_USE_FOUNDRY=1 dbt build
 ```
 
@@ -138,11 +138,10 @@ Without `disable_wildcards`, ADBC's dataset filter is a `LIKE` pattern and dbt p
 unescaped, so `_` in `dbt_example` matches any character: each listing walks the project's
 datasets (G74), and dbt files the tables of a matching `dbtXexample` under the requested schema
 (UP-78). [Upstream dbt commit `7f6844449`](https://github.com/dbt-labs/dbt/commit/7f6844449b13b920dc9ea4da49806d1d835f718b)
-enables the literal option best-effort, and that code is present on upstream `main`. dbt 2.0.11
-does not set it, nor did the `2.0.9` binary used in the
-[performance investigation](PERFORMANCE.md#repeated-dataset-discovery); the cached canonical and
-Foundry libraries also reject the option. With this
-driver, enabling it avoids the extra dataset scan when listing tables in a populated dataset.
+enables the literal option best-effort on upstream `main`. dbt 2.0.11 does not set it, and the
+canonical `0.21.0.dev+dbt0.21.19` and Foundry `0.21.0.dev+dbt0.1.5` libraries
+[reject it](PERFORMANCE.md#repeated-dataset-discovery). With this driver, enabling it avoids the
+extra dataset scan when listing tables in a populated dataset.
 
 `get_relation` and source freshness use `GetTableSchema`. A missing or invalid table is
 `NOT_FOUND`, whose message also contains `404 Not Found:` (and `notFound:` for failed query jobs)
@@ -260,8 +259,9 @@ As a read it runs with `adbc.connection.autocommit` disabled. `execute` reports 
 `execute_update` reports `-1` as a query does, `execute_schema` returns the schema without a request,
 and `execute_partitions` is `INVALID_STATE`.
 
-dbt 2.0.11 and the public `dbt-labs/dbt` source do not send this option yet: they run
-`adapter.get_dataset_location` as an `INFORMATION_SCHEMA.SCHEMATA` query, which is ordinary SQL here.
+dbt 2.0.11 does not send this option: it runs `adapter.get_dataset_location` as an
+`INFORMATION_SCHEMA.SCHEMATA` query, which is ordinary SQL here. dbt's main branch sends it from
+[commit `3f1c248`](https://github.com/dbt-labs/dbt/commit/3f1c2489b9787d4b680a6a67c643c6e00f12d119).
 
 ### Python models
 
@@ -340,8 +340,8 @@ The comparison covers these upstream revisions:
 - [dbt-labs/bigquery-adbc `9499ba3`](https://github.com/dbt-labs/bigquery-adbc/tree/9499ba31235a85d11045422ab6037b5d26c9113b),
   including its configured-source impersonation fix.
 - [dbt-labs/dbt `301b305`](https://github.com/dbt-labs/dbt/tree/301b305e063fc305ff3e46cb9497c1f606e3b2fa),
-  whose Foundry channel expects `0.21.0.dev+dbt0.1.10`. Executed dbt integration tests use the
-  installed `dbt 2.0.9`, not a binary built from this main-branch revision.
+  whose Foundry channel expects `0.21.0.dev+dbt0.1.10`. The live comparisons below ran on
+  `dbt 2.0.9`, not a binary built from this revision.
 
 Switching can change stored seed values, token scopes and query results, or reject an existing
 configuration. The comparisons below use a shared library built from the pinned fork.
@@ -598,8 +598,8 @@ Sources: [dbt custom execution options](https://github.com/dbt-labs/dbt/blob/301
 
 These paths differ in source, but the review did not reproduce the corresponding live failure:
 
-- `copy_partitions` forwards dbt's job timeout and, on current dbt main, reservation. This driver
-  puts them on the copy job; the fork ignores them. An unsuitable reservation or a previously
+- `copy_partitions` forwards dbt's job timeout and reservation. This driver puts them on the
+  copy job; the fork ignores them. An unsuitable reservation or a previously
   ignored short timeout can therefore turn a copy into a failure. Ordinary dbt seeds pass only
   the destination and CSV options with no execution state: they do not automatically inherit
   these options, even though the driver supports them on load jobs.

@@ -21,7 +21,7 @@ An option described as refused returns `NOT_IMPLEMENTED` with the reason when se
 | [Metadata](#metadata) | Filter matching, null fields, statistics, and schema metadata differ. This driver can discover tables in a project other than the configured project. |
 | [Configuration and authentication](#configuration-and-authentication) | Option scopes, validation, credential handling, and URI replacement differ. Legacy-SQL-only options are unsupported. |
 | [C interface and object lifecycle](#c-interface-and-object-lifecycle) | This driver exports init entrypoints only; callers use a driver manager. Invalid inputs and handle-state checks also differ. |
-| [Artifact size](#artifact-size) | Measured library and wheel sizes, with build commands. |
+| [Artifact size](#artifact-size) | Measured Go library sizes, with build commands. |
 
 ## Bulk ingestion
 
@@ -62,7 +62,7 @@ returns.
 Each ingest batch is normalized and sent in slices of about 9 MB, under BigQuery's
 10,000,000-byte request limit, so a batch of any size is converted a request at a time and only a
 single row too large for one request fails, locally, with `INVALID_ARGUMENT`. Appends carry explicit
-offsets on a pending stream, and a failed append is retried up to 4 times on the same stream, a
+offsets on a pending stream, and a failed append is retried up to 3 times on the same stream, a
 replay answered `ALREADY_EXISTS` counting as written. Go sends each batch as one request, so a large
 batch fails at the service, and its appends carry no offset and only the first is retried, on
 `NotFound`, so a transport failure mid-ingest fails it.

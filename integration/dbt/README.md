@@ -1,8 +1,8 @@
 # dbt 2.0 integration project
 
 This project runs dbt-core 2.0 (pinned to `dbt 2.0.11`) against BigQuery with Application Default
-Credentials (ADC). It uses this repository's driver by default, or dbt's canonical bundled
-`bigquery` driver for comparison. [KNOWN_ISSUES.md](KNOWN_ISSUES.md) lists the current issues the
+Credentials (ADC). It uses this repository's driver by default, or dbt's canonical `bigquery`
+driver for comparison. [KNOWN_ISSUES.md](KNOWN_ISSUES.md) lists the current issues the
 suite pins.
 
 ## Coverage
@@ -77,7 +77,7 @@ the bucket name is `<project>-adbc-scratch`.
 export BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT=my-test-project
 cargo test --locked --test clients dbt -- --ignored                 # this repository's driver
 uv run --directory integration/dbt --locked run.py                  # the same, without Cargo
-uv run --directory integration/dbt --locked run.py --upstream-adbc  # dbt's canonical bundled driver
+uv run --directory integration/dbt --locked run.py --upstream-adbc  # dbt's canonical driver
 uv run --directory integration/dbt --locked run.py --compare        # both, then compare results
 ```
 

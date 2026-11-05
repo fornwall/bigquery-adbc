@@ -119,8 +119,8 @@ for the effective configuration.
 
 [Standard ADBC options](#standard-adbc-options) are also accepted. Use one spelling per option
 during initialization, because driver managers can reorder options. Validation errors name the
-option and the expected type or values, and repeat the supplied value only for endpoint hosts,
-quota projects and a URI's `OAuthType`, since a value sent under the wrong key can be a credential.
+option and the expected type or values, and repeat the supplied value only for endpoint hosts and
+ports and a URI's `OAuthType`, since a value sent under the wrong key can be a credential.
 That includes a credential file path, here and in `GOOGLE_APPLICATION_CREDENTIALS`: its errors give
 the operating system's cause and the remedy instead. Optional string settings clear with `""`; JSON
 object options also accept `{}`. Booleans and enums with defaults require a listed value, and integer options have
@@ -248,7 +248,7 @@ defaults in effect, including the connection's.
 | `adbc.connection.readonly` | Connection | Only `false` is accepted, as a no-op; `true` returns `NOT_IMPLEMENTED`. Reads as `false`. |
 | `adbc.connection.transaction.isolation_level` | Connection | `adbc.connection.transaction.isolation.default` and `adbc.connection.transaction.isolation.snapshot` are accepted as no-ops; other levels return `NOT_IMPLEMENTED`. Reads as the snapshot level, which BigQuery transactions provide. |
 | `adbc.connection.catalog` | Connection | Current catalog: the project for unqualified names. Empty clears it; unqualified names, including a `GetTableSchema` table without a catalog, then resolve in `bigquery.project_id`, which the option then reads back and the metadata listings treat as the current project. |
-| `adbc.connection.db_schema` | Connection | Current schema: the dataset for unqualified names. A change to either option reaches existing statements at their next execution; a statement's `bigquery.query.default_*` options take precedence. |
+| `adbc.connection.db_schema` | Connection | Current schema: the dataset for unqualified names. Empty clears it. A change to either option reaches existing statements at their next execution; a statement's `bigquery.query.default_*` options take precedence. |
 | `adbc.statement.bind_by_name` | Statement | Boolean, default `false`. Alias of `bigquery.query.parameter_mode`: `true` is `named`, `false` is `positional`. |
 | `adbc.ingest.mode` | Statement | `adbc.ingest.mode.` followed by `create` (default), `append`, `replace` or `create_append`. The DB-API accepts short names such as `mode="create"`. See [bulk ingest](#bulk-ingest). |
 | `adbc.ingest.target_table` | Statement | Table to ingest into. Setting it puts the statement in ingest mode; empty clears the target without discarding a SQL query already set. |

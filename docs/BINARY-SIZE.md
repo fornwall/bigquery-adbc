@@ -136,7 +136,7 @@ Canonical option-enum names use one out-of-line scan over their declaration-orde
 tables; an unmatched name takes the legacy-alias lookup. This saves 1,952 bytes (0.0225%), while
 keeping the per-enum lookup and marking it `inline(never)` instead grew the artifact by 448 bytes.
 
-The two larger key enums contain 86 variants together. A native benchmark of their public
+The two larger key enums contain 81 variants together. A native benchmark of their public
 lookup methods checked the speed tradeoff, alongside a two-value enum. Each reported range
 contains two runs' median of five 3,000,000-call samples; runs alternated before/after/after/before
 on an AMD Ryzen 9 7950X3D pinned to CPU 8. These measure local option parsing, not query latency.
@@ -224,7 +224,7 @@ experiments needed offline lockfile pruning in their scratch trees; versions wer
 
 The larger remaining candidates need a narrower SDK feature boundary: telemetry dependencies
 are mandatory under GAX's `_internal-common`, and the BigQuery crate cannot select only the
-Storage RPCs the driver uses. See the earlier [upstream measurements](#upstream-only-weights).
+Storage RPCs the driver uses. See the [upstream measurements](#upstream-only-weights).
 YAML support and REST HTTP/2 have previously measured costs, but removing either changes
 supported behavior. This audit compared resolved features and pinned source; it did not rerun
 those historical binary-size experiments.
