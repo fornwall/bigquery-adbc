@@ -28,6 +28,8 @@ changes.
 
 ### Fixed
 
+- Ingest rejects equal or reversed RANGE bounds before an invalid first batch can create or
+  replace the target table.
 - `GetObjects` reports repeated columns as non-nullable in both XDBC nullability fields.
 - Dataset-location `ExecuteSchema` invalidates prior statement results, including unread bound
   parameter rows.

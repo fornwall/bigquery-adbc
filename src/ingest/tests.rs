@@ -314,8 +314,11 @@ mod replace_statements {
 
         use arrow_array::{
             ArrayRef, Date32Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray,
+            StructArray,
         };
         use arrow_schema::{DataType, Field, Schema};
+
+        use crate::test_support::arrow::{bigquery_typed, range_bounds};
 
         let differing = json!({
             "tableReference": {
@@ -354,6 +357,25 @@ mod replace_statements {
             ),
         ])
         .unwrap();
+        let invalid_range = {
+            let bounds = range_bounds(DataType::Date32);
+            let field = bigquery_typed(
+                Field::new("period", DataType::Struct(bounds.clone()), true),
+                "RANGE<DATE>",
+            );
+            RecordBatch::try_new(
+                Arc::new(Schema::new(vec![field])),
+                vec![Arc::new(StructArray::new(
+                    bounds,
+                    vec![
+                        Arc::new(Date32Array::from(vec![1])),
+                        Arc::new(Date32Array::from(vec![0])),
+                    ],
+                    None,
+                ))],
+            )
+            .unwrap()
+        };
         for (batch, status, cause) in [
             (
                 oversized_row,
@@ -370,6 +392,7 @@ mod replace_statements {
                 Status::InvalidData,
                 "out-of-range value at row 1",
             ),
+            (invalid_range, Status::InvalidData, "lower bound"),
         ] {
             for (mode, responses) in [
                 (IngestMode::Create, vec![(200, json!({}))]),

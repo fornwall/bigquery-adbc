@@ -17,8 +17,8 @@ use arrow_array::types::{
 use arrow_array::{Array, ArrayRef, BinaryArray, GenericByteArray, PrimitiveArray, StringArray};
 use arrow_schema::{DataType, Field, IntervalUnit, TimeUnit};
 
-use super::downcast_array;
 use super::site::ValueSite;
+use super::{downcast_array, normalized_array_type_error};
 use crate::BIGQUERY_FIELD_METADATA_MAX_LENGTH;
 use crate::error::error;
 use crate::types::decimal::spans_full_physical_domain;
@@ -26,6 +26,47 @@ use crate::types::temporal::{
     IntervalOutOfRange, MICROSECONDS_PER_DAY, MILLISECONDS_PER_DAY, NANOSECONDS_PER_DAY,
     SECONDS_PER_DAY, check_interval_months_days,
 };
+
+/// Checks normalized RANGE bounds. Null bounds are unbounded; null parent structs have already
+/// masked both children. Epoch microseconds and packed civil datetimes both preserve ordering.
+pub(super) fn validate_range_values(columns: &[ArrayRef], site: &ValueSite<'_>) -> Result<()> {
+    let [start, end] = columns else {
+        return Err(crate::error::driver_defect(format_args!(
+            "normalized BigQuery RANGE needs two bounds"
+        )));
+    };
+    match start.data_type() {
+        DataType::Date32 => validate_range_order::<Date32Type>(start, end, site),
+        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            validate_range_order::<TimestampMicrosecondType>(start, end, site)
+        }
+        other => Err(normalized_array_type_error(site.name(), other)),
+    }
+}
+
+fn validate_range_order<T: ArrowPrimitiveType>(
+    start: &ArrayRef,
+    end: &ArrayRef,
+    site: &ValueSite<'_>,
+) -> Result<()> {
+    let start = downcast_array::<PrimitiveArray<T>>(start, site.name())?;
+    let end = downcast_array::<PrimitiveArray<T>>(end, site.name())?;
+    let invalid = start
+        .iter()
+        .zip(end)
+        .position(|(start, end)| matches!((start, end), (Some(start), Some(end)) if start >= end));
+    if let Some(index) = invalid {
+        let (name, row) = (site.name(), site.row(index));
+        return Err(error(
+            format!(
+                "BigQuery RANGE ingest field {name:?} has a lower bound greater than or equal \
+                 to its upper bound at row {row}"
+            ),
+            Status::InvalidData,
+        ));
+    }
+    Ok(())
+}
 
 // Unix day offsets for 0001-01-01 and 10000-01-01 (exclusive).
 const CALENDAR_START_DAY: i64 = -719_162;

@@ -599,6 +599,9 @@ ignored. Storage Write rejects NULL structs with `REQUIRED` or `REPEATED` descen
 the hidden values are valid; the error names the required field or reports `Null lists are not
 allowed for repeated fields`.
 
+RANGE lower bounds must precede their upper bounds after conversion to microsecond precision.
+Equal or reversed bounds return `INVALID_DATA`; NULL bounds remain unbounded.
+
 Storage Write fails every append carrying an `ARRAY<TIMESTAMP>` field with `INTERNAL` (UP-90 in
 [UPSTREAM.md](UPSTREAM.md)), so bound data with one, at any depth, returns `NOT_IMPLEMENTED`
 naming the field before any request is sent, in every mode and in a dry run. An append that omits

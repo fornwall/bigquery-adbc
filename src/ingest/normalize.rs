@@ -31,7 +31,9 @@ use list::{
     offset_value_range,
 };
 use site::ValueSite;
-use validate::{declared_max_length, validate_max_length, validate_scalar_values};
+use validate::{
+    declared_max_length, validate_max_length, validate_range_values, validate_scalar_values,
+};
 
 /// Views a normalized column as the concrete Arrow array its field type promises.
 ///
@@ -191,6 +193,9 @@ fn normalize_column(column: &ArrayRef, field: &Field, site: &ValueSite<'_>) -> R
                         .get_mut(index)
                         .expect("index enumerates the original child arrays") = normalized;
                 }
+            }
+            if range_metadata(field).is_some() {
+                validate_range_values(&columns, site)?;
             }
             if column.data_type() == field.data_type() && matches!(columns, Cow::Borrowed(_)) {
                 return Ok(column.clone());

@@ -82,6 +82,9 @@ created or replaced; a schema with no columns is refused before any request. Go'
 prepares the table first, so an invalid batch can leave a new or recreated table. In both drivers
 a later batch can still fail after preparation, and a failed ingest keeps any table it created.
 
+Local validation also rejects equal or reversed RANGE bounds after precision conversion,
+following BigQuery's [RANGE ordering rule](https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/range-functions#range).
+
 ### G24. Storage Write ingestion supports exact Arrow Date64 values
 
 Arrow Date64 values that are whole days (multiples of 86,400,000 ms) ingest as `DATE`. Other values
