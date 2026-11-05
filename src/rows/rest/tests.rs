@@ -176,6 +176,30 @@ fn a_rest_value_is_no_larger_than_its_heap_variants_require() {
 }
 
 #[test]
+fn retained_bytes_include_nested_allocations_and_spare_capacity() {
+    let mut text = String::with_capacity(128);
+    text.push_str("short but heap allocated");
+    let text_bytes = text.capacity();
+    let mut repeated = Vec::with_capacity(8);
+    repeated.push(RestValue::String(text));
+    repeated.push(RestValue::string("inline"));
+    let repeated_bytes = repeated.capacity() * size_of::<RestValue>();
+    let mut record = Vec::with_capacity(4);
+    record.push(RestValue::Repeated(repeated));
+    let record_bytes = record.capacity() * size_of::<RestValue>();
+    let mut cells = Vec::with_capacity(16);
+    cells.push(RestValue::Record(record));
+    cells.push(RestValue::Null);
+    let cell_bytes = cells.capacity() * size_of::<RestValue>();
+
+    assert_eq!(
+        RestRow::new(cells).allocated_bytes(),
+        cell_bytes + record_bytes + repeated_bytes + text_bytes,
+    );
+    assert_eq!(RestRow::new(Vec::new()).allocated_bytes(), 0);
+}
+
+#[test]
 fn inline_and_heap_strings_preserve_utf8_escapes_and_boundaries() {
     for text in [
         String::new(),

@@ -26,6 +26,11 @@ changes.
 - Diagnostics lines start with a UTC timestamp and are tagged `[bigquery-adbc]`.
 - An empty `ADBC_DRIVER_BIGQUERY_LOG_LEVEL` disables diagnostics.
 
+### Fixed
+
+- The REST conversion window counts retained row and nested-value allocations, including spare
+  capacity, so uneven pages with a few wide rows no longer evade its memory accounting.
+
 ## [0.1.1] - 2026-11-05
 
 ### Fixed

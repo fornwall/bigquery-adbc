@@ -15,8 +15,8 @@ use crate::runtime::SharedRuntime;
 
 use super::pager::QueryPager;
 
-/// Encoded bytes allowed in pending conversions, which the pipeline's completed-batch budget
-/// does not cover. A row can be megabytes wide, so prefetch concurrency alone is insufficient.
+/// Retained input bytes allowed in pending conversions, which the pipeline's completed-batch
+/// budget does not cover. A row can be megabytes wide, so prefetch concurrency alone is insufficient.
 /// One conversion always proceeds, even when it exceeds this window.
 const CONVERSION_WINDOW_BYTES: usize = 64 * 1024 * 1024;
 
@@ -148,13 +148,15 @@ pub(super) async fn buffer_rest_query_results(
             if let Some(remaining_rows) = &mut remaining_rows {
                 *remaining_rows = remaining_rows.saturating_sub(batch_rows.len());
             }
-            let bytes = batch_rows.len().saturating_mul(pager.row_bytes());
             let batch_first_row = first_row;
             first_row += batch_rows.len();
 
             let Some(conversion_permit) = sink.conversion_permit().await? else {
                 return Ok(());
             };
+            // A single ARRAY cell can contain millions of values. Account for those allocations
+            // under the CPU permit without holding an asynchronous runtime worker.
+            let bytes = crate::runtime::block_in_place(|| conversion_input_bytes(&batch_rows));
             let schema = sink.schema.clone();
             let conversion_cancellation = sink.cancellation.clone();
             conversions.push(
@@ -195,7 +197,16 @@ async fn deliver_conversion(
 /// cancellation.
 type ConversionResult = Result<Option<RecordBatch>, ArrowError>;
 
-/// Pending conversions in delivery order, charged by encoded input bytes.
+/// The allocations a conversion owns. Page-average wire bytes undercount decoded cells and
+/// batches containing disproportionately wide rows; neither describes the retained input.
+fn conversion_input_bytes(rows: &Vec<RestRow>) -> usize {
+    rows.iter().fold(
+        rows.capacity().saturating_mul(size_of::<RestRow>()),
+        |bytes, row| bytes.saturating_add(row.allocated_bytes()),
+    )
+}
+
+/// Pending conversions in delivery order, charged by retained input allocations.
 /// Drop cooperatively cancels running blocking work and aborts tasks that have not started.
 /// Drop also runs on successful completion, so local cancellation does not imply truncation.
 struct ConversionTasks {

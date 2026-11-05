@@ -267,6 +267,57 @@ fn the_conversion_window_bounds_in_flight_rows_by_bytes_as_well_as_count() {
     assert_eq!(conversions.bytes, 0);
 }
 
+#[test]
+fn a_skewed_page_charges_the_wide_batch_its_retained_allocation() {
+    use super::conversion_input_bytes;
+    use crate::pipeline::{BATCH_SIZE, ResultSink};
+    use crate::query::pager::QueryPager;
+    use crate::query::response::QueryResponse;
+    use crate::rest::jobs::JobClient;
+    use crate::rows::{RestRow, RestValue};
+
+    const PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
+    const ROWS: usize = 16 * BATCH_SIZE;
+    let body = format!(
+        r#"{{"rows":[{{"f":[{{"v":"{}"}}]}}{}]}}"#,
+        "x".repeat(PAYLOAD_BYTES),
+        r#",{"f":[{"v":null}]}"#.repeat(ROWS - 1),
+    );
+    let page = QueryResponse::decode(body.as_bytes(), "skewed fixture")
+        .unwrap()
+        .page();
+    let previous_charge = (page.encoded_len / page.rows.len()) * BATCH_SIZE;
+    let runtime = crate::runtime::new_runtime().unwrap();
+    let mut pager = QueryPager::new(
+        JobClient::for_test(crate::test_support::UNREACHABLE_ENDPOINT),
+        None,
+        None,
+        page,
+    );
+    let (batch, exhausted) = runtime
+        .block_on(pager.next_batch(&ResultSink::for_test(), BATCH_SIZE))
+        .unwrap()
+        .unwrap();
+    assert!(!exhausted);
+    // The first row's initially unsized cell vector has capacity four; every later row learns
+    // its single-cell width. Inline nulls allocate nothing outside those vectors.
+    let expected = PAYLOAD_BYTES
+        + (BATCH_SIZE + 3) * size_of::<RestValue>()
+        + BATCH_SIZE * size_of::<RestRow>();
+    let charged = conversion_input_bytes(&batch);
+    assert_eq!(charged, expected);
+    assert!(previous_charge < PAYLOAD_BYTES / 8);
+
+    let mut conversions =
+        super::ConversionTasks::new(crate::pipeline::ResultPipelineCancellation::new(None));
+    for _ in 0..8 {
+        assert!(conversions.may_start(10));
+        conversions.push(runtime.spawn(async { Ok(None) }), charged);
+    }
+    assert!(!conversions.may_start(10));
+    assert!(8 * previous_charge < super::CONVERSION_WINDOW_BYTES);
+}
+
 /// A conversion that panicked reaches the reader as the driver defect it is, not as a bare
 /// `JoinError` without a status.
 #[test]

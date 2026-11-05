@@ -387,8 +387,7 @@ fn absorb<T>(current: &mut Option<T>, update: Option<T>) {
 pub(super) struct QueryPage {
     pub(super) rows: Vec<RestRow>,
     pub(super) page_token: Option<String>,
-    /// The size of the response the rows were decoded from, which budgets them while they wait
-    /// for conversion.
+    /// The response size, which bounds whether a complete small page can use the resident reader.
     pub(super) encoded_len: usize,
 }
 

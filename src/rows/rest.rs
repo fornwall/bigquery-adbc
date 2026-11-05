@@ -44,6 +44,27 @@ impl RestRow {
     pub(crate) fn into_cells(self) -> Vec<RestValue> {
         self.cells
     }
+
+    /// Heap allocations owned by this row, including spare cell and nested-value capacity.
+    /// The row itself is stored in its batch's separately charged vector.
+    pub(crate) fn allocated_bytes(&self) -> usize {
+        allocated_value_bytes(&self.cells)
+    }
+}
+
+fn allocated_value_bytes(values: &Vec<RestValue>) -> usize {
+    values.iter().fold(
+        values.capacity().saturating_mul(size_of::<RestValue>()),
+        |bytes, value| {
+            bytes.saturating_add(match value {
+                RestValue::String(value) => value.capacity(),
+                RestValue::Repeated(values) | RestValue::Record(values) => {
+                    allocated_value_bytes(values)
+                }
+                _ => 0,
+            })
+        },
+    )
 }
 
 /// A value after removing only BigQuery's `f` and `v` envelopes.

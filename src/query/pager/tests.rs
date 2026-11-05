@@ -77,7 +77,6 @@ fn splits_resident_pages_without_skipping_or_repeating_rows() {
                 .unwrap();
             assert!(!batch.is_empty());
             assert!(batch.len() <= capacity);
-            assert_eq!(pager.row_bytes(), 20);
             actual.extend(values(batch));
             assert_eq!(exhausted, actual.len() == 5);
             if exhausted {

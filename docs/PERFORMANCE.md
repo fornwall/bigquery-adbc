@@ -758,6 +758,42 @@ buffers; active response pages, conversions, array metadata and batches returned
 application remain outside it. Accounting adds a temporary vector of buffer identities and
 sorts it; the resident small-result reader does not use this buffered path.
 
+## Retained REST conversion inputs
+
+Pending REST conversions charge the allocations they actually own: the batch's row vector, cell
+vectors, nested ARRAY/STRUCT vectors, and heap strings, including spare capacity. The producer
+stops starting batches once pending input reaches 64 MiB, subject to its concurrency limit; one
+batch may cross that window. The resident response page and Arrow arrays being constructed remain
+outside this input budget. Accounting shares the driver-wide conversion permit and hands off the
+runtime worker while scanning potentially large nested values.
+
+A deterministic fixture has 16,384 rows, with an 8 MiB STRING in the first row and NULLs thereafter.
+Its first 1,024-row batch owns 8,446,048 bytes; the former page-average wire charge was 543,744 bytes,
+15.5 times too small. Eight such pending batches now fill the conversion window; their former
+charges total only 4,349,952 bytes. Nested/spare-capacity coverage checks each owned allocation.
+These are allocation-capacity measurements, excluding allocator overhead and process RSS.
+
+```sh
+cargo test --locked --lib a_skewed_page_charges_the_wide_batch_its_retained_allocation
+cargo test --locked --lib retained_bytes_include_nested_allocations_and_spare_capacity
+cargo bench --locked --features benchmark --bench query_result
+```
+
+Three alternating before/after executable pairs on Rust 1.99.1 / Ryzen 9 7950X3D, pinned to CPUs
+0–7, measured the added accounting and worker handoff. Each cell gives the median and range of
+three harness reports, each of which takes seven samples. Concurrent host activity still affects
+timing; these measure local processing, with no network or BigQuery work.
+
+| Case, 1,024 rows | Before, µs | After, µs | Allocation calls before → after | Requested bytes before → after |
+| --- | ---: | ---: | ---: | ---: |
+| `query/read` | 63.631 (61.425–64.301) | 71.246 (66.748–73.089) | 83 → 84 | 23,095 → 23,959 |
+| `query/complete` | 275.117 (271.156–277.929) | 279.864 (273.156–281.319) | 1,129 → 1,130 | 172,602 → 173,466 |
+
+The worker handoff adds one allocation and 864 requested bytes per buffered batch. Resident tiny
+results skip this accounting: the one-row controls retain 71 allocations / 5,559 bytes for reading
+and 85 / 7,386 for complete processing. The cost buys accurate admission accounting for wide and
+uneven results; it is not a throughput improvement.
+
 ## Storage Read wire backpressure
 
 A lazy SDK-stream fixture measures how many 8 MiB responses the receiving stage materializes while

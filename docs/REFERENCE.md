@@ -222,7 +222,7 @@ defaults in effect, including the connection's.
 | `bigquery.get_objects.skip_table_metadata` | Connection | Boolean, default `true`. At `GetObjects` tables depth, skips per-table describes and returns null columns and constraints. `false` fetches constraints; columns stay null. Column and all depths are unaffected. |
 | `bigquery.get_objects.disable_wildcards` | Connection | Boolean, default `false`. `true` makes the `GetObjects` catalog, schema, table and column filters exact, case-sensitive names in which `%` and `_` match themselves, so names containing `_` get direct lookups ([metadata catalogs](#metadata-catalogs)). Unset filters still match everything; `GetStatistics` keeps pattern matching. |
 | `bigquery.bulk_ingest.method` | Connection, statement | `storage_write` (default and only supported value). `load` returns `NOT_IMPLEMENTED`. |
-| `bigquery.query.prefetch_concurrency` | Connection, statement | Positive integer, default `10`: the maximum REST row batches one reader converts concurrently. Fewer run once pending conversions span 64 MiB of response, and conversion across the driver is bounded by available parallelism. Not used by Storage Read. |
+| `bigquery.query.prefetch_concurrency` | Connection, statement | Positive integer, default `10`: the maximum REST row batches one reader converts concurrently. Fewer run once pending conversions retain 64 MiB of decoded input allocations, and conversion across the driver is bounded by available parallelism. Not used by Storage Read. |
 | `bigquery.query.unordered_read` | Connection, statement | Boolean, default `false`. Lets Storage Read read several streams in parallel and return batches in arrival order. Rows are never lost or duplicated, but `ORDER BY` order is not kept. |
 | `bigquery.query.use_storage_api_disabled_client` | Connection, statement | Boolean, default `false`. `true` forces REST results; see [Storage Read](#reading-large-results-through-the-storage-read-api). |
 | `bigquery.query.default_project_id` | Statement | Project for the default dataset; empty restores the connection's current catalog. Clearing it returns `INVALID_STATE` while a statement default dataset is set and no connection catalog or database project can replace it. |
@@ -482,6 +482,11 @@ to return the first page because a row exceeds its 20 MiB response limit. A comp
 stays on REST. A narrow first page cannot predict whether a later row exceeds REST's limit, so the
 path is chosen before the schema or any rows are reported. Both paths return the same schema and
 values.
+
+Pending REST conversions have a separate 64 MiB input window, charged by their actual row and cell
+vectors, nested values, and heap strings, including spare capacity. Once pending inputs reach the
+window, further conversions wait; one batch can exceed it. The current response page and output
+arrays under construction remain outside this input budget.
 
 Buffered readers limit completed batches to a 64 MiB buffer-allocation budget and 200 batches.
 Slices charge their retained allocation capacity, counted once per allocation within a batch;

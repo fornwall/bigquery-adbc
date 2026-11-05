@@ -23,8 +23,6 @@ pub(super) struct QueryPager {
     reference: Option<JobReference>,
     operation: Option<Operation>,
     rows: std::vec::IntoIter<RestRow>,
-    /// The current page's encoded size per row: what one of its rows costs the conversion window.
-    row_bytes: usize,
     page_token: Option<String>,
     /// Recent tokens detect short pagination cycles without retaining every token of a long scan.
     seen_tokens: VecDeque<String>,
@@ -45,7 +43,6 @@ impl QueryPager {
             reference,
             operation,
             rows: Vec::new().into_iter(),
-            row_bytes: 0,
             page_token: None,
             seen_tokens: VecDeque::new(),
         };
@@ -54,15 +51,8 @@ impl QueryPager {
     }
 
     fn set_page(&mut self, page: QueryPage) {
-        self.row_bytes = page.encoded_len / page.rows.len().max(1);
         self.rows = page.rows.into_iter();
         self.page_token = page.page_token;
-    }
-
-    /// Estimated encoded bytes per row for the last batch, based on its page's average.
-    /// Batches never span pages.
-    pub(super) fn row_bytes(&self) -> usize {
-        self.row_bytes
     }
 
     /// Takes at most `capacity` rows from the current page, fetching only when it is empty.

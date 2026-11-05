@@ -249,7 +249,9 @@ Complete resident REST results of at most 32 rows and 4 KiB convert lazily on th
 read. Larger or pageable results convert to Arrow in blocking tasks that reader release or
 cancellation stop, even mid-conversion. Both paths share driver-wide conversion permits equal to
 the available parallelism, so a high `bigquery.query.prefetch_concurrency` cannot oversubscribe
-the CPU. REST batches end at page boundaries and can hold fewer than 1,024 rows. Go reads results through
+the CPU. Pending REST conversions stop accepting batches once their retained input allocations
+reach 64 MiB, counting nested values and spare capacity rather than page-average wire bytes.
+REST batches end at page boundaries and can hold fewer than 1,024 rows. Go reads results through
 Storage Read, keeps its batch sizes, and does not apply `prefetch_concurrency` to plain queries.
 
 ### G26. Storage Read uses one stream by default
