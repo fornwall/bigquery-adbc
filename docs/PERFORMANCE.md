@@ -305,13 +305,12 @@ the caller or source reader. Reproduce with:
 cargo test --locked --lib bound_parameter_batches
 ```
 
-The Storage Write transport also retained its initial input batch until finalization, while the
-IPC writer retained each plan's input buffers until the next plan. A two-row slice could keep
-8,388,608 bytes referenced during the next source read. The transport now drops consumed batches,
-and writing or discarding an IPC plan releases its buffer references while preserving scratch
-capacity. The regression keeps one observer buffer and asserts that no driver reference remains
-before reading the next batch, including the final EOF read. It completes a 12-row mock ingest
-and commit; this measures buffer ownership, not process RSS or live BigQuery performance:
+The Storage Write transport drops consumed batches, and writing or discarding an IPC plan releases
+its buffer references while preserving scratch capacity, so a two-row slice cannot keep 8,388,608
+bytes referenced during the next source read. The regression keeps one observer buffer and asserts
+that no driver reference remains before reading the next batch, including the final EOF read. It
+completes a 12-row mock ingest and commit; this measures buffer ownership, not process RSS or live
+BigQuery performance:
 
 ```sh
 cargo test --locked --lib the_first_ingest_batch_is_released_before_reading_more_input
@@ -518,7 +517,7 @@ one warmed authenticated HTTP session, all projected responses were equal:
 
 A second 24-pair run using the checked-in metadata benchmark also returned equal configurations.
 Its paired savings were 57.6ms for the table, 40.1ms for the view and 35.8ms for the materialized
-view. Both runs' samples are archived below.
+view.
 
 These HTTP measurements isolate the metadata view; they do not measure the Rust transport or
 establish an end-to-end dbt improvement. Relation lookups run concurrently, so their individual
@@ -570,33 +569,33 @@ The two dataset listings traced in the installed dbt `2.0.9` have different call
 registration calls `GetObjects` at schema depth without a schema filter. The first relation-cache
 lookup then calls it at table depth with the target dataset name. Underscores in that name are
 ADBC pattern wildcards, so the driver enumerates datasets again before filtering. A temporary
-ADBC wrapper confirmed sequential calls on the same connection and no connection-option setup
+ADBC wrapper recorded sequential calls on the same connection and no connection-option setup
 by this dbt binary; neither request was a retry.
 
 Setting the existing `bigquery.get_objects.disable_wildcards=true` option removed the second
 `datasets.list` in a live build over populated relations. Both diagnostic builds passed all
 39 jobs, with no query-cache hits and the expected aggregate signature. An empty dataset still
 needs `datasets.get` after an empty `tables.list` to distinguish it from a missing dataset, so
-this does not guarantee fewer requests for a fresh dataset. This investigation does not establish
-a whole-build speedup. The existing mock test reproduces the direct table listing:
+this does not guarantee fewer requests for a fresh dataset. These runs do not establish a
+whole-build speedup. The existing mock test reproduces the direct table listing:
 
 ```sh
 cargo test --locked --all-features disabling_wildcards_keeps_unfiltered_dataset_and_table_listings
 ```
 
 [Upstream dbt commit `7f6844449`](https://github.com/dbt-labs/dbt/commit/7f6844449b13b920dc9ea4da49806d1d835f718b)
-enables literal filters best-effort in `crates/dbt-adapter/src/engine/adbc.rs`. Both the commit's
-ancestry and the option-setting code were confirmed on upstream `main`; the installed `2.0.9`
-binary lacks it. This driver accepts the option. Offline probes of the cached canonical
-`0.21.0.dev+dbt0.21.19` and opt-in Foundry `0.21.0.dev+dbt0.1.5` libraries returned
+enables literal filters best-effort in `crates/dbt-adapter/src/engine/adbc.rs` on upstream `main`;
+the `2.0.9` binary lacks it. This driver accepts the option. The canonical
+`0.21.0.dev+dbt0.21.19` and opt-in Foundry `0.21.0.dev+dbt0.1.5` libraries return
 `NOT_IMPLEMENTED` for `disable_wildcards` and `skip_table_metadata`. Caller configuration and
 driver support must both be present; a driver-wide dataset cache or changing default ADBC
 wildcard semantics is unnecessary.
 
 ### Result pages and Storage Read
 
-These historical measurements motivated the earlier row-count and row-width threshold. The
-pagination rule measured below supersedes that threshold to handle wide rows on later pages.
+These measurements compare a row-count and row-width threshold that the
+[continuation-token rule](#choosing-storage-read-for-every-paginated-result) replaced, to handle
+wide rows on later pages.
 
 Seconds to read a whole result in one Rust process against `example-project` with
 `bigquery.query.disable_query_cache`, over two rounds per build, alternating builds. Narrow rows are
@@ -615,8 +614,7 @@ response, and Storage Read from two pages or 80,000 rows left.
 | 600,000 narrow rows | 8.49–8.72 | 4.73–5.22 | 19.89–20.42 | 13.57–14.49 |
 | 60,000 padded rows | 3.33–3.68 | 3.55–3.63 | 4.76–4.85 | 3.84–4.37 |
 
-That threshold came from the same setup with Storage Read forced at any size
-(the former `QueryPage::rest_outlasts_storage_read` returning `true`) against
+That threshold came from the same setup with Storage Read forced at any size against
 `bigquery.query.use_storage_api_disabled_client=true`, at 100,000-row pages:
 
 | Result | Pages after the first | Storage Read | REST |
@@ -887,7 +885,7 @@ These comparisons were recorded during development; their raw samples were not p
   so Storage Read does not reread a 350,000-row first page: see
   [result pages and Storage Read](#result-pages-and-storage-read).
 - Complete first responses stay on REST. A total-count rule reread 100,000 narrow rows that the
-  first response already held, 3.9–4.2 s against 2.8–3.4 s over REST. A continuation token now
+  first response already held, 3.9–4.2 s against 2.8–3.4 s over REST. A continuation token
   selects Storage Read before any rows are delivered, because the first page cannot predict a
   later row exceeding REST's size limit; its cost for small paginated results is
   [measured separately](#choosing-storage-read-for-every-paginated-result).

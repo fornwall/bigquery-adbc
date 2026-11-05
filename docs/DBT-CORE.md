@@ -76,11 +76,11 @@ Token exchanges and the driver's direct HTTPS requests honor
 
 With `impersonate.target_principal`, this driver uses the configured authentication as the source
 identity, including a profile's refresh token, JSON credentials or temporary access token. The
-fork does too since [commit `9499ba3`](https://github.com/dbt-labs/bigquery-adbc/commit/9499ba31235a85d11045422ab6037b5d26c9113b);
-earlier revisions silently used ADC instead, as the active Go reference driver still does
+fork does too from [commit `9499ba3`](https://github.com/dbt-labs/bigquery-adbc/commit/9499ba31235a85d11045422ab6037b5d26c9113b),
+while the active Go reference driver silently uses ADC instead
 ([G90](GO-DRIVER-COMPARISON.md#g90-configured-credentials-are-never-silently-replaced-or-ignored)).
-This source-selection fix does not change the fork's static-token behavior with an explicit
-impersonation lifetime ([G89](GO-DRIVER-COMPARISON.md#g89-impersonated-credentials-refresh-even-with-an-explicit-lifetime)).
+The fork keeps Go's static token with an explicit impersonation lifetime
+([G89](GO-DRIVER-COMPARISON.md#g89-impersonated-credentials-refresh-even-with-an-explicit-lifetime)).
 
 For `external-oauth-wif`, the driver POSTs the profile's `token_endpoint.request_data` unchanged as
 a form body to `token_endpoint.request_url`, and exchanges the response's `access_token` at
@@ -236,8 +236,7 @@ after three rounds a lost race is `INVALID_STATE`.
 Use the canonical project ID in an authorized view's name. Like the fork, the driver compares
 existing view references literally, while BigQuery rewrites numeric project numbers to IDs in
 the stored access list. Repeated authorization using a numeric view project can therefore append
-duplicate entries. This was reproduced against live BigQuery; source-dataset project numbers
-do not cause that comparison problem.
+duplicate entries. Source-dataset project numbers do not cause this.
 
 ### Dataset location
 
@@ -302,7 +301,7 @@ in-flight request may still finish after the deadline.
   starting a second job. The Vertex AI create has no such ID and is sent once.
 - The notebook job runs on `template_id`, else the project's first `ONE_CLICK` runtime template,
   else fails with `NOT_FOUND`. It runs as `adbc.bigquery.notebook_execute_job.service_account`
-  (which the reviewed dbt caller does not send), else
+  (which dbt does not send), else
   `bigquery.impersonate.target_principal`, else the service account of a JSON key or a standard
   IAM impersonation URL in JSON credentials or discrete WIF options, else as the template
   decides. Custom impersonation URLs in JSON credentials remain usable but do not identify a
@@ -345,18 +344,18 @@ The comparison covers these upstream revisions:
 
 Switching can change stored seed values, token scopes and query results, or reject an existing
 configuration. The comparisons below use a shared library built from the pinned fork.
-`integration/dbt/run.py --compare` uses an older canonical driver and tests a different baseline.
+`integration/dbt/run.py --compare` uses dbt's canonical driver, a different baseline.
 
-| Migration concern | Evidence | Action before switching |
-| --- | --- | --- |
-| Parameterized seeds round values or reject formerly accepted input | Live comparisons, including `dbt seed` | Audit seed declarations and values; use unparameterized types where intended. |
-| Small queries can report a `job_id` that is not a BigQuery job | Live query and `jobs.get` comparison | Adapt job-ID consumers; requiring jobs needs a driver change (section 4). |
-| Custom macros fetching a query with an explicit destination receive no rows | Live `dbt run-operation` comparison | Keep the intentional metadata-only result; query the destination separately when rows are needed. |
-| Some custom token proxies and WIF impersonation URLs are refused | OAuth loopback exchange; WIF configuration probe | Use supported endpoints or add an explicit integration path for these profiles. |
-| Copies enforce previously ignored job options; some IAM requirements differ | Source and request-builder coverage | Check copy timeouts/reservations and least-privilege profiles; see section 11. |
+| Migration concern | Action before switching |
+| --- | --- |
+| Parameterized seeds round values or reject input the fork accepts | Audit seed declarations and values; use unparameterized types where intended. |
+| Small queries can report a `job_id` that is not a BigQuery job | Adapt job-ID consumers; requiring jobs needs a driver change (section 4). |
+| Custom macros fetching a query with an explicit destination receive no rows | Keep the intentional metadata-only result; query the destination separately when rows are needed. |
+| Some custom token proxies and WIF impersonation URLs are refused | Use supported endpoints or add an explicit integration path for these profiles. |
+| Copies enforce job options the fork ignores; some IAM requirements differ | Check copy timeouts/reservations and least-privilege profiles; see section 11. |
 
 Sections 3, 4, 9, 10 and 11 describe these migration concerns. The other sections record matching
-behavior and its validation.
+behavior.
 
 ### 1. Base credentials preserve dbt's requested scopes
 
@@ -365,9 +364,8 @@ and userinfo.email. Without an impersonation layer, both drivers apply these to 
 Here, explicit `bigquery.auth.scopes` takes precedence. An impersonation target's scope list does
 not narrow its source token, which still needs IAM access.
 
-Mock tests inspect signed JWTs for service-account JSON strings, files and ADC, covering dbt's
-scopes, explicit precedence, defaults and a Drive-only impersonation target. No live Drive table
-was tested. Authorized-user tokens need prior consent; see section 7 for scope narrowing.
+Authorized-user tokens need prior consent; see section 7 for scope narrowing. No live Drive table
+has been tested.
 
 Sources: [dbt scope configuration](https://github.com/dbt-labs/dbt/blob/301b305e063fc305ff3e46cb9497c1f606e3b2fa/crates/dbt-auth/src/bigquery/mod.rs#L314-L368),
 [fork base scopes](https://github.com/dbt-labs/bigquery-adbc/blob/9499ba31235a85d11045422ab6037b5d26c9113b/go/connection.go#L1143-L1151),
@@ -379,8 +377,8 @@ This driver selects Storage Read when the first response has a continuation toke
 responses stay on REST. A narrow first page cannot prove that later rows fit REST's 20 MiB limit.
 The fork reads ordinary query results through Storage Read too.
 
-This live regression returned all 2,001 rows once and in order, with every payload checked. Its
-last row is 24,000,123 bytes, exceeding REST's 20,971,520-byte limit:
+A live regression reads this query's 2,001 rows once and in order. The last row is 24,000,123
+bytes, over REST's 20,971,520-byte limit:
 
 ```sql
 SELECT i,
@@ -403,8 +401,7 @@ Sources: [`reader_from_rest_query`](../src/query/reader.rs),
 ### 3. Enforcing seed type parameters changes values and accepted input
 
 The fork discards precision, scale and length from seed `column_types`; this driver preserves
-them and uploads unchanged CSV bytes. BigQuery interprets them using the submitted schema.
-Live CSV-load comparisons produced:
+them and uploads unchanged CSV bytes. BigQuery interprets them using the submitted schema:
 
 | Declared type and CSV value | Fork | This driver |
 | --- | --- | --- |
@@ -412,13 +409,11 @@ Live CSV-load comparisons produced:
 | `numeric(5,2)`, `1234.56` | Succeeds | Fails: out of range |
 | `string(3)`, `abcdef` | Succeeds | Fails: too long |
 
-The rounding difference also reproduced through `dbt 2.0.9 seed`, using the same project and CSV
-and separate Foundry caches. Both commands succeeded; the stored values differed.
+`dbt seed` shows the same rounding difference: both drivers succeed and store different values.
 
 Review declarations and input data before switching; use unparameterized types when intended.
-dbt drops the old seed table before loading, so a rejected load can leave it absent. Direct-driver
-probes also found that `varchar` falls back to `STRING` in the fork and fails here. That is not an
-established dbt regression: dbt's own parser may reject it first.
+dbt drops the old seed table before loading, so a rejected load can leave it absent. `varchar`
+falls back to `STRING` in the fork and fails here, though dbt's own parser may reject it first.
 
 Sources: [fork type parameter removal](https://github.com/dbt-labs/bigquery-adbc/blob/9499ba31235a85d11045422ab6037b5d26c9113b/go/bulk_ingest.go#L33-L43),
 [`CsvSeedOptions`](../src/dbt/csv_seed.rs),
@@ -430,11 +425,11 @@ The fork always submits a query job. This driver allows jobless queries and retu
 `queryId` as `BIGQUERY:query_id`. dbt copies it to both `query_id` and `job_id`, so consumers cannot
 assume those fields identify a retrievable BigQuery job.
 
-A live `SELECT 42 AS answer` with a dbt invocation label and 600,000 ms job timeout returned an
-`adbc-...` job ID from the fork; `jobs.get` found it in `DONE`. This driver's ID contained `@` and
-`jobs.get` rejected it with HTTP 400 `Invalid job ID`. Query values matched, but labels and
-timeouts did not force job creation. Adapt consumers to handle jobless IDs. Requiring jobs needs
-a driver change: `bigquery.query.job_creation_mode` is unsupported here.
+For `SELECT 42 AS answer` with a dbt invocation label and 600,000 ms job timeout, the fork returns
+an `adbc-...` job ID that `jobs.get` finds in `DONE`. This driver's ID contains `@`, and `jobs.get`
+rejects it with HTTP 400 `Invalid job ID`: labels and timeouts do not force job creation. Adapt
+consumers to handle jobless IDs. Requiring jobs needs a driver change:
+`bigquery.query.job_creation_mode` is unsupported here.
 
 Sources: [`QueryJobCreation`](../src/query/plan.rs),
 [`schema_with_rest_metadata`](../src/query/job_metadata.rs),
@@ -454,9 +449,7 @@ This authorization applies only to the BigQuery REST endpoint. Custom Storage Re
 auxiliary service endpoints, OAuth/STS token exchanges and identity-provider requests retain
 their separate [endpoint rules](REFERENCE.md#endpoint-overrides).
 
-Mock tests check authorization headers for each option spelling with synthetic service-account
-and temporary-token credentials, plus URI configuration and endpoint restrictions. No corporate
-proxy was tested.
+No corporate proxy has been tested.
 
 Sources: [dbt endpoint support](https://github.com/dbt-labs/dbt/blob/301b305e063fc305ff3e46cb9497c1f606e3b2fa/crates/dbt-auth/src/bigquery/mod.rs#L146-L175),
 [`DatabaseConfig::validate_endpoints`](../src/config.rs),
@@ -469,9 +462,7 @@ drivers. This driver's credential wrapper replaces the outgoing `x-goog-user-pro
 while retaining the SDK's ADC discovery, token refresh and cache behavior. When the option is
 unset, ADC keeps its normal environment and credential-file precedence.
 
-Mock tests check metadata requests using service-account, authorized-user and impersonated ADC,
-covering absent, equal and conflicting environment values, token refresh and cache reuse. They
-do not validate live billing or IAM permissions.
+Live billing and IAM permissions are not validated.
 
 Sources: [fork quota option](https://github.com/dbt-labs/bigquery-adbc/blob/9499ba31235a85d11045422ab6037b5d26c9113b/go/connection.go#L1107-L1109),
 [`ClientConfiguration::build`](../src/config/client.rs),
@@ -480,20 +471,16 @@ Sources: [fork quota option](https://github.com/dbt-labs/bigquery-adbc/blob/9499
 ### 7. User OAuth scope lists restrict refreshed tokens
 
 For `method: oauth-secrets` with a refresh token, both drivers send the requested `scopes` as the
-OAuth refresh field `scope`. The pinned Google SDK includes the UP-99 fix. Refreshed tokens can
-use a subset of the original consent grant; refresh cannot add consent. This also applies to
-authorized-user JSON and ADC.
+OAuth refresh field `scope`. Refreshed tokens can use a subset of the original consent grant;
+refresh cannot add consent. This also applies to authorized-user JSON and ADC.
 
-Mock tests inspect refresh requests for discrete credentials and JSON files and strings,
-covering defaults, dbt's fallback and explicit precedence. On 2026-10-27, the live UP-99 probe
-confirmed through Google's `tokeninfo` endpoint that the SDK token had exactly the requested
-`cloud-platform` scope.
+[`scripts/reproduce-up99.rs`](../scripts/reproduce-up99.rs) checks through Google's `tokeninfo`
+endpoint that the pinned SDK's token has exactly the requested `cloud-platform` scope.
 
 Sources: [dbt profile scopes](https://github.com/dbt-labs/dbt/blob/301b305e063fc305ff3e46cb9497c1f606e3b2fa/crates/dbt-auth/src/bigquery/mod.rs#L314-L368),
 [fork refresh request](https://github.com/dbt-labs/bigquery-adbc/blob/9499ba31235a85d11045422ab6037b5d26c9113b/go/connection.go#L1638-L1645),
 [`user refresh regression test`](../src/config/tests/scopes.rs),
-[SDK fix](https://github.com/googleapis/google-cloud-rust/pull/7283),
-[`live scope probe`](../scripts/reproduce-up99.rs).
+[SDK fix](https://github.com/googleapis/google-cloud-rust/pull/7283).
 
 ### 8. Project identifiers are validated by BigQuery
 
@@ -508,17 +495,15 @@ responses for a different named project or a different project number are still 
 Metadata filters for project spellings the service rejects as invalid return an empty listing,
 as missing catalogs do. Connection catalog assignments still report the service's error.
 
-Live coverage includes queries, explicit destinations, table schemas and copies, plus
-`dbt 2.0.9 show --inline 'SELECT 42 AS answer'` with a numeric profile project. Repeat the driver
-test with `BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT` set to the project ID and
+A live test covers queries, explicit destinations, table schemas and copies. Run it with
+`BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT` set to the project ID and
 `BIGQUERY_ADBC_PROJECT_NUMBER` set to its numeric ID. Both are required; there is no project default:
 
 ```sh
 scripts/run-one-live-test.sh numeric_project_identifiers_work_for_queries_metadata_and_copies
 ```
 
-Domain-scoped projects have only mock metadata/authorized-view coverage and local parsing and
-partition-descriptor tests; no real legacy project was available. Both drivers retain the
+Domain-scoped projects have mock and local test coverage only. Both drivers share the
 [numeric-project limitation for authorized views](#authorized-views).
 
 Sources: [dbt project selection](https://github.com/dbt-labs/dbt/blob/301b305e063fc305ff3e46cb9497c1f606e3b2fa/crates/dbt-auth/src/bigquery/mod.rs#L275-L289),
@@ -529,11 +514,10 @@ Sources: [dbt project selection](https://github.com/dbt-labs/dbt/blob/301b305e06
 
 The BigQuery REST `api_endpoint` parity in section 5 does not cover token exchange endpoints:
 
-- For `oauth-secrets`, dbt forwards `token_uri` unchanged. A synthetic HTTP loopback token proxy
-  successfully refreshed and served a metadata request with the fork; this driver rejected it
-  unless `bigquery.allow_untrusted_endpoint=true`. The reviewed dbt profile mapping does not
-  expose that database option. Standard Google HTTPS token endpoints work. Arbitrary HTTPS
-  proxies were not proven to work with the fork either: its default OAuth TLS server name is
+- For `oauth-secrets`, dbt forwards `token_uri` unchanged. An HTTP loopback token proxy works with
+  the fork; this driver rejects it unless `bigquery.allow_untrusted_endpoint=true`, which dbt's
+  profile mapping does not expose. Standard Google HTTPS token endpoints work. Arbitrary HTTPS
+  proxies may not work with the fork either: its default OAuth TLS server name is
   `accounts.google.com`.
 - For `service-account-json`, a `token_uri` outside HTTPS `googleapis.com` or
   `accounts.google.com`, such as an emulator's in a fake key, is refused, and dbt cannot opt in.
@@ -541,19 +525,17 @@ The BigQuery REST `api_endpoint` parity in section 5 does not cover token exchan
   field from such a key restores it. With `impersonate_service_account`, a key's `universe_domain`
   must also be `googleapis.com`.
 - For `external-oauth-wif`, this driver requires `service_account_impersonation_url` to use the
-  exact standard IAM Credentials URL form. A custom HTTPS IAM proxy URL initialized successfully
-  with the fork and was rejected here. This confirms a configuration difference, not a successful
-  live WIF exchange. The general endpoint trust flag does not relax this URL-format restriction.
+  exact standard IAM Credentials URL form. A custom HTTPS IAM proxy URL initializes with the fork
+  and is rejected here. The general endpoint trust flag does not relax this URL-format restriction.
 - The custom WIF identity-provider request requires HTTPS unless explicitly opted into HTTP and
   refuses redirects. The fork uses an ordinary HTTP client without those restrictions. A profile
-  relying on HTTP or a redirect needs review; no live identity provider requiring either was
-  tested.
+  relying on HTTP or a redirect needs review.
 
 Use supported direct endpoints or add a deliberate integration path for existing custom
 authentication infrastructure. A statement option cannot override a database authentication
 setting. Full JSON external-account credentials follow the
 [credential document rule](REFERENCE.md#endpoint-overrides) instead, but dbt's
-`external-oauth-wif` mapping constructs the discrete options reviewed here.
+`external-oauth-wif` mapping constructs the discrete options above.
 
 Sources: [dbt OAuth and WIF mapping](https://github.com/dbt-labs/dbt/blob/301b305e063fc305ff3e46cb9497c1f606e3b2fa/crates/dbt-auth/src/bigquery/mod.rs#L91-L129),
 [fork WIF configuration](https://github.com/dbt-labs/bigquery-adbc/blob/9499ba31235a85d11045422ab6037b5d26c9113b/go/connection.go#L1073-L1084),
@@ -568,8 +550,8 @@ driver selects metadata-only execution and returns zero rows. The fork returns t
 rows. This affects macros that combine an explicit destination with `fetch=true`; ordinary dbt
 materializations do not use that combination.
 
-The following macro pattern was compared through `dbt 2.0.9 run-operation`, with a fresh scratch
-dataset and each exact driver staged in its own Foundry cache:
+With this macro pattern, the fork returns one row and this driver none, though both destination
+tables hold one row:
 
 ```jinja
 {% set response, rows = adapter.execute(
@@ -579,10 +561,9 @@ dataset and each exact driver staged in its own Foundry cache:
              target.project ~ '.' ~ target.dataset ~ '.result'}) %}
 ```
 
-The fork returned one row; this driver returned none, failing the macro's row-count assertion.
-Both destination tables contained one row. dbt's `fetch` flag is intercepted as `dbt.fetch` in its
-statement wrapper and does not reach the BigQuery driver. Migrating macros must query the
-destination in a second call when they need its rows.
+dbt's `fetch` flag is intercepted as `dbt.fetch` in its statement wrapper and does not reach the
+BigQuery driver. Migrating macros must query the destination in a second call when they need its
+rows.
 
 Custom macros also need an option audit: legacy-SQL-only options, `result_buffer_size` and the
 Go-specific result-format/job-creation knobs are deliberately unsupported here. These are not
@@ -596,17 +577,17 @@ Sources: [dbt custom execution options](https://github.com/dbt-labs/dbt/blob/301
 
 ### 11. Conditional job-option and IAM changes need deployment validation
 
-These paths differ in source, but the review did not reproduce the corresponding live failure:
+These paths differ in source, but no corresponding live failure has been reproduced:
 
 - `copy_partitions` forwards dbt's job timeout and reservation. This driver puts them on the
-  copy job; the fork ignores them. An unsuitable reservation or a previously
-  ignored short timeout can therefore turn a copy into a failure. Ordinary dbt seeds pass only
+  copy job; the fork ignores them. An unsuitable reservation or a short timeout can therefore
+  turn a copy into a failure. Ordinary dbt seeds pass only
   the destination and CSV options with no execution state: they do not automatically inherit
   these options, even though the driver supports them on load jobs.
 - Without a profile `location`, seed and copy operations request `datasets.get` to establish the
   destination location before submission; the fork lets BigQuery infer it. A custom role lacking
   `bigquery.datasets.get` may need `location` supplied explicitly. Ordinary dbt discovery can
-  already require dataset access, so this is not established as a new end-to-end dbt failure.
+  already require dataset access.
 - With both `quota_project` and `impersonate_service_account`, this driver applies the quota
   project to the impersonated credential. The fork drops the quota option when replacing its
   final client options with the impersonated token source. Quota attribution can change, and the
@@ -618,8 +599,7 @@ These paths differ in source, but the review did not reproduce the corresponding
 - Remote cancellation during the initial `jobs.query` waits for a response naming the job, up to
   its ten-second completion wait plus transport time. If no job reference can be recovered,
   remote work cannot be cancelled. Local cancellation is immediate; the fork normally already
-  knows the job ID from `jobs.insert` (G49). This is relevant to interrupted dbt runs, but no
-  paired live cancellation comparison was run in this review.
+  knows the job ID from `jobs.insert` (G49). This is relevant to interrupted dbt runs.
 
 Sources: [dbt copy options](https://github.com/dbt-labs/dbt/blob/301b305e063fc305ff3e46cb9497c1f606e3b2fa/crates/dbt-adapter/src/adapter/adapter_impl.rs#L5193),
 [dbt seed execution](https://github.com/dbt-labs/dbt/blob/301b305e063fc305ff3e46cb9497c1f606e3b2fa/crates/dbt-adapter/src/adapter/adapter_impl.rs#L3701-L3725),
@@ -631,15 +611,11 @@ Sources: [dbt copy options](https://github.com/dbt-labs/dbt/blob/301b305e063fc30
 
 ### Coverage and remaining validation
 
-The migration review used `dbt 2.0.9`, ADC in `example-project` (anonymized), this driver's release library
-and the pinned fork library. Both libraries were built separately; this driver's build command
-is `cargo rustc --release --locked --lib --crate-type cdylib`.
-
-| Coverage | Result and limits |
-| --- | --- |
-| Full dbt suite | Build, replacement-seed, incremental, snapshot, metadata, adapter-response and cleanup checks passed. The suite separately checks forced REST pagination and default Storage Read routing, including diagnostics and absence of fallback warnings. |
-| Focused live comparisons | Wide rows, job-ID lookup, seed values and the explicit-destination macro are covered above. A 23-field query also matched Arrow physical types and values for floating-point edge cases, decimal and temporal limits, intervals, ranges, JSON, geography, binary values, nested/null/empty composites and collation. |
-| Authentication | Ten synthetic probes (five per driver) checked project identifiers, OAuth endpoint trust, refresh scope fields and WIF URL acceptance. These were mock checks; the separate UP-99 probe used Google's token endpoint. |
+The comparisons used `dbt 2.0.9`, ADC in `example-project` (anonymized), this driver's release
+library and a library built from the pinned fork. Authentication comparisons are mock checks. A
+23-field query matches Arrow physical types and values for floating-point edge cases, decimal and
+temporal limits, intervals, ranges, JSON, geography, binary values, nested/null/empty composites
+and collation.
 
 Repeat the full integration run with:
 
@@ -649,16 +625,15 @@ uv run --directory integration/dbt --locked run.py
 
 See the [runner guide](../integration/dbt/README.md) for project and dataset configuration.
 
-Deleting a view's source table left its schema intact, and both drivers rebuilt the view through
-dbt. This did not exercise G39: if BigQuery returns a view without a schema, this driver errors
-where the fork returns an empty schema.
+If BigQuery returns a view without a schema, this driver errors where the fork returns an empty
+schema (G39). Deleting a view's source table does not cause this: the view keeps its schema, and
+both drivers rebuild it through dbt.
 
 Successful Dataproc/Vertex jobs, live WIF and driver-managed impersonation remain unvalidated.
 The fork rejects dbt's string-valued `pooling_timeout` before submission, so accepting that option
 does not establish Python-model parity. Linux platform compatibility also needs validation:
-Python wheels target `manylinux_2_28`, while dbt distributes `manylinux_2_17` libraries. No ABI
-failure was demonstrated. dbt's static driver cache keeps the library loaded, as this driver's
-runtime requires.
+Python wheels target `manylinux_2_28`, while dbt distributes `manylinux_2_17` libraries. dbt's
+static driver cache keeps the library loaded, as this driver's runtime requires.
 
 ## Known gaps
 

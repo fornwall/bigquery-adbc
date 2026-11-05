@@ -395,10 +395,10 @@ expose `BIGQUERY:job_creation_reason`. Inline Arrow for a collated column, such 
 `SELECT COLLATE('hello', 'und:ci') AS s`, fails with HTTP 400 `jobInternalError`, while REST rows
 and this driver's Storage Read path return it with its `Collation` metadata.
 
-Live verification on 2026-10-24 reproduced the failure with ADC in `example-project` (anonymized), `US`,
-and query caching disabled. POST this body to
+To reproduce the failure with ADC, POST this body to
 [`jobs.query`](https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/jobs/query)
-(`https://bigquery.googleapis.com/bigquery/v2/projects/example-project/queries`):
+(`https://bigquery.googleapis.com/bigquery/v2/projects/example-project/queries`, with your own
+project):
 
 ```json
 {
@@ -416,11 +416,8 @@ Both `JOB_CREATION_OPTIONAL` and `JOB_CREATION_REQUIRED` return HTTP 400, reason
 execution and was unable to complete successfully." Omitting `queryResultsFormat` succeeds and
 returns `hello` with `collation: "und:ci"`. A nested result,
 `SELECT STRUCT(COLLATE('hello', 'und:ci') AS s) AS nested`, has the same failure and JSON success.
-Arrow controls using `'hello'`, `COLLATE(COLLATE('hello', 'und:ci'), '')`, and
-`CAST(COLLATE('hello', 'und:ci') AS STRING)` all succeed in both job modes; PyArrow 26.0.0 decoded
-each as `s: string` with value `hello` and no collation metadata. These 14 direct API requests
-needed no tables; all successful responses reported zero bytes billed. This recheck covers inline
-Arrow and JSON responses, not Storage Read.
+Arrow results for `'hello'`, `COLLATE(COLLATE('hello', 'und:ci'), '')`, and
+`CAST(COLLATE('hello', 'und:ci') AS STRING)` succeed in both job modes, with no collation metadata.
 
 ### G91. Reader construction failures release owned resources
 
@@ -466,9 +463,9 @@ empty, and writes `TIMESTAMP [bigquery-adbc] LEVEL message` lines to stderr. Tim
 in RFC 3339 format with millisecond precision ([diagnostics](REFERENCE.md#diagnostics)).
 
 Go reads the variable at every `AdbcDatabaseInit` and writes timestamped slog JSON lines to
-stderr, or to a temporary file with `ADBC_DRIVER_BIGQUERY_LOG_SINK=tempfile`. Its current
+stderr, or to a temporary file with `ADBC_DRIVER_BIGQUERY_LOG_SINK=tempfile`. Its
 [C wrapper](https://github.com/adbc-drivers/bigquery/blob/5f836152af0103f04c8e0770a7830f4e3535404f/go/pkg/driver.go#L232)
-selects warnings correctly for both `warn` and `warning`. An unset or empty value retains
+selects warnings for both `warn` and `warning`. An unset or empty value retains
 driverbase's [default error-level stderr logger](https://github.com/adbc-drivers/driverbase-go/blob/5cee18f5413f/driverbase/logging.go#L33).
 Native Go callers can also supply a custom slog logger through `DatabaseLogging.SetLogger`;
 this driver has no logger injection API or configurable sink.
@@ -848,9 +845,8 @@ from ADC under `anonymous` and stores and ignores unused credential options.
 For ADC, an explicitly configured quota project overrides `GOOGLE_CLOUD_QUOTA_PROJECT`, matching
 Go and the dbt-labs fork. With no explicit value, the SDK's normal ADC quota selection remains.
 
-The dbt-labs fork now passes the configured source to impersonation; see
-[dbt authentication](DBT-CORE.md#database-options). The ambient-ADC source bug above remains in the
-active Go reference driver.
+The dbt-labs fork passes the configured source to impersonation, unlike the Go driver; see
+[dbt authentication](DBT-CORE.md#database-options).
 
 ### G94. The custom user agent is sent with REST and Storage Read requests only
 

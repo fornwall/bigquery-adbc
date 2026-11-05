@@ -225,9 +225,7 @@ experiments needed offline lockfile pruning in their scratch trees; versions wer
 The larger remaining candidates need a narrower SDK feature boundary: telemetry dependencies
 are mandatory under GAX's `_internal-common`, and the BigQuery crate cannot select only the
 Storage RPCs the driver uses. See the [upstream measurements](#upstream-only-weights).
-YAML support and REST HTTP/2 have previously measured costs, but removing either changes
-supported behavior. This audit compared resolved features and pinned source; it did not rerun
-those historical binary-size experiments.
+YAML support and REST HTTP/2 have measured costs, but removing either changes supported behavior.
 
 ### YAML and authentication dependencies
 

@@ -5,22 +5,19 @@ workaround. An entry stays until the driver, or the client environments it suppo
 upstream fix. Entries with no linked issue or PR are local findings. Differences from the Go
 driver are in [GO-DRIVER-COMPARISON.md](GO-DRIVER-COMPARISON.md).
 
-Source and linked issue/PR statuses were rechecked on 2026-10-31 against these revisions:
+The findings apply to these revisions:
 
-| Component | Revision reviewed | Relationship to this repository |
+| Component | Revision | Relationship to this repository |
 | --- | --- | --- |
-| Google Cloud Rust | [`5a2297f`](https://github.com/googleapis/google-cloud-rust/commit/5a2297f47973775e925ce49d37971b03ce358fba) | Cargo pin and upstream `main`; BigQuery 0.19.0, auth 1.18.0. |
-| Apache Arrow ADBC | [`aa2c1c2`](https://github.com/apache/arrow-adbc/commit/aa2c1c2496d287e111d70d382e5d9af07568488b) | Rust, C++ validation and Python integration pins; upstream `main`. Python packaging allows `adbc-driver-manager>=1.13,<2`. |
-| Driver Foundry validation | [`5db1f44`](https://github.com/adbc-drivers/validation/commit/5db1f44782f4868c5ae9e89d6ac9812ca6e1758c) | Integration pin and upstream `main`. |
-| `h2` | 0.4.20 and [`e64c166`](https://github.com/hyperium/h2/commit/e64c1662ebb14794fc19cbcbb5b5dd0f67925f27) | Cargo uses 0.4.20; upstream `master` still has UP-94. |
-| dbt | [`b601ffe`](https://github.com/dbt-labs/dbt/commit/b601ffe469be8404e70b5e20f0ea0babc35ba6a8) | Upstream `main`; dbt is an external client, not a Cargo dependency. |
+| Google Cloud Rust | [`5a2297f`](https://github.com/googleapis/google-cloud-rust/commit/5a2297f47973775e925ce49d37971b03ce358fba) | Cargo pin; BigQuery 0.19.0, auth 1.18.0. |
+| Apache Arrow ADBC | [`aa2c1c2`](https://github.com/apache/arrow-adbc/commit/aa2c1c2496d287e111d70d382e5d9af07568488b) | Rust, C++ validation and Python integration pins. Python packaging allows `adbc-driver-manager>=1.13,<2`. |
+| Driver Foundry validation | [`5db1f44`](https://github.com/adbc-drivers/validation/commit/5db1f44782f4868c5ae9e89d6ac9812ca6e1758c) | Integration pin. |
+| `h2` | 0.4.20 and [`e64c166`](https://github.com/hyperium/h2/commit/e64c1662ebb14794fc19cbcbb5b5dd0f67925f27) | Cargo uses 0.4.20; upstream `master` at this commit has UP-94. |
+| dbt | [`b601ffe`](https://github.com/dbt-labs/dbt/commit/b601ffe469be8404e70b5e20f0ea0babc35ba6a8) | External client, not a Cargo dependency. |
 
-The dependency findings below still apply to those revisions. No newer mainline Google SDK,
-ADBC or Foundry snapshot was available; unmerged candidates are listed separately below.
-This was a source and documentation review, with no new mock or live BigQuery runs. Google's
-Arrow mapping was checked, and all three Google Issue Tracker reports remain assigned.
-Service failures remain recorded from earlier observations;
-driver normalization or rejection tests alone cannot establish whether the service is fixed.
+Service findings come from observed failures; a driver test that normalizes or rejects the input
+cannot show whether the service is fixed. Unmerged fixes are under
+[Git snapshot candidates](#git-snapshot-candidates).
 
 | ID | Subject | Upstream | Status | Issue or PR |
 | --- | --- | --- | --- | --- |
@@ -51,29 +48,29 @@ driver normalization or rejection tests alone cannot establish whether the servi
 | UP-86 | Seed and copy job IDs missing from `run_results.json` | `dbt-labs/dbt` | Local finding | None |
 | UP-87 | `adbc_clone` drops autocommit and the backend | ADBC Python driver manager | Local finding | None |
 | UP-88 | A transient token failure is served from cache for 10 s | `google-cloud-auth` | SDK limitation; no workaround | None |
-| UP-89 | Array decimal elements read at the full scale | BigQuery Storage Write | Not revalidated; driver rescales | None |
-| UP-90 | `ARRAY<TIMESTAMP>` appends fail | BigQuery Storage Write | Not revalidated; driver refuses up front | None |
+| UP-89 | Array decimal elements read at the full scale | BigQuery Storage Write | Local finding; driver rescales | None |
+| UP-90 | `ARRAY<TIMESTAMP>` appends fail | BigQuery Storage Write | Local finding; driver refuses up front | None |
 | UP-91 | Removed `persist_docs` policy tags are never cleared | `dbt-labs/dbt` | Local finding; no driver workaround | None |
 | UP-92 | DB-API type objects answer `!=` with `True` | ADBC Python driver manager | Local finding; package wraps them | None |
 | UP-93 | Storage Write appends take no request options | `google-cloud-bigquery` | SDK limitation; no workaround | None |
 | UP-94 | Padded empty HTTP/2 DATA frames end the connection | `h2` | Open; candidate fix unmerged; gzip left off | [#961](https://github.com/hyperium/h2/issues/961), [#972](https://github.com/hyperium/h2/pull/972) |
 | UP-95 | `adbc_ingest` keeps an earlier call's catalog and schema | ADBC Python driver manager | Local finding; documented workaround | None |
-| UP-96 | Arrow appends refuse flexible column names | BigQuery Storage Write | Not revalidated; driver refuses up front | None |
-| [UP-100](#up-100-sdk-token-exchanges-follow-redirects) | Token exchanges follow redirects | `google-cloud-auth` | Source-review finding; no SDK policy option | None |
+| UP-96 | Arrow appends refuse flexible column names | BigQuery Storage Write | Local finding; driver refuses up front | None |
+| [UP-100](#up-100-sdk-token-exchanges-follow-redirects) | Token exchanges follow redirects | `google-cloud-auth` | Local finding; no SDK policy option | None |
 
 ## Git snapshot candidates
 
-These changes were inspected, not adopted or integration-tested in this review. A snapshot of
+These changes are not adopted or integration-tested. A snapshot of
 a PR branch is a fork revision; older PR branches may also omit changes
 already in our pins, so porting their patches onto the current revision is preferable to a
 wholesale downgrade.
 
 | Issue | Snapshot | What adopting it would address |
 | --- | --- | --- |
-| UP-84 | [ADBC PR #4814, `3237467`](https://github.com/fornwall/arrow-adbc/commit/3237467b86536a008042beb2c64f696c2c6ba9b7) | Fixes the cancellation target for Python partition reads, including result consumption. Build/install `python/adbc_driver_manager`; changing the Rust ADBC pin alone does not update the installed Python manager. PR remains open. |
-| UP-94 | [`h2` PR #972, `1050775`](https://github.com/Elrendio/h2/commit/1050775ac348f9ebe7e3e9d0c7e4875f7a2a1c82) | Replenishes the empty-frame budget with non-final payload frames, addressing the observed interleaved padding pattern without an application option. PR remains open; small payloads or payloads carried only in final frames can still exhaust the budget. Validate compressed BigQuery responses before enabling gzip. |
-| UP-77 | [dbt PR #16488, `6ac48bb`](https://github.com/fornwall/dbt-core/commit/6ac48bb195f98583778bc82982714b22d81bd9f8) | Preserves dotted descriptions and policy-tag paths. Requires a rebuilt dbt client and a driver supporting nested updates, as this driver does. PR remains open; it does not fix removed policy tags (UP-91). |
-| UP-78 | [dbt mainline mitigation, `7f68444`](https://github.com/dbt-labs/dbt/commit/7f6844449b13b920dc9ea4da49806d1d835f718b) or the reviewed dbt `main` | Requests literal dataset filters from supporting drivers. Mitigates the overmatching with this driver; the relation attribution code itself is unchanged. |
+| UP-84 | [ADBC PR #4814, `3237467`](https://github.com/fornwall/arrow-adbc/commit/3237467b86536a008042beb2c64f696c2c6ba9b7) | Fixes the cancellation target for Python partition reads, including result consumption. Build/install `python/adbc_driver_manager`; changing the Rust ADBC pin alone does not update the installed Python manager. The PR is open. |
+| UP-94 | [`h2` PR #972, `1050775`](https://github.com/Elrendio/h2/commit/1050775ac348f9ebe7e3e9d0c7e4875f7a2a1c82) | Replenishes the empty-frame budget with non-final payload frames, addressing the observed interleaved padding pattern without an application option. The PR is open; small payloads or payloads carried only in final frames can still exhaust the budget. Validate compressed BigQuery responses before enabling gzip. |
+| UP-77 | [dbt PR #16488, `6ac48bb`](https://github.com/fornwall/dbt-core/commit/6ac48bb195f98583778bc82982714b22d81bd9f8) | Preserves dotted descriptions and policy-tag paths. Requires a rebuilt dbt client and a driver supporting nested updates, as this driver does. The PR is open; it does not fix removed policy tags (UP-91). |
+| UP-78 | [dbt mainline mitigation, `7f68444`](https://github.com/dbt-labs/dbt/commit/7f6844449b13b920dc9ea4da49806d1d835f718b) or later dbt `main` | Requests literal dataset filters from supporting drivers. Mitigates the overmatching with this driver; the relation attribution code itself is unchanged. |
 | UP-31 | [ADBC fork PR #43, `f11ad98`](https://github.com/fornwall/arrow-adbc/commit/f11ad988c6ae70fbed96bd8d8ce8ec68c6040024) | Adds `NullListForm` to C++ validation. Adopting it requires adapting the local quirks/patch; it replaces an existing workaround rather than fixing driver behavior. It is not an Apache upstream PR. |
 
 No client snapshot fix was identified for the recorded BigQuery service failures.
@@ -118,8 +115,8 @@ one GTest, which triggers UP-26. Reusing a table is valid, so no upstream fix is
 GTests use fixed table names in the adapter's catalog and schema, and `MetadataGetObjectsTables`
 assumes no table in any dataset matches `asdf%`. `tests/clients/adbc_validation.rs` creates fresh
 datasets per GTest, and `validation-quirks.patch` scopes that test's metadata calls to the
-configured namespace. PR #4916 remains closed without merging; its namespace-scoping patch
-does not replace the per-test dataset isolation.
+configured namespace. PR #4916 was closed without merging; its namespace-scoping patch would not
+replace the per-test dataset isolation.
 
 ## UP-30: `RANGE<DATETIME>` children need a civil-time encoding the Arrow mapping omits
 
@@ -217,18 +214,17 @@ matches other datasets too, and `list_relations_via_adbc` files every match unde
 dataset instead of its `db_schema_name`. The default driver behavior must retain ADBC wildcard
 semantics. This driver's opt-in `bigquery.get_objects.disable_wildcards=true` makes the names
 literal. [Upstream dbt commit `7f6844449`](https://github.com/dbt-labs/dbt/commit/7f6844449b13b920dc9ea4da49806d1d835f718b)
-enables it best-effort, and that code is present on upstream `main`; the `2.0.11` release does not
-set it, nor did the `2.0.9` binary used in the
-[performance investigation](PERFORMANCE.md#repeated-dataset-discovery).
-The [current adapter](https://github.com/dbt-labs/dbt/blob/b601ffe469be8404e70b5e20f0ea0babc35ba6a8/crates/dbt-adapter/src/engine/adbc.rs#L614)
-still skips this setup with dbt Cloud credentials and ignores option errors. Both the adapter
-and driver must support it for the mitigation to apply; a source upgrade does not fix clients
-whose driver rejects the option. The relation parser still ignores the returned schema name.
+enables it best-effort on upstream `main`; the `2.0.11` release does not set it
+([measurements](PERFORMANCE.md#repeated-dataset-discovery)).
+The [adapter](https://github.com/dbt-labs/dbt/blob/b601ffe469be8404e70b5e20f0ea0babc35ba6a8/crates/dbt-adapter/src/engine/adbc.rs#L614)
+skips this setup with dbt Cloud credentials and ignores option errors. Both the adapter and driver
+must support it for the mitigation to apply; a source upgrade does not fix clients whose driver
+rejects the option. The relation parser ignores the returned schema name.
 
 ## UP-79: an unrecognized BigQuery table type panics the dbt process
 
 [`RelationType::from_adapter_type`](https://github.com/dbt-labs/dbt/blob/b601ffe469be8404e70b5e20f0ea0babc35ba6a8/crates/dbt-schemas/src/dbt_types.rs#L43)
-in dbt-core still panics on an unrecognized BigQuery table type, under an upstream `TODO` to
+in dbt-core panics on an unrecognized BigQuery table type, under an upstream `TODO` to
 return an error. The driver reports any type outside the five that `GetTableTypes` advertises
 as `TABLE` (`src/connection/table_metadata.rs`).
 
@@ -359,5 +355,5 @@ use reqwest's default redirect policy, with no credential-builder option to chan
 and 308 preserve the POST body, which contains a refresh token and client secret or a subject
 token. The driver's initial endpoint allowlist therefore does not constrain every recipient of
 these credentials. The SDK should disable redirects for token requests; the custom identity
-provider in `src/config/external_account.rs` already does. This finding is from source review;
-no live Google redirect was observed.
+provider in `src/config/external_account.rs` already does. No live Google redirect has been
+observed.
