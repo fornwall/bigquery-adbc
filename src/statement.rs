@@ -60,7 +60,7 @@ pub struct BigQueryStatement {
     query_options: StatementQueryOptions,
     transaction: Arc<TransactionState>,
     cancellation: Arc<Cancellation>,
-    sql: Option<String>,
+    sql: Option<Arc<str>>,
     ingest: IngestOptions,
     dbt: DbtStatementState,
     parameter_mode: ParameterMode,
@@ -225,7 +225,7 @@ impl BigQueryStatement {
                 .execute_option_only_operation(operation)
                 .map(OptionOnlyOutcome::into_result);
         }
-        let sql = require_sql(self.sql.as_deref(), "execute")?;
+        let sql = require_sql(self.sql.as_ref(), "execute")?;
         self.parameters.require_available()?;
         self.refuse_session_creation()?;
         if let Some(parameters) = self.dry_run_parameters()? {
@@ -312,7 +312,7 @@ impl BigQueryStatement {
             context: self.context.clone(),
             query_options: self.query_options.clone(),
             transaction: Arc::clone(&self.transaction),
-            sql: sql.to_owned(),
+            sql: sql.clone(),
             parameter_mode: self.parameter_mode,
             rows,
             current,
@@ -352,7 +352,7 @@ impl BigQueryStatement {
         &self,
         rows: &ParameterRows,
         operation: &Operation,
-        sql: &str,
+        sql: &Arc<str>,
     ) -> Result<Schema> {
         let session_id = self.transaction.session_id()?;
         let parameters = parameters_for_schema(rows.schema().as_ref(), self.parameter_mode)?;
@@ -392,7 +392,7 @@ impl Statement for BigQueryStatement {
                 .execute_option_only_operation(operation)
                 .map(|outcome| outcome.rows_affected);
         }
-        let sql = require_sql(self.sql.as_deref(), "execute")?;
+        let sql = require_sql(self.sql.as_ref(), "execute")?;
         self.parameters.require_available()?;
         self.refuse_session_creation()?;
         if let Some(parameters) = self.dry_run_parameters()? {
@@ -450,7 +450,7 @@ impl Statement for BigQueryStatement {
                 ))
             });
         }
-        let sql = require_sql(self.sql.as_deref(), "describe")?;
+        let sql = require_sql(self.sql.as_ref(), "describe")?;
         self.refuse_session_creation()?;
         let session_id = self.transaction.session_id()?;
         // Describing needs no values: an unbound statement's placeholders, including those of a
@@ -490,7 +490,7 @@ impl Statement for BigQueryStatement {
                 rows_affected: outcome.rows_affected.unwrap_or(-1),
             });
         }
-        let sql = require_sql(self.sql.as_deref(), "execute")?;
+        let sql = require_sql(self.sql.as_ref(), "execute")?;
         // Reject before reading parameters, including an empty stream's schema dry run.
         if self.query_options.dry_run {
             return Err(invalid_state(format!(
@@ -572,7 +572,7 @@ impl Statement for BigQueryStatement {
         {
             return Ok(cached.schema.clone());
         }
-        let sql = require_sql(self.sql.as_deref(), "describe the parameters of")?;
+        let sql = require_sql(self.sql.as_ref(), "describe the parameters of")?;
         let mut execution = self.context.clone();
         namespace.clone().apply_to(&mut execution);
         // Concurrent, not superseding: adbc.h lets only ExecuteQuery, ExecuteSchema and Prepare
@@ -603,7 +603,7 @@ impl Statement for BigQueryStatement {
     /// Go driver does. The dry run [`Self::get_parameter_schema`] needs is left to that call, so
     /// prepare-then-execute costs no extra round trip.
     fn prepare(&mut self) -> Result<()> {
-        require_sql(self.sql.as_deref(), "prepare")?;
+        require_sql(self.sql.as_ref(), "prepare")?;
         // adbc.h: preparing a statement "invalidates any prior result sets", exactly as executing
         // one does, so it supersedes whatever is still running on this statement.
         self.cancellation.begin().finish();
@@ -617,10 +617,10 @@ impl Statement for BigQueryStatement {
         self.parameters.reset_consumed();
         match self.dbt.sql_disposition(query) {
             SqlDisposition::Drop => self.sql = None,
-            SqlDisposition::Store => self.sql = Some(query.to_owned()),
+            SqlDisposition::Store => self.sql = Some(Arc::from(query)),
             SqlDisposition::Replace => {
                 self.enter_mode(StatementMode::SqlQuery);
-                self.sql = Some(query.to_owned());
+                self.sql = Some(Arc::from(query));
             }
         }
         Ok(())

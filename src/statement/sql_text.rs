@@ -1,5 +1,7 @@
 //! SQL text validation and comment skipping.
 
+use std::sync::Arc;
+
 use adbc_core::error::Result;
 
 use crate::error::invalid_state;
@@ -8,7 +10,10 @@ use crate::error::invalid_state;
 ///
 /// Option-only operations handle dbt-core's comment-only placeholders before calling this.
 /// `operation` names the entry point in the error: execute, prepare or describe.
-pub(super) fn require_sql<'a>(query: Option<&'a str>, operation: &str) -> Result<&'a str> {
+pub(super) fn require_sql<'a>(
+    query: Option<&'a Arc<str>>,
+    operation: &str,
+) -> Result<&'a Arc<str>> {
     query.filter(|sql| !has_no_statement(sql)).ok_or_else(|| {
         invalid_state(format!(
             "cannot {operation} a BigQuery statement without a SQL query: the statement text is \

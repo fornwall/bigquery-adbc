@@ -132,7 +132,7 @@ impl QueryPlan {
         defaults: QueryDefaults<'_>,
         location: Option<&str>,
         session_id: Option<&str>,
-        sql: &str,
+        sql: Arc<str>,
         parameters: Option<(&str, Vec<QueryParameter>)>,
         options: &StatementQueryOptions,
         job_creation: QueryJobCreation,
@@ -153,7 +153,7 @@ impl QueryPlan {
         let identity = new_identity(route(options));
         Ok(Self {
             project_id,
-            sql: Arc::from(sql),
+            sql,
             default_dataset,
             location: location.map(Arc::from),
             session_id: session_id.map(Arc::from),

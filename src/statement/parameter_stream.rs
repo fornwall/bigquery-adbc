@@ -167,7 +167,7 @@ pub(super) struct ParameterizedRecordBatchReader {
     pub(super) context: ExecutionContext,
     pub(super) query_options: StatementQueryOptions,
     pub(super) transaction: Arc<TransactionState>,
-    pub(super) sql: String,
+    pub(super) sql: Arc<str>,
     pub(super) parameter_mode: ParameterMode,
     pub(super) rows: ParameterRows,
     pub(super) current: Box<dyn RecordBatchReader + Send>,

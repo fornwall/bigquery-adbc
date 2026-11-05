@@ -29,8 +29,9 @@ preparation, network I/O and server time are outside every measured region.
   INTERVAL, a three-field STRUCT and a repeated INT64. `decode` is the `serde_json` pass into
   positional rows; `convert` is `rest_rows_to_record_batch` on a decoded page.
 - `query_result` measures request serialization with 65-, 1,024- and 65,536-byte SQL targets
-  (`query/request-*`, with the row-count column unused). The fixtures include a default dataset,
-  location and dbt invocation label, with plan construction outside measurement. It also measures
+  (`query/request-*`, with the row-count column unused) and execution planning from stored SQL
+  (`query/planning-*`). The fixtures include a default dataset, location and dbt invocation label;
+  serialization measures an already-constructed plan. It also measures
   the production query response decoder and reader at 0, 1, 32 and 1,024
   rows, with the integer and two boolean columns of a dbt data-test result. `decode` includes
   operation tracking, the conversion permit and task scheduling; `read` starts from a decoded
@@ -197,6 +198,32 @@ The runtime tests cover nested multithreaded hosts, worker handoff and shutdown:
 
 ```sh
 cargo test --locked --lib runtime::tests::
+```
+
+#### Shared statement SQL
+
+Statements, execution plans and lazy parameter readers retain the same immutable SQL allocation.
+Setting or replacing a statement's SQL still takes an owned snapshot; executing it no longer copies
+that text into each plan or lazy reader. A mock regression replaces the statement text while its
+parameter reader remains open, verifies that later bindings execute the original SQL, and checks
+that the original allocation is released when the reader ends.
+
+`query/planning-*` measures a fresh plan and request identity from already-stored SQL. A paired run
+on Rust 1.99.1 / Ryzen 9 7950X3D, pinned to CPUs 8–15, reported:
+
+| SQL target bytes | Allocation calls before → after | Requested bytes before → after |
+| --- | ---: | ---: |
+| 65 | 7 → 6 | 268 → 180 |
+| 1,024 | 7 → 6 | 1,220 → 180 |
+| 65,536 | 7 → 6 | 65,732 → 180 |
+
+This removes one SQL-sized allocation per plan; the measured planning allocation is now independent
+of SQL length. Input setup and request serialization are excluded. These are local allocation
+measurements, not a live dbt latency claim. Reproduce with:
+
+```sh
+cargo bench --locked --features benchmark --bench query_result
+cargo test --locked --lib statement::tests::execution::
 ```
 
 #### Query request capacity

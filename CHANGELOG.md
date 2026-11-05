@@ -14,6 +14,9 @@ changes.
 
 ### Changed
 
+- Statements share their SQL text with execution plans and parameter readers, avoiding repeated
+  copies of compiled queries.
+
 - The native library shares transaction-control and connection-cleanup task machinery to reduce
   binary size.
 

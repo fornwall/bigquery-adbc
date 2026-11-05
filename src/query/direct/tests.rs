@@ -53,7 +53,7 @@ fn plan_at(options: StatementQueryOptions, location: Option<&str>) -> QueryPlan 
         QueryDefaults::default(),
         location,
         None,
-        "SELECT 1",
+        "SELECT 1".into(),
         None,
         &options,
         QueryJobCreation::Optional,

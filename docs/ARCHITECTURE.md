@@ -31,8 +31,9 @@ result readers receive batches from tasks running on it.
 
 ## Running a query
 
-1. `src/statement.rs` collects the SQL, options and bound parameters. `src/parameters` converts
-   Arrow parameters to BigQuery parameter types.
+1. `src/statement.rs` collects the SQL, options and bound parameters. Statements, execution plans
+   and lazy parameter readers share immutable SQL text. `src/parameters` converts Arrow parameters
+   to BigQuery parameter types.
 2. `src/query` submits the query. Ordinary queries use `jobs.query`, which lets short queries
    return their rows without creating a job. Dry runs and options that need a job use
    `jobs.insert`. Submission, polling and recovery after a lost response are in `src/query/direct`.

@@ -16,6 +16,35 @@ use crate::config::DatabaseConfig;
 pub struct QueryRequestFixture(super::plan::QueryPlan);
 
 impl QueryRequestFixture {
+    /// Builds a fresh execution plan from already-stored statement SQL and options.
+    pub fn plan(&self) -> impl std::fmt::Debug {
+        super::plan::QueryPlan::new(
+            Some(&self.0.project_id),
+            super::QueryDefaults {
+                catalog: self
+                    .0
+                    .default_dataset
+                    .as_ref()
+                    .map(|dataset| &dataset.project_id),
+                db_schema: self
+                    .0
+                    .default_dataset
+                    .as_ref()
+                    .map(|dataset| dataset.dataset_id.as_ref()),
+            },
+            self.0.location.as_deref(),
+            None,
+            self.0.sql.clone(),
+            None,
+            &super::StatementQueryOptions {
+                labels: self.0.labels.clone(),
+                ..Default::default()
+            },
+            super::plan::QueryJobCreation::Optional,
+        )
+        .expect("the benchmark query plans")
+    }
+
     /// Prepares a SELECT and its plan outside the measured serialization work.
     pub fn new(sql_bytes: usize) -> Self {
         use super::plan::{QueryJobCreation, QueryPlan};
@@ -39,7 +68,7 @@ impl QueryRequestFixture {
                 },
                 Some("US"),
                 None,
-                &sql,
+                sql.into(),
                 None,
                 &StatementQueryOptions {
                     labels: Some(Arc::new(

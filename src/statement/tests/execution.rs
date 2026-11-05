@@ -635,8 +635,7 @@ fn job_labels_and_timeout_reach_the_query_request() {
     assert_eq!(request["jobTimeoutMs"], json!("90000"));
 }
 
-/// Repeated unparameterized execution borrows the statement's stored SQL for each request;
-/// only the lazy parameterized reader needs an owned copy that outlives the execute call.
+/// Repeated execution and lazy parameter readers retain the SQL set on their statement.
 #[test]
 fn unparameterized_statement_reuses_its_sql_across_executions() {
     let response = || {
@@ -723,13 +722,17 @@ fn lazy_parameterized_reader_keeps_its_owned_sql() {
     let mut statement = test_statement_at(&endpoint);
     let sql = "SELECT ? AS answer";
     statement.set_sql_query(sql).unwrap();
+    let retained_sql = Arc::downgrade(statement.sql.as_ref().unwrap());
     statement
         .bind(int64_column("value", vec![1_i64, 2]))
         .unwrap();
 
     let mut reader = statement.execute().unwrap();
+    assert_eq!(retained_sql.strong_count(), 2);
     statement.set_sql_query("SELECT 99 AS replacement").unwrap();
+    assert_eq!(retained_sql.strong_count(), 1);
     assert!(reader.next().is_none());
+    assert_eq!(retained_sql.strong_count(), 0);
 
     let requests = requests.join().unwrap();
     assert_eq!(requests.len(), 2);

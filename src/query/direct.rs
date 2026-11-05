@@ -54,7 +54,7 @@ pub(super) struct CompletedQuery {
 
 pub(super) fn complete_statement_query(
     context: StatementQueryContext<'_>,
-    sql: &str,
+    sql: &Arc<str>,
     parameters: Option<(&str, Vec<crate::rest::model::QueryParameter>)>,
     job_creation: QueryJobCreation,
     result_mode: QueryResultMode,
@@ -65,7 +65,7 @@ pub(super) fn complete_statement_query(
         context.execution.statement_defaults(context.options),
         context.execution.location.as_deref(),
         context.session_id,
-        sql,
+        sql.clone(),
         parameters,
         context.options,
         job_creation,
@@ -173,7 +173,7 @@ pub(super) fn complete_context_query(
         context.defaults,
         context.location,
         context.session_id,
-        sql,
+        Arc::from(sql),
         None,
         options,
         QueryJobCreation::Optional,

@@ -10,6 +10,12 @@ fn main() {
     for sql_bytes in [65, 1024, 65536] {
         let fixture = QueryRequestFixture::new(sql_bytes);
         run_case(
+            &format!("query/planning-{sql_bytes}"),
+            0,
+            || (),
+            |()| fixture.plan(),
+        );
+        run_case(
             &format!("query/request-{sql_bytes}"),
             0,
             || (),

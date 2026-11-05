@@ -74,7 +74,7 @@ impl QueryResultMode {
 /// writes to a destination table.
 pub(crate) fn execute_query(
     context: StatementQueryContext<'_>,
-    sql: &str,
+    sql: &Arc<str>,
     parameters: Option<(&str, Vec<QueryParameter>)>,
 ) -> Result<(Box<dyn RecordBatchReader + Send + 'static>, Option<i64>)> {
     let complete = direct::complete_statement_query(
@@ -116,7 +116,7 @@ pub(crate) struct QueryPartition {
 
 pub(crate) fn execute_query_partition_with_parameters(
     context: StatementQueryContext<'_>,
-    sql: &str,
+    sql: &Arc<str>,
     parameters: Option<(&str, Vec<QueryParameter>)>,
 ) -> Result<QueryPartition> {
     let complete = direct::complete_statement_query(
@@ -216,7 +216,7 @@ pub(crate) fn execute_driver_statement(
 
 pub(crate) fn execute_update_with_parameters(
     context: StatementQueryContext<'_>,
-    sql: &str,
+    sql: &Arc<str>,
     parameters: Option<(&str, Vec<QueryParameter>)>,
 ) -> Result<Option<i64>> {
     let complete = direct::complete_statement_query(
@@ -238,7 +238,7 @@ pub(crate) fn execute_update_with_parameters(
 
 pub(crate) fn execute_schema(
     context: StatementQueryContext<'_>,
-    sql: &str,
+    sql: &Arc<str>,
     parameters: Option<(&str, Vec<QueryParameter>)>,
 ) -> Result<Schema> {
     let metadata = describe_query(context, sql, parameters, "BigQuery dry run failed")?;
@@ -247,7 +247,7 @@ pub(crate) fn execute_schema(
 
 pub(crate) fn execute_parameter_schema(
     context: StatementQueryContext<'_>,
-    sql: &str,
+    sql: &Arc<str>,
     parameter_mode: &str,
 ) -> Result<Schema> {
     let metadata = describe_query(
@@ -273,7 +273,7 @@ pub(crate) fn execute_parameter_schema(
 /// BigQuery to infer; typed parameters constrain the result schema.
 fn describe_query(
     context: StatementQueryContext<'_>,
-    sql: &str,
+    sql: &Arc<str>,
     parameters: Option<(&str, Vec<QueryParameter>)>,
     failure_context: &str,
 ) -> Result<response::QueryMetadata> {

@@ -48,7 +48,7 @@ fn run_commit(endpoint: &str, options: &StatementQueryOptions, transaction: &Tra
     };
     complete_statement_query(
         context,
-        "COMMIT TRANSACTION",
+        &Arc::from("COMMIT TRANSACTION"),
         None,
         QueryJobCreation::Optional,
         QueryResultMode::MetadataOnly,
