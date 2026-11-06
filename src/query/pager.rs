@@ -38,21 +38,14 @@ impl QueryPager {
         operation: Option<Operation>,
         page: QueryPage,
     ) -> Self {
-        let mut pager = Self {
+        Self {
             client,
             reference,
             operation,
-            rows: Vec::new().into_iter(),
-            page_token: None,
+            rows: page.rows.into_iter(),
+            page_token: page.page_token,
             seen_tokens: VecDeque::new(),
-        };
-        pager.set_page(page);
-        pager
-    }
-
-    fn set_page(&mut self, page: QueryPage) {
-        self.rows = page.rows.into_iter();
-        self.page_token = page.page_token;
+        }
     }
 
     /// Takes at most `capacity` rows from the current page, fetching only when it is empty.
@@ -155,7 +148,8 @@ impl QueryPager {
                 }
                 self.reference = Some(canonical);
             }
-            self.set_page(page);
+            self.rows = page.rows.into_iter();
+            self.page_token = page.page_token;
         }
     }
 }

@@ -183,25 +183,17 @@ impl Iterator for ParameterizedRecordBatchReader {
         if self.failed {
             return None;
         }
+        let batch = self.next_batch().transpose();
+        self.failed = batch.as_ref().is_some_and(|batch| batch.is_err());
+        batch
+    }
+}
+
+impl ParameterizedRecordBatchReader {
+    fn next_batch(&mut self) -> std::result::Result<Option<RecordBatch>, ArrowError> {
         loop {
             if let Some(batch) = self.current.next() {
-                let batch = batch.and_then(|batch| {
-                    if batch.schema_ref() == &self.schema {
-                        Ok(batch)
-                    } else {
-                        // A later parameter set ran as its own job, so its batches carry that
-                        // job's BIGQUERY:query_id; re-home them on the schema this reader
-                        // reported. The columns were already verified compatible below.
-                        let (_, columns, row_count) = batch.into_parts();
-                        RecordBatch::try_new_with_options(
-                            self.schema.clone(),
-                            columns,
-                            &RecordBatchOptions::new().with_row_count(Some(row_count)),
-                        )
-                    }
-                });
-                self.failed = batch.is_err();
-                return Some(batch.map_err(|source| match source {
+                let batch = batch.map_err(|source| match source {
                     ArrowError::ExternalError(source) => {
                         ArrowError::ExternalError(match source.downcast::<Error>() {
                             Ok(failure) => Box::new(self.rows.failed_row(*failure)),
@@ -209,18 +201,29 @@ impl Iterator for ParameterizedRecordBatchReader {
                         })
                     }
                     source => source,
-                }));
+                })?;
+                if batch.schema_ref() == &self.schema {
+                    return Ok(Some(batch));
+                }
+                // Each parameter row runs as its own job. Keep the reader's metadata while
+                // preserving the columns, whose compatibility was checked below.
+                let (_, columns, row_count) = batch.into_parts();
+                return RecordBatch::try_new_with_options(
+                    self.schema.clone(),
+                    columns,
+                    &RecordBatchOptions::new().with_row_count(Some(row_count)),
+                )
+                .map(Some);
             }
 
-            let parameters = match self.rows.next(&self.operation) {
-                Ok(Some(parameters)) => parameters,
-                Ok(None) => return None,
-                Err(source) => {
-                    self.failed = true;
-                    return Some(Err(ArrowError::ExternalError(Box::new(source))));
-                }
+            let Some(parameters) = self
+                .rows
+                .next(&self.operation)
+                .map_err(|source| ArrowError::ExternalError(Box::new(source)))?
+            else {
+                return Ok(None);
             };
-            let reader = TransactionContext::new(
+            self.current = TransactionContext::new(
                 &self.context,
                 self.context.statement_defaults(&self.query_options),
             )
@@ -251,15 +254,8 @@ impl Iterator for ParameterizedRecordBatchReader {
                 } else {
                     Err(divergent_parameter_schema(&self.schema, &schema))
                 }
-            });
-            match reader {
-                Ok(reader) => self.current = reader,
-                Err(source) => {
-                    self.failed = true;
-                    let source = self.rows.failed_row(source);
-                    return Some(Err(ArrowError::ExternalError(Box::new(source))));
-                }
-            }
+            })
+            .map_err(|source| ArrowError::ExternalError(Box::new(self.rows.failed_row(source))))?;
         }
     }
 }
