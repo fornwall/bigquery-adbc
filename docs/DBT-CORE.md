@@ -200,8 +200,8 @@ This is separate from ADBC bulk ingestion (G2).
   first, so a failed load leaves no table. The file is never resent; an ambiguous submission is
   resolved by fetching the job.
 - A seed path that is missing, unreadable or not a regular file is `INVALID_ARGUMENT`; Unix FIFOs
-  are rejected without waiting for a writer. A dry run
-  checks that the file opens and that the declared schema is a valid load schema, without reading
+  are rejected without waiting for a writer. A dry run checks that the file opens and that the
+  declared schema is a valid load schema, without reading
   the file or sending a request, and reports `-1` rows.
 - Without `bigquery.location` the load runs in the destination dataset's location (G48), whose
   lookup needs `bigquery.datasets.get`.

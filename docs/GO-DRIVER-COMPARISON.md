@@ -66,8 +66,10 @@ returns.
 Each ingest batch is normalized and sent in slices of about 9 MB, under BigQuery's
 10,000,000-byte request limit, so a batch of any size is converted a request at a time and only a
 single row too large for one request fails, locally, with `INVALID_ARGUMENT`. Appends carry explicit
-offsets on a pending stream, and a failed append is retried up to 3 times on the same stream, a
-replay answered `ALREADY_EXISTS` counting as written. Go sends each batch as one request, so a large
+offsets on a pending stream. Recovery of the oldest failed append allows up to three retries;
+queued successors are then replayed at their original offsets. A later append's failure starts a
+new recovery budget, so a queued append may be sent more than four times overall. A replay answered
+`ALREADY_EXISTS` counts as written. Go sends each batch as one request, so a large
 batch fails at the service, and its appends carry no offset and only the first is retried, on
 `NotFound`, so a transport failure mid-ingest fails it.
 
