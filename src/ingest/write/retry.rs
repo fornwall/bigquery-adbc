@@ -388,29 +388,6 @@ impl AppendPipeline {
         }
         Ok(())
     }
-
-    /// After production fails, prefer an earlier permanent append failure. Transient failures
-    /// have no bearing on the input error, and no replay will happen now.
-    pub(super) async fn abort(&mut self, target: &AppendTarget<'_>) -> Result<()> {
-        self.in_flight_bytes = 0;
-        // Drain drops successors on every exit, including cancellation and permanent errors.
-        for InFlightAppend {
-            offset,
-            future,
-            replayed,
-            ..
-        } in self.in_flight.drain(..)
-        {
-            match target.operation.wait(future).await? {
-                Ok(_) => {}
-                Err(source) if replay_landed(replayed, &source) => {}
-                // Its successors' failures are consequences of it, so none of them is reported.
-                Err(source) if append_error_is_retryable(&source) => break,
-                Err(source) => return Err(append_failure(target.table_path, source, offset)),
-            }
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]

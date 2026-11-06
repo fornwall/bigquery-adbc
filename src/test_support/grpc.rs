@@ -118,6 +118,8 @@ pub(crate) struct MockPlan {
     /// Signal the first notification when GetWriteStream arrives, then await the second
     /// before responding. This lets cancellation tests stop an in-flight reattachment.
     pub(crate) attach_gate: Option<Arc<(tokio::sync::Notify, tokio::sync::Notify)>>,
+    /// Signal arrival of the append at this offset, then wait for release before answering.
+    pub(crate) append_gate: Option<(i64, Arc<(tokio::sync::Notify, tokio::sync::Notify)>)>,
 }
 
 /// What the server saw, and the pending write stream it is keeping.
@@ -586,6 +588,10 @@ async fn append_rows(
         let Some(rows) = appended_row_count(&request, &mut call_schema) else {
             return INVALID_ARGUMENT;
         };
+        if let Some((_, gate)) = plan.append_gate.as_ref().filter(|(at, _)| *at == offset) {
+            gate.0.notify_one();
+            gate.1.notified().await;
+        }
 
         let mut state = lock(state);
         state.append_offsets.push(offset);

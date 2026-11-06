@@ -148,6 +148,8 @@ response fail the ingest, except `STREAM_ALREADY_COMMITTED` on a replayed commit
 commit ignore cancellation for up to 60 seconds, so a cancel cannot report failure for committed
 rows. Go retries only `CreateWriteStream` on `NotFound`, sends finalize and commit once, and
 discards the commit response, so a commit BigQuery declined is reported as a successful ingest.
+Input failures drop queued appends without waiting for their responses, then attempt to finalize
+the abandoned stream with a 10-second timeout.
 
 ### G79. An ingest target that exists but is not a table is refused before anything is written
 
@@ -351,11 +353,11 @@ starts five minutes before submission to allow clock skew, retries an incomplete
 three scans, and stops at 100 pages or 30 seconds including credentials and the final job fetch.
 It registers references found through duplicate responses or listings for cancellation before
 fetching the job, so a failed fetch does not prevent cancellation. If recovery fails, the error
-names the job as possibly still running; Go's SDK returns an error at once. dbt-core 2.0 seed loads and table copies run in the
-destination dataset's location, found by one cached `datasets.get` per dataset, where the dbt-labs
-fork lets BigQuery infer it. The database shares at most 32 cached locations across its
-connections, evicting the oldest inserted entry when full; revisiting an evicted dataset repeats
-the lookup.
+names the job as possibly still running; Go's SDK returns an error at once. dbt-core 2.0 seed loads
+and table copies run in the destination dataset's location, found by one cached `datasets.get`
+per dataset, where the dbt-labs fork lets BigQuery infer it. The database shares at most 32 cached
+locations across its connections, evicting the oldest inserted entry when full; revisiting an
+evicted dataset repeats the lookup.
 
 ### G49. Remote job cancellation and operation lifetime
 

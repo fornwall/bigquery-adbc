@@ -1361,41 +1361,61 @@ mod mock_writes {
         assert!(!committed, "a failed ingest must not commit its stream");
     }
 
-    /// A reader failure is reported over the transient failure of an append still queued when it
-    /// stopped production. Nothing replays that append once production has stopped, so its
-    /// failure says nothing about the ingest, and an `IO` status would send the caller to retry
-    /// input that can never succeed.
     #[test]
-    fn a_reader_failure_is_reported_over_a_queued_appends_transient_failure() {
+    fn a_reader_failure_does_not_wait_for_a_stalled_append() {
+        use std::time::Duration;
+
         use arrow_schema::ArrowError;
+        use tokio::sync::Notify;
 
         let runtime = crate::runtime::new_runtime().unwrap();
         let schema = ingest_schema();
-        // The second append, queued in the pipeline when the reader fails, ends its call unacked.
+        let gate = Arc::new((Notify::new(), Notify::new()));
         let mock = StorageMock::start(
             &runtime,
             MockPlan {
-                tear_append_after: Some(2),
+                append_gate: Some((ROWS_PER_BATCH, gate.clone())),
                 ..MockPlan::default()
             },
         );
         let batches = ingest_batches(&schema);
+        let (fail, failure_allowed) = std::sync::mpsc::channel();
         let reader = RecordBatchIterator::new(
-            [
-                Ok(batches[0].clone()),
-                Ok(batches[1].clone()),
-                Err(ArrowError::ComputeError("the source broke".to_owned())),
-            ],
+            batches
+                .into_iter()
+                .take(2)
+                .map(Ok)
+                .chain(std::iter::once_with(move || {
+                    failure_allowed
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap();
+                    Err(ArrowError::ComputeError("the source broke".to_owned()))
+                })),
             schema.clone(),
         );
-
-        let failure = ingest_from(&runtime, &mock, &schema, Box::new(reader)).unwrap_err();
-        assert_eq!(failure.status, Status::InvalidData, "{}", failure.message);
-        assert_message(&failure, &["the source broke"]);
-        assert_eq!(mock.append_offsets(), vec![0, ROWS_PER_BATCH]);
-        let (finalized, committed) = mock.finalized();
-        assert!(finalized.is_some(), "the abandoned stream was left open");
-        assert!(!committed, "a failed ingest must not commit its stream");
+        let (sent, received) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                sent.send(ingest_from(&runtime, &mock, &schema, Box::new(reader)))
+                    .unwrap();
+            });
+            runtime.block_on(async {
+                tokio::time::timeout(Duration::from_secs(5), gate.0.notified())
+                    .await
+                    .expect("the queued append never arrived");
+            });
+            fail.send(()).unwrap();
+            let result = received.recv_timeout(Duration::from_secs(5));
+            // Release the server even on failure, so the regression cannot hang the test.
+            gate.1.notify_one();
+            let failure = result
+                .expect("input failure waited for an append")
+                .unwrap_err();
+            assert_eq!(failure.status, Status::InvalidData);
+            assert_message(&failure, &["the source broke"]);
+            assert!(mock.finalized().0.is_some());
+            assert!(!mock.finalized().1);
+        });
     }
 
     #[test]

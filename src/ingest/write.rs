@@ -103,6 +103,9 @@ pub(super) async fn write_batches(
         Ok(()) => stream.finalize().await,
         Err(source) => Err(source),
     };
+    // An input failure already ends the ingest. Release queued appends without waiting for
+    // their responses before the bounded cleanup of its uncommitted stream.
+    drop(stream.pipeline);
     if outcome.is_err()
         && let Some(writer) = &stream.writer
     {
@@ -188,28 +191,8 @@ struct StreamWriter<'a> {
 }
 
 impl StreamWriter<'_> {
-    /// Appends remaining batches and drains the pipeline, reporting its earliest failure.
+    /// Appends remaining batches and drains the pipeline.
     async fn append_all(
-        &mut self,
-        input_schema: &SchemaRef,
-        first: RecordBatch,
-        reader: &mut dyn RecordBatchReader,
-    ) -> Result<()> {
-        match self.produce(input_schema, first, reader).await {
-            Ok(()) => match &mut self.writer {
-                Some(writer) => self.pipeline.finish(&self.target, writer).await,
-                None => Ok(()),
-            },
-            Err(source) => {
-                // Prefer an earlier queued append failure. If `source` came from the pipeline,
-                // it has already dropped successors and `abort` succeeds.
-                self.pipeline.abort(&self.target).await?;
-                Err(source)
-            }
-        }
-    }
-
-    async fn produce(
         &mut self,
         input_schema: &SchemaRef,
         first: RecordBatch,
@@ -224,12 +207,16 @@ impl StreamWriter<'_> {
         loop {
             self.target.operation.check()?;
             let Some(batch) = reader.next() else {
-                return Ok(());
+                break;
             };
             let batch = read_batch(batch, input_schema)?;
             if batch.num_rows() != 0 {
                 self.append_batch(&batch).await?;
             }
+        }
+        match &mut self.writer {
+            Some(writer) => self.pipeline.finish(&self.target, writer).await,
+            None => Ok(()),
         }
     }
 
