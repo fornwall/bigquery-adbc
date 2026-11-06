@@ -303,7 +303,10 @@ fn the_reported_rpc_code_numbers_are_the_ones_the_protocol_assigns() {
         assert_eq!(failure.vendor_code, expected, "{number}");
         assert_eq!(
             failure.details,
-            Some(vec![(DETAIL_RPC_CODE.to_owned(), expected.to_string().into_bytes())]),
+            Some(vec![(
+                DETAIL_RPC_CODE.to_owned(),
+                expected.to_string().into_bytes()
+            )]),
         );
     }
 }

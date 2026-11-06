@@ -190,8 +190,8 @@ limit.
 
 ### G17. Out-of-precision decimal values are rejected locally
 
-Decimal32, Decimal64, Decimal128 and Decimal256 values outside their declared precision, including nested ones, are
-rejected before any request with `INVALID_DATA`, for parameters as for ingest. Go
+All four Arrow decimal widths reject values outside their declared precision, including nested
+ones, before any request with `INVALID_DATA`, for parameters as for ingest. Go
 formats such a parameter with the declared number of digits, so it can send a rounded value, and
 passes ingest values to Storage Write unchecked. This driver's validation errors name the field
 and declared precision without quoting the rejected value. A wider ingest destination does not
