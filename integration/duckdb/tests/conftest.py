@@ -11,6 +11,7 @@ import itertools
 import os
 import re
 from collections.abc import Callable, Iterator
+from contextlib import closing
 from pathlib import Path
 
 import duckdb
@@ -69,7 +70,7 @@ def profile_directory(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """The one directory the driver manager searches for profiles."""
 
     directory = tmp_path_factory.mktemp("adbc-profiles")
-    extension.use_profile_directory(directory)
+    os.environ["ADBC_PROFILE_PATH"] = str(directory)
     return directory
 
 
@@ -124,11 +125,8 @@ def duck() -> Iterator[duckdb.DuckDBPyConnection]:
     connection.
     """
 
-    connection = extension.connect()
-    try:
+    with closing(extension.connect()) as connection:
         yield connection
-    finally:
-        connection.close()
 
 
 @pytest.fixture
@@ -142,11 +140,8 @@ def session(duck: duckdb.DuckDBPyConnection, profile: str) -> Session:
 def bigquery(profile: str) -> Iterator[Session]:
     """A session-scoped client for building and tearing down test fixtures."""
 
-    connection = extension.connect()
-    try:
+    with closing(extension.connect()) as connection:
         yield Session(connection, profile)
-    finally:
-        connection.close()
 
 
 @pytest.fixture

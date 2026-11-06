@@ -8,8 +8,8 @@ or scheduling, so tests assert only completion and correct rows.
 from __future__ import annotations
 
 import concurrent.futures
-import contextlib
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
+from contextlib import closing
 
 import duckdb
 import extension
@@ -30,26 +30,15 @@ SETTING_DEFAULTS = {
 
 # One non-default value per setting, for the SET/RESET round trip.
 SETTING_OVERRIDES = {
-    "adbc_connection_pool_size": ("4", "4"),
-    "adbc_insert_buffer_size": ("16", "16"),
-    "adbc_materialize_insert_rows": ("true", "true"),
-    "adbc_mix_reads_writes": ("true", "true"),
+    "adbc_connection_pool_size": "4",
+    "adbc_insert_buffer_size": "16",
+    "adbc_materialize_insert_rows": "true",
+    "adbc_mix_reads_writes": "true",
 }
 
 # Spans several of the extension's 2048-row input chunks.
 MULTI_CHUNK_ROWS = 5000
 MULTI_CHUNK_SUM = MULTI_CHUNK_ROWS * (MULTI_CHUNK_ROWS - 1) // 2
-
-
-@contextlib.contextmanager
-def _connection(**config: object) -> Iterator[duckdb.DuckDBPyConnection]:
-    """Open one more DuckDB connection, configured and closed by this block."""
-
-    connection = extension.connect(**config)
-    try:
-        yield connection
-    finally:
-        connection.close()
 
 
 def _setting(connection: duckdb.DuckDBPyConnection, name: str) -> str:
@@ -86,8 +75,8 @@ def test_settings_report_their_documented_defaults(duck: duckdb.DuckDBPyConnecti
 def test_each_setting_takes_a_value_and_returns_to_its_default(
     duck: duckdb.DuckDBPyConnection,
 ) -> None:
-    for name, (assigned, expected) in SETTING_OVERRIDES.items():
-        duck.execute(f"SET {name} = {assigned}")
+    for name, expected in SETTING_OVERRIDES.items():
+        duck.execute(f"SET {name} = {expected}")
         assert _setting(duck, name) == expected
         duck.execute(f"RESET {name}")
         assert _setting(duck, name) == SETTING_DEFAULTS[name][0]
@@ -130,7 +119,7 @@ def test_a_pool_of_one_serves_several_scans_in_one_statement(
     _counted_table(bigquery, project, dataset, left, 5)
     _counted_table(bigquery, project, dataset, right, 5)
 
-    with _connection(threads=4) as connection:
+    with closing(extension.connect(threads=4)) as connection:
         connection.execute("SET adbc_connection_pool_size = 1")
         connection.execute(sql.attach(profile, ATTACHED_CATALOG))
         left_table = sql.attached(ATTACHED_CATALOG, dataset, left)
@@ -163,7 +152,7 @@ def test_a_larger_pool_scans_several_tables_across_worker_threads(
     for index, table in enumerate(tables, start=1):
         _counted_table(bigquery, project, dataset, table, index)
 
-    with _connection(threads=4) as connection:
+    with closing(extension.connect(threads=4)) as connection:
         connection.execute("SET adbc_connection_pool_size = 8")
         connection.execute(sql.attach(profile, ATTACHED_CATALOG))
         branches = " UNION ALL ".join(
@@ -195,7 +184,7 @@ def test_parallel_duckdb_connections_share_one_profile(profile: str) -> None:
     """
 
     def run(index: int) -> list[tuple]:
-        with _connection() as connection:
+        with closing(extension.connect()) as connection:
             return connection.execute(
                 sql.read_adbc(profile, f"SELECT {index} AS i")
             ).fetchall()
@@ -225,7 +214,7 @@ def test_a_read_and_a_write_run_concurrently_on_one_dataset(
     )
 
     def read() -> list[tuple]:
-        with _connection() as connection:
+        with closing(extension.connect()) as connection:
             return connection.execute(
                 sql.read_adbc(
                     profile,
@@ -234,7 +223,7 @@ def test_a_read_and_a_write_run_concurrently_on_one_dataset(
             ).fetchall()
 
     def write() -> list[tuple]:
-        with _connection() as connection:
+        with closing(extension.connect()) as connection:
             connection.execute(sql.attach(profile, ATTACHED_CATALOG))
             return connection.execute(
                 f"INSERT INTO {sql.attached(ATTACHED_CATALOG, dataset, destination)} "
@@ -355,7 +344,7 @@ def test_settings_do_not_leak_between_duckdb_connections() -> None:
     share their connection's settings.
     """
 
-    with _connection() as first, _connection() as second:
+    with closing(extension.connect()) as first, closing(extension.connect()) as second:
         first.execute("SET adbc_connection_pool_size = 3")
         assert _setting(first, "adbc_connection_pool_size") == "3"
         assert _setting(second, "adbc_connection_pool_size") == "50"

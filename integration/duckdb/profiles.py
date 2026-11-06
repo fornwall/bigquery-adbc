@@ -21,17 +21,9 @@ _NAME_CHARACTERS = set("abcdefghijklmnopqrstuvwxyz0123456789_")
 ProfileOption = str | bool | int
 
 
-def _toml_string(value: str) -> str:
+def _toml_value(value: ProfileOption) -> str:
     # TOML accepts JSON's escapes but rejects surrogate pairs and an unescaped DEL.
     return json.dumps(value, ensure_ascii=False).replace("\x7f", r"\u007f")
-
-
-def _toml_value(value: ProfileOption) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int):
-        return str(value)
-    return _toml_string(value)
 
 
 def render_profile(*, driver: str, options: dict[str, ProfileOption]) -> str:
@@ -39,11 +31,11 @@ def render_profile(*, driver: str, options: dict[str, ProfileOption]) -> str:
 
     lines = [
         f"profile_version = {PROFILE_VERSION}",
-        f"driver = {_toml_string(driver)}",
+        f"driver = {_toml_value(driver)}",
         "",
         "[Options]",
     ]
-    lines.extend(f"{_toml_string(key)} = {_toml_value(value)}" for key, value in options.items())
+    lines.extend(f"{_toml_value(key)} = {_toml_value(value)}" for key, value in options.items())
     return "\n".join(lines) + "\n"
 
 

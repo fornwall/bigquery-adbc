@@ -89,49 +89,26 @@ def test_uri_and_discrete_forms_reach_the_same_table(
     assert Session(duck, discrete).scalar(query) == 1
 
 
-def test_uri_dataset_id_resolves_an_unqualified_table_name(
+@pytest.mark.parametrize(
+    "parameters", ["DatasetId={dataset}", "OAuthType=0&DatasetId={dataset}&Location=US"]
+)
+def test_uri_options_resolve_an_unqualified_table_name(
     duck: duckdb.DuckDBPyConnection,
     make_profile: MakeProfile,
     bigquery: Session,
     name: Callable[[str], str],
     project: str,
     dataset: str,
+    parameters: str,
 ) -> None:
-    """`?DatasetId=` in the URI is what an unqualified name resolves against."""
+    """Resolve the URI's dataset alone and alongside ADC and location options."""
 
     table = name("uri_dataset")
     _create_probe_table(bigquery, project, dataset, table)
     profile = make_profile(
         "uri_dataset",
-        uri=f"bigquery:///{project}?DatasetId={dataset}",
+        uri=f"bigquery:///{project}?{parameters.format(dataset=dataset)}",
         # Dropped, so the URI parameter is the only thing naming a dataset.
-        **{"bigquery.dataset_id": None},
-    )
-
-    assert Session(duck, profile).scalar(f"SELECT n FROM {sql.identifier(table)}") == 42
-
-
-def test_uri_query_parameters_combine(
-    duck: duckdb.DuckDBPyConnection,
-    make_profile: MakeProfile,
-    bigquery: Session,
-    name: Callable[[str], str],
-    project: str,
-    dataset: str,
-) -> None:
-    """`OAuthType`, `DatasetId` and `Location` in one URI, all applied.
-
-    `OAuthType=0` is Application Default Credentials, which is what every other
-    profile in the suite gets implicitly; spelling it out here is the only place
-    the parameter is exercised. The datasets this run creates are US, so `US` is
-    the location that must let the query through.
-    """
-
-    table = name("uri_params")
-    _create_probe_table(bigquery, project, dataset, table)
-    profile = make_profile(
-        "uri_params",
-        uri=f"bigquery:///{project}?OAuthType=0&DatasetId={dataset}&Location=US",
         **{"bigquery.dataset_id": None},
     )
 
