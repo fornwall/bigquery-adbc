@@ -1,13 +1,8 @@
 # Release binary size
 
-The driver is a `cdylib` loaded into another process, so file size and mapped code are release
-constraints. This file is for contributors changing dependencies or the build profile. It records
-the size of the stripped release library, how to reproduce it, and the measured choices that keep
-it small. Judge a change by whole-artifact bytes: several changes here cut `.text` and still grew
-the file.
-
-Each measurement describes the tree it was made on, not necessarily the current checkout. Use the
-commands below to measure the library you intend to distribute.
+Measurements of the stripped release library and dependency/profile choices. Compare whole-file
+bytes: reducing `.text` can still grow the file. These figures describe historical trees; measure
+the checkout you intend to distribute with the commands below.
 
 ## Usage
 
@@ -27,28 +22,18 @@ scripts/report-binary-size.sh \
   --symbols-from target/size-symbols/release/libadbc_driver_bigquery.so
 ```
 
-The tab-separated report identifies the artifact by path, format and SHA-256, and records its
-size, per-section byte counts and top `crate` and `symbol` rows (`--top COUNT`, default 20).
-Named text differs from `.text` because of inlining and linker-generated code; use it to find
-candidates, then compare whole-artifact bytes.
+The TSV report records path, format, SHA-256, total/section bytes and top crates/symbols
+(`--top COUNT`, default 20). Inlining and linker-generated code make named text differ from `.text`.
+Version 2 `context` rows describe the reporting environment, not a supplied artifact's provenance;
+keep build records with saved libraries. `CARGO_BUILD_TARGET` is recorded when set, but Cargo
+configuration can also select a target.
 
-In report version 2, `context` rows describe the checkout and tools running the report. They do
-not establish a supplied artifact's source revision, compiler, profile or target. Keep those
-build records alongside saved libraries. The report records `CARGO_BUILD_TARGET` when set;
-Cargo configuration can also select a target, so an unset variable does not imply a host build.
-
-Every delta below is a paired build of two copies of one tree
-(`git archive HEAD | tar -x -C <dir>`) that differ only in the change, using
-`cargo rustc --locked --release --lib --crate-type cdylib` on `x86_64-unknown-linux-gnu` with
-default features and the checked-in profile. A change to only paths or `-C metadata` moves the
-artifact by a few hundred bytes (328 measured), so smaller deltas are noise. Each delta was
-measured against the tree of its time; deltas from before the library was built alone as a
-`cdylib` were measured without LTO.
-
-Cargo applies the profile's `lto` only to a target whose crate types all support it, which an
-`rlib` does not. The manifest therefore declares only the `rlib` that tests, benchmarks and fuzzing
-use, and every shipped and tested build of the shared library runs
-`cargo rustc --crate-type cdylib`.
+Deltas compare isolated changes in two copies of one tree (`git archive HEAD | tar -x -C <dir>`),
+using `cargo rustc --locked --release --lib --crate-type cdylib` on `x86_64-unknown-linux-gnu`
+with default features and the checked-in profile. Paths or `-C metadata` alone moved the file
+328 bytes; smaller deltas are noise. Earlier mixed `rlib`/`cdylib` builds lacked LTO: Cargo applies
+it only when every crate type supports it. The manifest now declares `rlib` for tests/benchmarks,
+while all shipped and tested shared-library builds explicitly select `cdylib`.
 
 ## Baseline
 
@@ -71,10 +56,9 @@ build adds.
 
 ## Release builds compile logging out
 
-`tracing` and `log` are built with `release_max_level_off`. Nothing in the library installs a
-subscriber or logger, and its copies of both crates are private to the shared library, so every
-dependency event went to a no-op dispatcher. The size is per callsite, in `h2`, `hyper`, `tonic`,
-`reqwest`, `rustls` and the transports of `google-cloud-gax` (gax):
+The shared library installs no logger/subscriber, so its private `tracing` and `log` copies use
+`release_max_level_off`. This removes dependency callsites in `h2`, `hyper`, `tonic`, `reqwest`,
+`rustls` and `google-cloud-gax` (gax):
 
 | `tracing` cap | `log` cap | Artifact | Delta |
 | --- | --- | ---: | ---: |
@@ -83,12 +67,10 @@ dependency event went to a no-op dispatcher. The size is per callsite, in `h2`, 
 | `off` | `debug` | 9,625,888 | -188,992 |
 | `off` | `off` | 9,592,896 | -221,984 |
 
-Both caps are needed because `rustls` logs through `log`, so `log` and `tracing` are dependencies
-the driver never calls. Tests and debug builds keep every level; what the caps mean for a Rust
-application that depends on this crate is in the [Rust API reference](REFERENCE.md#rust-api). The
-driver's own diagnostics are `src/diag.rs`, a stderr writer enabled by
-`ADBC_DRIVER_BIGQUERY_LOG_LEVEL` that costs 5,328 bytes; a `tracing` subscriber would need at
-least the `warn` cap, 44,800 bytes more.
+Both caps are needed because `rustls` uses `log`; debug builds retain all levels. For Rust
+applications' feature unification, see [Rust API](REFERENCE.md#rust-api). The driver's stderr
+diagnostics (`src/diag.rs`, `ADBC_DRIVER_BIGQUERY_LOG_LEVEL`) cost 5,328 bytes; a `tracing`
+subscriber needs at least `warn`, adding 44,800 bytes.
 
 ## Decisions that keep it small
 
@@ -135,11 +117,9 @@ and ships a 15 MB library; the `"*"` spelling does not.
 
 ### Shared transaction blocking tasks
 
-`DriverRuntime::spawn_detached_blocking` takes `Box<dyn FnOnce() + Send>`, so session creation,
-`BEGIN`/`COMMIT`/`ROLLBACK` control and connection cleanup share Tokio's blocking-task machinery.
-The existing channels still carry results and preserve cancellation cleanup. This adds one
-closure allocation per dispatched control or cleanup task; query submission and row conversion
-keep their existing task types.
+`DriverRuntime::spawn_detached_blocking` takes `Box<dyn FnOnce() + Send>`, sharing Tokio task
+machinery across session creation, transaction control and connection cleanup at one closure
+allocation per dispatch. Query submission and row conversion retain their task types.
 
 A paired build of `0d223a6` and the same tree with only this change in `src/runtime.rs`,
 `src/transaction.rs` and `src/connection/transactions.rs` measured:
@@ -150,9 +130,8 @@ A paired build of `0d223a6` and the same tree with only this change in `src/runt
 | `.text` | 6,469,958 | 6,458,566 | -11,392 |
 | `.eh_frame` | 760,052 | 758,908 | -1,144 |
 
-Both builds used Rust 1.99.1, default features, `x86_64-unknown-linux-gnu`, the checked-in
-release profile and the same scratch source path. Symbols were retained for inspection, then
-both libraries were stripped with the same tool. Reproduce on each tree with:
+Both used Rust 1.99.1, default features, the checked-in release profile and the same scratch path
+on Linux x86-64, retaining symbols before stripping with the same tool. Reproduce on each tree:
 
 ```sh
 CARGO_PROFILE_RELEASE_STRIP=none CARGO_TARGET_DIR=target/size-review \
@@ -228,9 +207,8 @@ text and cost build time only.
 
 ### Dependency feature audit
 
-The pinned dependency graph was checked with `cargo machete` and independent scratch-manifest
-feature removals. Machete found no unused direct dependency. Each of these five changes left the
-resolved Linux normal/build package and feature list identical:
+Independent scratch-manifest removals left the Linux normal/build package and feature lists
+identical for all five changes below:
 
 | Removed direct request | Why the feature remains enabled |
 | --- | --- |
@@ -240,9 +218,7 @@ resolved Linux normal/build package and feature list identical:
 | Tokio-util `io` | `h2` enables it. |
 | GAX default features | `google-cloud-gax` defines no default feature set. |
 
-Deleting a redundant declaration therefore does not exclude its implementation. Keep explicit
-requirements for the APIs the driver uses, instead of depending on incidental feature unification.
-Compare the graph before and after each isolated manifest edit with:
+Keep explicit features for APIs the driver uses. Compare each isolated manifest edit with:
 
 ```sh
 cargo tree --locked --target x86_64-unknown-linux-gnu -e normal,build \
@@ -256,10 +232,8 @@ REST multiplexing but keeps `h2` and Hyper's HTTP/2 implementation for gRPC. Non
 variants removes any of the 210 Linux normal/build package instances. The proxy and HTTP/2
 experiments needed offline lockfile pruning in their scratch trees; versions were not upgraded.
 
-The larger remaining candidates need a narrower SDK feature boundary: telemetry dependencies
-are mandatory under GAX's `_internal-common`, and the BigQuery crate cannot select only the
-Storage RPCs the driver uses. See the [upstream measurements](#upstream-only-weights).
-YAML support and REST HTTP/2 have measured costs, but removing either changes supported behavior.
+Larger candidates need narrower SDK features ([upstream measurements](#upstream-only-weights)).
+Removing YAML or REST HTTP/2 changes supported behavior.
 
 ### YAML and authentication dependencies
 

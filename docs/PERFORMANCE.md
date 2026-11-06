@@ -1,13 +1,8 @@
 # Performance
 
-Measurements of the driver's hot paths and how to reproduce them, for contributors changing those
-paths and evaluators comparing drivers. Microbenchmarks measure REST-to-Arrow decoding, ingest
-normalization, and Storage API IPC encoding and decoding. A separate live benchmark measures
-complete `dbt build` runs of [dbt-core 2.0](DBT-CORE.md). Binary size is in
-[BINARY-SIZE.md](BINARY-SIZE.md).
-
-The live-test project ID is anonymized as `example-project` here and in the saved measurement
-artifacts. Use your own project when reproducing a run.
+Local benchmarks cover REST decoding, result delivery, ingest normalization and Storage API IPC.
+Live benchmarks measure `dbt build` runs of [dbt-core 2.0](DBT-CORE.md); `example-project` anonymizes
+the test project here and in saved artifacts. See [BINARY-SIZE.md](BINARY-SIZE.md) for library size.
 
 ## Reproducing
 
@@ -77,20 +72,16 @@ Measuring a change:
 
 ## Results
 
-Figures describe the code and workload measured, not necessarily the current checkout. A "before"
-figure is the code preceding the change described, which this tree no longer contains, so the
-[benchmark commands](#reproducing) reproduce only the "after" side, in the rows each section names.
-Rerun both versions on the same machine when evaluating a change, and record the toolchain and CPU
-with new results. Approaches that did not help are listed under
-[rejected optimizations](#rejected-optimizations).
+Figures describe historical comparisons, not necessarily this checkout. The commands run the
+current implementation; reproduce a comparison with both source versions on the same machine.
+Record the CPU and toolchain with new measurements.
 
-Native comparisons used Rust 1.99.1, locked dependencies and the release profile on Linux x86-64;
-timed ones ran on an AMD Ryzen 9 7950X3D, pinned to CPU 3 unless a section says otherwise. They
-alternated saved before and after executables. Each run reports the median of seven samples, and
-tables give the median of three runs per executable. These results exclude network and BigQuery
-work and establish no live dbt or upload speedup, and CPU affinity does not reserve a core against
-other host activity. Requested bytes include intermediate allocations that have already been
-freed; they are not retained memory or process RSS.
+Unless stated otherwise, native comparisons used Rust 1.99.1, locked release builds on Linux
+x86-64 and an AMD Ryzen 9 7950X3D pinned to CPU 3. Tables report the median of three alternating
+before/after runs, each taking seven samples. CPU affinity does not exclude other host activity.
+These exclude network and BigQuery work and establish no live dbt or upload speedup. Requested
+bytes include freed intermediates; ownership tests measure retained buffers. Neither measures
+process RSS, allocator retention or independently held caller buffers.
 
 ### Tiny query results
 
@@ -105,25 +96,19 @@ workers. The table gives the median and range of three reports for a one-row res
 | Inline response decode | 18.68 µs (18.15–18.87) | 108 | 18,496 |
 | Inline decode and resident reader | 3.43 µs (3.24–5.36) | 94 | 10,040 |
 
-The synthetic response has dbt's `failures` integer and `should_warn`/`should_error` booleans,
-plus query metadata. Its JSON is 335, 380, 1,807 and 47,441 bytes at 0, 1, 32 and 1,024 rows.
-The one-row measurements include operation tracking, JSON decoding, schema conversion, reader
-construction, Arrow conversion and draining to EOF. They exclude network I/O and BigQuery work.
-
-Response JSON up to 4 KiB decodes inline while retaining the driver-wide conversion permit.
-A complete resident page of at most 32 rows and 4 KiB converts lazily on its first read, using
-the same permit and cancellation checks. This avoids a producer task and bounded delivery queue
-for those results. Conversion errors still arrive during iteration; continuation tokens, wide
-rows and larger results keep their existing paths. Conversion hands a host Tokio worker back
-before running synchronously, since a tiny completion page can inherit a large earlier schema.
+The response has dbt's `failures`, `should_warn` and `should_error` columns plus metadata:
+335, 380, 1,807 and 47,441 JSON bytes at 0, 1, 32 and 1,024 rows. Response JSON up to 4 KiB
+decodes inline. A complete page of at most 32 rows and 4 KiB converts on its first read, without
+a producer task or queue. Both retain conversion permits and cancellation; conversion hands a
+host Tokio worker back because a tiny page can inherit a large schema. Errors arrive during
+iteration, as on the buffered path.
 
 The 32-row complete path fell from a median 33.16 µs to 10.79 µs. The buffered 1,024-row control
 ranged from 270–276 µs at baseline and 273–436 µs with the resident change, with a final sample of
 273 µs, so these measurements establish no large-result throughput change.
 
-Even the measured one-row saving totals only about 0.6 ms across the workload's 26 data tests,
-before accounting for their concurrency. It is a reduction in local result-handling overhead;
-the remote requests take hundreds of milliseconds, so this does not predict a visible dbt gain.
+The one-row saving totals about 0.6 ms across 26 data tests before concurrency; remote requests
+take hundreds of milliseconds.
 
 Three alternating before/after pairs then rebuilt existing relations with dbt `2.0.9`, at the
 same eight threads, against `example-project` in `US`. Preparation stayed outside the timer.
@@ -135,20 +120,13 @@ zero cache hits.
 | Before | 8.86s | 8.51–11.00s | 17.11s |
 | After | 8.61s | 8.19–8.70s | 15.86s |
 
-The paired after/before median was `0.963`, ranging from `0.783` to `0.982`. This small sample,
-changing BigQuery service time and host load cannot attribute the observed difference to the
-driver change. The evidence supports lower local result-handling overhead, not an established
-whole-build speedup.
-
-Keep other CPU-heavy workloads idle when comparing scheduling costs.
+The paired after/before median was `0.963` (`0.783`–`0.982`). The small sample and changing service
+time and host load do not establish a whole-build speedup.
 
 #### Avoiding unused job clients
 
-The REST job-client wrapper is built only when a result needs a metadata lookup or buffered
-pagination, because resident and empty results already contain everything needed. Metadata
-fetches and pagination share one wrapper per reader. These `query/complete` allocation counts
-compare building it for every result with deferring it; concurrent compilation made timing
-unsuitable for comparison:
+Deferring the REST job-client wrapper until metadata lookup or pagination reduced
+`query/complete` allocations below. Concurrent compilation prevented timing comparisons:
 
 | Rows | Allocation calls before → after | Requested bytes before → after |
 | ---: | ---: | ---: |
@@ -159,29 +137,21 @@ unsuitable for comparison:
 
 #### Reusing the job client across statements
 
-The REST job-client wrapper is cached with the database's immutable client configuration, so
-submitting many small queries reuses its projects URL. The `query/client` row measures warmed
-client acquisition, with no network requests:
+Caching the REST job-client wrapper with the database configuration reuses its projects URL.
+`query/client` measures warmed acquisition:
 
 | `query/client`, rows 0 | Allocation calls | Requested allocation bytes |
 | --- | ---: | ---: |
 | Before | 3 | 198 |
 | Cached wrapper | 0 | 0 |
 
-One wrapper and its URL remain resident per initialized configuration generation. Existing
-connections retain their original configuration after a database option change; request-local
-dataset-location resolvers stay outside the cache to avoid retaining that generation forever.
-Mock endpoint and ownership tests cover both properties.
+One wrapper and URL remain resident per configuration generation. Existing connections retain
+their generation after option changes; request-local dataset resolvers stay outside the cache.
 
 #### Stack-pinned runtime bridge
 
-The synchronous runtime bridge pins its type-erased future on the calling thread's stack.
-Type erasure still shares Tokio's blocking machinery across call sites, but the future needs no
-heap allocation because it cannot outlive the synchronous call. This applies to query submission,
-resident result conversion and other blocking calls, including calls from a dbt Tokio host.
-
-Complete response handling in `query/complete`, before and after moving the erased future from the
-heap to the stack:
+The synchronous runtime bridge stack-pins its type-erased future, which cannot outlive the call.
+Type erasure still shares Tokio's blocking machinery. The effect on `query/complete`:
 
 | Rows | Allocation calls before → after | Requested allocation bytes before → after |
 | ---: | ---: | ---: |
@@ -190,11 +160,9 @@ heap to the stack:
 | 32 | 125 → 123 | 14,410 → 12,026 |
 | 1,024 (buffered) | 1,135 → 1,133 | 174,322 → 172,674 |
 
-Each response decode avoids one allocation. Nonempty resident results also avoid one for the
-conversion permit; the buffered control avoids one when joining its producer at EOF. Consuming
-an empty reader does not enter the runtime. The corresponding future state lives on the stack.
-The isolated stripped-library cost was 1,088 bytes (0.013%); see [BINARY-SIZE.md](BINARY-SIZE.md).
-The runtime tests cover nested multithreaded hosts, worker handoff and shutdown:
+Each decode avoids one allocation; resident conversion permits and buffered EOF joins avoid
+another. Empty readers do not enter the runtime. The library grew 1,088 bytes (0.013%;
+[BINARY-SIZE.md](BINARY-SIZE.md)). Check runtime nesting, worker handoff and shutdown with:
 
 ```sh
 cargo test --locked --lib runtime::tests::
@@ -202,14 +170,9 @@ cargo test --locked --lib runtime::tests::
 
 #### Shared statement SQL
 
-Statements, execution plans and lazy parameter readers retain the same immutable SQL allocation.
-Setting or replacing a statement's SQL still takes an owned snapshot; executing it no longer copies
-that text into each plan or lazy reader. A mock regression replaces the statement text while its
-parameter reader remains open, verifies that later bindings execute the original SQL, and checks
-that the original allocation is released when the reader ends.
-
-`query/planning-*` measures a fresh plan and request identity from already-stored SQL. A paired run
-on Rust 1.99.1 / Ryzen 9 7950X3D, pinned to CPUs 8–15, reported:
+Statements, plans and lazy parameter readers share immutable SQL; replacing it leaves open
+readers' snapshots intact. `query/planning-*` measures planning and request identity from stored
+SQL, excluding input setup and serialization. A paired run pinned to CPUs 8–15 reported:
 
 | SQL target bytes | Allocation calls before → after | Requested bytes before → after |
 | --- | ---: | ---: |
@@ -217,9 +180,7 @@ on Rust 1.99.1 / Ryzen 9 7950X3D, pinned to CPUs 8–15, reported:
 | 1,024 | 7 → 6 | 1,220 → 180 |
 | 65,536 | 7 → 6 | 65,732 → 180 |
 
-This removes one SQL-sized allocation per plan; the measured planning allocation is now independent
-of SQL length. Input setup and request serialization are excluded. These are local allocation
-measurements, not a live dbt latency claim. Reproduce with:
+Reproduce allocation counts and check snapshot lifetime with:
 
 ```sh
 cargo bench --locked --features benchmark --bench query_result
@@ -228,11 +189,9 @@ cargo test --locked --lib statement::tests::execution::
 
 #### Query request capacity
 
-Reserving the SQL length plus 512 bytes for the usual request envelope avoids growing and
-copying the buffer while serializing the SQL. This is a capacity hint: escaped SQL, parameters
-and larger labels can still grow the buffer, and the request contents are unchanged. The
-`query/request-*` rows cover serialization alone. Concurrent host activity made timings unsuitable
-for a speed claim:
+Reserving SQL length plus 512 bytes avoids buffer growth for usual request envelopes; escaping,
+parameters or labels can still grow it. `query/request-*` measures serialization allocations.
+Concurrent host activity prevented timing comparisons:
 
 | SQL bytes | Allocation calls before → after | Requested allocation bytes before → after |
 | ---: | ---: | ---: |
@@ -242,13 +201,9 @@ for a speed claim:
 
 #### Uncontended resident conversion permits
 
-A tiny resident result tries to acquire its conversion permit before entering the driver
-runtime. If the permit is unavailable, the existing cancellable wait still applies. Conversion
-continues to hand a Tokio host worker back before running, and retains the same driver-wide
-concurrency limit. A closed semaphore still reports the existing one-shot pipeline error.
-
-Three alternating before/after pairs of `query_result`, pinned to CPUs `8-15`, changed only the
-resident permit acquisition:
+Resident results try to acquire a conversion permit before entering the runtime, retaining the
+cancellable wait and host-worker handoff. Three alternating `query_result` pairs, pinned to
+CPUs `8-15`, changed only this acquisition:
 
 | Case | Before ns | After ns | Allocation calls / bytes (unchanged) |
 | --- | ---: | ---: | ---: |
@@ -262,16 +217,10 @@ The unchanged zero-row read control measured 1,297 → 1,313 ns, and the buffere
 measured median process-wide instruction counts of 145,595,441 → 143,813,619 for 1,000
 `query/read/1` calls, including input preparation and fixture startup.
 
-Existing tests cover cancellation with an available permit and while waiting for a held permit;
-the closed-pipeline regression checks error delivery and subsequent EOF.
-
 #### Query schema conversion allocations
 
-Schema conversion checks nesting depth during its existing field walk and borrows scalar type
-names until inserting the Arrow metadata, avoiding a separate validation stack and a temporary
-string for each scalar field. Tests cover a 256-level hostile input and siblings at the supported
-depth limit. In `query/complete`, the three-column dbt data-test schema takes four fewer
-allocations and requests 72 fewer bytes per result:
+Checking depth during schema conversion and borrowing scalar type names until metadata insertion
+removes a validation stack and temporary strings. The three-column dbt schema in `query/complete`:
 
 | Complete result | Allocation calls before / after | Requested bytes before / after |
 | --- | ---: | ---: |
@@ -280,22 +229,13 @@ allocations and requests 72 fewer bytes per result:
 | 32 rows | 123 / 119 | 12,026 / 11,954 |
 | 1,024 rows | 1,133 / 1,129 | 172,674 / 172,602 |
 
-Request serialization and response-decoding allocation counts are unchanged. Concurrent release
-and fuzz builds affected timings, so no latency claim is made.
+Serialization and response-decoding allocations are unchanged. Concurrent builds prevented timing comparisons.
 
 ### Dataset location cache retention
 
-The dataset-location cache holds at most 32 entries across a database's connections, evicting
-the oldest inserted entry when full. One queue stores keys and locations; lookups scan at most
-32 entries without changing their order. Revisiting an evicted dataset repeats `datasets.get`.
-This bounds retained metadata for long-lived clients that visit many scratch datasets without
-changing the location selected for a job.
-
-A regression inserts 4,096 distinct dataset locations and retains the newest 32; an unbounded
-cache retained all of them. Weak-reference assertions verify that eviction releases the dataset
-name and location allocations. Separate tests cover replacement, invalidation, reinsertion and a
-mock HTTP lookup after eviction. These measure retained entries and ownership, not process RSS or
-live request latency.
+The dataset-location cache retains the newest 32 insertions across a database's connections;
+revisiting an evicted dataset repeats `datasets.get`. An ownership regression inserts 4,096
+locations and verifies that only 32 remain, with evicted names and locations released:
 
 ```sh
 cargo test --locked --lib clients::tests::
@@ -303,75 +243,50 @@ cargo test --locked --lib clients::tests::
 
 ### Terminal reader retention
 
-Result wrappers release their inner reader as soon as they observe EOF, an error or cancellation.
-This frees queued result batches and unread bound inputs while keeping the wrapper's schema
-available.
-
-A regression uses a one-row INT64 slice backed by an 8,388,608-byte allocation. A wrapper that held
-its inner reader after EOF or cancellation left two references (reader plus observer); the wrapper
-leaves only the observer reference before `next()` returns. The tests also cover terminal errors,
-cancellation arriving during the inner read, both wrapper variants, stable `schema()` and
-subsequent EOF. An existing regression continues to check that an already-buffered metadata reader
-remains readable after cancellation.
+Result wrappers release their inner reader on EOF, error or observed cancellation, retaining the
+schema. A one-row INT64 slice backed by 8,388,608 bytes previously kept two references after EOF
+or cancellation; now only the test's observer remains before `next()` returns:
 
 ```sh
 cargo test --locked --lib operation_readers_release_retained_buffers
 cargo test --locked --lib cancellation::tests::
 ```
 
-These are deterministic retained-buffer lifetime measurements, not process RSS or throughput
-measurements. Caller-owned batches and allocations retained by the allocator are excluded.
-Cancellation is observed when the caller next polls the wrapper; this does not make an unpolled
-wrapper release its queued data immediately when a cancellation handle is invoked.
+Cancellation releases queued data when the caller next polls, not when the handle is invoked.
 
 ### Input buffer retention
 
-A two-row Int64 slice backed by 8 MiB checks ownership. The driver releases its batch reference,
-and with it all 8,388,608 backing-buffer bytes, before returning the final parameter row for
-execution. The first row still retains the input because the second remains unread.
-Empty sliced batches are also released before the next source callback. This measures a
-deterministic buffer lifetime, not process RSS, and excludes buffers retained independently by
-the caller or source reader. Reproduce with:
+The driver releases a two-row Int64 slice's 8,388,608-byte buffer before returning its final
+parameter row. Empty batches are released before the next source callback:
 
 ```sh
 cargo test --locked --lib bound_parameter_batches
 ```
 
-The Storage Write transport drops consumed batches, and writing or discarding an IPC plan releases
-its buffer references while preserving scratch capacity, so a two-row slice cannot keep 8,388,608
-bytes referenced during the next source read. The regression keeps one observer buffer and asserts
-that no driver reference remains before reading the next batch, including the final EOF read. It
-completes a 12-row mock ingest and commit; this measures buffer ownership, not process RSS or live
-BigQuery performance:
+Storage Write drops consumed batches; writing or discarding IPC plans releases buffer references
+but preserves scratch capacity. A 12-row mock ingest checks that a two-row slice's 8,388,608-byte
+buffer has no driver reference before the next source read, including EOF:
 
 ```sh
 cargo test --locked --lib the_first_ingest_batch_is_released_before_reading_more_input
 cargo test --locked --lib written_and_discarded_plans_release_their_input_buffers
 ```
 
-The normalized window is also released before waiting for an AppendRows response or stream
-creation retry. A 1,048,576-row Float32 input normalizes to an 8,388,608-byte Float64 allocation.
-Consuming the window during encoding reduces the driver's references to that allocation from
-one to zero before the append starts, while the independently encoded IPC payload stays valid.
-The regression verifies this on success and rejection, and round-trips every successful value:
+A 1,048,576-row Float32 input normalizes to an 8,388,608-byte Float64 allocation. Encoding releases
+it before append or stream creation retry, on success and rejection; the independent IPC payload
+still round-trips every value:
 
 ```sh
 cargo test --locked --lib encoded_chunks_release_their_normalized_window
 ```
 
-This measures ownership of the normalization allocation, not peak RSS or live ingestion
-throughput. The source reader's input buffers, encoded payload and allocator retention are
-outside this measurement.
+Source inputs and encoded payloads are outside this normalization-allocation measurement.
 
 ### Parameterized decimal buffer reuse
 
-When Decimal128 or Decimal256 already has the target physical width and written scale, exact
-declared precision/scale validation retains its value and null buffers. An unchanged Arrow type
-also keeps the original array. A narrower declared scale still rejects nonzero discarded digits
-and preserves row diagnostics.
-
-`normalize` allocation counts before and after this reuse, for both the `decimal-precision` and
-`decimal-scale` rows at 65,536 rows:
+Decimal128/256 validation reuses value and null buffers when physical width and written scale
+match, retaining precision checks. Both `decimal-precision` and `decimal-scale` rows of
+`normalize` measured these allocations at 65,536 rows:
 
 | Columns | Allocation calls before / after | Requested bytes before / after |
 | --- | ---: | ---: |
@@ -380,20 +295,13 @@ and preserves row diagnostics.
 
 Columns alternate Decimal128(38, 9) and Decimal256(76, 38), with one null per sixteen rows and
 nonzero slice offsets. The remaining allocation holds the batch's column references; source buffers
-are shared. Timings were unpaired under concurrent build and fuzz load, so these results establish
-no throughput gain. Two alternating instruction-count pairs over 1,000 calls increased about
-0.6–0.7%, including fixture preparation and drops. Tests check sliced buffers, null validity and
-opaque null payloads, unchanged integer/fractional overflow rejection and row diagnostics.
+are shared. Unpaired timings under build/fuzz load establish no throughput gain. Two alternating
+instruction-count pairs over 1,000 calls increased 0.6–0.7%, including preparation and drops.
 
 ### Nullable dictionary expansion
 
-Bulk ingest gathers consecutive dictionary keys within each valid span and appends each null
-span in one operation, where the presence of any null key would otherwise select a per-row gather,
-including for long ascending runs. Key validation, null dictionary values, sliced validity
-bitmaps and the existing zero-copy path for wholly consecutive non-null keys are preserved.
-
-The `dictionary-*` rows of `normalize`, comparing the per-row gather with span gathering on the
-same fixtures, at 65,536 rows:
+Gathering dictionary keys and nulls by consecutive spans replaces a per-row gather when any null
+key is present. The `dictionary-*` rows of `normalize` compare both approaches at 65,536 rows:
 
 | Dictionary keys | Columns | Before, ms | After, ms |
 | --- | ---: | ---: | ---: |
@@ -417,8 +325,7 @@ instructions for ascending runs, 37.512→32.850 billion for scattered keys, and
 billion for alternating nulls. These counts include harness initialization, input preparation
 and output drops.
 
-Tests compare against Arrow's `take` kernel across nested value types, null runs, non-byte-aligned
-slices and invalid live keys:
+Check against Arrow's `take` kernel with:
 
 ```sh
 cargo test --locked --lib types::cast::tests::
@@ -426,11 +333,9 @@ cargo test --locked --lib types::cast::tests::
 
 ### Large-offset byte columns
 
-Narrowing LargeUtf8 and LargeBinary offsets validates their minimum and maximum before rebasing
-them into one exactly sized vector per column, where fallible collection grew that vector
-incrementally. STRING and BYTES payload buffers remain shared, and every offset must still fall
-inside the validated span before narrowing. In the `large-offsets` rows of `normalize`, `narrow`
-has two columns and `wide` has sixteen:
+Narrowing LargeUtf8/Binary offsets preallocates one vector per column after validating the span,
+keeping payload buffers shared. The `large-offsets` rows of `normalize` compare this with
+incremental vector growth; `narrow` has two columns, `wide` sixteen:
 
 | Rows | Large-offset shape | Before µs | After µs | Allocation calls before → after | Requested bytes before → after |
 | ---: | --- | ---: | ---: | ---: | ---: |
@@ -450,8 +355,7 @@ median times within 0.7%. Three paired instruction counts for 1,000 large-offset
 fell from about 58.43 billion to 49.10 billion user instructions (16.0% fewer), including
 identical fixture construction and input preparation.
 
-The cast regression checks NULLs, empty values, non-ASCII strings, vector boundaries and
-65,536-row slices, including that the original payload buffers remain shared:
+Check casts and shared-buffer ownership with:
 
 ```sh
 cargo test --locked --lib types::cast::tests::
@@ -459,10 +363,9 @@ cargo test --locked --lib types::cast::tests::
 
 ### Sliced Storage Write batches
 
-Chunking a large input batch leaves nonzero STRING, BYTES and LIST offsets. The writer copies each
-offset region once and rebases it in place, avoiding a vector extension and checked subtraction
-for every offset. Planning still validates the offsets before writing them. The `encode-sliced`
-rows of `ipc`, with the same fixtures in both executables and no other build or test running:
+The writer copies and rebases nonzero STRING/BYTES/LIST offsets in place after validation,
+replacing per-offset vector extensions and checked subtractions. The `encode-sliced` rows of
+`ipc`, with identical fixtures and no other build or test running:
 
 | Rows | Sliced shape | Before µs | After µs | Time reduction | Allocation calls / requested bytes, unchanged |
 | ---: | --- | ---: | ---: | ---: | ---: |
@@ -481,19 +384,11 @@ nested 1.111→1.113 µs and deep 3.558→3.507 µs, with unchanged allocations.
 The largest deep fixture exceeds one AppendRows request budget and measures the codec
 independently of the chunk encoder's existing request limits.
 
-Large sliced BYTES/LIST coverage is checked against the independent `arrow-ipc` reader, including
-null and empty entries and slice lengths around loop tails.
-
 ### Validating sliced list windows
 
-Canonical sliced lists validate only the child values their offsets address. Validation keeps the
-original offsets and translates error locations by the child window's origin; offsets are copied
-and rebased only when normalization must rebuild the list. Nested lists and NULL-list rewrites
-retain their row locations and values.
-
-One paired run of `normalize`, pinned to CPU 3 with Rust 1.99.1 on a Ryzen 9 7950X3D, measured
-these `list-window` cases. Each time is the harness median of seven samples; other builds were
-running, so timings are indicative. Allocations are requested bytes, not peak RSS.
+Canonical sliced lists validate only referenced child values, retaining offsets and translating
+error locations by the window's origin. One paired `normalize` run measured `list-window` below.
+Each time is the median of seven samples; concurrent builds make timings indicative.
 
 | Columns / rows | Before, ns | After, ns | Allocation calls before → after | Requested bytes before → after |
 | --- | ---: | ---: | ---: | ---: |
@@ -514,11 +409,9 @@ cargo test --locked --lib ingest::normalize::
 
 ### Offset validation for sliced Storage Write batches
 
-The writer's offset validation reduces to the smallest offset, where a scan that could return at
-every offset would keep the compiler from vectorizing the valid-input path. The minimum must still
-be at least the nonnegative first offset, which proves every later rebase is nonnegative and
-cannot overflow. Invalid inputs still fail before any body is materialized. Allocation calls and
-requested bytes were unchanged from the preceding sliced-write table:
+Reducing to the smallest offset lets the writer vectorize validation. The minimum must be at
+least the nonnegative first offset, proving rebases cannot overflow; failures precede body
+materialization. Allocation counts and bytes match the preceding sliced-write table:
 
 | Rows | Sliced shape | Before µs | After µs | Time reduction |
 | ---: | --- | ---: | ---: | ---: |
@@ -537,10 +430,6 @@ for deep; other host workloads added visible jitter. Unsliced 1,024-row control 
 Instruction counts provide a less timing-sensitive check: three alternating runs of 1,000 deep
 65,536-row sliced encodes fell from a median 11,892,573,353 to 4,141,286,435 user instructions
 (65.2% fewer). These process counts also include identical fixture construction and validation.
-
-Writer tests cover invalid offsets at every interior position around vector-width boundaries,
-including `i32::MIN` and `i32::MAX`, and existing independent `arrow-ipc` round trips cover valid
-sliced output.
 
 ### Live dbt workload
 
@@ -579,12 +468,10 @@ A second 24-pair run using the checked-in metadata benchmark also returned equal
 Its paired savings were 57.6ms for the table, 40.1ms for the view and 35.8ms for the materialized
 view.
 
-These HTTP measurements isolate the metadata view; they do not measure the Rust transport or
-establish an end-to-end dbt improvement. Relation lookups run concurrently, so their individual
-savings do not add directly to process wall time. The live Rust test
-`table_metadata_describes_what_defines_each_relation` verified configuration for tables, views,
-materialized views and external tables after the change. Regression tests separately pin BASIC
-for relation schemas and STORAGE_STATS for exact row counts.
+These HTTP measurements isolate the metadata view, excluding Rust transport. Concurrent lookups'
+savings do not add directly to dbt wall time. The live
+`table_metadata_describes_what_defines_each_relation` test verified tables, views, materialized
+views and external tables.
 
 Five before/after pairs rebuilt existing relations with `--existing`, alternating which library
 ran first. Preparation ran outside the timer; each timed invocation again verified 39 jobs,
@@ -607,9 +494,9 @@ relations, gave:
 | Downloaded Foundry | 25.39s | 24.86–28.16s | 1.54 | 18.36s |
 | This driver | 10.23s | 9.78–17.43s | 3.81 | 8.36s |
 
-The paired local/Foundry ratio was `0.403` (59.7% lower wall time). All six timed builds verified
-the same 39 jobs, zero cache hits and expected result signature; successful scratch datasets were
-deleted. This is the comparison between drivers, not a measure of the metadata change alone.
+The paired local/Foundry ratio was `0.403` (59.7% lower wall time), with the same 39 jobs, zero
+cache hits and expected signature in all six builds. This compares drivers, not the metadata
+change alone.
 
 Reproduce the current Foundry comparison and metadata measurement:
 
@@ -625,19 +512,14 @@ libraries. Query execution and network variance are substantial; timings have no
 
 #### Repeated dataset discovery
 
-The two dataset listings traced in the installed dbt `2.0.9` have different callers. Schema
-registration calls `GetObjects` at schema depth without a schema filter. The first relation-cache
-lookup then calls it at table depth with the target dataset name. Underscores in that name are
-ADBC pattern wildcards, so the driver enumerates datasets again before filtering. A temporary
-ADBC wrapper recorded sequential calls on the same connection and no connection-option setup
-by this dbt binary; neither request was a retry.
+An ADBC wrapper traced two sequential dataset listings on one connection in dbt `2.0.9`: schema
+registration without a filter, then table-depth relation-cache lookup. Dataset underscores act
+as ADBC wildcards, causing the second enumeration. Neither was a retry; dbt set no options.
 
-Setting the existing `bigquery.get_objects.disable_wildcards=true` option removed the second
-`datasets.list` in a live build over populated relations. Both diagnostic builds passed all
-39 jobs, with no query-cache hits and the expected aggregate signature. An empty dataset still
-needs `datasets.get` after an empty `tables.list` to distinguish it from a missing dataset, so
-this does not guarantee fewer requests for a fresh dataset. These runs do not establish a
-whole-build speedup. The existing mock test reproduces the direct table listing:
+`bigquery.get_objects.disable_wildcards=true` removed the second listing for populated relations.
+Both live diagnostic builds passed 39 jobs with no cache hits and the expected signature, without
+establishing a whole-build speedup. Empty datasets still need `datasets.get` after `tables.list`
+to distinguish them from missing ones. Reproduce the direct listing in a mock test:
 
 ```sh
 cargo test --locked --all-features disabling_wildcards_keeps_unfiltered_dataset_and_table_listings
@@ -730,49 +612,36 @@ scripts/run-one-live-test.sh reads_a_later_row_too_large_for_rest_through_storag
 
 ## Retained result-buffer memory
 
-The pipeline regression fixtures check the buffer capacity retained by small Arrow slices against
-the completed-batch budget. Retained-capacity accounting counts each backing allocation once per
-batch, including nested buffers and validity bitmaps; the previous charge used logical slice
-lengths.
+Completed-batch accounting counts each backing allocation once per batch, including nested buffers
+and validity bitmaps. Small-slice regressions compare this with the former logical-length charge:
 
 | Fixture | Retained buffer bytes | Previous charge | Retained-capacity charge |
 | --- | ---: | ---: | ---: |
 | Nine 16-row INT64 columns sharing one 8 MiB allocation | 8,388,608 | 1,152 | 8,388,608 |
 | One INT64 row in an 8 KiB allocation | 8,192 | 8 | 8,192 |
 
-These are deterministic allocation-capacity and semaphore measurements, not process RSS or
-throughput measurements. A sliced external response buffer is also charged its full 8 MiB
-extent. The backpressure regression holds the 8 KiB fixture in an 8 KiB budget, verifies that a
-second batch cannot enter, then releases the first batch and verifies that the second proceeds.
-The oversized-batch regression retains more than 64 MiB behind one row and verifies that the
-existing whole-budget clamp still allows delivery without deadlock.
-
-Reproduce the fixtures and budget checks:
+A sliced external response buffer is also charged its full 8 MiB. An 8 KiB fixture fills an 8 KiB
+budget and blocks a second batch until release; a row retaining over 64 MiB still proceeds under
+the whole-budget clamp. Reproduce these capacity and semaphore checks with:
 
 ```sh
 cargo test --locked --lib pipeline::tests::
 ```
 
-Sharing across separate batches is charged independently. This conservative accounting avoids
-making one batch's permit depend on the lifetime of another. The 64 MiB limit covers completed
-buffers; active response pages, conversions, array metadata and batches returned to the
-application remain outside it. Accounting adds a temporary vector of buffer identities and
-sorts it; the resident small-result reader does not use this buffered path.
+Shared buffers are charged independently across batches so permits have independent lifetimes.
+The 64 MiB budget excludes active pages, conversions, array metadata and returned batches.
+Accounting sorts a temporary vector of buffer identities; resident readers skip it.
 
 ## Retained REST conversion inputs
 
-Pending REST conversions charge the allocations they actually own: the batch's row vector, cell
-vectors, nested ARRAY/STRUCT vectors, and heap strings, including spare capacity. The producer
-stops starting batches once pending input reaches 64 MiB, subject to its concurrency limit; one
-batch may cross that window. The resident response page and Arrow arrays being constructed remain
-outside this input budget. Accounting shares the driver-wide conversion permit and hands off the
-runtime worker while scanning potentially large nested values.
+Pending REST conversions charge owned row, cell and nested vectors and strings, including spare
+capacity. Input is capped at 64 MiB, allowing one batch to cross; resident pages and arrays being
+built are excluded. Accounting uses a conversion permit and hands off the runtime worker.
 
 A deterministic fixture has 16,384 rows, with an 8 MiB STRING in the first row and NULLs thereafter.
 Its first 1,024-row batch owns 8,446,048 bytes; the former page-average wire charge was 543,744 bytes,
 15.5 times too small. Eight such pending batches now fill the conversion window; their former
-charges total only 4,349,952 bytes. Nested/spare-capacity coverage checks each owned allocation.
-These are allocation-capacity measurements, excluding allocator overhead and process RSS.
+charges total only 4,349,952 bytes. Nested/spare-capacity tests check each owned allocation.
 
 ```sh
 cargo test --locked --lib a_skewed_page_charges_the_wide_batch_its_retained_allocation
@@ -780,10 +649,8 @@ cargo test --locked --lib retained_bytes_include_nested_allocations_and_spare_ca
 cargo bench --locked --features benchmark --bench query_result
 ```
 
-Three alternating before/after executable pairs on Rust 1.99.1 / Ryzen 9 7950X3D, pinned to CPUs
-0–7, measured the added accounting and worker handoff. Each cell gives the median and range of
-three harness reports, each of which takes seven samples. Concurrent host activity still affects
-timing; these measure local processing, with no network or BigQuery work.
+Three alternating pairs pinned to CPUs 0–7 measured accounting and worker handoff below, reporting
+median and range. Concurrent host activity affected timings.
 
 | Case, 1,024 rows | Before, µs | After, µs | Allocation calls before → after | Requested bytes before → after |
 | --- | ---: | ---: | ---: | ---: |
@@ -792,8 +659,7 @@ timing; these measure local processing, with no network or BigQuery work.
 
 The worker handoff adds one allocation and 864 requested bytes per buffered batch. Resident tiny
 results skip this accounting: the one-row controls retain 71 allocations / 5,559 bytes for reading
-and 85 / 7,386 for complete processing. The cost buys accurate admission accounting for wide and
-uneven results; it is not a throughput improvement.
+and 85 / 7,386 for complete processing.
 
 ## Storage Read wire backpressure
 
@@ -805,30 +671,22 @@ its one-slot queue is full, with and without reserving the queue slot before pol
 | Receive, then wait to enqueue | 2 | 16,777,216 |
 | Reserve, then receive | 1 | 8,388,608 |
 
-The fixture allocates each response only when the SDK stream is polled. It verifies that draining
-the queue permits the next response, and that cancellation or decoder closure stops reception
-both while waiting for queue space and while awaiting a response. Reproduce with:
+The fixture allocates on polling, checks draining permits the next response, and checks
+cancellation and decoder closure during queue and response waits:
 
 ```sh
 cargo test --locked --lib storage_read::tests::a_full_wire_queue_does_not_materialize_another_response
 cargo test --locked --lib storage_read::tests::a_stopped_decoder_releases_a_pending_wire_response
 ```
 
-These are deterministic materialized-payload measurements, not process RSS or throughput
-measurements. The bound is per stream and excludes a response already taken by the decoder,
-completed Arrow batches and buffering inside the SDK/HTTP transport. Receiving the queued
-response still overlaps decoding the previous one.
+The per-stream bound excludes the decoder's current response, completed Arrow batches and SDK/HTTP
+buffering. Reception still overlaps decoding.
 
 ## Sliced boolean IPC encoding
 
-The IPC writer copies a non-byte-aligned bitmap's selected bytes once, then shifts the
-bounded destination slice. This lets the compiler vectorize both boolean values and validity
-bitmaps without growing the output vector for each byte. The last partial byte is still masked,
-including when the selected range reaches the end of its backing buffer.
-
-The `boolean/encode-sliced` rows of `ipc` compare growing the output vector for each byte with this
-bounded copy. Each fixture is a nullable boolean column sliced at bit offset one, and the table
-gives the median and range of three reports, including planning and serialization:
+Copying a bitmap's selected bytes once, then shifting in place, allows vectorization without
+per-byte vector growth. Partial final bytes remain masked. `boolean/encode-sliced` in `ipc`
+compares both paths, including planning and serialization, for a nullable column at bit offset one:
 
 | Rows | Before, µs (range) | After, µs (range) | Allocation calls, both | Requested bytes, both |
 | ---: | ---: | ---: | ---: | ---: |
@@ -836,10 +694,8 @@ gives the median and range of three reports, including planning and serializatio
 | 65,536 | 14.043 (14.032–14.056) | 1.005 (1.004–1.193) | 2 | 16,600 |
 | 1,048,576 | 221.622 (218.198–221.814) | 14.296 (14.291–16.223) | 2 | 262,360 |
 
-The million-row encoding is 15.5 times faster in these local measurements, with unchanged allocation
-counts and requested bytes. The writer tests cover every non-byte-aligned start within four bytes,
-empty and partial bitmaps, byte and vector boundaries, exact buffer ends and extra backing bytes.
-Existing golden and Arrow IPC oracle tests continue to check the serialized layout:
+The million-row case is 15.5 times faster with unchanged allocations. Check bitmap boundaries
+and golden/oracle layouts with:
 
 ```sh
 cargo test --locked --lib arrow_ipc_bigquery::writer::tests::
@@ -847,10 +703,8 @@ cargo test --locked --lib arrow_ipc_bigquery::writer::tests::
 
 ## Foundry validation build cache
 
-The [Driver Foundry validation suite](../integration/foundry-validation/README.md) reuses the
-checkout's Cargo `target/` by default. It still builds and installs a new wheel each time; Cargo checks whether
-native code needs rebuilding.
-`CARGO_TARGET_DIR` selects a different cache.
+The [Foundry suite](../integration/foundry-validation/README.md) builds and installs a new wheel
+each time, reusing Cargo's `target/` unless `CARGO_TARGET_DIR` overrides it.
 
 On 2026-10-23, Linux x86-64, Rust 1.99.1 and uv 0.13.5, building the same checkout with a fresh
 target directory and then reusing it produced these wheel-build wall times:
@@ -862,10 +716,9 @@ target directory and then reusing it produced these wheel-build wall times:
 | Reused, run 2 | 0.957s |
 | Reused, run 3 | 0.993s |
 
-The warmed median was 0.982s. These measurements include packaging and native-library validation,
-but exclude environment synchronization, dataset creation, pytest, and dataset cleanup. Dependency
-downloads were already cached. The live Foundry suite ran concurrently, so these are local build
-measurements, not a controlled end-to-end suite speedup. Source changes still incur recompilation.
+The warmed median was 0.982s, including packaging and library validation but excluding environment
+sync, datasets and pytest. Dependencies were cached and the live suite ran concurrently. Source
+changes still require recompilation; these figures do not measure end-to-end suite speedup.
 
 Reproduce from the repository root on Linux; keep the same directory across all four builds:
 
@@ -893,20 +746,12 @@ PYTEST_ADDOPTS='-q --durations=15' \
   cargo test --locked --test clients foundry::suite_passes -- --ignored
 ```
 
-Use `--collect-only` and the offline fixture-lint checks for discovery and fixture editing, and
-`-k` selections for focused live validation. The complete suite still validates the committed
-collection and skip baselines; see the [Foundry guide](../integration/foundry-validation/README.md).
-
 ## Rejected optimizations
 
-Approaches that were tried and did not help, kept so they are not retried without a new reason.
-These are notes rather than reproducible evidence: the rejected code is not in this tree, so
-reopening one means rebuilding it and measuring as described under [Reproducing](#reproducing).
+These notes require rebuilding the rejected code and [measuring again](#reproducing).
 
-- Converting REST rows a column at a time ran fewer instructions than converting them in row order
-  in `wide/convert/1024`, and took longer, because regrouping cells by column moves the page
-  through memory again. The decoder produces one cell vector per row, which is why the cells need
-  regrouping.
+- Column-at-a-time REST conversion ran fewer instructions in `wide/convert/1024` but took longer:
+  regrouping the decoder's per-row cell vectors moves the page through memory again.
 - A flat per-page cell slab, in place of a cell vector per row, removed about one allocation per
   row, but typed decode and convert slowed slightly and requested bytes rose.
 - Selecting Storage Read by total row count reread rows that a complete first response already

@@ -44,30 +44,8 @@ depends on this one. The driver's own [diagnostics](#diagnostics) are unaffected
 
 ### Example
 
-```rust
-use adbc_core::options::{OptionDatabase, OptionValue};
-use adbc_core::{Connection, Database, Driver, Statement};
-use adbc_driver_bigquery::BigQueryDriver;
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut driver = BigQueryDriver::try_new()?;
-    let database = driver.new_database_with_opts([(
-        OptionDatabase::Uri,
-        OptionValue::String("bigquery:///my-project".into()),
-    )])?;
-    let mut connection = database.new_connection()?;
-    let mut statement = connection.new_statement()?;
-    statement.set_sql_query("SELECT 1 AS n")?;
-    for batch in statement.execute()? {
-        let batch = batch?;
-        println!("{} rows x {} columns", batch.num_rows(), batch.num_columns());
-    }
-    Ok(())
-}
-```
-
-[`examples/query.rs`](../examples/query.rs) is the same program, taking the project and query as
-arguments. Credentials default to Application Default Credentials (ADC); run
+[`examples/query.rs`](../examples/query.rs) opens a connection and reads Arrow batches, taking the
+project and query as arguments. Credentials default to Application Default Credentials (ADC); run
 `gcloud auth application-default login` once, or see [connection URIs](#connection-uris) and
 [database options](#database-options). `execute()` returns a `RecordBatchReader` whose schema is
 available before the first batch.
