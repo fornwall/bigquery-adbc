@@ -62,7 +62,7 @@ fn a_full_wire_queue_does_not_materialize_another_response() {
             });
             let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
             let sink = ResultSink::for_test();
-            let mut receiving = std::pin::pin!(receive_rows(&client, "stream", &sender, &sink));
+            let mut receiving = std::pin::pin!(receive_rows(&client, "stream", sender, &sink));
             let mut context = Context::from_waker(Waker::noop());
 
             assert!(receiving.as_mut().poll(&mut context).is_pending());
@@ -107,7 +107,7 @@ fn a_stopped_decoder_releases_a_pending_wire_response() {
             });
             let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
             let sink = ResultSink::for_test();
-            let mut receiving = std::pin::pin!(receive_rows(&client, "stream", &sender, &sink));
+            let mut receiving = std::pin::pin!(receive_rows(&client, "stream", sender, &sink));
             let mut context = Context::from_waker(Waker::noop());
             assert!(receiving.as_mut().poll(&mut context).is_pending());
             assert_eq!(responses.load(Ordering::Relaxed), 1);
@@ -737,7 +737,7 @@ mod mock_reads {
         let plan: Arc<ReshapePlan> = Arc::new(reshape_plans(&schema, &schema).unwrap());
 
         runtime.block_on(async move {
-            let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+            let (sender, receiver) = tokio::sync::mpsc::channel(1);
             sender
                 .send((Buffer::from(messages[0].clone()), BATCH_ROWS[0]))
                 .await
@@ -745,9 +745,7 @@ mod mock_reads {
 
             let slot = sink.delivery_slot().await.unwrap().unwrap();
             let decoding =
-                tokio::spawn(
-                    async move { decode_batches(&mut receiver, schema, &plan, &sink).await },
-                );
+                tokio::spawn(async move { decode_batches(receiver, schema, &plan, &sink).await });
 
             // The rendezvous: this returns only once the decode has dequeued the first buffer.
             sender
@@ -918,7 +916,7 @@ mod mock_reads {
             let failure = super::receive_rows(
                 &client,
                 "projects/p/locations/l/sessions/mock/streams/0",
-                &sender,
+                sender,
                 &ResultSink::for_test(),
             )
             .await

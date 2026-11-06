@@ -341,23 +341,11 @@ async fn stream_batches(
     // Overlap receiving with decoding, retaining at most one queued wire payload outside the
     // pipeline's byte budget. A full result buffer stalls both stages through this channel.
     let (sender, receiver) = tokio::sync::mpsc::channel::<(Buffer, i64)>(1);
-    let (client, stream, sink) = (&client, stream.as_str(), &sink);
-    let receive = async move {
-        let result = receive_rows(client, stream, &sender, sink).await;
-        // Dropping the sender is what ends the decode loop; `try_join!` holds this future alive
-        // until both stages finish, so it cannot be left to the future's own destructor.
-        drop(sender);
-        result
-    };
-    let decode = async move {
-        let mut receiver = receiver;
-        let result = decode_batches(&mut receiver, session_schema, &plan, sink).await;
-        // Closing the receiver is what ends the receive loop when decoding stops first, for the
-        // same reason the sender above is dropped by hand.
-        receiver.close();
-        result
-    };
-    tokio::try_join!(receive, decode)?;
+    // Each stage owns its endpoint, so completing either stage closes its side of the channel.
+    tokio::try_join!(
+        receive_rows(&client, &stream, sender, &sink),
+        decode_batches(receiver, session_schema, &plan, &sink),
+    )?;
     Ok(())
 }
 
@@ -366,7 +354,7 @@ async fn stream_batches(
 async fn receive_rows(
     client: &Read,
     stream: &str,
-    sender: &tokio::sync::mpsc::Sender<(Buffer, i64)>,
+    sender: tokio::sync::mpsc::Sender<(Buffer, i64)>,
     sink: &ResultSink,
 ) -> std::result::Result<(), ArrowError> {
     let mut offset = 0_i64;
@@ -560,7 +548,7 @@ fn read_rows_failure(source: GoogleError) -> ArrowError {
 
 /// Decode and reshape one stream's batches in order, reusing its session schema.
 async fn decode_batches(
-    batches: &mut tokio::sync::mpsc::Receiver<(Buffer, i64)>,
+    mut batches: tokio::sync::mpsc::Receiver<(Buffer, i64)>,
     session_schema: SchemaRef,
     plan: &Arc<ReshapePlan>,
     sink: &ResultSink,
