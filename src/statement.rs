@@ -640,8 +640,8 @@ impl Statement for BigQueryStatement {
     }
 }
 
-/// Whether a result holds rows a caller reads: a query's, or that of a script ending in one. DML
-/// and DDL return no rows, though BigQuery reports DML with its target table's schema.
+/// Whether a query, script or procedure returns rows. DML and DDL return no rows, though BigQuery
+/// reports DML with its target table's schema.
 ///
 /// The statement type is missing when a job outlasted the `jobs.query` wait
 /// (`jobs.getQueryResults` never carries it) and the follow-up `jobs.get` failed; a DML count
@@ -650,7 +650,7 @@ fn returns_rows(schema: &Schema) -> bool {
     let metadata = schema.metadata();
     !schema.fields().is_empty()
         && match metadata.get(BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE) {
-            Some(statement_type) => matches!(statement_type.as_str(), "SELECT" | "SCRIPT"),
+            Some(statement_type) => matches!(statement_type.as_str(), "SELECT" | "SCRIPT" | "CALL"),
             None => !metadata.contains_key(BIGQUERY_SCHEMA_METADATA_NUM_DML_AFFECTED_ROWS),
         }
 }

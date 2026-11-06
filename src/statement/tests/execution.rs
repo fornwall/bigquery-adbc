@@ -910,6 +910,46 @@ fn multi_row_parameter_queries_report_an_unknown_row_count() {
     assert_eq!(requests.join().unwrap().len(), 1);
 }
 
+#[test]
+fn bound_procedure_calls_return_each_result_in_parameter_order() {
+    let (endpoint, requests) = capture_requests(
+        [1, 2]
+            .into_iter()
+            .map(|value| {
+                (
+                    200,
+                    json!({
+                        "jobComplete": true,
+                        "statementType": "CALL",
+                        "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
+                        "rows": [{"f": [{"v": value.to_string()}]}],
+                        "totalRows": "1"
+                    }),
+                )
+            })
+            .collect(),
+    );
+    let mut statement = test_statement_at(&endpoint);
+    statement.set_sql_query("CALL dataset.echo(?)").unwrap();
+    statement.bind(int64_column("value", vec![1, 2])).unwrap();
+
+    let (reader, affected) = statement.execute_with_rows_affected().unwrap();
+    assert_eq!(affected, -1);
+    let values: Vec<_> = reader
+        .map(|batch| {
+            batch
+                .unwrap()
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .value(0)
+        })
+        .collect();
+    assert_eq!(values, [1, 2]);
+    assert_eq!(requests.join().unwrap().len(), 2);
+}
+
 /// A DB-API `cursor.execute(sql, parameters)` binds one row, which has run in full when
 /// `AdbcStatementExecuteQuery` returns, so `cursor.rowcount` sees its count. Trailing empty
 /// batches of a bound stream add no row.
