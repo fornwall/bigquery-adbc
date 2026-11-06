@@ -510,12 +510,10 @@ impl QueryParameters {
                     ),
                 ]);
             }
-            oauth_type => {
-                // Unlike AuthCredentials, OAuthType names a mode rather than carrying one, so
-                // the rejected spelling is safe to show.
-                return Err(invalid_argument(format!(
-                    "BigQuery URI OAuthType {oauth_type:?} must be 0, 1, 2, or 3"
-                )));
+            _ => {
+                return Err(invalid_argument(
+                    "BigQuery URI OAuthType must be 0, 1, 2, or 3",
+                ));
             }
         }
         Ok(())

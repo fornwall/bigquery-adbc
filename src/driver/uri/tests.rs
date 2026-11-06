@@ -344,7 +344,7 @@ fn rejections_name_the_parameter_or_the_form_that_would_have_worked() {
         ),
         (
             "bigquery:///my-project?OAuthType=4",
-            "BigQuery URI OAuthType \"4\" must be 0, 1, 2, or 3",
+            "BigQuery URI OAuthType must be 0, 1, 2, or 3",
         ),
         (
             "bigquery:///my-project?Location=EU%2",
@@ -454,6 +454,23 @@ fn a_password_in_the_authority_is_never_echoed() {
             "{uri}"
         );
         assert_message_omits(&error, &["hunter2"]);
+    }
+}
+
+#[test]
+fn a_credential_in_oauth_type_is_not_echoed() {
+    for value in [
+        "misplaced-token",
+        "%7B%22private_key%22%3A%22misplaced-key%22%7D",
+    ] {
+        let error =
+            parse_bigquery_uri(&format!("bigquery:///my-project?OAuthType={value}")).unwrap_err();
+        assert_eq!(error.status, adbc_core::error::Status::InvalidArguments);
+        assert_eq!(
+            error.message,
+            "BigQuery URI OAuthType must be 0, 1, 2, or 3"
+        );
+        assert_message_omits(&error, &["misplaced-token", "misplaced-key", "private_key"]);
     }
 }
 
