@@ -48,10 +48,10 @@ pub(super) fn encode_partition(
         partition.extend_from_slice(field.as_bytes());
     }
     let mut flags = 0;
-    if options.use_storage_read() {
+    if options.use_storage_read {
         flags |= USE_STORAGE_READ;
     }
-    if options.unordered_read() {
+    if options.unordered_read {
         flags |= UNORDERED_READ;
     }
     partition.push(flags);
@@ -86,8 +86,8 @@ pub(super) fn decode_partition(mut partition: &[u8]) -> Result<(JobReference, Qu
         return Err(invalid_partition("unknown result option flags"));
     }
     let mut options = QueryResultOptions::default();
-    options.set_use_storage_read(flags & USE_STORAGE_READ != 0);
-    options.set_unordered_read(flags & UNORDERED_READ != 0);
+    options.use_storage_read = flags & USE_STORAGE_READ != 0;
+    options.unordered_read = flags & UNORDERED_READ != 0;
     options
         .set_prefetch_concurrency("", i64::from(u32::from_be_bytes([p0, p1, p2, p3])))
         .map_err(|_| invalid_partition("its prefetch concurrency is zero"))?;

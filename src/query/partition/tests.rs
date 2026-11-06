@@ -8,8 +8,8 @@ use crate::test_support::errors::assert_message;
 
 fn options(use_storage_read: bool, unordered_read: bool, prefetch: i64) -> QueryResultOptions {
     let mut options = QueryResultOptions::default();
-    options.set_use_storage_read(use_storage_read);
-    options.set_unordered_read(unordered_read);
+    options.use_storage_read = use_storage_read;
+    options.unordered_read = unordered_read;
     options
         .set_prefetch_concurrency("prefetch", prefetch)
         .unwrap();

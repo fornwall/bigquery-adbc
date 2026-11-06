@@ -44,17 +44,15 @@ impl Optionable for BigQueryConnection {
                     )?;
                 }
                 BigQueryConnectionOption::UnorderedRead => {
-                    self.context
-                        .result_options
-                        .set_unordered_read(boolean_value(key.as_ref(), value)?);
+                    self.context.result_options.unordered_read =
+                        boolean_value(key.as_ref(), value)?;
                 }
                 BigQueryConnectionOption::UseStorageApiDisabledClient => {
-                    self.context
-                        .result_options
-                        .set_use_storage_read(!boolean_value(key.as_ref(), value)?);
+                    self.context.result_options.use_storage_read =
+                        !boolean_value(key.as_ref(), value)?;
                     // Re-enabling on a connection retries Storage Read after a permission change.
                     // Statement overrides must not reset this shared per-project refusal.
-                    if self.context.result_options.use_storage_read()
+                    if self.context.result_options.use_storage_read
                         && let Some(project) = self.context.billing_project_id.as_ref()
                     {
                         self.context.state.enable_storage_read(project.as_str());
@@ -128,10 +126,10 @@ impl Optionable for BigQueryConnection {
                     Err(wrong_option_type(key.as_ref(), OptionKind::Int, "a string"))
                 }
                 BigQueryConnectionOption::UnorderedRead => {
-                    Ok(boolean_option(self.context.result_options.unordered_read()))
+                    Ok(boolean_option(self.context.result_options.unordered_read))
                 }
                 BigQueryConnectionOption::UseStorageApiDisabledClient => Ok(boolean_option(
-                    !self.context.result_options.use_storage_read(),
+                    !self.context.result_options.use_storage_read,
                 )),
             };
         }

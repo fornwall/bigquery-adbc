@@ -82,7 +82,7 @@ pub(crate) fn eligible(
     job_reference: &JobReference,
     schema: &SchemaRef,
 ) -> bool {
-    options.use_storage_read()
+    options.use_storage_read
         && !schema.fields().is_empty()
         && !clients.storage_read_disabled(&job_reference.project_id)
 }
@@ -140,7 +140,7 @@ async fn open_reader(
             Status::NotImplemented,
         )));
     }
-    let max_streams = if options.unordered_read() {
+    let max_streams = if options.unordered_read {
         unordered_max_stream_count()
     } else {
         ORDERED_MAX_STREAM_COUNT

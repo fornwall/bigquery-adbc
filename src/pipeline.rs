@@ -22,8 +22,8 @@ use crate::runtime::{SharedRuntime, block_in_place};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct QueryResultOptions {
     prefetch_concurrency: usize,
-    use_storage_read: bool,
-    unordered_read: bool,
+    pub(crate) use_storage_read: bool,
+    pub(crate) unordered_read: bool,
 }
 
 impl QueryResultOptions {
@@ -51,22 +51,6 @@ impl QueryResultOptions {
                 invalid_argument(format!("BigQuery option {key} must be a positive integer"))
             })?;
         Ok(())
-    }
-
-    pub(crate) fn use_storage_read(self) -> bool {
-        self.use_storage_read
-    }
-
-    pub(crate) fn set_use_storage_read(&mut self, value: bool) {
-        self.use_storage_read = value;
-    }
-
-    pub(crate) fn unordered_read(self) -> bool {
-        self.unordered_read
-    }
-
-    pub(crate) fn set_unordered_read(&mut self, value: bool) {
-        self.unordered_read = value;
     }
 }
 

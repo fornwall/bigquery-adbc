@@ -73,7 +73,7 @@ fn storage_api_disabled_client_round_trips_without_changing_a_recorded_refusal()
     let key = BigQueryStatementOption::UseStorageApiDisabledClient;
 
     assert_eq!(option_string(&statement, key), ADBC_OPTION_VALUE_DISABLED);
-    assert!(statement.context.result_options.use_storage_read());
+    assert!(statement.context.result_options.use_storage_read);
     let legacy = OptionStatement::Other(
         "adbc.bigquery.sql.query.use_storage_api_disabled_client".to_owned(),
     );
@@ -83,7 +83,7 @@ fn storage_api_disabled_client_round_trips_without_changing_a_recorded_refusal()
     for (value, enabled) in [("true", false), ("false", true)] {
         set_option(&mut statement, key, value.to_owned());
         assert_eq!(option_string(&statement, key), value);
-        assert_eq!(statement.context.result_options.use_storage_read(), enabled);
+        assert_eq!(statement.context.result_options.use_storage_read, enabled);
     }
     for value in [
         OptionValue::String("invalid".to_owned()),

@@ -299,15 +299,11 @@ impl BigQueryStatement {
                     .set_prefetch_concurrency(key.as_ref(), integer_value(key.as_ref(), value)?)?;
             }
             BigQueryStatementOption::UnorderedRead => {
-                self.context
-                    .result_options
-                    .set_unordered_read(boolean_value(key.as_ref(), value)?);
+                self.context.result_options.unordered_read = boolean_value(key.as_ref(), value)?;
             }
             BigQueryStatementOption::UseStorageApiDisabledClient => {
                 // Only the connection setter clears the shared per-project Storage Read refusal.
-                self.context
-                    .result_options
-                    .set_use_storage_read(!boolean_value(key.as_ref(), value)?);
+                self.context.result_options.use_storage_read = !boolean_value(key.as_ref(), value)?;
             }
             BigQueryStatementOption::CreateSession => {
                 self.query_options.create_session = boolean_value(key.as_ref(), value)?;
@@ -383,10 +379,10 @@ impl BigQueryStatement {
             }
             BigQueryStatementOption::LinkFailedJob => boolean_option(self.link_failed_job),
             BigQueryStatementOption::UnorderedRead => {
-                boolean_option(self.context.result_options.unordered_read())
+                boolean_option(self.context.result_options.unordered_read)
             }
             BigQueryStatementOption::UseStorageApiDisabledClient => {
-                boolean_option(!self.context.result_options.use_storage_read())
+                boolean_option(!self.context.result_options.use_storage_read)
             }
             // The options this driver does not spell as a string: the integer ones, which read
             // back through `get_option_int`.

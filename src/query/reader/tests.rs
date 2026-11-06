@@ -318,7 +318,7 @@ fn empty_results_keep_metadata_and_empty_pages_follow_their_token() {
             json!({"jobComplete":true,"rows":[{"f":[{"v":"7"}]}]}),
         )]);
         let mut execution = execution_at(&runtime, &endpoint);
-        execution.result_options.set_use_storage_read(false);
+        execution.result_options.use_storage_read = false;
         let mut body = json!({
             "jobComplete":true,
             "jobReference":{"projectId":"project","jobId":"job","location":"US"},
@@ -526,7 +526,7 @@ fn a_result_too_large_for_rest_fails_without_storage_read() {
         &crate::runtime::new_runtime().unwrap(),
         crate::test_support::UNREACHABLE_ENDPOINT,
     );
-    execution.result_options.set_use_storage_read(false);
+    execution.result_options.use_storage_read = false;
     let mut complete = completed(
         br#"{"jobComplete":true,"jobReference":{"projectId":"project","jobId":"job","location":"US"},"statementType":"SELECT","schema":{"fields":[{"name":"big","type":"STRING"}]},"totalRows":"2"}"#,
         true,
@@ -635,7 +635,7 @@ fn a_result_read_over_further_rest_pages_reports_it_once() {
     let (endpoint, server) =
         capture_requests_until_stopped(vec![page("8", Some("third")), page("9", None)]);
     let mut execution = execution_at(&runtime, &endpoint);
-    execution.result_options.set_use_storage_read(false);
+    execution.result_options.use_storage_read = false;
     let complete = completed(
         br#"{"jobComplete":true,"jobReference":{"projectId":"project","jobId":"paged-diag","location":"US"},"statementType":"SELECT","schema":{"fields":[{"name":"value","type":"INTEGER"}]},"rows":[{"f":[{"v":"7"}]}],"totalRows":"3","pageToken":"second"}"#,
         true,

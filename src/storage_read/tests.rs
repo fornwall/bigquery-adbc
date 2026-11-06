@@ -439,7 +439,7 @@ mod mock_reads {
     /// The options a parallel read runs under.
     fn unordered() -> QueryResultOptions {
         let mut options = QueryResultOptions::default();
-        options.set_unordered_read(true);
+        options.unordered_read = true;
         options
     }
 
