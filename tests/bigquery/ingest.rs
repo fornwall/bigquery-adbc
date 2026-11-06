@@ -163,14 +163,10 @@ fn bulk_ingests_arrow_with_standard_lifecycle_modes() {
     ingest.bind(round_trip_batch).unwrap();
     assert_eq!(ingest.execute_update().unwrap(), Some(1));
 
-    let mismatched = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new(
-            "different",
-            DataType::Int64,
-            false,
-        )])),
-        vec![Arc::new(Int64Array::from(vec![4]))],
-    )
+    let mismatched = RecordBatch::try_from_iter([(
+        "different",
+        Arc::new(Int64Array::from(vec![4])) as ArrayRef,
+    )])
     .unwrap();
     ingest.bind(mismatched).unwrap();
     assert_eq!(
@@ -423,13 +419,8 @@ fn dry_runs_a_bulk_ingest_without_touching_the_target() {
     let _drop_table = DropTable::table(&table);
     let mut connection = connect_with_dataset();
 
-    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let batch = |ids: Vec<i64>| {
-        RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int64Array::from(ids)) as ArrayRef],
-        )
-        .unwrap()
+        RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(ids)) as ArrayRef)]).unwrap()
     };
 
     let mut ingest = connection.new_statement().unwrap();
@@ -479,14 +470,10 @@ fn dry_runs_a_bulk_ingest_without_touching_the_target() {
     // A schema the existing table cannot accept is refused before anything is written.
     ingest
         .bind(
-            RecordBatch::try_new(
-                Arc::new(Schema::new(vec![Field::new(
-                    "different",
-                    DataType::Int64,
-                    false,
-                )])),
-                vec![Arc::new(Int64Array::from(vec![4])) as ArrayRef],
-            )
+            RecordBatch::try_from_iter([(
+                "different",
+                Arc::new(Int64Array::from(vec![4])) as ArrayRef,
+            )])
             .unwrap(),
         )
         .unwrap();
@@ -517,18 +504,14 @@ fn bulk_ingests_a_batch_larger_than_the_append_rows_request_limit() {
     // 10,000,000-byte AppendRows request limit, while every individual row remains shippable.
     const ROW_BYTES: usize = 8_000_000;
     let value = vec![b'x'; ROW_BYTES];
-    let batch = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new(
-            "payload",
-            DataType::Binary,
-            false,
-        )])),
-        vec![Arc::new(BinaryArray::from(vec![
+    let batch = RecordBatch::try_from_iter([(
+        "payload",
+        Arc::new(BinaryArray::from(vec![
             value.as_slice(),
             value.as_slice(),
             value.as_slice(),
-        ]))],
-    )
+        ])) as ArrayRef,
+    )])
     .unwrap();
     assert_eq!(ingest_batch(&mut connection, &table, batch), Some(3));
 
@@ -555,14 +538,10 @@ fn bulk_ingests_chunks_that_fill_the_append_rows_size_budget() {
     const ROW_BYTES: usize = 32 * 1024;
     const ROWS: usize = 320;
     let value = "x".repeat(ROW_BYTES);
-    let batch = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![Field::new(
-            "payload",
-            DataType::Utf8,
-            false,
-        )])),
-        vec![Arc::new(StringArray::from(vec![value.as_str(); ROWS]))],
-    )
+    let batch = RecordBatch::try_from_iter([(
+        "payload",
+        Arc::new(StringArray::from(vec![value.as_str(); ROWS])) as ArrayRef,
+    )])
     .unwrap();
     assert_eq!(
         ingest_batch(&mut connection, &table, batch),
@@ -1006,32 +985,25 @@ fn bulk_ingests_interval_values() {
     let _drop_table = DropTable::table(&table);
     let mut connection = connect_with_dataset();
 
-    let schema = Arc::new(Schema::new(vec![
-        Field::new(
+    let batch = RecordBatch::try_from_iter([
+        (
             "year_month",
-            DataType::Interval(IntervalUnit::YearMonth),
-            false,
-        ),
-        Field::new("day_time", DataType::Interval(IntervalUnit::DayTime), false),
-        Field::new(
-            "month_day_nano",
-            DataType::Interval(IntervalUnit::MonthDayNano),
-            false,
-        ),
-    ]));
-    let batch = RecordBatch::try_new(
-        schema,
-        vec![
             Arc::new(IntervalYearMonthArray::from(vec![-25])) as ArrayRef,
+        ),
+        (
+            "day_time",
             Arc::new(IntervalDayTimeArray::from(vec![IntervalDayTime::new(
                 -3,
                 -14_706_008,
             )])) as ArrayRef,
+        ),
+        (
+            "month_day_nano",
             Arc::new(IntervalMonthDayNanoArray::from(vec![
                 IntervalMonthDayNano::new(14, 3, 14_706_007_008_999),
             ])) as ArrayRef,
-        ],
-    )
+        ),
+    ])
     .unwrap();
     assert_eq!(ingest_batch(&mut connection, &table, batch), Some(1));
 
@@ -1064,33 +1036,24 @@ fn bulk_ingests_duration_values() {
     let _drop_table = DropTable::table(&table);
     let mut connection = connect_with_dataset();
 
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("seconds", DataType::Duration(TimeUnit::Second), false),
-        Field::new(
-            "milliseconds",
-            DataType::Duration(TimeUnit::Millisecond),
-            false,
-        ),
-        Field::new(
-            "microseconds",
-            DataType::Duration(TimeUnit::Microsecond),
-            false,
-        ),
-        Field::new(
-            "nanoseconds",
-            DataType::Duration(TimeUnit::Nanosecond),
-            false,
-        ),
-    ]));
-    let batch = RecordBatch::try_new(
-        schema,
-        vec![
+    let batch = RecordBatch::try_from_iter([
+        (
+            "seconds",
             Arc::new(DurationSecondArray::from(vec![-14_706])) as ArrayRef,
+        ),
+        (
+            "milliseconds",
             Arc::new(DurationMillisecondArray::from(vec![-14_706_008])) as ArrayRef,
+        ),
+        (
+            "microseconds",
             Arc::new(DurationMicrosecondArray::from(vec![14_706_007_008])) as ArrayRef,
+        ),
+        (
+            "nanoseconds",
             Arc::new(DurationNanosecondArray::from(vec![-14_706_007_008_999])) as ArrayRef,
-        ],
-    )
+        ),
+    ])
     .unwrap();
     assert_eq!(ingest_batch(&mut connection, &table, batch), Some(1));
 
