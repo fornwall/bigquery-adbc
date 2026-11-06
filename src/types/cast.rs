@@ -78,20 +78,12 @@ fn cast_array(column: &ArrayRef, data_type: &DataType) -> CastResult {
         (_, DataType::Utf8) => to_utf8(column),
         (_, DataType::Binary) => to_binary(column),
         (DataType::Date64, DataType::Date32) => to_date32(column),
-        (
-            DataType::Decimal32(_, _)
-            | DataType::Decimal64(_, _)
-            | DataType::Decimal128(_, _)
-            | DataType::Decimal256(_, _),
-            DataType::Decimal128(precision, scale),
-        ) => to_decimal::<Decimal128Type>(column, *precision, *scale),
-        (
-            DataType::Decimal32(_, _)
-            | DataType::Decimal64(_, _)
-            | DataType::Decimal128(_, _)
-            | DataType::Decimal256(_, _),
-            DataType::Decimal256(precision, scale),
-        ) => to_decimal::<Decimal256Type>(column, *precision, *scale),
+        (_, DataType::Decimal128(precision, scale)) => {
+            to_decimal::<Decimal128Type>(column, *precision, *scale)
+        }
+        (_, DataType::Decimal256(precision, scale)) => {
+            to_decimal::<Decimal256Type>(column, *precision, *scale)
+        }
         (_, DataType::Time64(TimeUnit::Microsecond)) => to_time64_micros(column),
         (DataType::Timestamp(unit, _), DataType::Timestamp(TimeUnit::Microsecond, timezone)) => {
             to_timestamp_micros(column, *unit, timezone.clone())
