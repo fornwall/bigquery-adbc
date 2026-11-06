@@ -77,7 +77,7 @@ first query that needs a transaction opens a BigQuery session. BigQuery rejects 
 DDL such as `CREATE TABLE` inside a transaction, and the driver rejects `adbc_ingest`. Leaving
 the `with` block rolls back uncommitted work; call `connection.commit()` first to keep it.
 
-`executemany` runs one BigQuery job per parameter row. For bulk inserts, use `cursor.adbc_ingest`,
+`executemany` executes the query once per parameter row. For bulk inserts, use `cursor.adbc_ingest`,
 which streams rows through the Storage Write API. On a reused cursor, an `adbc_ingest` call that
 omits `catalog_name` or `db_schema_name` keeps the previous call's value; pass `""` for the
 connection's default

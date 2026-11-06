@@ -14,7 +14,7 @@ flowchart LR
     objects --> ingest["Bulk ingest<br/>src/ingest"]
     objects --> dbt["dbt operations<br/>src/dbt"]
     query -- "jobs.query, jobs.insert" --> rest["BigQuery REST API"]
-    query -- "large results" --> read["Storage Read API"]
+    query -- "paginated results or oversized rows" --> read["Storage Read API"]
     ingest -- "table setup" --> rest
     ingest -- "rows" --> write["Storage Write API"]
     dbt --> rest
@@ -25,18 +25,20 @@ creates a `BigQueryDatabase`, which creates `BigQueryConnection`s, which create
 `BigQueryStatement`s. The C ABI in `src/ffi` is a translation layer on top of those types: nothing
 outside it knows the driver is exported over C.
 
-ADBC is a blocking API and the Google clients are asynchronous. `src/runtime.rs` holds one Tokio
-runtime shared by the driver hierarchy and bridges the two. The ADBC objects block on it, and
-result readers receive batches from tasks running on it.
+ADBC is a blocking API and the Google clients are asynchronous. Each Rust driver owns a Tokio
+runtime, implemented in `src/runtime.rs`, shared by its databases, connections, statements and
+readers. The ADBC objects block on it, and result readers receive batches from tasks running on
+it. The C ABI keeps one driver for the process; releasing its handles does not stop the runtime,
+so the shared library must remain loaded.
 
 ## Running a query
 
-1. `src/statement.rs` collects the SQL, options and bound parameters. Statements, execution plans
-   and lazy parameter readers share immutable SQL text. `src/parameters` converts Arrow parameters
-   to BigQuery parameter types.
-2. `src/query` submits the query. Ordinary queries use `jobs.query`, which lets short queries
-   return their rows without creating a job. Dry runs and options that need a job use
-   `jobs.insert`. Submission, polling and recovery after a lost response are in `src/query/direct`.
+1. `src/statement.rs` collects the SQL, options and bound parameters. `src/parameters` converts
+   Arrow parameters to BigQuery parameter types.
+2. `src/query/plan.rs` selects `jobs.query` for ordinary queries, allowing short queries to return
+   without creating a job. Dry runs and job-only settings, such as a destination table or batch
+   priority, select `jobs.insert`. `src/query/direct` handles submission, polling and query
+   reissues; `src/rest/jobs.rs` handles transport retries and recovery after a lost response.
 3. Once the query completes, `src/query/reader.rs` selects a reader from its first result page.
    A complete page is decoded from REST JSON. A continuation token or a row too large for REST
    selects Storage Read. If Storage Read is disabled or a permitted fallback applies, the driver
@@ -68,11 +70,15 @@ then writes through the Storage Write API:
 3. `src/ingest/write` appends the batches, encoded by `src/arrow_ipc_bigquery`, to a pending stream
    and commits it, so the rows become visible together.
 
+Table preparation and the stream commit are separate operations. In particular, `replace` can
+remove the old rows before a later step fails; the [ingest reference](REFERENCE.md#bulk-ingest)
+describes the failure behavior for each mode.
+
 ## Other subsystems
 
 | Path | Responsibility |
 | --- | --- |
-| `src/config`, `src/driver/uri.rs` | Options and URIs into validated credentials and endpoints, including the rules that keep credentials on Google hosts. |
+| `src/config`, `src/driver/uri.rs` | Validate options, URIs, credentials and endpoints, including which endpoint overrides may receive credentials ([endpoint rules](REFERENCE.md#endpoint-overrides)). |
 | `src/options` | Option keys and values. `src/python_options.rs` generates the Python enums from them. |
 | `src/clients.rs` | Lazily created REST and Storage clients that share one configuration snapshot. |
 | `src/rest` | The REST client, wire models and retry rules. `src/rest/rejection` classifies BigQuery's errors. |

@@ -145,7 +145,7 @@ manifest as `bigquery.toml` instead.
 ## Rust
 
 The C ABI and the Python package are the supported interfaces. The Rust crate is available only
-from Git, is unstable, and may change without notice. To use it anyway, see the
+from Git, is unstable, and may change without notice. For Rust integration, see the
 [Rust API reference](docs/REFERENCE.md#rust-api), which lists the `adbc_core` revision and Arrow
 patches your workspace needs. From a checkout, [`examples/query.rs`](examples/query.rs) runs with:
 
@@ -203,8 +203,9 @@ The standard `adbc.statement.bind_by_name=true` also selects named mode. See
 
 ## Testing
 
-CI runs the offline suites on Linux, macOS and Windows, builds and install-tests the Python wheels,
-runs the FFI layer under Miri, and fuzzes the Arrow IPC and REST decoders.
+CI runs Rust unit and mock tests on Linux, macOS and Windows, Python unit tests on Linux, and
+installation tests for each platform's Python wheel. It also runs the FFI layer under Miri and
+fuzzes the Arrow IPC and REST decoders.
 
 Separate live suites run against real BigQuery: the Rust tests, the Python package, Apache Arrow's
 [ADBC C++ validation suite](integration/adbc-validation/README.md),
