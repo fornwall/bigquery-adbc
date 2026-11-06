@@ -139,24 +139,20 @@ impl BigQueryConnection {
         };
         // An empty filter matches no name, so it lists nothing rather than failing validation.
         if let Some(literal) = pattern.exact().filter(|it| !it.is_empty()) {
-            return match current {
-                Some(project_id) if project_id.as_str() == literal => Ok(Some(project_id.clone())),
-                _ => {
-                    // Structurally unsafe names cannot identify a catalog. Other spellings are
-                    // validated by BigQuery, including numeric and domain-scoped projects.
-                    let Ok(project_id) = ProjectIdentifier::try_new(literal) else {
-                        return Ok(None);
-                    };
-                    match self.probe_project(operation, &project_id) {
-                        Ok(()) => Ok(Some(project_id)),
-                        Err(source) if source.is_not_found() || source.is_invalid_project() => {
-                            Ok(None)
-                        }
-                        Err(source) => Err(source.into_error(&format!(
-                            "failed to validate the BigQuery catalog filter {project_id}"
-                        ))),
-                    }
-                }
+            if current.is_some_and(|project| project.as_str() == literal) {
+                return Ok(current.cloned());
+            }
+            // Structurally unsafe names cannot identify a catalog. BigQuery validates other
+            // spellings, including numeric and domain-scoped projects.
+            let Ok(project_id) = ProjectIdentifier::try_new(literal) else {
+                return Ok(None);
+            };
+            return match self.probe_project(operation, &project_id) {
+                Ok(()) => Ok(Some(project_id)),
+                Err(source) if source.is_not_found() || source.is_invalid_project() => Ok(None),
+                Err(source) => Err(source.into_error(&format!(
+                    "failed to validate the BigQuery catalog filter {project_id}"
+                ))),
             };
         }
         Ok(current

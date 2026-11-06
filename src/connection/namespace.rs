@@ -94,36 +94,32 @@ impl BigQueryConnection {
         {
             return Ok(());
         }
-        if dataset_id.is_empty() {
-            self.context.current_schema = None;
-            self.schema_predates_catalog = false;
-            self.namespace.publish(&self.context);
-            return Ok(());
-        }
-        let project_id = self.name_catalog().ok_or_else(|| {
-            dataset_needs_a_project(
-                "the connection option adbc.connection.db_schema",
-                &[
-                    "the connection option adbc.connection.catalog",
-                    "the database option bigquery.project_id",
-                ],
-            )
-        })?;
-        self.context
-            .runtime
-            .block_on(self.metadata_client()?.get_dataset(
-                Some(operation),
-                DatasetId {
-                    project_id: project_id.as_str(),
-                    dataset_id: &dataset_id,
-                },
-            ))
-            .map_err(|source| {
-                source.into_error(&format!(
-                    "failed to validate the current BigQuery schema {project_id}.{dataset_id}"
-                ))
+        if !dataset_id.is_empty() {
+            let project_id = self.name_catalog().ok_or_else(|| {
+                dataset_needs_a_project(
+                    "the connection option adbc.connection.db_schema",
+                    &[
+                        "the connection option adbc.connection.catalog",
+                        "the database option bigquery.project_id",
+                    ],
+                )
             })?;
-        self.context.current_schema = Some(Arc::from(dataset_id));
+            self.context
+                .runtime
+                .block_on(self.metadata_client()?.get_dataset(
+                    Some(operation),
+                    DatasetId {
+                        project_id: project_id.as_str(),
+                        dataset_id: &dataset_id,
+                    },
+                ))
+                .map_err(|source| {
+                    source.into_error(&format!(
+                        "failed to validate the current BigQuery schema {project_id}.{dataset_id}"
+                    ))
+                })?;
+        }
+        self.context.current_schema = (!dataset_id.is_empty()).then(|| Arc::from(dataset_id));
         self.schema_predates_catalog = false;
         self.namespace.publish(&self.context);
         Ok(())
