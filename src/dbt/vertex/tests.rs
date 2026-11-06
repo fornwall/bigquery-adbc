@@ -34,10 +34,8 @@ fn connection_running_notebooks_at(endpoint: String) -> BigQueryConnection {
     )
 }
 
-/// The email in [`service_account_key`], which the driver uses as the execution identity.
 const SERVICE_ACCOUNT: &str = "dbt-runner@data-project.iam.gserviceaccount.com";
 
-/// A service-account key document naming [`SERVICE_ACCOUNT`].
 fn service_account_key() -> String {
     json!({
         "type": "service_account",
@@ -49,9 +47,6 @@ fn service_account_key() -> String {
     .to_string()
 }
 
-/// The same connection, authenticated with a service-account key rather than anonymously, so
-/// the notebook job has a principal to derive.
-///
 /// The mock is plaintext loopback, which a credential-bearing configuration refuses unless
 /// `bigquery.allow_untrusted_endpoint` is set.
 fn connection_running_notebooks_as_a_service_account(endpoint: String) -> BigQueryConnection {
@@ -78,9 +73,7 @@ fn connection_running_notebooks_as_a_service_account(endpoint: String) -> BigQue
     )
 }
 
-/// Exactly what dbt-core 2.0 sets for `submission_method: bigframes`, in its own order:
-/// seven notebook keys, the Dataproc-namespaced batch ID, the timeout, and the placeholder
-/// query it finalizes the statement with.
+/// The `bigframes` option order and SQL placeholder emitted by dbt-core 2.0.
 fn bigframes_statement(
     connection: &mut BigQueryConnection,
     template_id: Option<&str>,
@@ -126,8 +119,6 @@ fn job_in_state(state: &str) -> serde_json::Value {
     json!({"name": JOB, "jobState": state})
 }
 
-/// The dbt-core 2.0 contract end to end: the options it sends become one runtime-template listing
-/// and one create request, and the job is polled to its terminal state.
 #[test]
 fn dbt_bigframes_model_submits_one_notebook_execution_job() {
     let (endpoint, captured) = capture_requests(vec![
@@ -201,8 +192,7 @@ fn dbt_bigframes_model_submits_one_notebook_execution_job() {
     }
 }
 
-/// A configured template ID names the template directly, so nothing is listed. dbt-core 2.0 sends
-/// it only when the model's `notebook_template_id` parses as an integer.
+/// dbt-core 2.0 sends the template ID only when `notebook_template_id` parses as an integer.
 #[test]
 fn a_configured_template_id_names_the_template_without_listing() {
     let (endpoint, captured) = capture_requests(vec![
@@ -223,7 +213,6 @@ fn a_configured_template_id_names_the_template_without_listing() {
     );
 }
 
-/// Each request that can be refused names what it addressed beside the service's reason.
 #[test]
 fn a_refused_request_names_the_resource_it_addressed() {
     let denied = json!({"error": {"code": 403, "message": "Vertex AI API has not been used"}});
@@ -298,8 +287,6 @@ fn only_the_template_listing_is_resent_after_a_transient_failure() {
     );
 }
 
-/// The template ID is validated like every other interpolated resource name: a `/` would name a
-/// different resource.
 #[test]
 fn a_template_id_that_reshapes_the_resource_path_is_refused() {
     // An empty value clears the option rather than naming a template, so it is not tested here.
@@ -429,38 +416,40 @@ fn malformed_template_listings_are_invalid_data() {
     }
 }
 
-/// Vertex AI's own status survives, rather than being flattened the way the fork flattens
-/// every python-model failure to UNKNOWN.
 #[test]
-fn a_failed_notebook_job_reports_the_services_message_and_status() {
-    let (endpoint, captured) = capture_requests(vec![
-        (200, lro(true)),
+fn failed_notebook_jobs_preserve_the_service_status_and_message() {
+    for (state, code, message, status) in [
         (
-            200,
-            json!({
-                "name": JOB,
-                "jobState": "JOB_STATE_FAILED",
-                "status": {
-                    "code": 7,
-                    "message": "the Colab service agent cannot read gs://dbt-python",
-                },
-            }),
+            "JOB_STATE_FAILED",
+            7,
+            "the Colab service agent cannot read gs://dbt-python",
+            Status::Unauthorized,
         ),
-    ]);
-    let mut connection = connection_running_notebooks_at(endpoint);
-    let mut statement = bigframes_statement(&mut connection, Some("4242"), "3600");
+        (
+            "JOB_STATE_PARTIALLY_SUCCEEDED",
+            3,
+            "cell 2 raised ValueError",
+            Status::InvalidArguments,
+        ),
+    ] {
+        let (endpoint, captured) = capture_requests(vec![
+            (200, lro(true)),
+            (
+                200,
+                json!({"name": JOB, "jobState": state,
+                "status": {"code": code, "message": message}}),
+            ),
+        ]);
+        let mut connection = connection_running_notebooks_at(endpoint);
+        let mut statement = bigframes_statement(&mut connection, Some("4242"), "3600");
 
-    let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::Unauthorized);
-    assert_message(
-        &error,
-        &[JOB, "the Colab service agent cannot read gs://dbt-python"],
-    );
-    assert_eq!(captured.join().unwrap().len(), 2);
+        let error = statement.execute_update().unwrap_err();
+        assert_eq!(error.status, status, "{state}");
+        assert_message(&error, &[JOB, state, message]);
+        assert_eq!(captured.join().unwrap().len(), 2);
+    }
 }
 
-/// A wait that gives up on its polls leaves the job running and billing, so the error says so
-/// and names it, in either wait phase.
 #[test]
 fn a_failed_poll_says_the_notebook_job_may_still_be_running() {
     let denied = json!({"error": {"code": 403, "message": "Permission denied"}});
@@ -483,33 +472,6 @@ fn a_failed_poll_says_the_notebook_job_may_still_be_running() {
         );
         assert_eq!(captured.join().unwrap().len(), 2);
     }
-}
-
-/// Cells that raised mean the relation is not what the model describes, so a partial success is
-/// a failure.
-#[test]
-fn a_partially_succeeded_notebook_job_is_a_failure() {
-    let (endpoint, captured) = capture_requests(vec![
-        (200, lro(true)),
-        (
-            200,
-            json!({
-                "name": JOB,
-                "jobState": "JOB_STATE_PARTIALLY_SUCCEEDED",
-                "status": {"code": 3, "message": "cell 2 raised ValueError"},
-            }),
-        ),
-    ]);
-    let mut connection = connection_running_notebooks_at(endpoint);
-    let mut statement = bigframes_statement(&mut connection, Some("4242"), "3600");
-
-    let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::InvalidArguments);
-    assert_message(
-        &error,
-        &["JOB_STATE_PARTIALLY_SUCCEEDED", "cell 2 raised ValueError"],
-    );
-    assert_eq!(captured.join().unwrap().len(), 2);
 }
 
 /// `pooling_timeout` is one deadline over both waits. Here the create spends all of it, so the
@@ -654,8 +616,6 @@ fn a_deadline_spent_listing_the_runtime_templates_never_creates_the_job() {
     );
 }
 
-/// A `pooling_timeout` too large for the clock becomes no deadline across both waits, so both
-/// run to completion and nothing is cancelled.
 #[test]
 fn a_pooling_timeout_beyond_the_clock_waits_out_both_phases() {
     let (endpoint, captured) = capture_requests(vec![
@@ -678,8 +638,6 @@ fn a_pooling_timeout_beyond_the_clock_waits_out_both_phases() {
     );
 }
 
-/// Cancelling the statement stops the wait rather than running it out, and asks Vertex AI to
-/// stop the job it created.
 #[test]
 fn cancelling_a_notebook_job_stops_the_wait() {
     let request_seen = Arc::new(Barrier::new(2));
@@ -777,25 +735,24 @@ fn terminal_job_states_are_classified_and_running_ones_keep_polling() {
 
     // With no `pooling_timeout`, an unclassifiable state must end the wait or it could poll
     // forever.
-    for unrecognized in ["JOB_STATE_SOMETHING_NEW", ""] {
+    for (unrecognized, detail) in [
+        (
+            "JOB_STATE_SOMETHING_NEW",
+            "the unrecognized state JOB_STATE_SOMETHING_NEW",
+        ),
+        ("", "reported no jobState"),
+    ] {
         let failure = job_outcome(unrecognized, &json!({}), JOB)
             .unwrap()
             .unwrap_err();
         assert_eq!(failure.status, Status::InvalidData);
-        assert_message(&failure, &[JOB]);
+        assert_message(&failure, &[JOB, detail]);
         assert!(
             failure.message.contains("JOB_STATE_RUNNING"),
             "the message names the states that would have kept the wait going: {}",
             failure.message
         );
     }
-    let named = job_outcome("JOB_STATE_SOMETHING_NEW", &json!({}), JOB)
-        .unwrap()
-        .unwrap_err();
-    assert_message(&named, &["the unrecognized state JOB_STATE_SOMETHING_NEW"]);
-    let missing = job_outcome("", &json!({}), JOB).unwrap().unwrap_err();
-    assert_message(&missing, &["reported no jobState"]);
-
     // A failure the service reported no status for stays honestly unknown.
     let bare = job_outcome("JOB_STATE_FAILED", &json!({"name": JOB}), JOB)
         .unwrap()
@@ -804,87 +761,55 @@ fn terminal_job_states_are_classified_and_running_ones_keep_polling() {
     assert_message(&bare, &["no failure detail"]);
 }
 
-/// A service-account key names its own principal, so the job runs as it without the fork's
-/// `oauth2/v2/userinfo` round trip, which would require an extra request and whose fallback sends
-/// an empty bearer token.
 #[test]
-fn a_service_account_credential_names_the_notebook_execution_identity() {
-    let (endpoint, captured) = capture_requests(vec![
-        (200, lro(true)),
-        (200, job_in_state("JOB_STATE_SUCCEEDED")),
-    ]);
-    let mut connection = connection_running_notebooks_as_a_service_account(endpoint);
-    let mut statement = bigframes_statement(&mut connection, Some("4242"), "3600");
-
-    assert_eq!(statement.execute_update().unwrap(), None);
-
-    let requests = captured.join().unwrap();
-    assert_eq!(
-        requests[0].body["serviceAccount"],
-        json!(SERVICE_ACCOUNT),
-        "the client_email of the configured key is the execution identity"
-    );
-    assert!(
-        requests[0].body.get("executionUser").is_none(),
-        "execution_identity is a oneof: {}",
-        requests[0].body
-    );
-}
-
-/// The one key dbt-core 2.0 does not send. Plain Application Default Credentials derive no
-/// principal, so the option is the only way to name one; with a service-account key, the option
-/// overrides the derived principal.
-#[test]
-fn an_explicit_service_account_names_the_identity_whatever_the_credentials_derive() {
+fn notebook_identity_can_be_derived_overridden_and_cleared() {
     const EXPLICIT: &str = "notebooks@data-project.iam.gserviceaccount.com";
-    for connect in [
-        connection_running_notebooks_at as fn(String) -> BigQueryConnection,
-        connection_running_notebooks_as_a_service_account,
+    for (connect, derived) in [
+        (
+            connection_running_notebooks_at as fn(String) -> BigQueryConnection,
+            None,
+        ),
+        (
+            connection_running_notebooks_as_a_service_account,
+            Some(SERVICE_ACCOUNT),
+        ),
     ] {
-        let (endpoint, captured) = capture_requests(vec![
-            (200, lro(true)),
-            (200, job_in_state("JOB_STATE_SUCCEEDED")),
-        ]);
-        let mut connection = connect(endpoint);
-        let mut statement = bigframes_statement(&mut connection, Some("4242"), "3600");
-        set_option(
-            &mut statement,
-            Key::NotebookExecuteJobServiceAccount,
-            EXPLICIT,
-        );
+        for (overrides, expected) in [
+            (&[][..], derived),
+            (&[EXPLICIT][..], Some(EXPLICIT)),
+            (&[EXPLICIT, ""][..], derived),
+        ] {
+            let (endpoint, captured) = capture_requests(vec![
+                (200, lro(true)),
+                (200, job_in_state("JOB_STATE_SUCCEEDED")),
+            ]);
+            let mut connection = connect(endpoint);
+            let mut statement = bigframes_statement(&mut connection, Some("4242"), "3600");
+            for &value in overrides {
+                set_option(&mut statement, Key::NotebookExecuteJobServiceAccount, value);
+            }
+            assert_string_option(
+                &statement,
+                Key::NotebookExecuteJobServiceAccount,
+                overrides.last().copied().filter(|value| !value.is_empty()),
+            );
 
-        assert_eq!(statement.execute_update().unwrap(), None);
+            assert_eq!(statement.execute_update().unwrap(), None);
 
-        assert_eq!(
-            captured.join().unwrap()[0].body["serviceAccount"],
-            json!(EXPLICIT),
-            "the explicit option is the identity, and outranks a key's own client_email"
-        );
+            let requests = captured.join().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(
+                requests[0].body.get("serviceAccount"),
+                expected.map(|value| json!(value)).as_ref(),
+                "derived {derived:?}, override sequence {overrides:?}"
+            );
+            assert!(
+                requests[0].body.get("executionUser").is_none(),
+                "execution_identity is a oneof: {}",
+                requests[0].body
+            );
+        }
     }
-}
-
-/// Clearing it goes back to the derived principal rather than to no identity, so a caller
-/// cannot end up with an empty `serviceAccount` on the wire.
-#[test]
-fn clearing_the_explicit_service_account_falls_back_to_the_derived_one() {
-    let (endpoint, captured) = capture_requests(vec![
-        (200, lro(true)),
-        (200, job_in_state("JOB_STATE_SUCCEEDED")),
-    ]);
-    let mut connection = connection_running_notebooks_as_a_service_account(endpoint);
-    let mut statement = bigframes_statement(&mut connection, Some("4242"), "3600");
-    for value in ["notebooks@data-project.iam.gserviceaccount.com", ""] {
-        set_option(&mut statement, Key::NotebookExecuteJobServiceAccount, value);
-    }
-    // The empty string clears the override.
-    assert_string_option(&statement, Key::NotebookExecuteJobServiceAccount, None);
-
-    assert_eq!(statement.execute_update().unwrap(), None);
-
-    assert_eq!(
-        captured.join().unwrap()[0].body["serviceAccount"],
-        json!(SERVICE_ACCOUNT),
-    );
 }
 
 /// The notebook `parent`, `project`, and `region` reach the request path, and the region also
@@ -906,8 +831,6 @@ fn resource_options_that_would_redirect_the_request_are_refused() {
     }
 }
 
-/// Every URL these operations build interpolates its resource names through one rule, shared
-/// with the Dataproc submissions: a path of segments keeps its separators and escapes the rest.
 #[test]
 fn resource_names_keep_their_segments_and_escape_the_rest() {
     assert_eq!(escape(PARENT).to_string(), PARENT);
