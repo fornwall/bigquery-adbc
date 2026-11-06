@@ -1,64 +1,54 @@
 # Agent guide
 
-This is a Rust ADBC driver for BigQuery, with a C interface and Python packaging.
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and validation commands,
-[docs/REFERENCE.md](docs/REFERENCE.md) for public behavior and options, and
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the code fits together.
+Rust ADBC driver for BigQuery, with a C interface and Python packaging. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for setup and checks, [REFERENCE.md](docs/REFERENCE.md) for public
+behavior, and [ARCHITECTURE.md](docs/ARCHITECTURE.md) for code structure.
 
 ## Implementation rules
 
-- Prioritize correctness and ADBC specification conformance.
-- Backward compatibility is not required; prefer the cleanest current API and implementation.
-- Keep code simple and minimize allocations, overhead, and data copying.
-- Support GoogleSQL only. Legacy SQL and legacy-SQL-only options are unsupported.
-- Bulk ingestion uses only the Storage Write API. For `bigquery.bulk_ingest.method=load`, return
-  `NOT_IMPLEMENTED`.
-- Keep comments about contracts, constraints, and non-obvious decisions. Preserve FFI safety
-  explanations; avoid narrating code or recording development history in comments.
+- Prioritize correctness and ADBC conformance. Backward compatibility is not required.
+- Prefer simple APIs and implementations; minimize allocations, overhead and copying.
+- Support GoogleSQL only; reject Legacy SQL and its exclusive options. Bulk ingestion uses only
+  Storage Write; `bigquery.bulk_ingest.method=load` returns `NOT_IMPLEMENTED`.
+- Comment on contracts, constraints and non-obvious decisions; preserve FFI safety explanations.
+  Avoid code narration and development history.
 
 ## Workflow and validation
 
 - Commit completed work frequently in small, focused checkpoints.
-- Add regression coverage for behavior fixes in the existing suites. Rust unit and mock tests
-  live beside the implementation in `src/`; live Rust tests are in `tests/bigquery/`; client
-  integration suites are in `integration/`, and `tests/clients/` drives them.
-- Run focused tests while iterating, then the checks for the changed language in
-  [CONTRIBUTING.md](CONTRIBUTING.md#local-checks). Use the pinned toolchain and locked dependencies.
-  Check Rust with both default and all features; developer features can hide shipped-build issues.
-- `cargo test --locked --all-features` runs offline tests and leaves live tests ignored. For
-  Python and its integration harnesses, use `scripts/run-offline-python-tests.sh` and
-  `scripts/run-python-lint.sh`.
-- Python option enums are generated: edit `src/python_options.rs` and the relevant Rust option
-  definitions, then run `cargo run --locked --features python-option-codegen --bin generate-python-options`.
-  Do not hand-edit `python/src/bigquery_adbc/_options.py`.
-- For IPC decoder, REST row decoder or FFI changes, run the
+- Add regression coverage for behavior fixes: unit and mock tests beside `src/` implementations,
+  live Rust tests in `tests/bigquery/`, client suites in `integration/` via `tests/clients/`.
+- Run focused tests, then the required [local checks](CONTRIBUTING.md#local-checks) for the changed
+  language and its harnesses, using the pinned toolchain and locked dependencies. Check Rust with
+  default and all features; offline tests leave live tests ignored.
+- Never hand-edit `python/src/bigquery_adbc/_options.py`: edit `src/python_options.rs` and relevant
+  Rust option definitions, then run
+  `cargo run --locked --features python-option-codegen --bin generate-python-options`.
+- For IPC decoder, REST row decoder or FFI changes, run
   [fuzz targets and Miri](CONTRIBUTING.md#fuzzing-and-miri).
-- Build the shared library with `cargo rustc --release --locked --lib --crate-type cdylib`; the
-  manifest declares only the `rlib`, so `cargo build` produces none.
-- Live BigQuery tests require `BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT` (no default) and
-  Application Default Credentials (ADC).
-  Use `scripts/run-one-live-test.sh <name>` for a focused Rust live test; it rejects zero matches.
-  Scratch-resource defaults are in `tests/bigquery/support.rs`.
-- For documentation-only changes, check affected links and `git diff --check`; code tests are
-  unnecessary. Report which checks ran and distinguish mock coverage from live validation.
+- Build the shared library with `cargo rustc --release --locked --lib --crate-type cdylib`;
+  `cargo build` produces only the `rlib`.
+- Live tests require `BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT` (no default) and ADC. Run focused
+  Rust cases with `scripts/run-one-live-test.sh <name>` (rejects zero matches); scratch-resource
+  defaults are in `tests/bigquery/support.rs`.
+- Documentation-only changes need link checks and `git diff --check`, not code tests. Report
+  checks run, distinguishing mock coverage from live validation.
 
 ## References and documentation
 
-Use the active [Go BigQuery ADBC driver](https://github.com/adbc-drivers/bigquery/tree/main/go)
-as the reference implementation. Do not use the retired `apache/arrow-adbc` BigQuery driver or
-the C# driver as references.
-
-Update the relevant documentation with behavior changes:
+Use the active [Go driver](https://github.com/adbc-drivers/bigquery/tree/main/go) as the reference,
+never the retired `apache/arrow-adbc` BigQuery driver or the C# driver. Update relevant docs with
+behavior changes:
 
 | File | What belongs there |
 | --- | --- |
-| [CHANGELOG.md](CHANGELOG.md) | User-visible changes, under Unreleased until a release. |
-| [docs/REFERENCE.md](docs/REFERENCE.md) | Public options, type mappings, and driver behavior. |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Code structure and data flow; update it when modules change roles. |
-| [docs/GO-DRIVER-COMPARISON.md](docs/GO-DRIVER-COMPARISON.md) | All differences from the Go driver, including bugs, missing features, and deliberate differences. Also record behavior inherited by the dbt-labs fork from Go here. |
-| [docs/DBT-CORE.md](docs/DBT-CORE.md) | Behavior specific to the `dbt-labs/bigquery-adbc` fork. |
-| [docs/UPSTREAM.md](docs/UPSTREAM.md) | Relevant issues in dependencies only. Submit upstream fixes when practical. |
-| [docs/LIMITATIONS.md](docs/LIMITATIONS.md) | Open limitations and validation gaps; keep completed work in git history. |
+| [CHANGELOG.md](CHANGELOG.md) | User-visible changes under Unreleased. |
+| [REFERENCE.md](docs/REFERENCE.md) | Public options, type mappings and behavior. |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Code structure and data flow; update when module roles change. |
+| [GO-DRIVER-COMPARISON.md](docs/GO-DRIVER-COMPARISON.md) | All Go differences: bugs, missing features and deliberate changes, including behavior the dbt-labs fork inherits from Go. |
+| [DBT-CORE.md](docs/DBT-CORE.md) | Behavior specific to `dbt-labs/bigquery-adbc`. |
+| [UPSTREAM.md](docs/UPSTREAM.md) | Dependency issues only; submit upstream fixes when practical. |
+| [LIMITATIONS.md](docs/LIMITATIONS.md) | Open limitations and validation gaps; completed work belongs in git history. |
 
 Support performance and binary-size claims with measurements and reproducible commands in
 [docs/PERFORMANCE.md](docs/PERFORMANCE.md) or [docs/BINARY-SIZE.md](docs/BINARY-SIZE.md).
