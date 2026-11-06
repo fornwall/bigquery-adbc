@@ -216,25 +216,20 @@ def test_aarch64_wheels_drop_only_the_flag_gnu_ld_refuses() -> None:
 
 def test_sdist_carries_the_license_files_setuptools_will_look_for(sdist_archive: Path) -> None:
     with tarfile.open(sdist_archive) as archive:
-        for document in ("LICENSE", "NOTICE"):
-            expected = (REPOSITORY_ROOT / document).read_bytes()
+        for document in LICENSE_FILES:
+            expected = (PYTHON_ROOT / document).read_bytes()
+            # PyPI resolves License-File against PKG-INFO at the archive root.
             assert _archive_file(archive, document) == expected
             # Wheel builds resolve project.license-files against the staged python/ directory.
             assert _archive_file(archive, f"python/{document}") == expected
-        for document in (*LICENSE_FILES[2:], "licenses/manifest.json"):
-            assert _archive_file(archive, f"python/{document}") == (PYTHON_ROOT / document).read_bytes()
+        assert (
+            _archive_file(archive, "python/licenses/manifest.json")
+            == (PYTHON_ROOT / "licenses/manifest.json").read_bytes()
+        )
         pkg_info = _archive_file(archive, "PKG-INFO")
 
     metadata = BytesParser(policy=policy.default).parsebytes(pkg_info)
     assert metadata.get_all("License-File", []) == list(LICENSE_FILES)
-
-
-def test_sdist_license_files_resolve_from_pkg_info(sdist_archive: Path) -> None:
-    # PyPI rejects an upload whose License-File is missing relative to PKG-INFO; twine does not.
-    with tarfile.open(sdist_archive) as archive:
-        metadata = BytesParser(policy=policy.default).parsebytes(_archive_file(archive, "PKG-INFO"))
-        for document in metadata.get_all("License-File", []):
-            assert _archive_file(archive, document) == (PYTHON_ROOT / document).read_bytes()
 
 
 def test_sdist_rust_toolchain_is_trimmed_to_a_build(sdist_archive: Path) -> None:
