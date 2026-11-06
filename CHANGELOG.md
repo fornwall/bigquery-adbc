@@ -28,6 +28,8 @@ changes.
 
 ### Fixed
 
+- Metadata discovery uses a described table's current type after concurrent replacement, keeping
+  type filters and statistics consistent with its schema.
 - Parameter-schema discovery preserves prior execution progress even when its dry run retries.
 - Parameterized stored-procedure calls preserve every returned result in bound-row order.
 - Storage Read treats an empty Arrow timezone as DATETIME, rejecting conversions to TIMESTAMP.

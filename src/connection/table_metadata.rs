@@ -374,19 +374,19 @@ impl BigQueryConnection {
                         let reference = metadata.table_reference.take().unwrap_or_default();
                         resolved_dataset_id
                             .get_or_insert_with(|| resolved_name(reference.dataset_id, dataset_id));
-                        let table_type = match listed_type {
-                            Some(table_type) => table_type,
-                            None => {
-                                let table_type = bigquery_table_type(metadata.table_type.clone());
-                                if scan
-                                    .table_types
-                                    .is_some_and(|types| !types.contains(table_type.as_str()))
-                                {
-                                    continue;
-                                }
-                                table_type
-                            }
-                        };
+                        // A table may have been replaced since it was listed. Keep its type
+                        // consistent with the schema and statistics from this description.
+                        let table_type = bigquery_table_type(if metadata.table_type.is_empty() {
+                            listed_type.unwrap_or_default()
+                        } else {
+                            metadata.table_type.clone()
+                        });
+                        if scan
+                            .table_types
+                            .is_some_and(|types| !types.contains(table_type.as_str()))
+                        {
+                            continue;
+                        }
                         tables.push(ScannedTable {
                             name: resolved_name(reference.table_id, &table_id),
                             table_type,

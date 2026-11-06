@@ -145,6 +145,51 @@ fn exact_get_objects_type_mismatch_keeps_the_schema_without_a_fallback() {
     assert_eq!(requests.join().unwrap().len(), 1);
 }
 
+#[test]
+fn a_described_table_type_supersedes_its_listing_type() {
+    for (depth, table_types) in [
+        (Some(ObjectDepth::Columns), None),
+        (Some(ObjectDepth::Columns), Some(vec!["TABLE"])),
+        (None, None),
+    ] {
+        let (endpoint, requests) = capture_requests(vec![
+            (200, json!({"tables": [listed_table("events")]})),
+            (
+                200,
+                json!({
+                    "type": "VIEW",
+                    "schema": {"fields": [{"name": "id", "type": "INTEGER"}]},
+                    "numRows": "0"
+                }),
+            ),
+        ]);
+        let connection = anonymous_connection_at(&endpoint);
+        let batch = match depth {
+            Some(depth) => objects_batch(
+                &connection,
+                depth,
+                Some("dataset"),
+                None,
+                table_types.clone(),
+            ),
+            None => connection
+                .get_statistics(None, Some("dataset"), None, false)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap(),
+        };
+        let tables = child_structs(child_structs(batch.column(1)).column(1));
+        if depth.is_some() && table_types.is_none() {
+            assert_eq!(tables.len(), 1);
+            assert_eq!(string_at(tables.column(1), 0), "VIEW");
+        } else {
+            assert!(tables.is_empty());
+        }
+        assert_eq!(requests.join().unwrap().len(), 2);
+    }
+}
+
 /// The partial-response selector that asks `tables.get` and `tables.list` for the names BigQuery
 /// resolved, percent-encoded as in a request path.
 const TABLE_REFERENCE_FIELDS: &str = "tableReference%28datasetId%2CtableId%29";

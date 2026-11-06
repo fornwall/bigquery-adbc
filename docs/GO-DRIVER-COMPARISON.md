@@ -617,7 +617,8 @@ element's `BIGQUERY:type`, which Go's lacks.
 
 An empty, non-NULL `table_type` list returns no tables and sends no request, because adbc.h gives
 only NULL the meaning "any type"; Go's driverbase treats an empty list like NULL. A non-empty list
-is applied before any per-table request, so excluded tables cost nothing.
+is applied before any per-table request, so excluded tables cost nothing. A described table's
+current type is checked again, in case it was replaced after listing.
 
 ### G72. A table or dataset dropped mid-listing is skipped, not reported as a missing dataset
 

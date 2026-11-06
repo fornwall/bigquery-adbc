@@ -713,6 +713,10 @@ BigQuery refuses with HTTP 403 `accessDenied` or no reason; other failures, and 
 the dataset walk itself or of `GetTableSchema`, are reported (G62 and G72 in the
 [Go driver comparison][go-comparison]).
 
+When discovery describes a listed table, the returned type supersedes the listing's type and is
+checked against the type filter again. This keeps its type, schema and statistics consistent if
+the table was replaced between requests.
+
 `GetObjects` reports `REQUIRED` and `REPEATED` columns as non-nullable in `xdbc_nullable` and
 `xdbc_is_nullable`. A repeated column can be empty, but cannot contain a NULL array. Omitted modes
 default to nullable.
