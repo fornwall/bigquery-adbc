@@ -6,37 +6,20 @@ using this driver or dbt's [canonical driver](../../docs/DBT-CORE.md#installing)
 
 ## Coverage
 
-- Seeds: typed, pipe-delimited and header-only CSV input, with parameterized decimals, quoted
-  delimiters, escaped quotes, Unicode, null and empty values, percentage floats and time-zone
-  normalization. `column_types` also load BYTES, JSON and GEOGRAPHY columns from Base64, JSON
-  and WKT text.
-- Models: views, tables, materialized views, ephemeral and versioned models, snapshots, MERGE and
-  static/dynamic insert-overwrite. Two-wave incremental fixtures check full row multisets,
-  composite keys, selective updates, MERGE predicates and `sync_all_columns` with nested fields.
-- Tests and lineage: unit tests, generic and singular data tests, source freshness through both
-  `loaded_at_field` and `__TABLES__`, exposures, hooks with audited DDL and DML, and
-  `adapter.dispatch`.
-- Failure reporting: an isolated data test must exit nonzero with status `fail` and one failing
-  row; success, skips and execution errors fail the check. Ordinary builds disable this probe.
-- Table configuration: partitioning, clustering, labels, expiration, contracts and documentation.
-  Rebuilds check option readback through `is_replaceable` and `describe_relation`; an unchanged
-  materialized view must refresh without alteration. The canonical driver is excluded because
-  its zero `ExpirationTime` causes dbt to detect a change.
-- Values: JSON, GEOGRAPHY, BYTES, BIGNUMERIC, DATETIME, TIME, ARRAY/STRUCT, boundaries, nulls, NUL
-  bytes, reserved/Unicode identifiers and typed empty results. Diagnostics must confirm REST
-  pagination for 60,005 rows and Storage Read for 200,000 rows, without warnings or fallback.
-- Option-only operations: `copy_partitions`, idempotent `grant_access_to` across view replacement,
-  `persist_docs` for seeds, incremental models and `run-operation`, and a Python-model upload to
-  Cloud Storage followed by rejection from a nonexistent Dataproc cluster.
-- Adapter responses: `MERGE` with five affected rows, cost statistics, matching query/job IDs,
-  project and location. Dynamic insert-overwrite reports `SCRIPT` without a row count; the
-  canonical driver's `SUCCESS` with zero rows is pinned under `--upstream-adbc`.
-- Job options: MERGE and copy jobs carry exactly dbt's invocation/query-comment labels and the
-  profile's timeout (the model override for copies). The canonical driver omits copy options,
-  so only this driver is checked.
-- `run-operation --sql` parity: in the default run, the same DDL, DML, MERGE, SELECT and Jinja-rendered statements run
-  through the canonical driver and then this driver, and the runner compares dbt's JSON events and
-  the resulting tables.
+- Seeds, SQL materializations, snapshots and two-wave incremental updates, including nested
+  schema changes, type parameters and CSV edge cases.
+- Unit/data tests, source freshness, lineage and hooks. An isolated failing-test probe must report
+  `fail`, one failing row and a nonzero exit; skips and execution errors do not pass it.
+- Table configuration and metadata readback, including unchanged materialized-view refreshes.
+  The latter excludes the canonical driver because its zero `ExpirationTime` triggers alteration.
+- Rich types and boundary values, plus confirmed REST pagination at 60,005 rows and Storage Read
+  at 200,000 rows without fallback.
+- Copies, authorized views, documentation patches, and a Cloud Storage upload followed by a
+  rejected Dataproc submission. Successful Python models remain unvalidated.
+- Adapter row counts, costs, IDs and locations. MERGE and copy jobs must preserve dbt's labels and
+  timeouts; the canonical driver omits copy options. Script-response differences are pinned.
+- `run-operation --sql` parity: compare JSON events and warehouse results for DDL, DML, MERGE,
+  SELECT and Jinja-rendered statements through the canonical driver and this one.
 
 The runner independently checks warehouse objects through BigQuery and validates `catalog.json`.
 Macros must log completion in the current invocation. Each build, seed and freshness phase must

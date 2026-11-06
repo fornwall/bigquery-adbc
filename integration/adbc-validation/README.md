@@ -1,9 +1,7 @@
 # ADBC C++ validation suite
 
-This harness, for contributors, runs Apache Arrow ADBC's C++ validation suite against the driver's
-C ABI. The ADBC driver manager loads the Rust `cdylib` through `AdbcDriverBigqueryInit`, so the
-suite exercises the ABI, the Arrow C Data and Stream interfaces, error ownership, and release
-callbacks.
+Apache Arrow ADBC's C++ suite loads the Rust `cdylib` through `AdbcDriverBigqueryInit`, exercising
+the C ABI, Arrow C Data/Stream interfaces, error ownership and release callbacks.
 
 ## Requirements
 
@@ -32,43 +30,25 @@ Plain `cargo test` needs neither CMake nor BigQuery, and already compares the ba
 adapter source. Cargo reports a mistyped test name as success with zero tests; to reject that,
 select one test with `BIGQUERY_ADBC_TEST_TARGET=clients scripts/run-one-live-test.sh <name>`.
 
-The test passes the library and datasets to the adapter in `ADBC_BIGQUERY_LIBRARY`,
-`ADBC_BIGQUERY_DATASET`, and `ADBC_BIGQUERY_SECONDARY_DATASET`.
-
-It enumerates the canonical suite and runs all 100 cases. A changed test count fails the
-offline check so dependency updates require a coverage review.
-
-Cases for capabilities BigQuery lacks self-skip through `DriverQuirks` hooks.
-`SqlIngestUInt64`, which no hook gates, skips through a test-method override in the
-fixture, as upstream's own driver tests do. `MetadataGetInfo` checks all five upstream subcases,
-including the vendor client-library version, because returning no expectation for a code would
-silently skip its assertions.
+The adapter receives `ADBC_BIGQUERY_LIBRARY`, `ADBC_BIGQUERY_DATASET` and
+`ADBC_BIGQUERY_SECONDARY_DATASET`. A changed test count fails the offline check.
 
 ## Datasets and cleanup
 
-Each GoogleTest case runs in a fresh, uniquely named dataset that is deleted right afterward. The
-one metadata case that needs a second schema gets a second unique dataset. Datasets are created and
-dropped through this driver with BigQuery DDL.
-
-Dataset names start with `bigquery_adbc_validation_`, and the datasets carry identifying labels and
-a one-day default table expiration. Cleanup refuses to drop a dataset without that prefix.
-The test drops every dataset whose creation it started, including failed creation requests, when
-a case fails or panics and after SIGINT or SIGTERM. After Ctrl-C, the test stops the running case
-within five seconds, and Cargo returns to the prompt at once, while the drop finishes. Unique
-datasets keep concurrent runs apart.
+Each case creates unique datasets through this driver's DDL, with identifying labels, one-day
+table expiration and the required `bigquery_adbc_validation_` prefix. Cleanup drops every dataset
+whose creation started, even after failed creation, test failure, panic, SIGINT or SIGTERM.
+After Ctrl-C the running case stops within five seconds; deletion finishes after Cargo returns.
 
 ## Coverage
 
-The suite has 93 passing cases and 7 skips. Two `DriverQuirks` hooks relax the assertions of
-five passing cases, and three more hooks make six cases self-skip; `SqlIngestUInt64` is the
-seventh skip. No failures are expected. Upstream's binary-view ingestion test omits empty binary
-values.
+The suite expects 93 passes and 7 skips. `DriverQuirks` hooks relax five cases and skip six;
+`SqlIngestUInt64` skips through a method override. `MetadataGetInfo` checks all five upstream
+subcases, including vendor client-library version. Upstream's binary-view test omits empty values.
 
-`coverage_baseline.txt` records the eleven relaxed or skipped cases, with the responsible
-mechanism and what it stops testing, in the same way as
-`integration/foundry-validation/skip_baseline.txt`. `suite_matches_coverage_baseline` checks every
-record offline against the enumerated suite and `bigquery_validation.cc` in both directions: a
-relaxation cannot be added without a record, and a record cannot outlive its relaxation.
+`coverage_baseline.txt` records each relaxation and skip. The offline check compares it with the
+enumerated suite and `bigquery_validation.cc` in both directions, rejecting unrecorded relaxations
+and obsolete records.
 
 ## Upstream revision and patch
 

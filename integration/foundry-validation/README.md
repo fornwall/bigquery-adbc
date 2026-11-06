@@ -45,38 +45,26 @@ PYTEST_ADDOPTS=--junitxml=foundry-results.xml \
 
 ## Coverage
 
-- [`GetObjects` type filtering](https://github.com/adbc-drivers/validation/pull/324) checks
-  inclusion and exclusion of tables and views, including combined filters.
-- Ingestion modes run with ordinary strings, string views, binary views, INT64, decimals
-  (including negative scales), nanosecond times, and microsecond and nanosecond timestamps. They
-  cover append, replacement, replacement with an explicit catalog and schema, schema conflicts,
-  large batches and multiple batches. The upstream mode helpers require two-column fixtures, so the
-  three-column timezone-aware timestamp fixtures run in `test_create`. Long-value cases cover
-  ordinary, large and view string and binary inputs from 1 to 128 KiB.
-- Dictionary binding covers all 28 scalar fixtures, including Float16, through INSERT and
-  `ExecuteUpdate`. [Dictionary ingestion](https://github.com/adbc-drivers/validation/pull/317)
-  covers all 30 ingestion fixtures, repeated indices and nulls; the second timezone-aware timestamp
-  column stays plain.
-- [Stream binding](https://github.com/adbc-drivers/validation/pull/306) covers all 28 scalar fixtures
-  in one or multiple batches, including interspersed empty batches. One INSERT `ExecuteUpdate`
-  consumes each stream, submitting one job per row. Native and installed-wheel tests cover
-  `ExecuteQuery` and entirely empty inputs.
+- [`GetObjects` filters](https://github.com/adbc-drivers/validation/pull/324) include and exclude
+  tables and views individually and together.
+- Ingestion covers modes, explicit namespaces, schema conflicts, large/multiple batches and
+  1–128 KiB string/binary values. Mode helpers require two columns; three-column timezone
+  fixtures therefore run only in `test_create`.
+- [Dictionary ingestion](https://github.com/adbc-drivers/validation/pull/317) runs all 30 ingest
+  fixtures with repeated indices and nulls; the second timezone-aware column stays plain.
+- Dictionary and [stream binding](https://github.com/adbc-drivers/validation/pull/306) run all 28
+  scalar fixtures through INSERT `ExecuteUpdate`, one job per row. Streams include empty batches;
+  native and wheel tests separately cover entirely empty input and `ExecuteQuery`.
 
-Dictionary ingestion and dictionary/stream binding select their fixtures from the query set,
-so adding a fixture also exercises those paths. Ingestion mode and long-value selections remain
-explicit because their upstream helpers require particular column shapes and types.
+Dictionary/stream cases derive from the query set; mode and long-value cases select compatible
+column shapes explicitly. Negative-scale decimals must retain exact values. Nanosecond inputs,
+including signed timestamp extremes, test conversion to microseconds: times truncate and timestamps
+round down, including before the epoch.
 
-Negative-scale decimal fixtures keep their original inputs and expect exact NUMERIC values.
-Nanosecond fixtures also keep their original inputs, including the minimum and maximum signed
-64-bit timestamps, and expect BigQuery's microsecond precision: times drop sub-microsecond digits
-and timestamps round down, including before the Unix epoch. These test conversion, not lossless
-nanosecond storage.
-
-All applicable capability flags in the pinned suite are enabled. The disabled flags are CHECK
-and UNIQUE constraints, temporary bulk-ingest tables, and DDL affected-row counts. The 86 expected
-skips cover the first three plus SQL output types BigQuery cannot represent (narrow integers,
-FLOAT32, and non-microsecond timestamp precision); DDL row-count assertions are gated within tests.
-These skips do not apply to Arrow inputs that the driver widens or converts.
+Disabled capabilities are CHECK/UNIQUE constraints, temporary ingest tables and DDL row counts.
+The 86 expected skips cover the first three and unsupported SQL output types (narrow integers,
+FLOAT32, non-microsecond timestamps); DDL row counts are gated inside tests. Arrow inputs that
+the driver widens or converts remain covered.
 
 Both scratch datasets are in the same project. Catalog tests validate explicit qualification and
 setting the current project back to itself, not switching between projects. The Python
