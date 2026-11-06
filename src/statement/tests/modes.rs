@@ -3,6 +3,7 @@
 //! with.
 
 use super::*;
+use crate::dbt::statement::DbtOperation;
 use crate::test_support::errors::assert_message;
 
 #[test]
@@ -106,14 +107,18 @@ fn authorization_placeholders_allow_a_terminator_before_comments() {
         "/* leading */ none /* before terminator */; /* after terminator */",
     ] {
         statement.set_sql_query(query).unwrap();
-        assert!(statement.dbt.dataset_authorization.is_active(), "{query}");
+        assert_eq!(
+            statement.dbt.active_operation(),
+            Some(DbtOperation::DatasetAuthorization),
+            "{query}"
+        );
         assert!(statement.sql.is_none(), "{query}");
     }
 
     statement
         .set_sql_query("none; /* comment */ SELECT 2")
         .unwrap();
-    assert!(!statement.dbt.dataset_authorization.is_active());
+    assert_string_option(&statement, option, None);
     assert_eq!(
         statement.sql.as_deref(),
         Some("none; /* comment */ SELECT 2")
@@ -421,17 +426,25 @@ fn a_csv_seed_and_a_table_copy_each_replace_the_other() {
         BigQueryStatementOption::CopyTableDestination,
         "analytics.destination",
     );
-    assert!(statement.dbt.table_copy.is_active());
+    assert_eq!(
+        statement.dbt.active_operation(),
+        Some(DbtOperation::TableCopy)
+    );
 
     set_option(
         &mut statement,
         BigQueryStatementOption::CsvFilepath,
         "seeds/example.csv",
     );
-    assert!(statement.dbt.csv_seed.is_active());
-    assert!(
-        !statement.dbt.table_copy.is_active(),
-        "a CSV filepath leaves table-copy mode rather than shadowing the copy"
+    assert_eq!(
+        statement.dbt.active_operation(),
+        Some(DbtOperation::CsvSeed)
+    );
+    assert_string_option(&statement, BigQueryStatementOption::CopyTableSource, None);
+    assert_string_option(
+        &statement,
+        BigQueryStatementOption::CopyTableDestination,
+        None,
     );
 
     set_option(
@@ -439,11 +452,11 @@ fn a_csv_seed_and_a_table_copy_each_replace_the_other() {
         BigQueryStatementOption::CopyTableSource,
         "analytics.source",
     );
-    assert!(statement.dbt.table_copy.is_active());
-    assert!(
-        !statement.dbt.csv_seed.is_active(),
-        "and a copy endpoint leaves CSV-seed mode"
+    assert_eq!(
+        statement.dbt.active_operation(),
+        Some(DbtOperation::TableCopy)
     );
+    assert_string_option(&statement, BigQueryStatementOption::CsvFilepath, None);
 }
 
 #[test]

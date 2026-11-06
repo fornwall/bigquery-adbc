@@ -2,20 +2,20 @@
 //!
 //! See `docs/DBT-CORE.md` for the supported operations and their option contracts.
 
-pub(crate) mod csv_load;
-pub(crate) mod csv_seed;
-pub(crate) mod dataproc;
-pub(crate) mod dataset_authorization;
-pub(crate) mod dataset_location;
-pub(crate) mod gcs;
+mod csv_load;
+mod csv_seed;
+mod dataproc;
+mod dataset_authorization;
+mod dataset_location;
+mod gcs;
 mod jobs;
 mod lro;
 pub(crate) mod statement;
-pub(crate) mod table_copy;
-pub(crate) mod table_mutation;
-pub(crate) mod vertex;
+mod table_copy;
+mod table_mutation;
+mod vertex;
 
-pub(crate) use jobs::FinishedJob;
+use jobs::FinishedJob;
 
 use adbc_core::error::{Error, Result};
 

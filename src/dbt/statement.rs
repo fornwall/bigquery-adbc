@@ -182,16 +182,16 @@ pub(crate) struct DbtExecution<'a> {
 /// The configuration of every dbt operation a statement can run.
 #[derive(Default)]
 pub(crate) struct DbtStatementState {
-    pub(crate) csv_seed: CsvSeedOptions,
-    pub(crate) dataset_authorization: DatasetAuthorizationOptions,
-    pub(crate) dataset_location: DatasetLocationOptions,
-    pub(crate) table_mutation: TableMutationOptions,
-    pub(crate) table_copy: TableCopyOptions,
+    csv_seed: CsvSeedOptions,
+    dataset_authorization: DatasetAuthorizationOptions,
+    dataset_location: DatasetLocationOptions,
+    table_mutation: TableMutationOptions,
+    table_copy: TableCopyOptions,
     /// The three dbt-core 2.0 python-model operations share one mode because their option
     /// families overlap (see [`crate::dbt::dataproc`]).
-    pub(crate) gcs_write: GcsWriteOptions,
-    pub(crate) dataproc: DataprocOptions,
-    pub(crate) notebook: NotebookExecutionOptions,
+    gcs_write: GcsWriteOptions,
+    dataproc: DataprocOptions,
+    notebook: NotebookExecutionOptions,
 }
 
 impl DbtStatementState {

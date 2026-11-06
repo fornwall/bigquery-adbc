@@ -2,6 +2,7 @@
 //! allowed to say about a rejected value.
 
 use super::*;
+use crate::dbt::statement::DbtOperation;
 use crate::test_support::driver::test_statement_at;
 use crate::test_support::errors::{assert_message, assert_message_omits};
 use crate::test_support::http::job_reference;
@@ -999,7 +1000,10 @@ fn dbt_csv_seed_options_round_trip_and_switch_operations_cleanly() {
     );
     statement.set_sql_query("").unwrap();
 
-    assert!(statement.dbt.csv_seed.is_active());
+    assert_eq!(
+        statement.dbt.active_operation(),
+        Some(DbtOperation::CsvSeed)
+    );
     assert_eq!(statement.sql.as_deref(), Some(""));
     assert_eq!(statement.ingest.target_table, None);
     assert_string_option(
@@ -1024,7 +1028,7 @@ fn dbt_csv_seed_options_round_trip_and_switch_operations_cleanly() {
     );
 
     statement.set_sql_query("SELECT 1").unwrap();
-    assert!(!statement.dbt.csv_seed.is_active());
+    assert_string_option(&statement, BigQueryStatementOption::CsvFilepath, None);
     assert!(
         statement
             .get_option_bytes(BigQueryStatementOption::CsvSchema.into())
@@ -1046,7 +1050,7 @@ fn dbt_csv_seed_options_round_trip_and_switch_operations_cleanly() {
         OptionStatement::TargetTable,
         "standard_ingest",
     );
-    assert!(!statement.dbt.csv_seed.is_active());
+    assert_string_option(&statement, BigQueryStatementOption::CsvFilepath, None);
     assert_eq!(
         statement.ingest.target_table.as_deref(),
         Some("standard_ingest")
