@@ -44,8 +44,8 @@ impl PollBackoff {
             .is_some_and(|deadline| Instant::now() >= deadline)
     }
 
-    /// Sleeps and doubles the backoff, clamped to the deadline. Returns `false` if already
-    /// expired. `floor` applies a quota delay without extending the deadline.
+    /// Sleeps and doubles the backoff, clamped to the deadline. Returns whether time remains
+    /// for another poll. `floor` applies a quota delay without extending the deadline.
     pub(super) async fn pause(&mut self, operation: &Operation, floor: Duration) -> Result<bool> {
         let mut nap = self.delay.max(floor);
         if let Some(deadline) = self.deadline {
@@ -57,7 +57,7 @@ impl PollBackoff {
         }
         operation.wait(tokio::time::sleep(nap)).await?;
         self.delay = (self.delay * 2).min(self.maximum);
-        Ok(true)
+        Ok(!self.expired())
     }
 }
 
@@ -260,8 +260,7 @@ impl<'a> LroPoller<'a> {
         let mut transient = 0_u32;
         let mut quota = Duration::ZERO;
         loop {
-            // A sleep can end exactly at the deadline; recheck before issuing a request.
-            if !self.backoff.pause(self.operation, quota).await? || self.backoff.expired() {
+            if !self.backoff.pause(self.operation, quota).await? {
                 return Err(self.timeout());
             }
             let (class, failure) = match Box::pin(self.attempt(Request::get(url, context))).await {

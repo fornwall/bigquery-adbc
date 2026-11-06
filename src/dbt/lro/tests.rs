@@ -161,29 +161,28 @@ fn response_resource_names_cannot_change_the_request_path() {
     }
 }
 
-/// `PollBackoff` doubles, caps, never sleeps past the deadline, and returns `true` at the
-/// deadline, which `poll` must recheck. The deadline half pairs a ten-second delay with a
-/// five-millisecond budget, so sleeping the full delay would hang the test.
 #[test]
 fn the_poll_backoff_doubles_caps_and_stops_exactly_at_the_deadline() {
-    let runtime = crate::runtime::new_runtime().unwrap();
-    let (_cancellation, operation) = poller_operation(&runtime);
+    let driver_runtime = crate::runtime::new_runtime().unwrap();
+    let (_cancellation, operation) = poller_operation(&driver_runtime);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build()
+        .unwrap();
 
     runtime.block_on(async {
         let mut backoff =
             PollBackoff::new(Duration::from_millis(1), Duration::from_millis(4), None);
         for expected in [2, 4, 4, 4] {
+            let before = Instant::now();
+            let delay = backoff.delay;
             assert!(backoff.pause(&operation, Duration::ZERO).await.unwrap());
-            assert_eq!(
-                backoff.delay,
-                Duration::from_millis(expected),
-                "the backoff doubles up to its ceiling and then stays there"
-            );
+            assert_eq!(before.elapsed(), delay);
+            assert_eq!(backoff.delay, Duration::from_millis(expected));
         }
-        assert!(!backoff.expired(), "a wait with no deadline never expires");
+        assert!(!backoff.expired());
 
-        // A sleep that would overrun the deadline is shortened to exactly what is left, so
-        // the timeout is reported neither early nor an iteration late.
         let budget = Duration::from_millis(5);
         let mut backoff = PollBackoff::new(
             Duration::from_secs(10),
@@ -192,25 +191,15 @@ fn the_poll_backoff_doubles_caps_and_stops_exactly_at_the_deadline() {
         );
         let before = Instant::now();
         assert!(
-            backoff
+            !backoff
                 .pause(&operation, Duration::from_secs(10))
                 .await
-                .unwrap(),
-            "the shortened sleep still ran, so it answers true"
+                .unwrap()
         );
-        assert!(
-            Instant::now() - before < Duration::from_secs(1),
-            "the sleep was cut to the remaining budget, not the ten-second delay or the quota \
-             floor raising it"
-        );
-
-        // Landing on the deadline returns `true`, so `LroPoller::poll` must check `expired`
-        // before polling again.
+        assert_eq!(before.elapsed(), budget);
         assert!(backoff.expired());
-        assert!(
-            !backoff.pause(&operation, Duration::ZERO).await.unwrap(),
-            "past the deadline there is nothing left to sleep"
-        );
+        assert!(!backoff.pause(&operation, Duration::ZERO).await.unwrap());
+        assert_eq!(before.elapsed(), budget);
     });
 }
 
