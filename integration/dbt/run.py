@@ -1661,89 +1661,52 @@ def assert_bigquery_state(
         "Unicode flexible column, persisted through the metadata update.",
     )
 
-    query = f"""
-        select
-          (select count(*) from `{project}.{dataset}.fct_orders`) as orders,
-          (select count(*) from `{project}.{dataset}.incremental_order_totals`)
-            as incremental_orders,
-          (select count(*) from `{project}.{dataset}.daily_revenue`) as revenue_days,
-          (select count(*) from `{project}.{dataset}.customers_snapshot`) as snapshot_versions,
-          (select count(*) from `{project}.{dataset}.typed_features`) as typed_rows,
-          (select count(*) from `{project}.{dataset}.customers`) as customers,
-          (select count(*) from `{project}.{dataset}.orders`) as seed_orders,
-          (select count(*) from `{project}.{dataset}.order_items`) as order_items,
-          (select countif(load_wave = 2) from `{project}.{dataset}.incremental_order_totals`)
-            as merged_rows,
-          (select count(*) from `{project}.{dataset}.exotic_materialized_view`) as mv_statuses,
-          (select count(*) from `{project}.{dataset}.{REFRESHED_VIEW}`) as refreshed_mv_statuses,
-          (select count(*) from `{project}.{dataset}.exotic_range_partitioned`) as range_rows,
-          (select count(*) from `{project}.{dataset}.exotic_dynamic_overwrite`) as overwrite_days,
-          (select countif(load_wave = 2) from `{project}.{dataset}.exotic_dynamic_overwrite`)
-            as overwrite_wave2,
-          (select count(*) from `{project}.{dataset}.exotic_schema_evolution`) as evolved_rows,
-          (select countif(doubled_total is not null)
-             from `{project}.{dataset}.exotic_schema_evolution`) as evolved_filled,
-          (select count(*) from `{project}.{dataset}.exotic_wide_types`) as wide_rows,
-          (select countif(label is null) from `{project}.{dataset}.exotic_wide_types`)
-            as wide_nulls,
-          (select count(*) from `{project}.{dataset}.exotic_empty`) as empty_rows,
-          (select count(*) from `{project}.{dataset}.exotic_encoded_types`) as encoded_rows,
-          (select countif(payload is null and document is null and location is null)
-             from `{project}.{dataset}.exotic_encoded_types`) as encoded_null_rows,
-          (select count(*) from `{project}.{dataset}.exotic_copied_partitions`) as copied_days,
-          (select countif(load_wave = 2) from `{project}.{dataset}.exotic_copied_partitions`)
-            as copied_wave2,
-          (select countif(load_wave = 1 and order_date = date '2026-01-12')
-             from `{project}.{dataset}.exotic_copied_partitions`) as copied_untouched,
-          (select count(*) from `{project}.{dataset}.exotic_csv_edges`) as csv_edge_rows,
-          (select countif(optional_label is null)
-             from `{project}.{dataset}.exotic_csv_edges`) as csv_edge_nulls,
-          (select countif(label = '')
-             from `{project}.{dataset}.exotic_csv_edges`) as csv_edge_empty_strings,
-          (select count(*) from `{project}.{dataset}.exotic_result_edges`) as result_edge_rows,
-          (select count(*) from `{project}.{dataset}.exotic_empty_result`) as empty_result_rows,
-          (select count(*) from `{project}.{dataset}.select`) as quoted_identifier_rows,
-          (select count(*) from `{project}.{dataset}.exotic_schema_sync`) as synchronized_rows,
-          (select countif(load_wave = 2 and original_wave = 1)
-             from `{project}.{dataset}.exotic_schema_sync`) as synchronized_updates
-    """
-    row = next(iter(client.query(query).result()))
-    counts = dict(row.items())
-    expected = {
-        "orders": 5,
-        "incremental_orders": 5,
-        "revenue_days": 3,
-        "snapshot_versions": 4,
-        "typed_rows": 4,
-        "customers": 4,
-        "seed_orders": 5,
-        "order_items": 6,
-        "merged_rows": 5,
-        "mv_statuses": 3,
-        "refreshed_mv_statuses": 3,
-        "range_rows": 5,
-        "overwrite_days": 3,
-        "overwrite_wave2": 3,
-        "evolved_rows": 5,
-        "evolved_filled": 5,
-        "wide_rows": 3,
-        "wide_nulls": 1,
-        "empty_rows": 0,
-        "encoded_rows": 3,
-        "encoded_null_rows": 1,
-        # copy_partitions: the second wave replaces two of three partitions.
-        "copied_days": 3,
-        "copied_wave2": 2,
-        "copied_untouched": 1,
-        "csv_edge_rows": 3,
-        "csv_edge_nulls": 1,
-        "csv_edge_empty_strings": 1,
-        "result_edge_rows": 1,
-        "empty_result_rows": 0,
-        "quoted_identifier_rows": 1,
-        "synchronized_rows": 6,
-        "synchronized_updates": 2,
+    # Keep each aggregate beside its expected value so additions cannot lose an assertion.
+    checks = {
+        "orders": ("fct_orders", "count(*)", 5),
+        "incremental_orders": ("incremental_order_totals", "count(*)", 5),
+        "revenue_days": ("daily_revenue", "count(*)", 3),
+        "snapshot_versions": ("customers_snapshot", "count(*)", 4),
+        "typed_rows": ("typed_features", "count(*)", 4),
+        "customers": ("customers", "count(*)", 4),
+        "seed_orders": ("orders", "count(*)", 5),
+        "order_items": ("order_items", "count(*)", 6),
+        "merged_rows": ("incremental_order_totals", "countif(load_wave = 2)", 5),
+        "mv_statuses": ("exotic_materialized_view", "count(*)", 3),
+        "refreshed_mv_statuses": (REFRESHED_VIEW, "count(*)", 3),
+        "range_rows": ("exotic_range_partitioned", "count(*)", 5),
+        "overwrite_days": ("exotic_dynamic_overwrite", "count(*)", 3),
+        "overwrite_wave2": ("exotic_dynamic_overwrite", "countif(load_wave = 2)", 3),
+        "evolved_rows": ("exotic_schema_evolution", "count(*)", 5),
+        "evolved_filled": ("exotic_schema_evolution", "countif(doubled_total is not null)", 5),
+        "wide_rows": ("exotic_wide_types", "count(*)", 3),
+        "wide_nulls": ("exotic_wide_types", "countif(label is null)", 1),
+        "empty_rows": ("exotic_empty", "count(*)", 0),
+        "encoded_rows": ("exotic_encoded_types", "count(*)", 3),
+        "encoded_null_rows": (
+            "exotic_encoded_types", "countif(payload is null and document is null and location is null)", 1,
+        ),
+        # The second wave replaces two of three partitions.
+        "copied_days": ("exotic_copied_partitions", "count(*)", 3),
+        "copied_wave2": ("exotic_copied_partitions", "countif(load_wave = 2)", 2),
+        "copied_untouched": (
+            "exotic_copied_partitions", "countif(load_wave = 1 and order_date = date '2026-01-12')", 1,
+        ),
+        "csv_edge_rows": ("exotic_csv_edges", "count(*)", 3),
+        "csv_edge_nulls": ("exotic_csv_edges", "countif(optional_label is null)", 1),
+        "csv_edge_empty_strings": ("exotic_csv_edges", "countif(label = '')", 1),
+        "result_edge_rows": ("exotic_result_edges", "count(*)", 1),
+        "empty_result_rows": ("exotic_empty_result", "count(*)", 0),
+        "quoted_identifier_rows": ("select", "count(*)", 1),
+        "synchronized_rows": ("exotic_schema_sync", "count(*)", 6),
+        "synchronized_updates": ("exotic_schema_sync", "countif(load_wave = 2 and original_wave = 1)", 2),
     }
+    query = "select " + ", ".join(
+        f"(select {aggregate} from `{project}.{dataset}.{table}`) as {name}"
+        for name, (table, aggregate, _) in checks.items()
+    )
+    counts = dict(next(iter(client.query(query).result())).items())
+    expected = {name: count for name, (_, _, count) in checks.items()}
     if counts != expected:
         differences = {
             key: (counts.get(key), expected.get(key))

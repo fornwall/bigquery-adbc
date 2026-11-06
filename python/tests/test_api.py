@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock, call
 
 import pyarrow
 import pytest
@@ -125,13 +126,7 @@ def test_low_level_connect_passes_options_without_mutating_them(
     options: dict[str, str],
     expected_uri: str | None,
 ) -> None:
-    calls: list[dict[str, str]] = []
-    database = object()
-
-    def make_database(**kwargs: str) -> object:
-        calls.append(kwargs)
-        return database
-
+    make_database = Mock()
     monkeypatch.setattr(driver, "driver_path", lambda: "/absolute/driver.so")
     monkeypatch.setattr(driver.adbc_driver_manager, "AdbcDatabase", make_database)
     original = options.copy()
@@ -140,9 +135,9 @@ def test_low_level_connect_passes_options_without_mutating_them(
         expected["uri"] = expected_uri
 
     actual = driver.connect(db_kwargs=options) if uri is None else driver.connect(uri, options)
-    assert actual is database
+    assert actual is make_database.return_value
     assert options == original
-    assert calls == [expected]
+    make_database.assert_called_once_with(**expected)
 
 
 def test_low_level_connect_rejects_conflicting_uri() -> None:
@@ -199,43 +194,29 @@ def test_dbapi_reexports_manager_facade() -> None:
     for name in expected - type_objects:
         assert getattr(dbapi, name) is getattr(dbapi._dbapi, name)
     for name in type_objects:
-        assert set(getattr(dbapi, name)) >= set(getattr(dbapi._dbapi, name))
+        value, upstream = getattr(dbapi, name), getattr(dbapi._dbapi, name)
+        assert set(value) >= set(upstream)
+        if name != "NUMBER":
+            assert value == upstream
+            assert upstream == value
     assert dbapi.paramstyle == "qmark"
-
-
-def test_dbapi_number_matches_bigquery_decimal_columns() -> None:
-    # NUMERIC and BIGNUMERIC are what cursor.description reports for BigQuery's
-    # exact numeric types; upstream's NUMBER matches neither.
-    assert pyarrow.decimal128(38, 9) == dbapi.NUMBER
-    assert pyarrow.decimal256(76, 38) == dbapi.NUMBER
-    # Any decimal parameters, not just BigQuery's widest.
-    assert pyarrow.decimal128(9, 2) == dbapi.NUMBER
-    # Everything upstream's NUMBER matched still matches.
-    assert pyarrow.int64() == dbapi.NUMBER
-    assert pyarrow.float64() == dbapi.NUMBER
-    assert set(dbapi._dbapi.NUMBER) <= set(dbapi.NUMBER)
-    # Non-numeric types do not.
-    assert pyarrow.string() != dbapi.NUMBER
-    assert pyarrow.binary() != dbapi.NUMBER
-
-
-def test_dbapi_string_matches_bigquery_json_columns() -> None:
-    # cursor.description reports BigQuery JSON as the canonical arrow.json extension type.
-    assert pyarrow.json_() == dbapi.STRING
-    assert dbapi.STRING == pyarrow.json_()  # noqa: SIM300 - the reflected comparison
-    assert pyarrow.string() == dbapi.STRING
-    assert pyarrow.large_string() == dbapi.STRING
-    assert pyarrow.json_() != dbapi.NUMBER
-    assert pyarrow.binary() != dbapi.STRING
-    # Type objects still compare with the manager's own.
-    assert dbapi.STRING == dbapi._dbapi.STRING
-    assert dbapi._dbapi.STRING == dbapi.STRING
 
 
 @pytest.mark.parametrize(
     ("arrow_type", "type_object", "equal"),
     [
         (pyarrow.string(), "STRING", True),
+        (pyarrow.large_string(), "STRING", True),
+        (pyarrow.json_(), "STRING", True),
+        (pyarrow.binary(), "STRING", False),
+        (pyarrow.decimal128(38, 9), "NUMBER", True),
+        (pyarrow.decimal256(76, 38), "NUMBER", True),
+        (pyarrow.decimal128(9, 2), "NUMBER", True),
+        (pyarrow.int64(), "NUMBER", True),
+        (pyarrow.float64(), "NUMBER", True),
+        (pyarrow.string(), "NUMBER", False),
+        (pyarrow.binary(), "NUMBER", False),
+        (pyarrow.json_(), "NUMBER", False),
         (pyarrow.int64(), "STRING", False),
         (pyarrow.binary(), "BINARY", True),
         (pyarrow.string(), "BINARY", False),
@@ -293,26 +274,10 @@ def test_dbapi_connect_returns_manager_objects_directly(
     monkeypatch: pytest.MonkeyPatch,
     connect_options: dict[str, Any],
 ) -> None:
-    calls: list[tuple[str, Any]] = []
-    database = object()
-    connection = object()
-    result = object()
-
-    def low_level_connect(uri: str | None, db_kwargs: Any = None) -> object:
-        calls.append(("database", (uri, db_kwargs)))
-        return database
-
-    def make_connection(db: object, **kwargs: str) -> object:
-        calls.append(("connection", (db, kwargs)))
-        return connection
-
-    def make_dbapi_connection(*args: Any, **kwargs: Any) -> object:
-        calls.append(("dbapi", (args, kwargs)))
-        return result
-
-    monkeypatch.setattr(dbapi, "_driver_connect", low_level_connect)
-    monkeypatch.setattr(dbapi.adbc_driver_manager, "AdbcConnection", make_connection)
-    monkeypatch.setattr(dbapi, "Connection", make_dbapi_connection)
+    factory = Mock()
+    monkeypatch.setattr(dbapi, "_driver_connect", factory.database)
+    monkeypatch.setattr(dbapi.adbc_driver_manager, "AdbcConnection", factory.connection)
+    monkeypatch.setattr(dbapi, "Connection", factory.dbapi)
     db_options = {"bigquery.project_id": "billing"}
     conn_options = {"adbc.connection.catalog": "data"}
 
@@ -323,22 +288,18 @@ def test_dbapi_connect_returns_manager_objects_directly(
         **connect_options,
     )
 
-    assert actual is result
+    assert actual is factory.dbapi.return_value
     assert db_options == {"bigquery.project_id": "billing"}
     assert conn_options == {"adbc.connection.catalog": "data"}
-    assert calls == [
-        ("database", (connect_options.get("uri"), db_options)),
-        ("connection", (database, conn_options)),
-        (
-            "dbapi",
-            (
-                (database, connection),
-                {
-                    "conn_kwargs": conn_options,
-                    "autocommit": connect_options.get("autocommit", False),
-                    "backend": "arrow",
-                },
-            ),
+    assert factory.mock_calls == [
+        call.database(connect_options.get("uri"), db_kwargs=db_options),
+        call.connection(factory.database.return_value, **conn_options),
+        call.dbapi(
+            factory.database.return_value,
+            factory.connection.return_value,
+            conn_kwargs=conn_options,
+            autocommit=connect_options.get("autocommit", False),
+            backend="arrow",
         ),
     ]
 
@@ -376,42 +337,26 @@ def test_dbapi_connect_cleans_up_partial_initialization(
     close_fails: bool,
     error_type: type[BaseException],
 ) -> None:
-    events: list[str] = []
     failure = error_type("initialization failed")
-
-    class Resource:
-        def __init__(self, name: str) -> None:
-            self.name = name
-
-        def close(self) -> None:
-            events.append(f"close {self.name}")
-            if close_fails:
-                raise RuntimeError(f"close {self.name} failed")
-
-    database = Resource("database")
-    connection = Resource("connection")
-
-    monkeypatch.setattr(dbapi, "_driver_connect", lambda *args, **kwargs: database)
-
-    def make_connection(*args: Any, **kwargs: Any) -> Resource:
-        if failure_stage == "connection":
-            raise failure
-        return connection
-
-    def make_dbapi_connection(*args: Any, **kwargs: Any) -> object:
-        raise failure
-
-    monkeypatch.setattr(dbapi.adbc_driver_manager, "AdbcConnection", make_connection)
-    monkeypatch.setattr(dbapi, "Connection", make_dbapi_connection)
+    resources = Mock()
+    for resource in (resources.database, resources.connection):
+        resource.close.side_effect = RuntimeError("close failed") if close_fails else None
+    monkeypatch.setattr(dbapi, "_driver_connect", Mock(return_value=resources.database))
+    monkeypatch.setattr(
+        dbapi.adbc_driver_manager,
+        "AdbcConnection",
+        Mock(return_value=resources.connection, side_effect=failure if failure_stage == "connection" else None),
+    )
+    monkeypatch.setattr(dbapi, "Connection", Mock(side_effect=failure))
 
     with pytest.raises(error_type) as caught:
         dbapi.connect("bigquery:///project")
 
     assert caught.value is failure
-    expected = ["close database"]
+    expected = [call.database.close()]
     if failure_stage == "dbapi":
-        expected.insert(0, "close connection")
-    assert events == expected
+        expected.insert(0, call.connection.close())
+    assert resources.mock_calls == expected
 
 
 def test_dbapi_connect_rejects_autocommit_in_conn_kwargs() -> None:
