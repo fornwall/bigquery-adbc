@@ -126,6 +126,41 @@ fn discovery_propagates_403_reasons_other_than_access_denied() {
     }
 }
 
+#[test]
+fn discovery_propagates_a_disabled_api_reported_in_error_info() {
+    for depth in [Some(ObjectDepth::Columns), None] {
+        for table_name in [None, Some("secret")] {
+            let mut responses = Vec::new();
+            if table_name.is_none() {
+                responses.push((200, json!({"tables": [listed_table("secret")]})));
+            }
+            responses.push((
+                403,
+                json!({"error": {
+                    "message": "BigQuery API is disabled",
+                    "details": [{
+                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                        "reason": "SERVICE_DISABLED",
+                        "domain": "googleapis.com"
+                    }]
+                }}),
+            ));
+            let expected_requests = responses.len();
+            let (endpoint, server) = capture_requests_until_stopped(responses);
+            let connection = anonymous_connection_at(&endpoint);
+            let failure = discover_metadata(&connection, depth, None, Some("dataset"), table_name)
+                .err()
+                .expect("a disabled API must fail discovery");
+            assert_eq!(failure.status, Status::InvalidState);
+            assert_message(
+                &failure,
+                &["BigQuery API is disabled", "test-project.dataset.secret"],
+            );
+            assert_eq!(server.stop().len(), expected_requests);
+        }
+    }
+}
+
 /// Only discovery of objects inside a dataset suppresses access denials. Resolving the
 /// `db_schema` filter (`datasets.get` for an exact name after a denied `tables.list`, or the
 /// `datasets.list` walk for a pattern) and an explicit schema request still report the refusal.

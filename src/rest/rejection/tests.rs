@@ -147,14 +147,33 @@ fn a_disabled_api_is_a_precondition_rather_than_a_denial() {
     let bigquery = br#"{"error": {"code": 403, "message": "BigQuery API has not been used",
         "errors": [{"message": "BigQuery API has not been used", "domain": "usageLimits",
             "reason": "accessNotConfigured"}]}}"#;
-    for body in [&dataproc[..], &bigquery[..]] {
-        let failure = service_error("failed to submit it", reqwest::StatusCode::FORBIDDEN, body);
+    for (body, expected_reason) in [
+        (&dataproc[..], "SERVICE_DISABLED"),
+        (&bigquery[..], "accessNotConfigured"),
+    ] {
+        let (failure, reason) =
+            super::service_failure("failed to submit it", reqwest::StatusCode::FORBIDDEN, body);
         assert_eq!(failure.status, Status::InvalidState, "{}", failure.message);
+        assert_eq!(reason.as_deref(), Some(expected_reason));
         assert!(
             failure.message.contains("has not been used"),
             "{}",
             failure.message
         );
+    }
+}
+
+#[test]
+fn only_error_info_details_classify_a_rejection() {
+    for detail in [
+        r#"{"@type":"type.googleapis.com/example.OtherDetail","reason":"SERVICE_DISABLED"}"#,
+        r#"{"reason":"SERVICE_DISABLED"}"#,
+    ] {
+        let body = format!(r#"{{"error":{{"message":"Forbidden","details":[{detail}]}}}}"#);
+        let (failure, reason) =
+            super::service_failure("", reqwest::StatusCode::FORBIDDEN, body.as_bytes());
+        assert_eq!(failure.status, Status::Unauthorized);
+        assert!(reason.is_none());
     }
 }
 

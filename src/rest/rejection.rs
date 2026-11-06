@@ -27,19 +27,20 @@ pub(crate) fn service_error(context: &str, status: reqwest::StatusCode, body: &[
     service_failure(context, status, body).0
 }
 
-/// [`service_error`], also returning the first entry's BigQuery `reason` for retry
-/// classification: HTTP 403 is both `rateLimitExceeded` (retryable) and `blocked` (permanent).
+/// [`service_error`], also returning the first entry's BigQuery `reason`, or the fallback
+/// `google.rpc.ErrorInfo` reason, for retry and metadata-discovery classification.
 /// See `crate::rest::retry::retry_class`.
 pub(crate) fn service_failure(
     context: &str,
     status: reqwest::StatusCode,
     body: &[u8],
 ) -> (Error, Option<String>) {
-    let rejection = Rejection::read(body);
+    let mut rejection = Rejection::read(body);
     if rejection.errors.is_empty() {
         let google_document = rejection.message.is_some();
         // Without `errors` entries, a `google.rpc.ErrorInfo` reason is the one refinement.
-        let refined = service_status(status, rejection.error_info_reason.as_deref());
+        let reason = rejection.error_info_reason.take();
+        let refined = service_status(status, reason.as_deref());
         let mut rendered = named(context, rejection.detail(status));
         append_http_status(&mut rendered, status);
         // A bare 404 would otherwise read exactly like a missing table.
@@ -54,7 +55,7 @@ pub(crate) fn service_failure(
         }
         let mut failure = error(rendered, refined);
         record_http_status(&mut failure, status);
-        return (failure, None);
+        return (failure, reason);
     }
     // Refining by the first entry's reason keeps a 403 rate limit from reading as a permission
     // failure.
@@ -140,10 +141,11 @@ struct ErrorEnvelope<'a> {
     details: Option<&'a RawValue>,
 }
 
-/// The one field of a `google.rpc.Status` detail read here. Of the standard detail types only
-/// `google.rpc.ErrorInfo` has a `reason`.
+/// A `google.rpc.Status` detail. Only `google.rpc.ErrorInfo` reasons classify failures.
 #[derive(Deserialize)]
 struct DetailReason {
+    #[serde(default, rename = "@type")]
+    type_url: String,
     #[serde(default)]
     reason: Option<String>,
 }
@@ -191,7 +193,14 @@ impl Rejection {
             .and_then(|details| {
                 serde_json::from_slice::<Vec<DetailReason>>(details.get().as_bytes()).ok()
             })
-            .and_then(|details| details.into_iter().find_map(|detail| detail.reason));
+            .and_then(|details| {
+                details
+                    .into_iter()
+                    .filter(|detail| {
+                        detail.type_url.rsplit('/').next() == Some("google.rpc.ErrorInfo")
+                    })
+                    .find_map(|detail| detail.reason)
+            });
         Self {
             errors,
             message: envelope.message,
