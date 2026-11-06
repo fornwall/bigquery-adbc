@@ -33,49 +33,32 @@ impl<'a> SqlPattern<'a> {
         if self.literal {
             return self.value == value;
         }
-        let pattern = self.value;
-        let mut pattern_index = 0;
-        let mut value_index = 0;
+        let mut pattern = self.value.chars();
+        let mut value = value.chars();
         let mut wildcard = None;
 
-        while value_index < value.len() {
-            let pattern_char = pattern[pattern_index..].chars().next();
-            let value_char = value[value_index..]
-                .chars()
-                .next()
-                .expect("value index is on a character boundary");
-            match pattern_char {
+        while let Some(value_char) = value.clone().next() {
+            match pattern.clone().next() {
                 Some('%') => {
-                    pattern_index += '%'.len_utf8();
-                    wildcard = Some((pattern_index, value_index));
+                    pattern.next();
+                    wildcard = Some((pattern.clone(), value.clone()));
                 }
-                Some('_') => {
-                    pattern_index += '_'.len_utf8();
-                    value_index += value_char.len_utf8();
-                }
-                Some(pattern_char) if pattern_char == value_char => {
-                    pattern_index += pattern_char.len_utf8();
-                    value_index += value_char.len_utf8();
+                Some(pattern_char) if pattern_char == '_' || pattern_char == value_char => {
+                    pattern.next();
+                    value.next();
                 }
                 _ => {
-                    let Some((after_wildcard, matched_through)) = wildcard else {
+                    let Some((after_wildcard, matched_through)) = &mut wildcard else {
                         return false;
                     };
-                    let matched_char = value[matched_through..]
-                        .chars()
-                        .next()
-                        .expect("wildcard cannot advance beyond the value");
-                    let next_value_index = matched_through + matched_char.len_utf8();
-                    wildcard = Some((after_wildcard, next_value_index));
-                    pattern_index = after_wildcard;
-                    value_index = next_value_index;
+                    matched_through.next();
+                    pattern = after_wildcard.clone();
+                    value = matched_through.clone();
                 }
             }
         }
 
-        pattern[pattern_index..]
-            .chars()
-            .all(|character| character == '%')
+        pattern.all(|character| character == '%')
     }
 
     /// A name eligible for direct lookup. In pattern mode, even common dataset names such as
@@ -193,5 +176,46 @@ mod tests {
         assert!(!sql_pattern_matches("%a%a%a%a%a%a%b", &value));
         assert!(sql_pattern_matches("%a%a%a%a%a%a%a", &value));
         assert!(!sql_pattern_matches(&"%a".repeat(500), &"a".repeat(499)));
+    }
+
+    #[test]
+    fn greedy_matching_agrees_with_exhaustive_backtracking() {
+        fn exhaustive(pattern: &[char], value: &[char]) -> bool {
+            match (pattern, value) {
+                ([], []) => true,
+                (['%', rest @ ..], _) => {
+                    (0..=value.len()).any(|count| exhaustive(rest, &value[count..]))
+                }
+                ([first, rest @ ..], [character, remaining @ ..])
+                    if *first == '_' || first == character =>
+                {
+                    exhaustive(rest, remaining)
+                }
+                _ => false,
+            }
+        }
+
+        let mut words = vec![String::new()];
+        for _ in 0..4 {
+            let next = words
+                .iter()
+                .flat_map(|word| ['a', 'å', '%', '_'].map(|character| format!("{word}{character}")))
+                .collect::<Vec<_>>();
+            words.extend(next);
+        }
+        words.sort_unstable();
+        words.dedup();
+        for pattern in &words {
+            for value in &words {
+                assert_eq!(
+                    sql_pattern_matches(pattern, value),
+                    exhaustive(
+                        &pattern.chars().collect::<Vec<_>>(),
+                        &value.chars().collect::<Vec<_>>()
+                    ),
+                    "{pattern:?} vs {value:?}"
+                );
+            }
+        }
     }
 }
