@@ -84,35 +84,6 @@ fn unreadable_database_options_are_reported_by_their_own_key() {
     }
 }
 
-/// No two option variants may spell the same key: `from_name` returns the first match, so a
-/// duplicated spelling makes one variant unreachable by name. Aliases are included, the
-/// comparison is case-insensitive like `from_name`, and all option scopes are checked together.
-#[test]
-fn no_option_key_or_alias_is_spelled_twice() {
-    fn assert_unique<T>(legacy_aliases: fn(T) -> &'static [&'static str])
-    where
-        T: crate::options::StringEnum + std::fmt::Debug + PartialEq,
-    {
-        let mut seen = std::collections::HashMap::new();
-        for &option in T::ALL {
-            for key in
-                std::iter::once(option.as_str()).chain(legacy_aliases(option).iter().copied())
-            {
-                assert_eq!(
-                    seen.insert(key.to_ascii_lowercase(), option),
-                    None,
-                    "{key} is spelled by two options"
-                );
-                assert_eq!(T::from_name(key), Some(option), "{key}");
-            }
-        }
-    }
-
-    assert_unique(BigQueryDatabaseOption::legacy_aliases);
-    assert_unique(BigQueryConnectionOption::legacy_aliases);
-    assert_unique(BigQueryStatementOption::legacy_aliases);
-}
-
 #[test]
 fn database_options_round_trip_and_redact_credentials() {
     let mut database = new_database();

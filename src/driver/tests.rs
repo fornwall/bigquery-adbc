@@ -10,10 +10,7 @@ use adbc_core::{Database, Driver, Optionable};
 
 use super::{BigQueryDatabase, BigQueryDriver, new_runtime};
 use crate::config::ServiceEndpointKind;
-use crate::{
-    BigQueryAuthenticationType, BigQueryConnectionOption, BigQueryCredentialsType,
-    BigQueryDatabaseOption, BigQueryStatementOption,
-};
+use crate::{BigQueryAuthenticationType, BigQueryCredentialsType, BigQueryDatabaseOption};
 
 mod credentials;
 mod dbt;

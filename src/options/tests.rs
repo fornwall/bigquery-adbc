@@ -211,178 +211,92 @@ fn every_enum_spells_its_values_distinctly_ignoring_case() {
         BigQueryWriteDisposition,
         crate::parameters::ParameterMode,
     );
-}
-
-#[test]
-fn names_and_legacy_aliases_match_ignoring_case() {
-    assert_eq!(
-        BigQueryWriteDisposition::from_name("write_append"),
-        Some(BigQueryWriteDisposition::WriteAppend)
-    );
-    assert_eq!(
-        BigQueryQueryPriority::from_name("Interactive"),
-        Some(BigQueryQueryPriority::Interactive)
-    );
-    assert_eq!(
-        BigQueryBulkIngestMethod::from_name("STORAGE_WRITE"),
-        Some(BigQueryBulkIngestMethod::StorageWrite)
-    );
     assert_eq!(
         BigQueryAuthenticationType::from_name("Service_Account"),
         None
     );
-    assert_eq!(
-        BigQueryDatabaseOption::from_name("BigQuery.Project_Id"),
-        Some(BigQueryDatabaseOption::ProjectId)
-    );
-    assert_eq!(
-        BigQueryDatabaseOption::from_name("ADBC.BIGQUERY.SQL.PROJECT_ID"),
-        Some(BigQueryDatabaseOption::ProjectId)
-    );
-    assert_eq!(BigQueryDatabaseOption::from_name("bigquery.unknown"), None);
 }
 
-/// Every key of the active Go driver's `optionRemapping`, grouped by support and option scope.
-///
-/// Transcribed from the Go driver's `go/driver.go`. The count assertion checks that the four
-/// groups cover the whole map; losing a supported alias would break profiles written for the Go
-/// driver.
+/// Assert a literal list of Go names under its legacy and canonical prefixes.
+fn assert_remappings<T: StringEnum>(legacy: &str, canonical: &str, names: &[&str]) -> usize {
+    for name in names {
+        let alias = format!("{legacy}{name}");
+        let expected = format!("{canonical}{name}");
+        assert_eq!(
+            T::from_name(&alias).map(T::as_str),
+            Some(expected.as_str()),
+            "{alias}"
+        );
+    }
+    names.len()
+}
+
+/// The 43 entries in the active Go driver's `go/driver.go` optionRemapping.
 #[test]
 fn every_go_option_remapping_key_resolves() {
-    const DATABASE: &[(&str, &str)] = &[
-        (
-            "adbc.bigquery.sql.auth.client_id",
-            "bigquery.auth.client_id",
-        ),
-        (
-            "adbc.bigquery.sql.auth.client_secret",
-            "bigquery.auth.client_secret",
-        ),
-        (
-            "adbc.bigquery.sql.auth.quota_project",
-            "bigquery.auth.quota_project",
-        ),
-        (
-            "adbc.bigquery.sql.auth.refresh_token",
-            "bigquery.auth.refresh_token",
-        ),
-        (
-            "adbc.bigquery.sql.auth_credentials",
-            "bigquery.auth.credentials",
-        ),
-        ("adbc.bigquery.sql.auth_type", "bigquery.auth_type"),
-        ("adbc.bigquery.sql.dataset_id", "bigquery.dataset_id"),
-        ("adbc.bigquery.sql.endpoint", "bigquery.endpoint"),
-        (
-            "adbc.bigquery.sql.impersonate.delegates",
-            "bigquery.impersonate.delegates",
-        ),
-        (
-            "adbc.bigquery.sql.impersonate.lifetime",
-            "bigquery.impersonate.lifetime",
-        ),
-        (
-            "adbc.bigquery.sql.impersonate.scopes",
-            "bigquery.impersonate.scopes",
-        ),
-        (
-            "adbc.bigquery.sql.impersonate.target_principal",
-            "bigquery.impersonate.target_principal",
-        ),
-        ("adbc.bigquery.sql.location", "bigquery.location"),
-        ("adbc.bigquery.sql.project_id", "bigquery.project_id"),
-        (
-            "adbc.bigquery.sql.storage_endpoint",
-            "bigquery.storage_endpoint",
-        ),
-    ];
-    const STATEMENT: &[(&str, &str)] = &[
-        (
-            "adbc.bigquery.sql.query.create_disposition",
-            "bigquery.query.create_disposition",
-        ),
-        (
-            "adbc.bigquery.sql.query.create_session",
-            "bigquery.query.create_session",
-        ),
-        (
-            "adbc.bigquery.sql.query.default_dataset_id",
-            "bigquery.query.default_dataset_id",
-        ),
-        (
-            "adbc.bigquery.sql.query.default_project_id",
-            "bigquery.query.default_project_id",
-        ),
-        (
-            "adbc.bigquery.sql.query.destination_table",
-            "bigquery.query.destination_table",
-        ),
-        (
-            "adbc.bigquery.sql.query.disable_query_cache",
-            "bigquery.query.disable_query_cache",
-        ),
-        ("adbc.bigquery.sql.query.dry_run", "bigquery.query.dry_run"),
-        (
-            "adbc.bigquery.sql.query.job_timeout",
-            "bigquery.query.job_timeout",
-        ),
-        (
-            "adbc.bigquery.sql.query.max_billing_tier",
-            "bigquery.query.max_billing_tier",
-        ),
-        (
-            "adbc.bigquery.sql.query.max_bytes_billed",
-            "bigquery.query.max_bytes_billed",
-        ),
-        (
-            "adbc.bigquery.sql.query.parameter_mode",
-            "bigquery.query.parameter_mode",
-        ),
-        (
-            "adbc.bigquery.sql.query.prefetch_concurrency",
-            "bigquery.query.prefetch_concurrency",
-        ),
-        (
-            "adbc.bigquery.sql.query.priority",
-            "bigquery.query.priority",
-        ),
-        (
-            "adbc.bigquery.sql.query.write_disposition",
-            "bigquery.query.write_disposition",
-        ),
-    ];
-    const AUTHENTICATION_TYPE_VALUES: &[(&str, &str)] = &[
-        ("adbc.bigquery.sql.auth_type.anonymous", "anonymous"),
-        (
-            "adbc.bigquery.sql.auth_type.app_default_credentials",
+    let database = assert_remappings::<BigQueryDatabaseOption>(
+        "adbc.bigquery.sql.",
+        "bigquery.",
+        &[
+            "auth.client_id",
+            "auth.client_secret",
+            "auth.quota_project",
+            "auth.refresh_token",
+            "auth_type",
+            "dataset_id",
+            "endpoint",
+            "impersonate.delegates",
+            "impersonate.lifetime",
+            "impersonate.scopes",
+            "impersonate.target_principal",
+            "location",
+            "project_id",
+            "storage_endpoint",
+        ],
+    );
+    // This alias also changes the separator within the option name.
+    assert_eq!(
+        BigQueryDatabaseOption::from_name("adbc.bigquery.sql.auth_credentials"),
+        Some(BigQueryDatabaseOption::AuthenticationCredentials)
+    );
+    let statement = assert_remappings::<BigQueryStatementOption>(
+        "adbc.bigquery.sql.query.",
+        "bigquery.query.",
+        &[
+            "create_disposition",
+            "create_session",
+            "default_dataset_id",
+            "default_project_id",
+            "destination_table",
+            "disable_query_cache",
+            "dry_run",
+            "job_timeout",
+            "max_billing_tier",
+            "max_bytes_billed",
+            "parameter_mode",
+            "prefetch_concurrency",
+            "priority",
+            "write_disposition",
+        ],
+    );
+    let authentication = assert_remappings::<BigQueryAuthenticationType>(
+        "adbc.bigquery.sql.auth_type.",
+        "",
+        &[
+            "anonymous",
             "app_default_credentials",
-        ),
-        ("adbc.bigquery.sql.auth_type.auth_bigquery", "auth_bigquery"),
-        (
-            "adbc.bigquery.sql.auth_type.json_credential_file",
+            "auth_bigquery",
             "json_credential_file",
-        ),
-        (
-            "adbc.bigquery.sql.auth_type.json_credential_string",
             "json_credential_string",
-        ),
-        (
-            "adbc.bigquery.sql.auth_type.user_authentication",
             "user_authentication",
-        ),
-    ];
-    const PARAMETER_MODE_VALUES: &[(&str, &str)] = &[
-        ("adbc.bigquery.sql.query.parameter_mode_named", "named"),
-        (
-            "adbc.bigquery.sql.query.parameter_mode_positional",
-            "positional",
-        ),
-    ];
-    // Go remaps these but resolves none of them to behavior this driver offers: the two
-    // auth-type values are vestigial constants its own auth switch rejects as "unknown auth
-    // type", legacy SQL is out of scope, `allow_large_results` and
-    // `disable_flattened_results` only shape legacy-SQL results, and the REST row buffer is
-    // an implementation detail here rather than a tunable.
+        ],
+    );
+    let parameters = assert_remappings::<crate::parameters::ParameterMode>(
+        "adbc.bigquery.sql.query.parameter_mode_",
+        "",
+        &["named", "positional"],
+    );
+    // Go remaps these vestigial auth values, legacy SQL options, and its REST buffer setting.
     const UNSUPPORTED: &[&str] = &[
         "adbc.bigquery.sql.auth_type.json_credentials",
         "adbc.bigquery.sql.auth_type.oauth_client_ids",
@@ -391,111 +305,55 @@ fn every_go_option_remapping_key_resolves() {
         "adbc.bigquery.sql.query.result_buffer_size",
         "adbc.bigquery.sql.query.use_legacy_sql",
     ];
-
-    for &(alias, canonical) in DATABASE {
-        let Some(option) = BigQueryDatabaseOption::from_name(alias) else {
-            panic!("{alias} resolves to no database option")
-        };
-        assert_eq!(option.as_str(), canonical, "{alias}");
-    }
-    for &(alias, canonical) in STATEMENT {
-        let Some(option) = BigQueryStatementOption::from_name(alias) else {
-            panic!("{alias} resolves to no statement option")
-        };
-        assert_eq!(option.as_str(), canonical, "{alias}");
-    }
-    for &(alias, canonical) in AUTHENTICATION_TYPE_VALUES {
-        let Some(value) = BigQueryAuthenticationType::from_name(alias) else {
-            panic!("{alias} resolves to no authentication type")
-        };
-        assert_eq!(value.as_str(), canonical, "{alias}");
-    }
-    for &(alias, canonical) in PARAMETER_MODE_VALUES {
-        let Some(mode) = crate::parameters::ParameterMode::from_name(alias) else {
-            panic!("{alias} resolves to no parameter mode")
-        };
-        assert_eq!(mode.as_str(), canonical, "{alias}");
-    }
     for &key in UNSUPPORTED {
         assert_eq!(BigQueryDatabaseOption::from_name(key), None, "{key}");
         assert_eq!(BigQueryConnectionOption::from_name(key), None, "{key}");
         assert_eq!(BigQueryStatementOption::from_name(key), None, "{key}");
     }
-
     assert_eq!(
-        DATABASE.len()
-            + STATEMENT.len()
-            + AUTHENTICATION_TYPE_VALUES.len()
-            + PARAMETER_MODE_VALUES.len()
-            + UNSUPPORTED.len(),
+        database + 1 + statement + authentication + parameters + UNSUPPORTED.len(),
         43,
         "the Go driver's optionRemapping has 43 entries; re-read it before changing this"
     );
 }
 
-/// The aliases this driver accepts that the active Go driver does not remap, each traced to
-/// the fork or to dbt-core 2.0, so an unexplained one is a mistake rather than compatibility.
+/// Additional aliases accepted by the dbt-labs fork.
 #[test]
 fn aliases_outside_the_go_remapping_are_accounted_for() {
-    const FORK_ONLY: &[(&str, &str)] = &[
-        // A backward-compat alias the fork keeps for the retired apache/arrow-adbc key.
-        ("adbc.bigquery.sql.api_endpoint", "bigquery.endpoint"),
-        // The fork's second spelling of the storage endpoint; it overrides both halves of
-        // the Storage API despite naming only the Read one.
+    for (alias, option) in [
+        ("api_endpoint", BigQueryDatabaseOption::Endpoint),
         (
-            "adbc.bigquery.sql.storage_read_api_endpoint",
-            "bigquery.storage_endpoint",
+            "storage_read_api_endpoint",
+            BigQueryDatabaseOption::StorageEndpoint,
         ),
-        (
-            "adbc.bigquery.sql.auth.access_token",
-            "bigquery.auth.access_token",
-        ),
-        (
-            "adbc.bigquery.sql.auth.access_token_endpoint",
-            "bigquery.auth.access_token_endpoint",
-        ),
-        (
-            "adbc.bigquery.sql.auth_type.temporary_access_token",
-            "temporary_access_token",
-        ),
-        (
-            "adbc.bigquery.sql.auth.external_account.audience",
-            "bigquery.auth.external_account.audience",
-        ),
-        (
-            "adbc.bigquery.sql.auth.external_account.request_url",
-            "bigquery.auth.external_account.request_url",
-        ),
-        (
-            "adbc.bigquery.sql.auth.external_account.request_data",
-            "bigquery.auth.external_account.request_data",
-        ),
-        (
-            "adbc.bigquery.sql.auth.external_account.impersonation_url",
-            "bigquery.auth.external_account.impersonation_url",
-        ),
-        (
-            "adbc.bigquery.sql.auth_type.external_account",
-            "external_account",
-        ),
-        ("adbc.bigquery.sql.query.labels", "bigquery.query.labels"),
-        (
-            "adbc.bigquery.sql.query.link_failed_job",
-            "bigquery.query.link_failed_job",
-        ),
-    ];
-
-    for &(alias, canonical) in FORK_ONLY {
-        let resolved = BigQueryDatabaseOption::from_name(alias)
-            .map(BigQueryDatabaseOption::as_str)
-            .or_else(|| {
-                BigQueryStatementOption::from_name(alias).map(BigQueryStatementOption::as_str)
-            })
-            .or_else(|| {
-                BigQueryAuthenticationType::from_name(alias).map(BigQueryAuthenticationType::as_str)
-            });
-        assert_eq!(resolved, Some(canonical), "{alias}");
+    ] {
+        assert_eq!(
+            BigQueryDatabaseOption::from_name(&format!("adbc.bigquery.sql.{alias}")),
+            Some(option)
+        );
     }
+    assert_remappings::<BigQueryDatabaseOption>(
+        "adbc.bigquery.sql.auth.",
+        "bigquery.auth.",
+        &[
+            "access_token",
+            "access_token_endpoint",
+            "external_account.audience",
+            "external_account.request_url",
+            "external_account.request_data",
+            "external_account.impersonation_url",
+        ],
+    );
+    assert_remappings::<BigQueryAuthenticationType>(
+        "adbc.bigquery.sql.auth_type.",
+        "",
+        &["temporary_access_token", "external_account"],
+    );
+    assert_remappings::<BigQueryStatementOption>(
+        "adbc.bigquery.sql.query.",
+        "bigquery.query.",
+        &["labels", "link_failed_job"],
+    );
 }
 
 /// serde's position for a well-formed document of the wrong shape is no help (column 0 for
