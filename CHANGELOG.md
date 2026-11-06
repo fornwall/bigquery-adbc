@@ -28,6 +28,8 @@ changes.
 
 ### Fixed
 
+- Queries identified as `SELECT` by a later job-metadata lookup reject a missing result schema
+  with `INVALID_DATA` instead of silently returning an empty result.
 - Query metadata preserves completed status and resolved job identities, avoiding redundant
   cancellation of finished jobs and directing cancellation of running jobs to the correct region.
 - Ingest window sizing accounts for resolved Null fields and widened primitive types before

@@ -84,11 +84,19 @@ pub(super) fn reader_from_rest_query(
         }
         job = Some(fetched);
     }
-    let schema = schema_with_rest_metadata(
-        result_schema_after_job_enrichment(preliminary_schema, &metadata, job_enriched_schema)
-            .map_err(link)?,
-        &metadata,
-    );
+    // A job can identify a SELECT after the preliminary conversion accepted an absent schema.
+    // Recheck that case, but reuse a present schema unless the job supplied a replacement.
+    let schema = if job_enriched_schema || metadata.schema.is_none() {
+        result_schema(
+            metadata.schema.as_ref(),
+            &metadata.statement_type,
+            "BigQuery query",
+        )
+        .map_err(link)?
+    } else {
+        preliminary_schema
+    };
+    let schema = schema_with_rest_metadata(schema, &metadata);
 
     // DML, DDL and empty SELECT results need no producer, queue or conversion permits.
     // An empty page with a continuation token can still lead to rows.
@@ -234,24 +242,6 @@ fn describe_query_job(
             );
             Ok(None)
         }
-    }
-}
-
-/// Reuses the converted query-response schema unless the `jobs.get` resource supplied its own.
-/// Presence decides; comparing the two schemas would add work to the common path.
-fn result_schema_after_job_enrichment(
-    preliminary_schema: arrow_schema::SchemaRef,
-    metadata: &response::QueryMetadata,
-    job_enriched_schema: bool,
-) -> Result<arrow_schema::SchemaRef> {
-    if job_enriched_schema {
-        result_schema(
-            metadata.schema.as_ref(),
-            &metadata.statement_type,
-            "BigQuery query",
-        )
-    } else {
-        Ok(preliminary_schema)
     }
 }
 

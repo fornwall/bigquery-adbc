@@ -542,6 +542,10 @@ values of the statement that created it, whichever connection reads it.
 
 ### Result-schema metadata
 
+`SELECT` results require a schema even when they contain no rows. A `SELECT` with no available
+result schema returns `INVALID_DATA`, including when a later job-metadata lookup identifies the
+statement type.
+
 Result schemas carry `BIGQUERY:query_id` (the job ID, or the `queryId` of a jobless response) and
 the statistics BigQuery reported, as decimal integer strings except the statement type. Unreported
 statistics are omitted, never written as zero. The schema `AdbcStatementExecutePartitions` returns

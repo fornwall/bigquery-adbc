@@ -568,40 +568,54 @@ fn a_result_too_large_for_rest_keeps_the_storage_read_failure_details() {
 }
 
 #[test]
-fn a_job_schema_replaces_the_preliminary_conversion_and_nothing_else_does() {
-    for (document, what, expected) in [
-        (
-            br#"{"statistics":{"query":{"totalBytesBilled":"1"}}}"#.as_slice(),
-            "schema-less job",
-            None,
-        ),
-        (
-            br#"{"statistics":{"query":{"schema":{"fields":[{"name":"job_response","type":"STRING"}]}}}}"#,
-            "job with schema",
-            Some(("job_response", DataType::Utf8)),
-        ),
-    ] {
-        let preliminary: arrow_schema::SchemaRef = Arc::new(Schema::new(vec![Field::new(
-            "query_response",
-            DataType::Int64,
-            true,
-        )]));
-        let mut metadata = response::QueryMetadata {
-            statement_type: "SELECT".to_owned(),
-            ..response::QueryMetadata::default()
-        };
-        let mut job = response::JobResponse::decode(document, what).unwrap();
+fn a_select_identified_by_job_metadata_requires_a_result_schema() {
+    let runtime = crate::runtime::new_runtime().unwrap();
+    for (query_schema, job_schema) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut job = json!({
+            "jobReference":{"projectId":"project","jobId":"job","location":"US"},
+            "status":{"state":"DONE"},
+            "statistics":{"query":{"statementType":"SELECT"}}
+        });
+        if job_schema {
+            job["statistics"]["query"]["schema"] =
+                json!({"fields":[{"name":"job_result","type":"STRING"}]});
+        }
+        let (endpoint, server) = capture_requests_until_stopped(vec![(200, job)]);
+        let execution = execution_at(&runtime, &endpoint);
+        let mut body = json!({
+            "jobComplete":true,
+            "jobReference":{"projectId":"project","jobId":"job","location":"US"}
+        });
+        if query_schema {
+            body["schema"] = json!({"fields":[{"name":"query_result","type":"INTEGER"}]});
+        }
+        let complete = completed(&serde_json::to_vec(&body).unwrap(), true);
 
-        let supplied_schema = metadata.absorb_job(&mut job);
-        let schema =
-            result_schema_after_job_enrichment(preliminary.clone(), &metadata, supplied_schema)
-                .unwrap();
-
-        assert_eq!(supplied_schema, expected.is_some(), "{what}");
-        assert_eq!(Arc::ptr_eq(&schema, &preliminary), expected.is_none(), "{what}");
-        if let Some((name, data_type)) = expected {
+        let result = reader_from_rest_query(&execution, complete, None, None);
+        assert_eq!(server.stop().len(), 1);
+        if !query_schema && !job_schema {
+            let failure = result.err().expect("SELECT requires a result schema");
+            assert_eq!(failure.status, Status::InvalidData);
+            assert!(
+                failure
+                    .message
+                    .contains("completed without a result schema")
+            );
+        } else {
+            let mut reader = result.unwrap();
+            let schema = reader.schema();
+            let (name, data_type) = if job_schema {
+                ("job_result", DataType::Utf8)
+            } else {
+                ("query_result", DataType::Int64)
+            };
             assert_eq!(schema.field(0).name(), name);
             assert_eq!(schema.field(0).data_type(), &data_type);
+            assert_eq!(
+                schema.metadata()[crate::BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE],
+                "SELECT"
+            );
+            assert!(reader.next().is_none());
         }
     }
 }
