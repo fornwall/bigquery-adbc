@@ -95,14 +95,9 @@ impl std::fmt::Display for Target {
 /// Whether a column of type `source` needs [`rescale_decimal_column`] to become `field`'s: it is
 /// a decimal of another type, or `field` declares a narrower shape than its type.
 pub(super) fn needs_rescale(source: &DataType, field: &Field) -> bool {
-    matches!(
-        source,
-        DataType::Decimal32(_, _)
-            | DataType::Decimal64(_, _)
-            | DataType::Decimal128(_, _)
-            | DataType::Decimal256(_, _)
-    ) && Target::of(field)
-        .is_some_and(|target| source != field.data_type() || !target.is_own_shape(field))
+    decimal_scale(source).is_some()
+        && Target::of(field)
+            .is_some_and(|target| source != field.data_type() || !target.is_own_shape(field))
 }
 
 /// Converts a decimal column to `field`'s type, refusing a value that does not fit the field's
@@ -187,6 +182,9 @@ impl Rescale {
     }
 
     fn apply(&self, value: i256) -> std::result::Result<i256, Misfit> {
+        if value == i256::ZERO {
+            return Ok(value);
+        }
         let value = match self.divisor {
             Some(divisor) => {
                 let divisor = divisor.ok_or(Misfit::FractionalDigits)?;

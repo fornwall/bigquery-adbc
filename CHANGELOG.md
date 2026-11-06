@@ -28,6 +28,8 @@ changes.
 
 ### Fixed
 
+- Decimal ingestion validates source precision at all four Arrow widths and accepts zero at extreme
+  negative scales when the field declares a valid BigQuery decimal shape.
 - Metadata discovery uses a described table's current type after concurrent replacement, keeping
   type filters and statistics consistent with its schema.
 - Parameter-schema discovery preserves prior execution progress even when its dry run retries.

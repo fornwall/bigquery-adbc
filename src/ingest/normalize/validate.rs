@@ -9,9 +9,9 @@
 use adbc_core::error::{Error, Result, Status};
 use arrow_array::types::ByteArrayType;
 use arrow_array::types::{
-    ArrowPrimitiveType, Date32Type, Date64Type, Decimal128Type, Decimal256Type, DecimalType,
-    IntervalDayTimeType, IntervalYearMonthType, Time32MillisecondType, Time32SecondType,
-    Time64MicrosecondType, Time64NanosecondType, TimestampMicrosecondType,
+    ArrowPrimitiveType, Date32Type, Date64Type, Decimal32Type, Decimal64Type, Decimal128Type,
+    Decimal256Type, DecimalType, IntervalDayTimeType, IntervalYearMonthType, Time32MillisecondType,
+    Time32SecondType, Time64MicrosecondType, Time64NanosecondType, TimestampMicrosecondType,
     TimestampMillisecondType, TimestampSecondType,
 };
 use arrow_array::{Array, ArrayRef, BinaryArray, GenericByteArray, PrimitiveArray, StringArray};
@@ -96,6 +96,8 @@ pub(super) fn validate_scalar_values(column: &ArrayRef, site: &ValueSite<'_>) ->
         DataType::Time64(TimeUnit::Nanosecond) => {
             validate_time_values::<Time64NanosecondType>(column, site, NANOSECONDS_PER_DAY)
         }
+        DataType::Decimal32(_, _) => validate_decimal_values::<Decimal32Type>(column, site),
+        DataType::Decimal64(_, _) => validate_decimal_values::<Decimal64Type>(column, site),
         DataType::Decimal128(_, _) => validate_decimal_values::<Decimal128Type>(column, site),
         DataType::Decimal256(_, _) => validate_decimal_values::<Decimal256Type>(column, site),
         DataType::Interval(IntervalUnit::YearMonth) => {

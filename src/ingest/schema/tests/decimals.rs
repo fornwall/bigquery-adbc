@@ -441,6 +441,79 @@ fn an_invalid_declared_decimal_shape_names_its_field() {
     }
 }
 
+#[test]
+fn declared_decimal_shapes_accept_zero_at_extreme_source_scales() {
+    for value in [0, 1, -1] {
+        let column: ArrayRef = Arc::new(
+            Decimal128Array::from(vec![Some(value), None])
+                .with_precision_and_scale(1, i8::MIN)
+                .unwrap(),
+        );
+        let schema = Arc::new(Schema::new(vec![declaring(
+            Field::new("amount", column.data_type().clone(), true),
+            "10",
+            "2",
+        )]));
+        let normalized_schema = Arc::new(normalize_schema(&schema).unwrap());
+        let result = normalize_batch(
+            RecordBatch::try_new(schema, vec![column]).unwrap(),
+            normalized_schema,
+        );
+        if value == 0 {
+            let batch = result.unwrap();
+            let column = column_as::<Decimal128Array>(&batch, 0);
+            assert_eq!(column.data_type(), &DataType::Decimal128(10, 2));
+            assert_eq!(column.iter().collect::<Vec<_>>(), [Some(0), None]);
+        } else {
+            assert_eq!(result.unwrap_err().status, Status::InvalidData);
+        }
+    }
+}
+
+#[test]
+fn declared_decimal_shapes_do_not_bypass_source_precision() {
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(
+            Decimal32Array::from(vec![Some(0), None, Some(10)])
+                .with_precision_and_scale(1, 0)
+                .unwrap(),
+        ),
+        Arc::new(
+            Decimal64Array::from(vec![Some(0), None, Some(10)])
+                .with_precision_and_scale(1, 0)
+                .unwrap(),
+        ),
+        Arc::new(
+            Decimal128Array::from(vec![Some(0), None, Some(10)])
+                .with_precision_and_scale(1, 0)
+                .unwrap(),
+        ),
+        Arc::new(
+            Decimal256Array::from(vec![Some(i256::ZERO), None, Some(i256::from_i128(10))])
+                .with_precision_and_scale(1, 0)
+                .unwrap(),
+        ),
+    ];
+    for column in columns {
+        let schema = Arc::new(Schema::new(vec![declaring(
+            Field::new("amount", column.data_type().clone(), true),
+            "2",
+            "0",
+        )]));
+        let normalized_schema = Arc::new(normalize_schema(&schema).unwrap());
+        let failure = normalize_batch(
+            RecordBatch::try_new(schema, vec![column]).unwrap(),
+            normalized_schema,
+        )
+        .unwrap_err();
+        assert_eq!(failure.status, Status::InvalidData);
+        assert_eq!(
+            failure.message,
+            "Arrow decimal ingest field \"amount\" contains a value outside its declared precision 1 at row 2"
+        );
+    }
+}
+
 /// Each column's type, mode and declared precision and scale.
 fn table_schema_shapes(table: &TableSchema) -> Vec<(&str, &str, i64, i64)> {
     table

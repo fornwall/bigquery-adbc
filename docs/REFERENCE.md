@@ -327,7 +327,9 @@ Conversion rules:
   `Decimal256`. The driver picks the smallest BigQuery decimal type that holds the field's full
   precision and scale (`NUMERIC` allows 29 integer and 9 fractional digits, `BIGNUMERIC` 38 of
   each); compatible `BIGQUERY:type` metadata can select either explicitly. Negative Arrow scales
-  are exact at scale zero. Unsupported shapes are rejected before any request is sent.
+  are exact at scale zero. Values must fit their declared Arrow precision even when the destination
+  is wider. An ingest field with explicit `BIGQUERY:precision` and `BIGQUERY:scale` accepts zero
+  at any negative source scale. Unsupported shapes are rejected before any request is sent.
 - BigQuery stores `TIME`, `DATETIME`, `TIMESTAMP` and `INTERVAL` at microsecond precision, so bound
   or ingested nanosecond values are truncated, nested values included. `DATETIME` and `TIMESTAMP`
   round down (`-1,999 ns` becomes `-2 us`); `TIME` and `INTERVAL` truncate towards zero.
