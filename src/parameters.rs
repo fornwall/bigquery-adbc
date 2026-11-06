@@ -24,14 +24,14 @@ use values::parameter_value;
 string_enum! {
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub(crate) enum ParameterMode {
-        Named => (
-            "named",
-            ["adbc.bigquery.sql.query.parameter_mode_named"]
-        ),
         #[default]
         Positional => (
             "positional",
             ["adbc.bigquery.sql.query.parameter_mode_positional"]
+        ),
+        Named => (
+            "named",
+            ["adbc.bigquery.sql.query.parameter_mode_named"]
         ),
     }
 }

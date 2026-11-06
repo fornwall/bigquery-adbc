@@ -524,35 +524,6 @@ fn statement_options() -> PythonEnum {
     }
 }
 
-fn parameter_modes() -> PythonEnum {
-    use ParameterMode as V;
-
-    // Preserve the Python API's established order even though the Rust default is declared last.
-    let members = [V::Positional, V::Named]
-        .into_iter()
-        .map(|value| {
-            let (name, doc) = match value {
-                V::Named => (
-                    "NAMED",
-                    "Send each bound parameter under the name of the field it came from, for \
-                     SQL that spells its placeholders `@name`.",
-                ),
-                V::Positional => (
-                    "POSITIONAL",
-                    "Send bound parameters in field order, for SQL that spells its \
-                     placeholders `?`. The default.",
-                ),
-            };
-            PythonMember::new(Some(name), doc, value.as_str())
-        })
-        .collect();
-    PythonEnum {
-        name: "ParameterMode",
-        doc: "BigQuery query parameter binding modes.",
-        members,
-    }
-}
-
 macro_rules! value_enum {
     ($name:literal, $doc:literal, $type:ty, {$($variant:path => ($member:literal, $member_doc:literal $(,)?)),+ $(,)?}) => {{
         let members = <$type>::ALL
@@ -578,7 +549,23 @@ fn python_enums() -> Vec<PythonEnum> {
         database_options(),
         connection_options(),
         statement_options(),
-        parameter_modes(),
+        value_enum!(
+            "ParameterMode",
+            "BigQuery query parameter binding modes.",
+            ParameterMode,
+            {
+                ParameterMode::Positional => (
+                    "POSITIONAL",
+                    "Send bound parameters in field order, for SQL that spells its \
+                     placeholders `?`. The default.",
+                ),
+                ParameterMode::Named => (
+                    "NAMED",
+                    "Send each bound parameter under the name of the field it came from, for \
+                     SQL that spells its placeholders `@name`.",
+                ),
+            }
+        ),
         value_enum!(
             "BulkIngestMethod",
             "Supported BigQuery bulk-ingest implementations.",
