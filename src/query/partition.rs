@@ -96,15 +96,12 @@ pub(super) fn decode_partition(mut partition: &[u8]) -> Result<(JobReference, Qu
 }
 
 fn decode_partition_field<'a>(partition: &mut &'a [u8], name: &str) -> Result<&'a str> {
-    if partition.len() < size_of::<u32>() {
-        return Err(invalid_partition(format!("missing {name} length")));
-    }
-    let (length, remaining) = partition.split_at(size_of::<u32>());
-    let length = u32::from_be_bytes(length.try_into().expect("length checked above")) as usize;
-    if remaining.len() < length {
-        return Err(invalid_partition(format!("truncated {name}")));
-    }
-    let (value, remaining) = remaining.split_at(length);
+    let (length, remaining) = partition
+        .split_first_chunk::<4>()
+        .ok_or_else(|| invalid_partition(format!("missing {name} length")))?;
+    let (value, remaining) = remaining
+        .split_at_checked(u32::from_be_bytes(*length) as usize)
+        .ok_or_else(|| invalid_partition(format!("truncated {name}")))?;
     *partition = remaining;
     std::str::from_utf8(value).map_err(|_| invalid_partition(format!("{name} is not valid UTF-8")))
 }
