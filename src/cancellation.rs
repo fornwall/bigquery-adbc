@@ -86,29 +86,26 @@ impl Cancellation {
             finished: AtomicBool::new(false),
             job: Mutex::new(None),
         });
-        let mut superseded = Vec::new();
         // Dropped after the lock: a concurrent drop can leave an upgraded entry as the last
         // reference, and `OperationInner::drop` takes the same lock.
-        let mut retained = Vec::new();
+        let mut previous = Vec::new();
         {
             let mut active = self.active();
             active.retain(|operation| {
                 let Some(operation) = operation.upgrade() else {
                     return false;
                 };
-                if supersedes && operation.supersedable {
-                    superseded.push(operation);
-                    return false;
-                }
-                retained.push(operation);
-                true
+                let retain = !supersedes || !operation.supersedable;
+                previous.push(operation);
+                retain
             });
             active.push(Arc::downgrade(&inner));
         }
-        drop(retained);
-        for previous in superseded {
-            previous.cancel_local();
-            self.cancel_job_in_background(&previous, Some(&previous));
+        for previous in previous {
+            if supersedes && previous.supersedable {
+                previous.cancel_local();
+                self.cancel_job_in_background(&previous, Some(&previous));
+            }
         }
         Operation { inner }
     }
