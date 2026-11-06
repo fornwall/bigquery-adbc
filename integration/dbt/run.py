@@ -272,7 +272,6 @@ def assert_adapter_response_contract(
     expected_rows_affected: int,
     expected_project: str,
     expected_location: str,
-    require_job_statistics: bool,
 ) -> None:
     """Assert the user-visible BigQuery fields dbt writes to run_results.json."""
 
@@ -313,8 +312,6 @@ def assert_adapter_response_contract(
     statistic_keys = ("bytes_processed", "bytes_billed", "slot_ms")
     for key in statistic_keys:
         value = response.get(key)
-        if value is None and not require_job_statistics:
-            continue
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise RuntimeError(
                 f"adapter_response {key} is {value!r}, expected a non-negative integer"
@@ -322,9 +319,7 @@ def assert_adapter_response_contract(
 
     query_id = response.get("query_id")
     job_id = response.get("job_id")
-    if (require_job_statistics or query_id is not None or job_id is not None) and (
-        not isinstance(query_id, str) or not query_id or job_id != query_id
-    ):
+    if not isinstance(query_id, str) or not query_id or job_id != query_id:
         raise RuntimeError(
             "adapter_response query_id/job_id are not equal non-empty strings: "
             f"{query_id!r} / {job_id!r}"
@@ -348,7 +343,6 @@ def assert_run_result_adapter_response(
     expected_rows_affected: int,
     expected_project: str,
     expected_location: str,
-    require_job_statistics: bool,
 ) -> None:
     """Find one dbt result and validate its adapter response before dbt overwrites it."""
 
@@ -360,7 +354,6 @@ def assert_run_result_adapter_response(
             expected_rows_affected=expected_rows_affected,
             expected_project=expected_project,
             expected_location=expected_location,
-            require_job_statistics=require_job_statistics,
         )
     except RuntimeError as error:
         observed = json.dumps(response, sort_keys=True)
@@ -1816,7 +1809,6 @@ def assert_materialized_view_refresh(
         expected_rows_affected=0,
         expected_project=project,
         expected_location=location,
-        require_job_statistics=True,
     )
     job = client.get_job(response["job_id"], project=project, location=location)
     assert_materialized_view_refresh_query(
@@ -1964,25 +1956,6 @@ def _decimal_parameters(
     return parameters
 
 
-def _normalized_relation_value(
-    value: object, *, main_dataset: str, authorized_dataset: str
-) -> object:
-    """Remove run-specific dataset names from nested BigQuery metadata."""
-
-    def normalize(item: object) -> object:
-        if isinstance(item, dict):
-            return {key: normalize(child) for key, child in item.items()}
-        if isinstance(item, list):
-            return [normalize(child) for child in item]
-        if isinstance(item, str):
-            return item.replace(authorized_dataset, "<authorized_source>").replace(
-                main_dataset, "<main>"
-            )
-        return item
-
-    return normalize(value)
-
-
 def _relation_rows(
     client: bigquery.Client,
     table: bigquery.Table,
@@ -2022,9 +1995,13 @@ def warehouse_snapshot(
     authorized_dataset = f"{main_dataset}{AUTHORIZED_SOURCE_SUFFIX}"
 
     def normalized(value: object) -> object:
-        return _normalized_relation_value(
-            value, main_dataset=main_dataset, authorized_dataset=authorized_dataset
-        )
+        if isinstance(value, dict):
+            return {key: normalized(child) for key, child in value.items()}
+        if isinstance(value, list):
+            return [normalized(child) for child in value]
+        if isinstance(value, str):
+            return value.replace(authorized_dataset, "<authorized_source>").replace(main_dataset, "<main>")
+        return value
 
     snapshot: dict[tuple[str, str], dict] = {}
     for scope, dataset in (
@@ -2470,7 +2447,6 @@ def main() -> int:
                 expected_rows_affected=5,
                 expected_project=project,
                 expected_location=location,
-                require_job_statistics=True,
             )
             LOG.note("dbt surfaced MERGE, its five affected rows and its job statistics")
             assert_run_result_adapter_response(
@@ -2480,7 +2456,6 @@ def main() -> int:
                 expected_rows_affected=0,
                 expected_project=project,
                 expected_location=location,
-                require_job_statistics=True,
             )
             LOG.note(
                 "dbt surfaced the dynamic insert-overwrite SCRIPT statement type, "
