@@ -211,7 +211,7 @@ async fn execute_jobs_insert(
         return Err(AttemptFailure::Terminal(TerminalFailure::new(
             errors,
             canonical,
-            response.statement_type().to_owned(),
+            response.statement_type(),
             "",
         )));
     }

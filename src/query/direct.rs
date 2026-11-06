@@ -388,9 +388,8 @@ impl AttemptFailure {
 pub(super) struct TerminalFailure {
     pub(super) errors: Vec<ErrorProto>,
     pub(super) job: Option<JobReference>,
-    /// The failed job's `statementType`, or empty if no response named one.
-    /// [`reissuable_statement`] uses it to keep a failed script from running again.
-    statement_type: String,
+    /// Whether the statement type rules out partial commits before failure.
+    reissuable_statement: bool,
 }
 
 impl TerminalFailure {
@@ -399,25 +398,24 @@ impl TerminalFailure {
     pub(super) fn new(
         errors: Vec<ErrorProto>,
         job: Option<JobReference>,
-        reported: String,
+        reported: &str,
         fallback: &str,
     ) -> Self {
-        let statement_type = if reported.is_empty() {
-            fallback.to_owned()
-        } else {
-            reported
-        };
         Self {
             errors,
             job,
-            statement_type,
+            reissuable_statement: reissuable_statement(if reported.is_empty() {
+                fallback
+            } else {
+                reported
+            }),
         }
     }
 
     /// Whether the SQL may run again under a fresh job identity: BigQuery's reason must permit a
     /// fresh job, and the statement must be one a failed job cannot have partly committed.
     fn may_reissue(&self) -> bool {
-        retryable_job_errors(&self.errors) && reissuable_statement(&self.statement_type)
+        self.reissuable_statement && retryable_job_errors(&self.errors)
     }
 }
 

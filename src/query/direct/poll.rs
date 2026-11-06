@@ -12,7 +12,6 @@ use crate::cancellation::{self, Operation};
 use crate::error::{failure_reason, job_error};
 use crate::query::ExecutionProgress;
 use crate::rest::jobs::{JobClient, JobReference, QueryResultsRead};
-use crate::rest::model::ErrorProto;
 use crate::rest::retry::retryable_failure;
 
 use crate::query::response::{JobResponse, QueryMetadata, QueryPage, QueryResponse};
@@ -151,16 +150,8 @@ async fn rejected_poll_failure(
     if !retryable_failure(failure.status) {
         return AttemptFailure::Request(failure);
     }
-    match verify_job(client, operation, reference).await {
-        JobVerdict::Failed {
-            errors,
-            statement_type: reported,
-        } => AttemptFailure::Terminal(TerminalFailure::new(
-            errors,
-            Some(reference.clone()),
-            reported,
-            statement_type,
-        )),
+    match verify_job(client, operation, reference, statement_type).await {
+        JobVerdict::Failed(terminal) => AttemptFailure::Terminal(terminal),
         JobVerdict::Cancelled(cancelled) => AttemptFailure::Request(cancelled),
         // Nothing the job said establishes that it failed, so the caller keeps its rejection.
         JobVerdict::Succeeded | JobVerdict::Unverified => AttemptFailure::Request(failure),
@@ -190,16 +181,8 @@ pub(super) async fn confirmed_terminal_query_errors(
         // warnings.
         return Ok(None);
     };
-    match verify_job(client, operation, reference).await {
-        JobVerdict::Failed {
-            errors,
-            statement_type: reported,
-        } => Ok(Some(TerminalFailure::new(
-            errors,
-            Some(reference.clone()),
-            reported,
-            statement_type,
-        ))),
+    match verify_job(client, operation, reference, statement_type).await {
+        JobVerdict::Failed(terminal) => Ok(Some(terminal)),
         // A DONE job without `errorResult` succeeded; its `errors` are warnings.
         JobVerdict::Succeeded => Ok(None),
         JobVerdict::Cancelled(cancelled) => Err(AttemptFailure::Request(cancelled)),
@@ -215,11 +198,7 @@ pub(super) async fn confirmed_terminal_query_errors(
 enum JobVerdict {
     /// The fetched resource is the same job, `DONE`, with a `status.errorResult` (which leads
     /// `errors`).
-    Failed {
-        errors: Vec<ErrorProto>,
-        /// The job's own `statementType`, empty where the resource carried no query statistics.
-        statement_type: String,
-    },
+    Failed(TerminalFailure),
     /// The same job, `DONE`, with no `errorResult`.
     Succeeded,
     /// The fetch failed or was undecodable, the resource named another job, or the job is not
@@ -251,6 +230,7 @@ async fn verify_job(
     client: &JobClient,
     operation: Option<&Operation>,
     reference: &JobReference,
+    statement_type: &str,
 ) -> JobVerdict {
     let mut job = match fetch_job(client, operation, reference, "failed query").await {
         Ok(job) if job.is_done() => job,
@@ -258,10 +238,12 @@ async fn verify_job(
         Ok(_) | Err(_) => return JobVerdict::Unverified,
     };
     match job.take_terminal_errors() {
-        Some(errors) => JobVerdict::Failed {
+        Some(errors) => JobVerdict::Failed(TerminalFailure::new(
             errors,
-            statement_type: job.statement_type().to_owned(),
-        },
+            Some(reference.clone()),
+            job.statement_type(),
+            statement_type,
+        )),
         None => JobVerdict::Succeeded,
     }
 }
