@@ -231,20 +231,17 @@ pub(crate) fn parse_view_authorizations(
         if datasets.is_empty() {
             continue;
         }
-        let mut sources = Vec::with_capacity(datasets.len());
-        for dataset in datasets {
-            insert_sorted(&mut sources, parse_source_dataset(&dataset)?);
-        }
-        match views.binary_search_by(|(existing, _)| existing.cmp(&view)) {
+        let index = match views.binary_search_by(|(existing, _)| existing.cmp(&view)) {
             // Two spellings of one view, such as `view` and `project.dataset.view`, merge.
-            Ok(index) => {
-                if let Some((_, existing)) = views.get_mut(index) {
-                    for source in sources {
-                        insert_sorted(existing, source);
-                    }
-                }
+            Ok(index) => index,
+            Err(index) => {
+                views.insert(index, (view, Vec::with_capacity(datasets.len())));
+                index
             }
-            Err(index) => views.insert(index, (view, sources)),
+        };
+        let (_, sources) = views.get_mut(index).expect("the view was found or inserted");
+        for dataset in datasets {
+            insert_sorted(sources, parse_source_dataset(&dataset)?);
         }
     }
     Ok((!views.is_empty()).then_some(views))
