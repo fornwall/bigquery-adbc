@@ -99,6 +99,80 @@ fn the_append_pipeline_is_bounded_by_queued_bytes_and_requests() {
     assert!(pipeline_has_room(100, 100 * SMALL, SMALL));
 }
 
+#[test]
+fn abort_releases_queued_appends_on_cancellation_and_permanent_errors() {
+    use std::sync::Arc;
+
+    use adbc_core::CancelHandle as _;
+    use arrow_array::{ArrayRef, Int64Array, RecordBatch};
+    use google_cloud_bigquery::model::ArrowSchema;
+    use google_cloud_bigquery::write::stream_type::PendingStream;
+
+    use crate::cancellation::{Cancellation, OperationCancelHandle};
+    use crate::clients::ClientState;
+    use crate::config::ServiceEndpointKind;
+    use crate::test_support::grpc::{INVALID_ARGUMENT, MockPlan, StorageMock, ipc_messages};
+
+    let runtime = crate::runtime::new_runtime().unwrap();
+    let batch =
+        RecordBatch::try_from_iter([("n", Arc::new(Int64Array::from(vec![1])) as ArrayRef)])
+            .unwrap();
+    let (schema, batches) = ipc_messages(batch.schema_ref(), std::slice::from_ref(&batch));
+    let schema = ArrowSchema::new().set_serialized_schema(schema);
+    let rows = ArrowRecordBatch::new().set_serialized_record_batch(batches[0].clone());
+    for cancel in [false, true] {
+        let mock = StorageMock::start(
+            &runtime,
+            MockPlan {
+                reject_at: Some((0, INVALID_ARGUMENT)),
+                ..MockPlan::default()
+            },
+        );
+        let clients = ClientState::for_test_at(ServiceEndpointKind::Storage, mock.endpoint());
+        let client = clients.write_client(&runtime).unwrap();
+        let cancellation = Cancellation::new(runtime.clone(), clients, "statement");
+        let operation = cancellation.begin();
+        let target = AppendTarget {
+            client: &client,
+            schema: schema.clone(),
+            table_path: "projects/p/datasets/d/tables/t",
+            operation: &operation,
+        };
+        runtime.block_on(async {
+            let mut writer = client
+                .create_stream::<PendingStream>(target.table_path)
+                .build_arrow(schema.clone())
+                .await
+                .unwrap();
+            let mut pipeline = AppendPipeline::new();
+            for offset in 0..3 {
+                pipeline
+                    .submit(&target, &mut writer, rows.clone(), offset)
+                    .await
+                    .unwrap();
+            }
+            if cancel {
+                OperationCancelHandle(cancellation).try_cancel().unwrap();
+            }
+            let failure = pipeline.abort(&target).await.unwrap_err();
+            assert_eq!(
+                failure.status,
+                if cancel {
+                    Status::Cancelled
+                } else {
+                    Status::InvalidArguments
+                }
+            );
+            assert!(
+                pipeline.in_flight.is_empty(),
+                "abort retained replay payloads and futures"
+            );
+            assert_eq!(pipeline.in_flight_bytes, 0);
+        });
+        operation.finish();
+    }
+}
+
 /// A drift in the driver's offset accounting would otherwise surface only at the finalize
 /// row-count check, after every byte has shipped.
 #[test]

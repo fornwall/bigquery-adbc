@@ -568,6 +568,7 @@ is reused. If fetching fails, the keys only it would supply are absent and the s
 
 Bulk ingest uses the Storage Write API. Batches are normalized in request-sized windows, counting
 expanded dictionary values, overlapping list-view ranges and offsets for empty or null values.
+Failed or cancelled ingests release queued append payloads before attempting remote stream cleanup.
 
 | Mode | Table preparation and failure behavior |
 | --- | --- |

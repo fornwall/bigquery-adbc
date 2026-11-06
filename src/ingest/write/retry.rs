@@ -1,14 +1,5 @@
-//! Which append failures may be replayed, and the pipeline of in-flight appends that replays them.
-//!
-//! Every append carries an explicit offset, so a replayed request that had landed is answered
-//! `ALREADY_EXISTS` instead of being written twice; that makes a retry safe, and is what
-//! [`replay_landed`] recognizes. The pipeline keeps a small bounded queue of
-//! unacknowledged appends so the next chunk is encoded while earlier ones are in flight, and it
-//! performs the retries.
-//!
-//! The control-plane RPCs around those appends retry through [`control_plane_retry`]: the pinned
-//! client gives them no retry policy, so one transient status on the last call would fail an
-//! ingest that has shipped every byte.
+//! Bounded append pipelining and retries. Explicit offsets prevent replay from duplicating rows.
+//! The pending writer's control-plane RPCs have no SDK retry policy, so they retry here too.
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -43,19 +34,10 @@ const APPEND_PIPELINE_REQUESTS: usize = 1_000;
 const CONTROL_PLANE_RETRY_ATTEMPTS: usize = 3;
 const CONTROL_PLANE_RETRY_DELAY: Duration = Duration::from_millis(200);
 
-/// Classifies the control-plane and append failures worth another attempt.
-///
-/// Upstream applies its `RetryableErrors` policy only in the default writer's `Dispatcher`
-/// (`write/arrow/default.rs`); a pending-stream ingest never opens one, so its control-plane RPCs
-/// run with `RequestOptions::retry_policy` left at `None`.
 pub(super) use crate::error::google_error_is_transient;
 
-/// Runs one Storage Write control-plane RPC, replaying it while the service answers transiently.
-///
-/// The outer `Result` is the caller's cancellation and the inner one the RPC's answer, so a call
-/// site can still handle a non-transient status itself, such as the NOT_FOUND of a new table that
-/// is not visible yet. `operation` is `None` for the two stream-closing RPCs, which must not be
-/// cancelled (see [`super::close_stream_call`]).
+/// Retries transient control-plane failures. The outer error is cancellation, the inner the RPC
+/// failure. Stream-closing RPCs pass no operation; see [`super::close_stream_call`].
 pub(super) async fn control_plane_retry<T, E, Call, Fut>(
     operation: Option<&Operation>,
     is_transient: impl Fn(&E) -> bool,
@@ -78,39 +60,31 @@ where
     }
 }
 
-/// Sleeps `delay` under the caller's cancellation, then doubles it for the next retry.
 async fn back_off(operation: Option<&Operation>, delay: &mut Duration) -> Result<()> {
     cancellation::sleep(operation, *delay).await?;
     *delay = delay.saturating_mul(2);
     Ok(())
 }
 
-/// Classifies append failures worth replaying: a transient status by the control-plane rule, or
-/// a request dropped when the AppendRows call carrying it ended. Explicit offsets make INTERNAL
-/// and ABORTED, whose outcome is unknown, as safe to replay as UNAVAILABLE.
+/// Explicit offsets make ambiguous INTERNAL and ABORTED outcomes safe to replay.
 fn append_error_is_retryable(source: &AppendError) -> bool {
     match source {
         AppendError::Rpc { source, .. } => google_error_is_transient(source),
-        // Once the runner's task exits, every request still queued on that writer resolves to
-        // this, including the successors of whichever failure ended the stream.
+        // The runner's exit drops every request still queued on that writer.
         AppendError::UnexpectedEndOfStream => true,
         _ => false,
     }
 }
 
-/// A retry of an append that actually landed is answered ALREADY_EXISTS / OFFSET_ALREADY_EXISTS.
-/// The rows are on the stream at the offset asked for, so that is a success, not a failure.
-///
-/// `StorageErrorCode::OffsetAlreadyExists` arrives as an undecoded status detail, so the transport
-/// code is matched instead; BigQuery uses it for nothing else on an offset-carrying append.
+/// ALREADY_EXISTS acknowledges a replay that landed. OFFSET_ALREADY_EXISTS is an undecoded
+/// status detail, so match its transport code, used for nothing else on offset-carrying appends.
 fn replay_landed(replayed: bool, source: &AppendError) -> bool {
     replayed
         && matches!(source, AppendError::Rpc { source, .. }
         if matches!(google_error_code(source), Some(Code::AlreadyExists)))
 }
 
-/// A retryable append failure in a few words for a diagnostic: its gRPC code, never its message,
-/// which can quote row values.
+/// Log the code, never the service message, which can quote row values.
 fn append_error_cause(source: &AppendError) -> &'static str {
     match source {
         AppendError::Rpc { source, .. } => {
@@ -121,24 +95,15 @@ fn append_error_cause(source: &AppendError) -> &'static str {
     }
 }
 
-/// What one call of [`append_with_retry`] already knows about the request it is about to send.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Replay {
-    /// Whether this exact request has been sent before. Only then is `ALREADY_EXISTS` success;
-    /// on a first send it means the driver's offset accounting is wrong.
+    /// Only a prior send makes `ALREADY_EXISTS` success; otherwise it signals an offset defect.
     pub(super) already_sent: bool,
-    /// Whether the stream this request rides on is already known to be dead, so the first
-    /// attempt has to reconnect before sending anything.
+    /// The current AppendRows call ended; reconnect before sending.
     pub(super) reconnect: bool,
 }
 
-/// Appends one chunk of rows at an explicit offset, reconnecting to the same stream before each
-/// replay.
-///
-/// The failure being retried has already ended the writer's AppendRows call (see
-/// [`AppendTarget`]), so a re-send on the same writer could only fail with
-/// `UnexpectedEndOfStream`. `writer` is replaced in place so the caller keeps appending to, and
-/// finalizes, the live stream.
+/// Replays at the original offset on the same stream, replacing the dead AppendRows connection.
 pub(super) async fn append_with_retry(
     target: &AppendTarget<'_>,
     writer: &mut PendingWriter<Arrow>,
@@ -155,12 +120,9 @@ pub(super) async fn append_with_retry(
     let mut delay = APPEND_RETRY_DELAY;
     loop {
         if reconnect {
-            // The drain that ended the appends can refuse the `GetWriteStream` too, so a
-            // transiently refused reconnect spends one attempt of the same budget, like a refused
-            // append.
+            // Reconnection failures spend the same retry budget as append failures.
             match reattach(target, writer).await? {
-                // The flag stays set: whatever failure sent this replay here ended the
-                // AppendRows call, and so does each later one, so every replay reconnects.
+                // Every later failure also ends AppendRows, so leave `reconnect` set.
                 Ok(()) => {}
                 Err(source) if attempts_left > 0 && attach_error_is_transient(&source) => {
                     attempts_left -= 1;
@@ -197,11 +159,7 @@ pub(super) async fn append_with_retry(
     }
 }
 
-/// Checks the offset the service acknowledged against the one requested.
-///
-/// For any stream but the default one, `AppendResult.offset` echoes the request offset (the
-/// append's first row, not a post-append cursor). A mismatch means the driver's offset accounting
-/// drifted, which would otherwise surface only at the finalize row-count check.
+/// The acknowledged offset is the append's first row, not the post-append cursor.
 fn check_acknowledged_offset(
     acknowledged: Option<i64>,
     offset: i64,
@@ -216,17 +174,12 @@ fn check_acknowledged_offset(
     }
 }
 
-/// The one wording every failed append reports. dbt matches it loosely, so it lives in one place.
-///
-/// `offset` is the count of rows appended before this chunk, which is what turns a rejected row's
-/// chunk-relative index into the caller's own row number.
+/// Keep the failure prefix stable for dbt's message matching.
 fn append_failure(table_path: &str, source: AppendError, offset: i64) -> adbc_core::error::Error {
     let context = format!("failed to append rows to BigQuery ingest target {table_path}");
     match source {
-        // Upstream's `Display` only prefixes "the operation failed. RPC error:" to the RPC error.
         AppendError::Rpc { source, .. } => google_error(&context, source),
-        // Upstream's `Display` is an uncapped `{:?}` dump of every rejected row, Google-internal
-        // fields included; render the service's per-row messages instead, capped like a job's.
+        // Avoid upstream's uncapped Debug dump of rejected rows and internal fields.
         AppendError::RowErrors { row_errors, .. } => error(
             format!("{context}: {}", row_failure_message(&row_errors, offset)),
             Status::InvalidData,
@@ -242,8 +195,6 @@ fn append_failure(table_path: &str, source: AppendError, offset: i64) -> adbc_co
     }
 }
 
-/// Renders a wholesale row rejection: how many rows the service refused, what to do about it, and
-/// the service's own account of the first [`crate::error::REPORTED_ERRORS`] of them.
 fn row_failure_message(rows: &[RowError], offset: i64) -> String {
     if rows.is_empty() {
         return "BigQuery rejected the batch without naming a row, and appended none".to_owned();
@@ -256,12 +207,7 @@ fn row_failure_message(rows: &[RowError], offset: i64) -> String {
     )
 }
 
-/// Renders one rejected row as `input row {absolute} (row {index} of the append at stream offset
-/// {offset}): {code}: {message}`, dropping the code when it is the unspecified sentinel.
-///
-/// The service's index is relative to the appended chunk, and the driver re-chunks the caller's
-/// batches, so `offset + index` is the caller's own row number. Both are reported, since only the
-/// chunk-relative one matches the service's message.
+/// Report both the caller's row number and the chunk-relative index used by the service.
 fn format_row_error(source: &RowError, offset: i64) -> String {
     let message = if source.message.is_empty() {
         "the row was rejected"
@@ -281,10 +227,6 @@ fn format_row_error(source: &RowError, offset: i64) -> String {
     }
 }
 
-/// Renders one commit-time stream error as `{code} on {entity}: {message}`.
-///
-/// The entity names the write stream that failed, which is the only way to tell one entry of a
-/// multi-stream commit from another.
 pub(super) fn format_storage_error(source: &StorageError) -> String {
     if source.entity.is_empty() {
         format!("{}: {}", source.code, source.error_message)
@@ -296,10 +238,7 @@ pub(super) fn format_storage_error(source: &StorageError) -> String {
     }
 }
 
-/// Classifies a commit-time stream error by its structured code.
-///
-/// These are data and stream-state failures, not I/O: reporting them as IO invites a caller to
-/// retry an append that can never succeed.
+/// Distinguish data and stream-state failures from retryable service errors.
 pub(super) fn storage_error_status(code: &StorageErrorCode) -> Status {
     match code {
         StorageErrorCode::TableNotFound | StorageErrorCode::StreamNotFound => Status::NotFound,
@@ -321,31 +260,22 @@ pub(super) fn storage_error_status(code: &StorageErrorCode) -> Status {
     }
 }
 
-/// One append queued on the pending stream whose response has not been awaited yet. The rows are
-/// retained so a transient failure can re-send them: the stream rejects every request queued
-/// behind a failed append once the offsets stop matching, so recovery replays from the failure.
+/// Retain rows for replay until their append is acknowledged.
 struct InFlightAppend {
     offset: i64,
     rows: ArrowRecordBatch,
     future: AppendFuture,
-    /// Whether this request was sent before, on a call that ended before answering it. Only then
-    /// is `ALREADY_EXISTS` the acknowledgement of rows that landed (see [`Replay::already_sent`]).
+    /// See [`Replay::already_sent`].
     replayed: bool,
 }
 
-/// Whether an append of `size` bytes may join `requests` queued appends of `bytes` in total. An
-/// empty pipeline takes any append, since a request is never larger than the budget.
+/// A single request always fits the pipeline budget.
 fn pipeline_has_room(requests: usize, bytes: usize, size: usize) -> bool {
     requests == 0 || (requests < APPEND_PIPELINE_REQUESTS && bytes + size <= APPEND_PIPELINE_BYTES)
 }
 
-/// A bounded pipeline of AppendRows requests on one pending stream.
-///
-/// Every request carries an explicit, pre-assigned offset and the service responds in request
-/// order, so several appends can be queued before the first response arrives. Failures surface
-/// strictly in offset order: the first failed append is the error reported, and the requests
-/// queued behind it are either re-sent (after a transient failure) or dropped, because their
-/// rejections are consequences of the first failure rather than independent errors.
+/// Bounded appends, acknowledged in offset order. A failure's successors are replayed or dropped;
+/// their offset errors must never hide the original failure.
 pub(super) struct AppendPipeline {
     in_flight: VecDeque<InFlightAppend>,
     /// The serialized size of every payload in `in_flight`.
@@ -360,8 +290,7 @@ impl AppendPipeline {
         }
     }
 
-    /// Queues one chunk at its explicit offset, first awaiting the oldest in-flight appends while
-    /// the pipeline has no room for it.
+    /// Wait for room, then queue a chunk at its explicit offset.
     pub(super) async fn submit(
         &mut self,
         target: &AppendTarget<'_>,
@@ -384,8 +313,7 @@ impl AppendPipeline {
         Ok(())
     }
 
-    /// Awaits every queued append; a successful return means the stream acknowledged all
-    /// submitted rows.
+    /// Await acknowledgement of every queued append.
     pub(super) async fn finish(
         &mut self,
         target: &AppendTarget<'_>,
@@ -395,18 +323,6 @@ impl AppendPipeline {
             self.complete_oldest(target, writer).await?;
         }
         Ok(())
-    }
-
-    fn pop_oldest(&mut self) -> Option<InFlightAppend> {
-        let oldest = self.in_flight.pop_front()?;
-        self.in_flight_bytes -= oldest.rows.serialized_record_batch.len();
-        Some(oldest)
-    }
-
-    /// Drops every queued append unread.
-    fn clear(&mut self) {
-        self.in_flight.clear();
-        self.in_flight_bytes = 0;
     }
 
     async fn complete_oldest(
@@ -419,10 +335,11 @@ impl AppendPipeline {
             rows,
             future,
             replayed,
-        }) = self.pop_oldest()
+        }) = self.in_flight.pop_front()
         else {
             return Ok(());
         };
+        self.in_flight_bytes -= rows.serialized_record_batch.len();
         let outcome = match target.operation.wait(future).await {
             Ok(Ok(response)) => {
                 check_acknowledged_offset(response.offset, offset, target.table_path)
@@ -443,16 +360,13 @@ impl AppendPipeline {
             Err(cancelled) => Err(cancelled),
         };
         if outcome.is_err() {
-            // The stream refuses every append queued behind a failed one (OFFSET_OUT_OF_RANGE),
-            // so drop them unread; no later drain may report one in place of the real failure.
-            self.clear();
+            self.in_flight.clear();
+            self.in_flight_bytes = 0;
         }
         outcome
     }
 
-    /// Re-sends a retryable append, then queues everything behind it again. Whatever ended the
-    /// oldest append also ended its successors' AppendRows call, so their responses are dropped
-    /// unread and their rows re-sent, in order and pipelined, on the reconnected stream.
+    /// Reconnect and replay the failed append, then requeue its successors in offset order.
     async fn resend(
         &mut self,
         target: &AppendTarget<'_>,
@@ -460,8 +374,6 @@ impl AppendPipeline {
         offset: i64,
         rows: ArrowRecordBatch,
     ) -> Result<()> {
-        // The reconnect is the first replay's first step, so it shares that replay's retry
-        // budget, and its success shows that the reconnected stream takes appends.
         let first = Replay {
             already_sent: true,
             reconnect: true,
@@ -477,20 +389,17 @@ impl AppendPipeline {
         Ok(())
     }
 
-    /// Awaits the appends still queued when production stopped for its own reason (a reader
-    /// error, a rejected batch, cancellation) and reports the earliest append failure among
-    /// them, which takes precedence over that reason. A retryable failure does not: nothing
-    /// replays it once production has stopped, so it says nothing about the data.
-    ///
-    /// After a pipeline failure nothing is left to await: [`Self::complete_oldest`] already
-    /// dropped the appends queued behind it.
+    /// After production fails, prefer an earlier permanent append failure. Transient failures
+    /// have no bearing on the input error, and no replay will happen now.
     pub(super) async fn abort(&mut self, target: &AppendTarget<'_>) -> Result<()> {
-        while let Some(InFlightAppend {
+        self.in_flight_bytes = 0;
+        // Drain drops successors on every exit, including cancellation and permanent errors.
+        for InFlightAppend {
             offset,
             future,
             replayed,
             ..
-        }) = self.pop_oldest()
+        } in self.in_flight.drain(..)
         {
             match target.operation.wait(future).await? {
                 Ok(_) => {}
@@ -500,7 +409,6 @@ impl AppendPipeline {
                 Err(source) => return Err(append_failure(target.table_path, source, offset)),
             }
         }
-        self.clear();
         Ok(())
     }
 }
