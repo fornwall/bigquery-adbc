@@ -1,13 +1,6 @@
-"""Exercise database options through DuckDB connection profiles.
+"""Database options applied by profiles before AdbcDatabaseInit.
 
-The driver manager applies profile options before `AdbcDatabaseInit`. The
-extension exposes no connection- or statement-level option setters.
-
-Coverage includes URI and discrete options, legacy option aliases, TOML value
-types, environment interpolation, profile resolution, and error propagation.
-Profiles with different options must remain independent on one connection for
-both `read_adbc()` and `ATTACH`.
-"""
+The extension exposes no connection- or statement-level option setters."""
 
 from __future__ import annotations
 
@@ -66,11 +59,7 @@ def test_uri_and_discrete_forms_reach_the_same_table(
     project: str,
     dataset: str,
 ) -> None:
-    """`uri` alone and `bigquery.project_id` alone configure the same project.
-
-    Neither profile sets a default dataset, so the query has to be qualified;
-    what is being compared is only how the project got configured.
-    """
+    """Neither profile sets a dataset, so use a qualified query to isolate project selection."""
 
     table = name("both_forms")
     _create_probe_table(bigquery, project, dataset, table)
@@ -101,8 +90,6 @@ def test_uri_options_resolve_an_unqualified_table_name(
     dataset: str,
     parameters: str,
 ) -> None:
-    """Resolve the URI's dataset alone and alongside ADC and location options."""
-
     table = name("uri_dataset")
     _create_probe_table(bigquery, project, dataset, table)
     profile = make_profile(
@@ -118,8 +105,6 @@ def test_uri_options_resolve_an_unqualified_table_name(
 def test_dataset_id_option_resolves_an_unqualified_table_name(
     duck: duckdb.DuckDBPyConnection, make_profile: MakeProfile
 ) -> None:
-    """`bigquery.dataset_id` decides whether an unqualified name resolves at all."""
-
     configured = make_profile("dataset_id_set")
     assert Session(duck, configured).scalar(UNQUALIFIED_TABLE_COUNT) is not None
 
@@ -136,8 +121,6 @@ def test_legacy_aliases_configure_the_same_database(
     project: str,
     dataset: str,
 ) -> None:
-    """Go-compatible aliases configure the project, dataset, location, and auth."""
-
     table = name("legacy_aliases")
     _create_probe_table(bigquery, project, dataset, table)
     profile = make_profile(
@@ -169,12 +152,6 @@ def test_location_pointing_at_the_wrong_region_is_rejected(
     project: str,
     dataset: str,
 ) -> None:
-    """A US dataset is invisible to a job pinned to another region.
-
-    BigQuery's rejection verifies that the option reaches the job and the
-    submission error propagates through DuckDB.
-    """
-
     profile = make_profile("location_eu", **{"bigquery.location": "europe-west4"})
     query = (
         f"SELECT COUNT(*) AS n FROM {sql.qualified(project, dataset)}.INFORMATION_SCHEMA.TABLES"
@@ -187,12 +164,7 @@ def test_location_pointing_at_the_wrong_region_is_rejected(
 def test_application_default_credentials_can_be_named_explicitly(
     duck: duckdb.DuckDBPyConnection, make_profile: MakeProfile
 ) -> None:
-    """Both spellings of ADC are accepted and resolve the same credentials.
-
-    `auth_bigquery` is the driver's default, so every other profile in the
-    suite takes this path without saying so; `app_default_credentials` is the
-    Go driver's name for the same behavior.
-    """
+    """auth_bigquery is the default; app_default_credentials is its Go-compatible alias."""
 
     for auth_type in ("auth_bigquery", "app_default_credentials"):
         profile = make_profile(f"auth_{auth_type}", **{"bigquery.auth_type": auth_type})
@@ -202,12 +174,7 @@ def test_application_default_credentials_can_be_named_explicitly(
 def test_quota_project_is_applied_to_the_credentials(
     duck: duckdb.DuckDBPyConnection, make_profile: MakeProfile, project: str
 ) -> None:
-    """`bigquery.auth.quota_project` pins quota and billing attribution.
-
-    BigQuery bills the job's own project, so a query is not where a wrong quota
-    project shows up -- what is asserted is that the option is accepted and
-    applied to the shared credentials without disturbing the query path.
-    """
+    """Checks option acceptance, not billing: BigQuery bills the job project."""
 
     profile = make_profile("quota_project", **{"bigquery.auth.quota_project": project})
 
@@ -217,8 +184,6 @@ def test_quota_project_is_applied_to_the_credentials(
 def test_a_boolean_option_is_accepted_as_a_TOML_boolean(
     duck: duckdb.DuckDBPyConnection, make_profile: MakeProfile
 ) -> None:
-    """TOML booleans must enable and disable the auxiliary endpoint opt-in."""
-
     for value in (True, False):
         profile = make_profile(
             f"allow_untrusted_{value}",
@@ -243,14 +208,7 @@ def test_a_boolean_option_is_accepted_as_a_TOML_boolean(
 def test_an_integer_value_reaches_the_driver_as_an_integer(
     duck: duckdb.DuckDBPyConnection, make_profile: MakeProfile
 ) -> None:
-    """A TOML integer arrives as `AdbcDatabaseSetOptionInt`, and is refused.
-
-    No database option of this driver is integer-kind -- the integer options are
-    all connection- or statement-level and unreachable from a profile -- so a
-    bare integer in `[Options]` is always a type error, and the driver's
-    wrong-type message is what proves the value was not quietly stringified
-    somewhere in the driver manager.
-    """
+    """No database option accepts integers; the wrong-type error proves TOML did not stringify it."""
 
     profile = make_profile("integer_valued", **{"bigquery.allow_untrusted_endpoint": 1})
 
@@ -273,13 +231,7 @@ def test_env_var_interpolation_supplies_options(
     project: str,
     dataset: str,
 ) -> None:
-    """`{{ env_var(NAME) }}` is expanded inside `[Options]`, on any key.
-
-    The variables are set first: the driver manager expands them when it loads
-    the profile, which is when the first statement against that profile runs,
-    and a variable that is not set by then expands to nothing rather than
-    failing -- so a test that set it late would silently assert nothing.
-    """
+    """Set variables before the first statement loads the profile; missing variables expand to empty."""
 
     monkeypatch.setenv("DUCKDB_SUITE_DATASET", dataset)
     monkeypatch.setenv("DUCKDB_SUITE_URI", f"bigquery:///{project}")
@@ -305,8 +257,6 @@ def test_env_var_interpolation_supplies_options(
 def test_an_unknown_bigquery_option_key_is_rejected(
     duck: duckdb.DuckDBPyConnection, make_profile: MakeProfile
 ) -> None:
-    """A typo in `[Options]` fails at the first statement, naming the near miss."""
-
     profile = make_profile("unknown_key", **{"bigquery.datasset_id": "whatever"})
 
     with pytest.raises(
@@ -347,11 +297,7 @@ def test_an_unknown_bigquery_option_key_is_rejected(
 def test_a_malformed_uri_is_rejected(
     duck: duckdb.DuckDBPyConnection, make_profile: MakeProfile, uri: str, message: str
 ) -> None:
-    """Every URI rejection is the driver's own, reaching DuckDB intact.
-
-    None of these ever open a connection: the URI is parsed while the database
-    is initialized, so the statement fails before BigQuery is contacted.
-    """
+    """URI validation fails during database initialization, before contacting BigQuery."""
 
     profile = make_profile("malformed_uri", uri=uri, **{"bigquery.dataset_id": None})
 
@@ -362,15 +308,7 @@ def test_a_malformed_uri_is_rejected(
 def test_a_nonexistent_project_is_rejected(
     duck: duckdb.DuckDBPyConnection, make_profile: MakeProfile
 ) -> None:
-    """A well-formed project ID that does not exist fails when the job is submitted.
-
-    The project ID passes the driver's own syntax check, so the refusal can
-    only come from BigQuery -- which is the point: the driver's framing of a
-    remote failure has to survive into DuckDB as well as its local validation
-    does. BigQuery answers an unknown project with `400 ProjectId must be
-    non-empty` (confirmed directly against the REST API), so only the driver's
-    own sentence is asserted here.
-    """
+    """Assert the driver context: BigQuery can report an unknown project as an empty project ID."""
 
     profile = make_profile(
         "nonexistent_project",
@@ -388,8 +326,6 @@ def test_a_nonexistent_project_is_rejected(
 def test_a_bad_value_for_an_enumerated_option_is_rejected(
     duck: duckdb.DuckDBPyConnection, make_profile: MakeProfile
 ) -> None:
-    """The rejection lists the accepted values and never echoes what was sent."""
-
     profile = make_profile("bad_auth_type", **{"bigquery.auth_type": "nope"})
 
     with pytest.raises(
@@ -402,8 +338,6 @@ def test_a_bad_value_for_an_enumerated_option_is_rejected(
 def test_an_explicit_rest_endpoint_is_used_without_opt_in(
     duck: duckdb.DuckDBPyConnection, make_profile: MakeProfile, project: str
 ) -> None:
-    """Explicit REST endpoints are trusted independently of auxiliary endpoints."""
-
     requested_paths: list[str] = []
 
     class Endpoint(BaseHTTPRequestHandler):
@@ -442,12 +376,7 @@ def test_an_explicit_rest_endpoint_is_used_without_opt_in(
 def test_a_profile_name_with_no_file_is_reported(
     duck: duckdb.DuckDBPyConnection, profile_directory: Path
 ) -> None:
-    """The driver manager names the profile and the paths it searched.
-
-    `profile_directory` is requested for its effect rather than its value: it
-    is what puts the run's directory on `ADBC_PROFILE_PATH`, and the searched
-    paths are half of what this failure has to report.
-    """
+    """profile_directory sets ADBC_PROFILE_PATH even though its value is unused here."""
 
     with pytest.raises(duckdb.Error, match=re.escape("Profile not found: no_such_profile")):
         duck.execute(sql.read_adbc("profile://no_such_profile", "SELECT 1 AS n"))
@@ -470,11 +399,7 @@ def test_a_profile_with_an_unsupported_version_is_reported(
 def test_a_profile_naming_a_driver_that_is_not_there_is_reported(
     duck: duckdb.DuckDBPyConnection, profile_directory: Path, project: str
 ) -> None:
-    """The load failure names the path, since `driver` is never interpolated.
-
-    `driver` is the one key `{{ env_var(NAME) }}` does not apply to, so a
-    profile that has moved between machines fails exactly here.
-    """
+    """The driver path, unlike Options, does not support environment interpolation."""
 
     missing = profile_directory / "not_a_driver.so"
     profile = _write_profile_document(
@@ -491,8 +416,6 @@ def test_a_profile_naming_a_driver_that_is_not_there_is_reported(
 def test_a_profile_without_an_options_table_is_reported(
     duck: duckdb.DuckDBPyConnection, profile_directory: Path, driver_library: str
 ) -> None:
-    """`[Options]` is required even when the driver needs no option at all."""
-
     profile = _write_profile_document(
         profile_directory,
         "no_options_table",
@@ -512,13 +435,7 @@ def test_two_profiles_on_one_connection_do_not_leak(
     dataset: str,
     secondary_dataset: str,
 ) -> None:
-    """Two datasets, one DuckDB connection, one query text, two answers.
-
-    The extension keys its cached databases by profile name, so the risk is a
-    second profile being answered from the first one's database. The table
-    exists in the primary dataset only, and the first profile is queried again
-    at the end, which also catches a cache that the second profile overwrote.
-    """
+    """Revisit the first profile to catch the second overwriting its cached database."""
 
     table = name("primary_only")
     _create_probe_table(bigquery, project, dataset, table)
@@ -544,11 +461,6 @@ def test_two_profiles_attach_as_two_catalogs_at_once(
     dataset: str,
     secondary_dataset: str,
 ) -> None:
-    """Two live attachments, each carrying its own profile's options.
-
-    Each attachment retains its own database and cached catalog for its lifetime.
-    """
-
     primary_table = name("attached_primary")
     secondary_table = name("attached_secondary")
     _create_probe_table(bigquery, project, dataset, primary_table)

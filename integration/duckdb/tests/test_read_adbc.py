@@ -1,9 +1,4 @@
-"""Column types, values, and errors through DuckDB's `read_adbc()`.
-
-The extension binds the result of `AdbcStatementExecuteSchema`, then executes
-and drains the Arrow stream, so errors surface either while planning or while
-scanning.
-"""
+"""read_adbc() binds via ExecuteSchema, then executes and drains the Arrow stream."""
 
 from __future__ import annotations
 
@@ -62,8 +57,6 @@ def sample_table(
 
 
 def test_scalar_types_reach_duckdb(duck: duckdb.DuckDBPyConnection, profile: str) -> None:
-    """Every scalar GoogleSQL type except TIMESTAMP and BIGNUMERIC, which have their own tests."""
-
     relation = _scan(
         duck,
         profile,
@@ -121,10 +114,7 @@ def test_scalar_types_reach_duckdb(duck: duckdb.DuckDBPyConnection, profile: str
 
 
 def test_timestamp_is_an_instant(duck: duckdb.DuckDBPyConnection, profile: str) -> None:
-    """A TIMESTAMP keeps its instant, not its literal text.
-
-    The +02 offset in the input catches a dropped or misapplied zone.
-    """
+    """The +02 input offset catches a dropped or misapplied zone."""
 
     query = "SELECT TIMESTAMP '2024-06-01 12:00:00.000001+02' AS ts"
     assert _types(_scan(duck, profile, query)) == ["TIMESTAMP WITH TIME ZONE"]
@@ -147,11 +137,7 @@ def test_timestamp_is_an_instant(duck: duckdb.DuckDBPyConnection, profile: str) 
 def test_bignumeric_is_wider_than_duckdb_can_represent(
     duck: duckdb.DuckDBPyConnection, profile: str
 ) -> None:
-    """BIGNUMERIC is an Arrow `Decimal256(76, 38)`, which DuckDB cannot hold.
-
-    DuckDB's widest DECIMAL is 128-bit, so its Arrow scanner rejects the schema
-    while binding and no query runs.
-    """
+    """DuckDB supports only 128-bit DECIMAL, so Decimal256 fails binding before query execution."""
 
     with pytest.raises(duckdb.NotImplementedException) as failure:
         _scan(duck, profile, "SELECT BIGNUMERIC '1.25' AS value")
@@ -159,8 +145,6 @@ def test_bignumeric_is_wider_than_duckdb_can_represent(
 
 
 def test_null_of_every_type(duck: duckdb.DuckDBPyConnection, profile: str) -> None:
-    """A typed NULL keeps its column type and arrives as `None`."""
-
     query = """
         SELECT
           CAST(NULL AS INT64) AS int64_value,
@@ -202,8 +186,6 @@ def test_null_of_every_type(duck: duckdb.DuckDBPyConnection, profile: str) -> No
 
 
 def test_all_null_column(duck: duckdb.DuckDBPyConnection, profile: str) -> None:
-    """A column that is NULL in every row still arrives with its type."""
-
     query = (
         "SELECT CAST(NULL AS STRING) AS label, x "
         "FROM UNNEST(GENERATE_ARRAY(1, 500)) AS x"
@@ -220,8 +202,6 @@ def test_all_null_column(duck: duckdb.DuckDBPyConnection, profile: str) -> None:
 
 
 def test_nested_values(duck: duckdb.DuckDBPyConnection, profile: str) -> None:
-    """Arrays, structs and their combinations survive the round trip."""
-
     relation = _scan(
         duck,
         profile,
@@ -251,11 +231,7 @@ def test_nested_values(duck: duckdb.DuckDBPyConnection, profile: str) -> None:
 
 
 def test_unicode_and_long_strings(duck: duckdb.DuckDBPyConnection, profile: str) -> None:
-    """Multi-byte text, quotes, and newlines survive both quoting layers.
-
-    The literal is quoted for GoogleSQL and again for DuckDB, so this also
-    checks the suite's escaping.
-    """
+    """Literals pass through both GoogleSQL and DuckDB quoting."""
 
     text = "héllo 🚀 'quoted' \"double\" \n tab\there"
     long_text = "ab" * 25_000
@@ -270,8 +246,6 @@ def test_unicode_and_long_strings(duck: duckdb.DuckDBPyConnection, profile: str)
 
 
 def test_wide_row(duck: duckdb.DuckDBPyConnection, profile: str) -> None:
-    """A result with many columns keeps every column in order."""
-
     width = 200
     projection = ", ".join(f"x * {index} AS c{index}" for index in range(width))
     relation = _scan(
@@ -287,8 +261,6 @@ def test_wide_row(duck: duckdb.DuckDBPyConnection, profile: str) -> None:
 
 
 def test_empty_result(duck: duckdb.DuckDBPyConnection, profile: str) -> None:
-    """A query returning no rows still carries its schema."""
-
     relation = _scan(
         duck,
         profile,
@@ -371,8 +343,6 @@ def test_scan_joined_with_local_table(
 def test_table_by_qualified_and_relative_name(
     duck: duckdb.DuckDBPyConnection, profile: str, project: str, dataset: str, sample_table: str
 ) -> None:
-    """The profile's `bigquery.dataset_id` resolves an unqualified name."""
-
     qualified = _scan(
         duck,
         profile,
@@ -391,8 +361,6 @@ def test_table_by_qualified_and_relative_name(
 def test_information_schema_columns(
     duck: duckdb.DuckDBPyConnection, profile: str, project: str, dataset: str, sample_table: str
 ) -> None:
-    """`INFORMATION_SCHEMA.COLUMNS` reports the sample table's GoogleSQL types as text."""
-
     relation = _scan(
         duck,
         profile,
@@ -412,10 +380,7 @@ def test_information_schema_columns(
 def test_information_schema_schemata(
     duck: duckdb.DuckDBPyConnection, profile: str, project: str, dataset: str
 ) -> None:
-    """A region-scoped catalog view returns timestamps and a struct.
-
-    `sync_status` is asserted by type only, since no test controls its value.
-    """
+    """sync_status is checked by type only because its value is outside the test's control."""
 
     query = (
         "SELECT catalog_name, schema_name, location, creation_time, sync_status FROM "
@@ -461,8 +426,6 @@ def test_invalid_syntax_fails_at_bind_time(
 def test_missing_table_fails_at_bind_time(
     duck: duckdb.DuckDBPyConnection, profile: str, dataset: str
 ) -> None:
-    """A missing table is reported with the dataset the profile chose."""
-
     with pytest.raises(duckdb.BinderException) as failure:
         _scan(duck, profile, "SELECT * FROM no_such_table_at_all")
     message = str(failure.value)
@@ -473,8 +436,6 @@ def test_missing_table_fails_at_bind_time(
 def test_runtime_failure_surfaces_while_scanning(
     duck: duckdb.DuckDBPyConnection, profile: str
 ) -> None:
-    """A query that fails only at run time binds, then fails when DuckDB pulls rows."""
-
     relation = _scan(duck, profile, "SELECT 1 / 0 AS value")
     assert _types(relation) == ["DOUBLE"]
     with pytest.raises(duckdb.IOException) as failure:

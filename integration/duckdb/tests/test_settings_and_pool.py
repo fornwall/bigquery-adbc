@@ -1,9 +1,7 @@
-"""The extension's settings, connection pool, and concurrent reads and writes.
+"""Settings, pooling, and concurrent reads and writes.
 
-Each pooled connection owns an independent `AdbcDatabase`; `read_adbc()` opens
-another connection outside the pool. The extension exposes no connection counts
-or scheduling, so tests assert only completion and correct rows.
-"""
+Each pooled connection owns an AdbcDatabase; read_adbc() bypasses the pool.
+The extension exposes no connection counts, so tests check completion and rows."""
 
 from __future__ import annotations
 
@@ -52,10 +50,7 @@ def _setting(connection: duckdb.DuckDBPyConnection, name: str) -> str:
 def _counted_table(
     bigquery: Session, project: str, dataset: str, table: str, rows: int
 ) -> None:
-    """Create a BigQuery table holding `i` = 1..rows.
-
-    Call it before ATTACH: the extension caches catalog tables on first lookup.
-    """
+    """Create i = 1..rows before ATTACH caches table metadata."""
 
     bigquery.execute(
         f"CREATE TABLE {sql.qualified(project, dataset, table)} AS "
@@ -109,10 +104,7 @@ def test_a_pool_of_one_serves_several_scans_in_one_statement(
     project: str,
     dataset: str,
 ) -> None:
-    """A statement needing more connections than the pool holds still runs.
-
-    The extension falls back to ephemeral connections when the pool is exhausted.
-    """
+    """An exhausted pool falls back to ephemeral connections."""
 
     left = name("left")
     right = name("right")
@@ -177,11 +169,7 @@ def test_many_read_adbc_calls_in_one_statement(
 
 
 def test_parallel_duckdb_connections_share_one_profile(profile: str) -> None:
-    """Six DuckDB connections query through one profile at once.
-
-    DuckDB connections are not thread-safe, so each worker opens its own and
-    drives its own driver instance from the same loaded library.
-    """
+    """DuckDB connections are not thread-safe; each worker opens its own."""
 
     def run(index: int) -> list[tuple]:
         with closing(extension.connect()) as connection:
@@ -201,10 +189,7 @@ def test_a_read_and_a_write_run_concurrently_on_one_dataset(
     project: str,
     dataset: str,
 ) -> None:
-    """Two driver instances run a query and an ingest against one dataset at once.
-
-    They touch different tables, so the results do not depend on ordering.
-    """
+    """Use separate tables so results do not depend on ordering."""
 
     source = name("source")
     destination = name("destination")
@@ -249,11 +234,7 @@ def test_mixing_a_read_and_a_write_needs_the_setting(
     project: str,
     dataset: str,
 ) -> None:
-    """`INSERT ... SELECT FROM read_adbc()` needs `adbc_mix_reads_writes`.
-
-    The extension cannot know the target's isolation guarantees, so it refuses
-    the statement by default.
-    """
+    """Unknown target isolation makes the extension refuse mixed reads and writes by default."""
 
     source = name("source")
     destination = name("destination")
@@ -292,10 +273,7 @@ def test_an_insert_buffer_of_one_chunk_still_inserts_every_row(
     project: str,
     dataset: str,
 ) -> None:
-    """Flushing after every 2048-row chunk must not drop or duplicate rows.
-
-    At the default of 1000 chunks this insert is one flush; at 1 it is several.
-    """
+    """One-chunk buffering forces multiple flushes; the default 1000 chunks would flush once."""
 
     table = name("buffered")
     bigquery.execute(f"CREATE TABLE {sql.qualified(project, dataset, table)} (i BIGINT)")
@@ -338,11 +316,7 @@ def test_materializing_the_input_still_inserts_every_row(
 
 
 def test_settings_do_not_leak_between_duckdb_connections() -> None:
-    """Settings belong to a database instance.
-
-    Each `extension.connect()` creates a separate in-memory database; cursors
-    share their connection's settings.
-    """
+    """extension.connect creates separate databases; cursors share their connection's settings."""
 
     with closing(extension.connect()) as first, closing(extension.connect()) as second:
         first.execute("SET adbc_connection_pool_size = 3")
@@ -364,10 +338,7 @@ def test_changing_the_pool_size_after_attach_leaves_the_attachment_working(
     project: str,
     dataset: str,
 ) -> None:
-    """The pool size is read at ATTACH, so an existing attachment keeps its pool.
-
-    SQL does not expose the capacity, so the test checks only that scans work.
-    """
+    """ATTACH fixes pool capacity, which SQL cannot inspect; check that scans still work."""
 
     table = name("after")
     _counted_table(bigquery, project, dataset, table, 5)
@@ -385,8 +356,6 @@ def test_changing_the_pool_size_after_attach_leaves_the_attachment_working(
 def test_clearing_the_cache_with_nothing_attached_is_safe(
     duck: duckdb.DuckDBPyConnection,
 ) -> None:
-    """`adbc_clear_cache()` has nothing to drop on a bare connection."""
-
     assert duck.execute("CALL adbc_clear_cache()").fetchall() == [(True,)]
 
 
@@ -398,8 +367,6 @@ def test_clearing_the_cache_keeps_an_attachment_usable(
     project: str,
     dataset: str,
 ) -> None:
-    """After `adbc_clear_cache()`, the next scan fetches metadata from the driver again."""
-
     table = name("cached")
     _counted_table(bigquery, project, dataset, table, 5)
 

@@ -1,10 +1,6 @@
-"""Bulk ingestion through DuckDB's attached ADBC catalog.
+"""Storage Write ingestion through DuckDB INSERT, CREATE TABLE, CTAS, and COPY.
 
-The extension binds an Arrow stream for INSERT, CREATE TABLE, CTAS, and COPY,
-which the driver writes through the Storage Write API. Tests check DuckDB's
-reported row count and read the stored values back through an independent
-`read_adbc()` session.
-"""
+Read back stored values through an independent read_adbc() session."""
 
 from __future__ import annotations
 
@@ -45,11 +41,7 @@ def _create_outside_attachment(
     table: str,
     columns: str,
 ) -> str:
-    """Create a BigQuery table with GoogleSQL and make the attachment see it.
-
-    The extension caches a catalog's tables for the life of the attachment, so
-    a table created outside it stays invisible until the cache is cleared.
-    """
+    """Clear the attachment cache so it sees the table created outside it."""
 
     bigquery.execute(
         f"CREATE TABLE {sql.qualified(project, dataset, table)} ({columns})"
@@ -110,8 +102,6 @@ def test_a_second_insert_appends_rather_than_replaces(
     project: str,
     dataset: str,
 ) -> None:
-    """The extension ingests in append mode."""
-
     table = name("target")
     target = sql.attached(ATTACHED_CATALOG, dataset, table)
     attached.execute(f"CREATE TABLE {target} (i BIGINT)")
@@ -131,11 +121,7 @@ def test_ingest_type_fidelity(
     project: str,
     dataset: str,
 ) -> None:
-    """Pin the DuckDB-to-BigQuery type mapping of the ingest path.
-
-    Every integer width becomes INT64 and FLOAT becomes FLOAT64. DuckDB's naive
-    TIMESTAMP becomes a civil DATETIME; only TIMESTAMPTZ becomes a TIMESTAMP.
-    """
+    """Naive TIMESTAMP maps to DATETIME; TIMESTAMPTZ maps to TIMESTAMP."""
 
     table = name("types")
     target = sql.attached(ATTACHED_CATALOG, dataset, table)
@@ -215,10 +201,7 @@ def test_ingest_nulls_in_every_type(
     project: str,
     dataset: str,
 ) -> None:
-    """A NULL survives ingest in every type except ARRAY.
-
-    BigQuery has no NULL array, so the driver writes a NULL LIST as an empty array.
-    """
+    """BigQuery has no NULL array; a NULL LIST becomes an empty array."""
 
     table = name("nulls")
     target = sql.attached(ATTACHED_CATALOG, dataset, table)
@@ -245,8 +228,6 @@ def test_ingest_nested_list_and_struct(
     project: str,
     dataset: str,
 ) -> None:
-    """LIST and STRUCT become ARRAY and STRUCT, including nested combinations."""
-
     table = name("nested")
     target = sql.attached(ATTACHED_CATALOG, dataset, table)
     attached.execute(
@@ -284,12 +265,6 @@ def test_ingest_unicode_and_awkward_strings(
     project: str,
     dataset: str,
 ) -> None:
-    """Strings reach BigQuery byte for byte.
-
-    The ingest path builds no SQL text, so quotes, backslashes, and newlines
-    need no escaping.
-    """
-
     table = name("strings")
     target = sql.attached(ATTACHED_CATALOG, dataset, table)
     attached.execute(f"CREATE TABLE {target} (k BIGINT, s VARCHAR)")
@@ -358,8 +333,6 @@ def test_buffering_settings_drive_a_multi_chunk_insert(
     project: str,
     dataset: str,
 ) -> None:
-    """Both of the extension's buffering strategies deliver the same rows."""
-
     rows = DUCKDB_CHUNK_ROWS * 3
     table = name("buffered")
     target = sql.attached(ATTACHED_CATALOG, dataset, table)
@@ -465,10 +438,7 @@ def test_copy_and_read_csv_both_reach_the_ingest_path(
     dataset: str,
     tmp_path: Path,
 ) -> None:
-    """`COPY ... FROM` and `read_csv()` reach the same bulk ingest.
-
-    They take different DuckDB code paths to `AdbcStatementBindStream`.
-    """
+    """COPY and read_csv take different DuckDB paths to AdbcStatementBindStream."""
 
     table = name("loaded")
     target = sql.attached(ATTACHED_CATALOG, dataset, table)
@@ -498,11 +468,7 @@ def test_write_into_a_dataset_other_than_the_profile_default(
     project: str,
     secondary_dataset: str,
 ) -> None:
-    """The schema in the DuckDB name overrides the profile's `bigquery.dataset_id`.
-
-    The extension sets `adbc.ingest.target_db_schema` but never
-    `adbc.ingest.target_catalog`.
-    """
+    """The extension sets target_db_schema, but never target_catalog."""
 
     table = name("elsewhere")
     target = sql.attached(ATTACHED_CATALOG, secondary_dataset, table)
@@ -522,11 +488,7 @@ def test_reading_and_writing_in_one_statement_needs_an_opt_in(
     project: str,
     dataset: str,
 ) -> None:
-    """A `read_adbc()` scan feeding a bulk ingest needs `adbc_mix_reads_writes`.
-
-    The extension refuses to mix ADBC reads and writes in one statement because
-    of the isolation risk.
-    """
+    """The extension refuses mixed ADBC reads and writes by default because of isolation risks."""
 
     source = name("source")
     bigquery.execute(
@@ -580,10 +542,7 @@ def test_driver_rejects_an_unsupported_arrow_type(
     name: Callable[[str], str],
     dataset: str,
 ) -> None:
-    """A driver-side ingest error reaches DuckDB intact.
-
-    DuckDB's UBIGINT is Arrow UInt64, which the driver, not DuckDB's binder, rejects.
-    """
+    """UBIGINT is Arrow UInt64; the driver rejects it after DuckDB binding succeeds."""
 
     target = sql.attached(ATTACHED_CATALOG, dataset, name("unsigned"))
 
@@ -619,11 +578,7 @@ def test_append_reaches_a_table_with_a_required_column(
     project: str,
     dataset: str,
 ) -> None:
-    """A REQUIRED BigQuery column does not block an append from DuckDB.
-
-    DuckDB binds every attached-table stream as nullable, so the driver compares
-    only repeatedness on append; an actual null is rejected by BigQuery.
-    """
+    """DuckDB binds nullable fields; append must accept them unless an actual null violates REQUIRED."""
 
     table = name("required")
     target = _create_outside_attachment(
@@ -651,11 +606,7 @@ def test_driver_rejects_an_append_whose_schema_does_not_match(
     project: str,
     dataset: str,
 ) -> None:
-    """An append shaped by a stale catalog entry is refused before writing.
-
-    DuckDB shapes the bound stream from its cached table entry, so replacing
-    the table behind the attachment produces a mismatch.
-    """
+    """Replace the table behind the attachment so its cached schema shapes an incompatible stream."""
 
     table = name("mismatch")
     target = _create_outside_attachment(
@@ -685,11 +636,7 @@ def test_duckdb_rejects_a_write_before_the_driver_sees_it(
     project: str,
     dataset: str,
 ) -> None:
-    """A wrong column, an uncastable value, and a missing table fail in DuckDB.
-
-    The extension caches the BigQuery schema, so these are binder or conversion
-    errors and nothing reaches BigQuery.
-    """
+    """The cached schema lets DuckDB reject these before contacting BigQuery."""
 
     table = name("guarded")
     target = _create_outside_attachment(
@@ -721,11 +668,7 @@ def test_write_statements_the_extension_does_not_implement(
     project: str,
     dataset: str,
 ) -> None:
-    """Bulk ingest only appends and creates; other writes need `adbc_execute()`.
-
-    `session` and `attached` are the same DuckDB connection, so the final
-    GoogleSQL DELETE runs on the connection that refused the catalog DELETE.
-    """
+    """session shares the attachment connection; execute DELETE there after catalog DELETE fails."""
 
     table = name("limits")
     target = sql.attached(ATTACHED_CATALOG, dataset, table)

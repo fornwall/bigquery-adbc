@@ -1,21 +1,9 @@
-"""BigQuery metadata and reads through an attached DuckDB catalog.
+"""Metadata and reads through an attached DuckDB catalog.
 
-The extension's catalog works as follows:
-
-* `ATTACH` calls `AdbcConnectionGetOption("adbc.connection.catalog")` and
-  `AdbcConnectionGetObjects(depth=DB_SCHEMAS)`, so a DuckDB schema in the
-  attached catalog is a BigQuery dataset of the driver's project.
-* Resolving a table runs `SELECT * FROM <schema>.<table>` and reads the columns
-  off the resulting Arrow schema; `AdbcConnectionGetTableSchema` is never
-  called. Names are quoted with the ATTACH-time `DELIMITER`, which must be
-  backticks for GoogleSQL.
-* A `catch (...)` swallows every resolution failure, so any driver error
-  surfaces as `Catalog Error: Table with name X does not exist!`.
-
-A whole-catalog listing (`AdbcSchemaEntry::Scan`) queries every table in every
-dataset, so tests list schemas with `duckdb_schemas()` and disable DuckDB's
-missing-table name suggestions, which use the same scan.
-"""
+ATTACH reads the current catalog and GetObjects(DB_SCHEMAS). Table resolution
+uses SELECT * with the ATTACH delimiter, not GetTableSchema, and masks every
+resolution error as a missing table. Whole-catalog listings resolve every table
+in every dataset; disable missing-table suggestions to avoid that scan."""
 
 from __future__ import annotations
 
@@ -167,8 +155,6 @@ def test_scan_returns_every_row(
 def test_describe_reports_the_duckdb_types_of_every_column(
     attached: duckdb.DuckDBPyConnection, people: str
 ) -> None:
-    """`DESCRIBE` reflects the driver's GoogleSQL-to-Arrow type mapping."""
-
     described = attached.execute(f"DESCRIBE {people}").fetchall()
 
     assert tuple((row[0], row[1]) for row in described) == PEOPLE_COLUMNS
@@ -187,12 +173,7 @@ def test_order_by_sorts_the_scanned_rows(
 def test_where_filter_is_evaluated_locally(
     attached: duckdb.DuckDBPyConnection, people: str
 ) -> None:
-    """A `WHERE` clause never reaches BigQuery.
-
-    The extension registers its scan with `filter_pushdown = false`, so DuckDB
-    filters in its own FILTER operator. A pushed-down predicate would appear as
-    a `Filters` entry in the scan metadata.
-    """
+    """filter_pushdown is disabled; a Filters entry in scan metadata would mean that changed."""
 
     query = f"SELECT name, score FROM {people} WHERE active AND id > 1"
     rows = attached.execute(query).fetchall()
@@ -208,11 +189,7 @@ def test_where_filter_is_evaluated_locally(
 def test_projection_is_pruned_after_decoding(
     attached: duckdb.DuckDBPyConnection, people: str
 ) -> None:
-    """Selecting one column still transfers every column.
-
-    The extension always sends `SELECT *` and prunes after decoding, so the plan
-    shows only the requested column.
-    """
+    """The extension sends SELECT * and prunes decoded columns; the plan shows the projection."""
 
     query = f"SELECT name FROM {people} ORDER BY name"
     rows = attached.execute(query).fetchall()
@@ -245,11 +222,7 @@ def test_aggregates_run_over_the_scanned_rows(
 def test_scan_of_a_table_with_a_known_row_count(
     attached: duckdb.DuckDBPyConnection, people: str
 ) -> None:
-    """The row count is correct even when the planner lacks a cardinality estimate.
-
-    The extension reads only float64 statistics; the driver returns BigQuery's
-    numRows as int64, so the estimate is unavailable.
-    """
+    """The extension reads only float64 statistics, so the driver's int64 numRows is unavailable."""
 
     scanned = attached.execute(f"SELECT COUNT(*) FROM {people}").fetchone()
 
@@ -268,8 +241,6 @@ def test_table_in_the_secondary_dataset_is_scannable(
 def test_use_makes_the_dataset_the_default_schema(
     attached: duckdb.DuckDBPyConnection, tables: Tables, dataset: str
 ) -> None:
-    """`USE bq.<dataset>` lets a table be named without qualification."""
-
     attached.execute(
         f"USE {sql.duckdb_identifier(ATTACHED_CATALOG)}."
         f"{sql.duckdb_identifier(dataset)}"
@@ -296,8 +267,6 @@ def test_view_is_resolved_and_scanned_like_a_table(
 def test_nested_column_types_survive_resolution(
     attached: duckdb.DuckDBPyConnection, tables: Tables, dataset: str
 ) -> None:
-    """ARRAY and STRUCT columns bind to DuckDB LIST and STRUCT types."""
-
     nested = sql.attached(ATTACHED_CATALOG, dataset, tables.nested)
 
     described = attached.execute(f"DESCRIBE {nested}").fetchall()
@@ -320,8 +289,6 @@ def test_nested_column_types_survive_resolution(
 def test_empty_table_resolves_and_scans_to_no_rows(
     attached: duckdb.DuckDBPyConnection, tables: Tables, dataset: str
 ) -> None:
-    """A table with no rows still binds: the schema comes from the stream."""
-
     empty = sql.attached(ATTACHED_CATALOG, dataset, tables.empty)
 
     described = attached.execute(f"DESCRIBE {empty}").fetchall()
@@ -341,11 +308,7 @@ def test_table_created_after_attach_is_visible_without_clearing_the_cache(
     dataset: str,
     name: Callable[[str], str],
 ) -> None:
-    """Only resolved tables are cached, so a new table resolves on first use.
-
-    The full table list is cached only after a whole-catalog scan, which nothing
-    here triggers.
-    """
+    """Only resolved tables are cached unless a whole-catalog scan has run."""
 
     # Cache the schema entry before the new table exists.
     assert attached.execute(f"SELECT COUNT(*) FROM {people}").fetchone() == (
@@ -369,11 +332,7 @@ def test_adbc_clear_cache_refreshes_a_stale_table_entry(
     dataset: str,
     name: Callable[[str], str],
 ) -> None:
-    """A resolved table keeps its columns until `adbc_clear_cache()`.
-
-    The call discards every cached entry of every attached ADBC catalog, and the
-    next reference rebinds.
-    """
+    """adbc_clear_cache discards every attachment's cached entries; the next reference rebinds."""
 
     table = name("evolving")
     qualified = sql.qualified(project, dataset, table)
@@ -397,11 +356,7 @@ def test_adbc_clear_cache_refreshes_a_stale_table_entry(
 def test_detach_and_reattach_on_the_same_connection(
     duck: duckdb.DuckDBPyConnection, profile: str, people: str
 ) -> None:
-    """`DETACH` removes the catalog, and re-attaching repeats the whole handshake.
-
-    The second `GetOption` and `GetObjects` on the same DuckDB connection would
-    break if the driver kept stale per-process state.
-    """
+    """Reattach repeats GetOption and GetObjects, catching stale per-process state."""
 
     duck.execute(sql.attach(profile, ATTACHED_CATALOG))
     assert duck.execute(f"SELECT COUNT(*) FROM {people}").fetchone() == (
@@ -426,10 +381,7 @@ def test_two_catalogs_attached_from_two_profiles(
     dataset: str,
     secondary_dataset: str,
 ) -> None:
-    """Two attachments, each with its own catalog and pool, join in one plan.
-
-    The second profile differs from the default in `bigquery.dataset_id`.
-    """
+    """The second profile differs in bigquery.dataset_id."""
 
     other_profile = make_profile(
         "attached_other", **{"bigquery.dataset_id": secondary_dataset}
@@ -469,11 +421,7 @@ def test_join_of_two_tables_in_one_attached_catalog(
 def test_join_with_a_local_duckdb_table(
     attached: duckdb.DuckDBPyConnection, people: str
 ) -> None:
-    """A BigQuery table joins against a local DuckDB table.
-
-    The local table is qualified with `memory.main`: `ATTACH` may leave the ADBC
-    catalog as the default, where `CREATE TABLE` would be a BigQuery ingest.
-    """
+    """Qualify memory.main because ATTACH may make the ADBC catalog the default."""
 
     attached.execute(
         "CREATE TABLE memory.main.local_scores AS "
@@ -495,13 +443,7 @@ def test_default_delimiter_resolves_no_table(
     dataset: str,
     people: str,
 ) -> None:
-    """`ATTACH` without `DELIMITER '``'` resolves no BigQuery table.
-
-    The default double quotes make GoogleSQL string literals where identifiers
-    are required, and the resolver reports the syntax error as a missing table.
-    Recheck on extension upgrades: a version that takes the delimiter from the
-    driver would resolve both attachments.
-    """
+    """Default double quotes become GoogleSQL strings; resolution masks the error as a missing table."""
 
     attached.execute(CATALOG_ERROR_SUGGESTIONS_OFF)
 
@@ -532,12 +474,7 @@ def test_default_delimiter_resolves_no_table(
 def test_missing_table_reports_a_catalog_error(
     attached: duckdb.DuckDBPyConnection, dataset: str, name: Callable[[str], str]
 ) -> None:
-    """A missing table surfaces as a catalog error.
-
-    The pinned extension reports every resolution failure this way, including
-    permission errors and dead connections. With DuckDB's name suggestions on,
-    this statement resolves every table in the project and can take minutes.
-    """
+    """Name suggestions are disabled: otherwise this failure resolves every table in the project."""
 
     attached.execute(CATALOG_ERROR_SUGGESTIONS_OFF)
 
@@ -551,8 +488,6 @@ def test_missing_table_reports_a_catalog_error(
 def test_dropping_a_table_through_the_catalog_is_unsupported(
     attached: duckdb.DuckDBPyConnection, people: str
 ) -> None:
-    """`DROP TABLE` is refused by the extension before the driver is reached."""
-
     with pytest.raises(
         duckdb.NotImplementedException,
         match="DropEntry not yet supported with the ADBC extension",
@@ -563,8 +498,6 @@ def test_dropping_a_table_through_the_catalog_is_unsupported(
 def test_creating_a_view_through_the_catalog_is_unsupported(
     attached: duckdb.DuckDBPyConnection, dataset: str, name: Callable[[str], str]
 ) -> None:
-    """`CREATE VIEW` and `CREATE SCHEMA` are refused before the driver is reached."""
-
     view = sql.attached(ATTACHED_CATALOG, dataset, name("view"))
     with pytest.raises(
         duckdb.NotImplementedException,

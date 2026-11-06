@@ -1,13 +1,8 @@
-"""Exercise DDL, DML, scripts, and routines through `adbc_execute()`.
+"""DDL, DML, scripts, and routines through adbc_execute().
 
-The extension calls `AdbcStatementExecuteQuery` with null stream and
-rows-affected pointers. Tests verify effects through `read_adbc()` and check
-that driver errors reach DuckDB.
-
-Profile resolution and library loading failures produce `BinderException`;
-execution failures produce `IOException`. The latter preserves the driver's
-message but discards its status, SQLSTATE, and vendor code.
-"""
+ExecuteQuery receives null stream and row-count pointers; verify effects via
+read_adbc(). Profile/load failures raise BinderException; execution failures
+raise IOException with the driver message but no status, SQLSTATE, or vendor code."""
 
 from __future__ import annotations
 
@@ -74,8 +69,6 @@ def test_call_reports_a_single_true_success_row(
 def test_create_alter_and_drop_a_table(
     session: Session, project: str, dataset: str, name: Callable[[str], str]
 ) -> None:
-    """CREATE TABLE, both ALTER TABLE column forms and DROP TABLE."""
-
     table = name("table")
     path = sql.qualified(project, dataset, table)
 
@@ -100,8 +93,6 @@ def test_create_alter_and_drop_a_table(
 def test_create_table_as_select_replace_and_if_not_exists(
     session: Session, project: str, dataset: str, name: Callable[[str], str]
 ) -> None:
-    """`CREATE OR REPLACE` rewrites the table; a repeated `IF NOT EXISTS` leaves it alone."""
-
     table = name("ctas")
     path = sql.qualified(project, dataset, table)
 
@@ -123,8 +114,6 @@ def test_create_table_as_select_replace_and_if_not_exists(
 def test_drop_table_if_exists_on_a_missing_table_succeeds(
     session: Session, project: str, dataset: str, name: Callable[[str], str]
 ) -> None:
-    """A no-op DDL runs a BigQuery job and succeeds."""
-
     path = sql.qualified(project, dataset, name("never_created"))
 
     session.execute(f"DROP TABLE IF EXISTS {path}")
@@ -133,8 +122,6 @@ def test_drop_table_if_exists_on_a_missing_table_succeeds(
 def test_view_lifecycle(
     session: Session, project: str, dataset: str, name: Callable[[str], str]
 ) -> None:
-    """CREATE VIEW, read it back through a scan, replace it and drop it."""
-
     table = name("base")
     view = name("view")
     table_path = sql.qualified(project, dataset, table)
@@ -231,8 +218,6 @@ def test_insert_update_and_delete(
 def test_merge_updates_and_inserts(
     session: Session, project: str, dataset: str, name: Callable[[str], str]
 ) -> None:
-    """One MERGE covering both a matched and an unmatched source row."""
-
     table = name("merge")
     path = sql.qualified(project, dataset, table)
     session.execute(
@@ -315,10 +300,7 @@ def test_script_with_declared_variables(
 def test_a_failing_script_keeps_what_ran_before_it(
     session: Session, project: str, dataset: str, name: Callable[[str], str]
 ) -> None:
-    """A script is not a transaction: the statements before the failure commit.
-
-    The `ERROR()` message raised inside the script must reach DuckDB intact.
-    """
+    """A script is not a transaction; statements before the failure commit."""
 
     table = name("partial")
     path = sql.qualified(project, dataset, table)
@@ -340,10 +322,7 @@ def test_a_failing_script_keeps_what_ran_before_it(
 def test_create_and_drop_a_schema(
     session: Session, project: str, name: Callable[[str], str]
 ) -> None:
-    """CREATE SCHEMA and DROP SCHEMA on a dataset this test alone owns.
-
-    The runner does not clean up this dataset, so the test drops it in a `finally`.
-    """
+    """The runner does not clean up this separate dataset; drop it in finally."""
 
     own_dataset = name("dataset")
     path = sql.qualified(project, own_dataset)
@@ -431,11 +410,7 @@ def test_stored_procedure_created_and_called_by_execute(
 def test_table_options_are_set_and_altered(
     session: Session, project: str, dataset: str, name: Callable[[str], str]
 ) -> None:
-    """DDL carrying an `OPTIONS(...)` list, read back from `TABLE_OPTIONS`.
-
-    `TABLE_OPTIONS` reports each value as a GoogleSQL literal: a description
-    reads back double-quoted and labels as `[STRUCT("key", "value")]`.
-    """
+    """TABLE_OPTIONS returns GoogleSQL literals: quoted descriptions and STRUCT arrays for labels."""
 
     table = name("options")
     path = sql.qualified(project, dataset, table)
@@ -474,8 +449,6 @@ def test_table_options_are_set_and_altered(
 def test_partitioned_and_clustered_table(
     session: Session, project: str, dataset: str, name: Callable[[str], str]
 ) -> None:
-    """Partitioning and clustering, then an insert and a partition-filtered read."""
-
     table = name("partitioned")
     path = sql.qualified(project, dataset, table)
 
@@ -501,11 +474,7 @@ def test_partitioned_and_clustered_table(
 
 
 def test_invalid_syntax_reports_the_bigquery_message(session: Session) -> None:
-    """A statement BigQuery cannot plan fails as a DuckDB `IOException`.
-
-    The extension forwards only the driver's message, so its `invalidQuery`
-    reason token is all that remains of the status and SQLSTATE.
-    """
+    """The extension forwards only the message; invalidQuery is all that remains of the driver status."""
 
     with pytest.raises(duckdb.IOException) as caught:
         session.execute("CREATE TABLE SELECT WHERE")
@@ -518,8 +487,6 @@ def test_invalid_syntax_reports_the_bigquery_message(session: Session) -> None:
 def test_dml_against_a_missing_table_reports_the_bigquery_message(
     session: Session, project: str, dataset: str, name: Callable[[str], str]
 ) -> None:
-    """A `notFound` failure names the table BigQuery could not resolve."""
-
     table = name("absent")
     path = sql.qualified(project, dataset, table)
 
@@ -558,8 +525,6 @@ def test_an_empty_statement_is_refused_before_any_request(session: Session) -> N
 def test_an_unknown_profile_fails_while_the_call_is_bound(
     duck: duckdb.DuckDBPyConnection,
 ) -> None:
-    """An unknown profile fails in the driver manager while the CALL is planned."""
-
     with pytest.raises(duckdb.BinderException) as caught:
         duck.execute(sql.adbc_execute("profile://no_such_profile", "SELECT 1"))
 
@@ -571,10 +536,7 @@ def test_an_unknown_profile_fails_while_the_call_is_bound(
 def test_a_missing_driver_library_fails_while_the_call_is_bound(
     duck: duckdb.DuckDBPyConnection, profile_directory: Path, project: str
 ) -> None:
-    """A profile naming a missing library also fails while the CALL is planned.
-
-    `make_profile` always names the built driver, so this writes the profile directly.
-    """
+    """Write the profile directly because make_profile always uses the built driver."""
 
     missing = profile_directory / "not_a_driver_library.so"
     uri = profiles.write_profile(
@@ -595,12 +557,9 @@ def test_a_missing_driver_library_fails_while_the_call_is_bound(
 def test_execute_and_read_do_not_share_an_adbc_connection(
     session: Session, project: str, dataset: str, name: Callable[[str], str]
 ) -> None:
-    """Each call opens its own ADBC connection, so nothing session-scoped survives.
+    """Calls use separate connections, so only committed tables survive.
 
-    A committed table is visible to the next scan; a script's temporary table is
-    not. The scan fails with `BinderException` because `read_adbc()` runs its
-    query while DuckDB binds it, to learn the result schema.
-    """
+    read_adbc resolves its schema while binding, hence BinderException for the temporary table."""
 
     table = name("shared")
     temporary = name("temp")
