@@ -213,8 +213,7 @@ impl BigQueryConnection {
             })
             .collect::<Vec<_>>();
         // Such a table name, or an empty type set, matches nothing.
-        if exact_table.is_some_and(names_no_table)
-            || scan.table_types.is_some_and(<[_]>::is_empty)
+        if exact_table.is_some_and(names_no_table) || scan.table_types.is_some_and(<[_]>::is_empty)
         {
             return Ok(datasets.into_iter().map(|dataset| dataset.scan).collect());
         }

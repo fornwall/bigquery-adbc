@@ -239,7 +239,9 @@ pub(crate) fn parse_view_authorizations(
                 index
             }
         };
-        let (_, sources) = views.get_mut(index).expect("the view was found or inserted");
+        let (_, sources) = views
+            .get_mut(index)
+            .expect("the view was found or inserted");
         for dataset in datasets {
             insert_sorted(sources, parse_source_dataset(&dataset)?);
         }
