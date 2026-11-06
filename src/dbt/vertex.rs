@@ -26,6 +26,7 @@ use crate::error::{error, invalid_state, not_found};
 use crate::query::ExecutionContext;
 use crate::rest::json::encode_json;
 use crate::rest::request::Request;
+use crate::rest::url::escape_url_component;
 
 const OPERATION: &str = "Vertex AI notebook execution job";
 
@@ -262,30 +263,54 @@ async fn runtime_template(
             request.project, request.region
         ));
     }
-    let url = poller.resource_url(
+    let mut url = poller.resource_url(
         request.parent,
         &format!("/notebookRuntimeTemplates?filter={ONE_CLICK_FILTER}"),
     );
+    let first_page_url_len = url.len();
     let context = format!(
         "list the BigQuery Vertex AI notebook runtime templates in {}",
         request.parent
     );
-    let listed = Box::pin(poller.request(true, &|| Request::get(&url, &context))).await?;
-    listed
-        .get("notebookRuntimeTemplates")
-        .and_then(|templates| templates.get(0))
-        .and_then(|template| template.get("name"))
-        .and_then(JsonValue::as_str)
-        .filter(|name| !name.is_empty())
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| {
-            not_found(format!(
-                "{} has no ONE_CLICK notebook runtime template; set {} to an existing \
-                 template, or create a ONE_CLICK template in that project and region",
-                request.parent,
-                BigQueryStatementOption::NotebookExecuteJobTemplateId.as_str()
-            ))
-        })
+    loop {
+        let listed = Box::pin(poller.request(true, &|| Request::get(&url, &context))).await?;
+        let templates = match listed.get("notebookRuntimeTemplates") {
+            None | Some(JsonValue::Null) => None,
+            Some(JsonValue::Array(templates)) => templates.first(),
+            Some(_) => {
+                return Err(error(
+                    format!(
+                        "the response to {context} has a non-array notebookRuntimeTemplates field"
+                    ),
+                    Status::InvalidData,
+                ));
+            }
+        };
+        if let Some(template) = templates {
+            return resource_name(template, "Vertex AI notebook runtime template");
+        }
+        // A filtered page can be empty before the end of the collection (AIP-158).
+        match listed.get("nextPageToken") {
+            None | Some(JsonValue::Null) => break,
+            Some(JsonValue::String(token)) if token.is_empty() => break,
+            Some(JsonValue::String(token)) => {
+                url.truncate(first_page_url_len);
+                let _ = write!(url, "&pageToken={}", escape_url_component(token));
+            }
+            Some(_) => {
+                return Err(error(
+                    format!("the response to {context} has a non-string nextPageToken field"),
+                    Status::InvalidData,
+                ));
+            }
+        }
+    }
+    Err(not_found(format!(
+        "{} has no ONE_CLICK notebook runtime template; set {} to an existing \
+         template, or create a ONE_CLICK template in that project and region",
+        request.parent,
+        BigQueryStatementOption::NotebookExecuteJobTemplateId.as_str()
+    )))
 }
 
 #[derive(serde::Serialize)]

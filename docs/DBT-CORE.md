@@ -309,7 +309,8 @@ in-flight request may still finish after the deadline.
 - Dataproc submissions carry a request ID, so one that failed transiently is resent without
   starting a second job. The Vertex AI create has no such ID and is sent once.
 - The notebook job runs on `template_id`, else the project's first `ONE_CLICK` runtime template,
-  else fails with `NOT_FOUND`. It runs as `adbc.bigquery.notebook_execute_job.service_account`
+  following empty pages until a template is found or the listing ends with `NOT_FOUND`. Malformed
+  listings return `INVALID_DATA`. It runs as `adbc.bigquery.notebook_execute_job.service_account`
   (which dbt does not send), else
   `bigquery.impersonate.target_principal`, else the service account of a JSON key or a standard
   IAM impersonation URL in JSON credentials or discrete WIF options, else as the template

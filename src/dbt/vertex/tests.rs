@@ -344,6 +344,72 @@ fn a_project_without_a_one_click_template_is_not_given_one() {
     );
 }
 
+#[test]
+fn template_lookup_continues_past_empty_pages() {
+    let (endpoint, captured) = capture_requests(vec![
+        (200, json!({"nextPageToken": "first+/=&"})),
+        (
+            200,
+            json!({"notebookRuntimeTemplates": [], "nextPageToken": "second"}),
+        ),
+        (
+            200,
+            json!({"notebookRuntimeTemplates": [{"name": TEMPLATE}]}),
+        ),
+        (200, lro(true)),
+        (200, job_in_state("JOB_STATE_SUCCEEDED")),
+    ]);
+    let mut connection = connection_running_notebooks_at(endpoint);
+    bigframes_statement(&mut connection, None, "3600")
+        .execute_update()
+        .unwrap();
+
+    let requests = captured.join().unwrap();
+    assert_eq!(requests.len(), 5);
+    let first = requests[0].path();
+    assert_eq!(
+        requests[1].path(),
+        format!("{first}&pageToken=first%2B%2F%3D%26")
+    );
+    assert_eq!(requests[2].path(), format!("{first}&pageToken=second"));
+    assert_eq!(
+        requests[3].body["notebookRuntimeTemplateResourceName"],
+        TEMPLATE
+    );
+}
+
+#[test]
+fn template_lookup_reports_not_found_only_after_the_last_page() {
+    let (endpoint, captured) = capture_requests(vec![
+        (200, json!({"nextPageToken": "next"})),
+        (200, json!({"nextPageToken": ""})),
+    ]);
+    let mut connection = connection_running_notebooks_at(endpoint);
+    let failure = bigframes_statement(&mut connection, None, "3600")
+        .execute_update()
+        .unwrap_err();
+    assert_eq!(failure.status, Status::NotFound);
+    assert_eq!(captured.join().unwrap().len(), 2);
+}
+
+#[test]
+fn malformed_template_listings_are_invalid_data() {
+    for listed in [
+        json!({"notebookRuntimeTemplates": {}}),
+        json!({"notebookRuntimeTemplates": [{}]}),
+        json!({"notebookRuntimeTemplates": [{"name": ""}]}),
+        json!({"nextPageToken": 1}),
+    ] {
+        let (endpoint, captured) = capture_requests(vec![(200, listed)]);
+        let mut connection = connection_running_notebooks_at(endpoint);
+        let failure = bigframes_statement(&mut connection, None, "3600")
+            .execute_update()
+            .unwrap_err();
+        assert_eq!(failure.status, Status::InvalidData);
+        assert_eq!(captured.join().unwrap().len(), 1);
+    }
+}
+
 /// Vertex AI's own status survives, rather than being flattened the way the fork flattens
 /// every python-model failure to UNKNOWN.
 #[test]

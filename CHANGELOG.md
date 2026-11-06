@@ -28,6 +28,8 @@ changes.
 
 ### Fixed
 
+- Notebook-template lookup follows empty result pages before reporting `NOT_FOUND` and rejects
+  malformed listings as `INVALID_DATA`.
 - REST requests refuse redirects, preventing query and upload bodies from being forwarded beyond
   the configured endpoint.
 - Ingest rejects equal or reversed RANGE bounds before an invalid first batch can create or
