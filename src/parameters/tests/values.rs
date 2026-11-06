@@ -436,15 +436,14 @@ fn converts_dictionary_parameter_rows() {
     let batch =
         RecordBatch::try_from_iter(vec![("label", Arc::new(dictionary) as ArrayRef)]).unwrap();
 
-    let first = parameters_for_row(&batch, 0, ParameterMode::Named).unwrap();
-    assert_eq!(ptype(&first[0]).r#type, "STRING");
-    assert_eq!(value_of(&first[0]), Some("first"));
-
-    let null = parameters_for_row(&batch, 1, ParameterMode::Named).unwrap();
-    assert!(value_of(&null[0]).is_none());
-
-    let second = parameters_for_row(&batch, 2, ParameterMode::Named).unwrap();
-    assert_eq!(value_of(&second[0]), Some("second"));
+    for (row, expected) in [Some("first"), None, Some("second")]
+        .into_iter()
+        .enumerate()
+    {
+        let parameters = parameters_for_row(&batch, row, ParameterMode::Named).unwrap();
+        assert_eq!(ptype(&parameters[0]).r#type, "STRING");
+        assert_eq!(value_of(&parameters[0]), expected, "row {row}");
+    }
 }
 
 /// Arrow has four list layouts (two offset widths, each with consecutive offsets or explicit
@@ -491,19 +490,12 @@ fn every_arrow_list_layout_binds_the_same_array_parameter() {
         ("LargeListView", Arc::new(large_list_view) as ArrayRef),
     ] {
         let parameter = one_parameter(array);
-        assert_eq!(ptype(&parameter).r#type, "ARRAY", "{label}");
         assert_eq!(
-            ptype(&parameter).array_type.as_ref().unwrap().r#type,
-            "INT64",
-            "{label}"
-        );
-        assert_eq!(
-            value(&parameter)
-                .array_values
-                .iter()
-                .map(|value| value.value.as_deref())
-                .collect::<Vec<_>>(),
-            [Some("1"), Some("2")],
+            json!(parameter),
+            json!({
+                "parameterType": {"type": "ARRAY", "arrayType": {"type": "INT64"}},
+                "parameterValue": {"arrayValues": [{"value": "1"}, {"value": "2"}]}
+            }),
             "{label}"
         );
     }
@@ -538,35 +530,24 @@ fn converts_rich_logical_parameter_rows() {
     )
     .unwrap();
 
-    let parameters = parameters_for_row(&batch, 0, ParameterMode::Named).unwrap();
-    let range_type = ptype(&parameters[0]);
-    assert_eq!(range_type.r#type, "RANGE");
-    assert_eq!(
-        range_type.range_element_type.as_ref().unwrap().r#type,
-        "DATE"
-    );
-    let range_value = value(&parameters[0]).range_value.as_ref().unwrap();
-    assert_eq!(
-        range_value.start.as_ref().unwrap().value.as_deref(),
-        Some("1970-01-01")
-    );
-    assert_eq!(
-        range_value.end.as_ref().unwrap().value.as_deref(),
-        Some("1970-01-03")
-    );
-    assert_eq!(ptype(&parameters[1]).r#type, "JSON");
-
-    let unbounded = parameters_for_row(&batch, 1, ParameterMode::Named).unwrap();
-    let range_value = value(&unbounded[0]).range_value.as_ref().unwrap();
-    assert!(range_value.start.is_none());
-    assert_eq!(
-        range_value.end.as_ref().unwrap().value.as_deref(),
-        Some("1970-01-04")
-    );
-
-    let null = parameters_for_row(&batch, 2, ParameterMode::Named).unwrap();
-    assert!(value(&null[0]).range_value.is_none());
-
+    for (row, expected) in [
+        json!({"rangeValue": {"start": {"value": "1970-01-01"}, "end": {"value": "1970-01-03"}}}),
+        json!({"rangeValue": {"end": {"value": "1970-01-04"}}}),
+        json!({}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let parameters = parameters_for_row(&batch, row, ParameterMode::Named).unwrap();
+        assert_eq!(
+            json!(ptype(&parameters[0])),
+            json!({
+                "type": "RANGE", "rangeElementType": {"type": "DATE"}
+            })
+        );
+        assert_eq!(json!(value(&parameters[0])), expected, "row {row}");
+        assert_eq!(ptype(&parameters[1]).r#type, "JSON");
+    }
     let schema_parameters =
         parameters_for_schema(batch.schema().as_ref(), ParameterMode::Named).unwrap();
     assert_eq!(ptype(&schema_parameters[0]).r#type, "RANGE");
@@ -604,46 +585,34 @@ fn converts_nested_parameter_rows() {
     let batch = RecordBatch::try_from_iter(columns).unwrap();
 
     let parameters = parameters_for_row(&batch, 0, ParameterMode::Named).unwrap();
-    let integer_type = ptype(&parameters[0]);
-    assert_eq!(integer_type.r#type, "ARRAY");
-    assert_eq!(integer_type.array_type.as_ref().unwrap().r#type, "INT64");
-    let integer_values = &value(&parameters[0]).array_values;
-    assert_eq!(integer_values[0].value.as_deref(), Some("1"));
-    assert_eq!(integer_values[1].value.as_deref(), Some("2"));
-    assert_eq!(integer_values[2].value.as_deref(), Some("3"));
-
-    let fixed_values = &value(&parameters[1]).array_values;
+    let array_type = json!({"type": "ARRAY", "arrayType": {"type": "INT64"}});
+    assert_eq!(json!(ptype(&parameters[0])), array_type);
+    assert_eq!(json!(ptype(&parameters[1])), array_type);
     assert_eq!(
-        fixed_values
-            .iter()
-            .map(|value| value.value.as_deref().unwrap())
-            .collect::<Vec<_>>(),
-        ["7", "8"]
-    );
-
-    let record_type = ptype(&parameters[2]);
-    assert_eq!(record_type.r#type, "STRUCT");
-    assert_eq!(record_type.struct_types[0].name, "label");
-    assert_eq!(
-        record_type.struct_types[1].r#type.as_ref().unwrap().r#type,
-        "ARRAY"
-    );
-    let record_value = value(&parameters[2]);
-    assert_eq!(
-        record_value.struct_values["label"].value.as_deref(),
-        Some("first")
+        json!(ptype(&parameters[2])),
+        json!({
+            "type": "STRUCT", "structTypes": [
+                {"name": "label", "type": {"type": "STRING"}},
+                {"name": "values", "type": array_type}
+            ]
+        })
     );
     assert_eq!(
-        record_value.struct_values["values"].array_values[1]
-            .value
-            .as_deref(),
-        Some("5")
+        json!(parameters.iter().map(value).collect::<Vec<_>>()),
+        json!([
+            {"arrayValues": [{"value": "1"}, {"value": "2"}, {"value": "3"}]},
+            {"arrayValues": [{"value": "7"}, {"value": "8"}]},
+            {"structValues": {
+                "label": {"value": "first"},
+                "values": {"arrayValues": [{"value": "4"}, {"value": "5"}]}
+            }}
+        ])
     );
-
     let nulls = parameters_for_row(&batch, 1, ParameterMode::Named).unwrap();
-    assert!(value_of(&nulls[0]).is_none());
-    assert!(value(&nulls[0]).array_values.is_empty());
-    assert!(value(&nulls[2]).struct_values.is_empty());
+    assert_eq!(
+        json!(nulls.iter().map(value).collect::<Vec<_>>()),
+        json!([{}, {}, {}])
+    );
 }
 
 /// Every value error names the parameter and the row it came from, and is `INVALID_DATA`.
@@ -881,22 +850,20 @@ fn preserves_empty_non_null_composite_parameter_values() {
     ])
     .unwrap();
 
-    let empty = parameters_for_row(&batch, 0, ParameterMode::Named).unwrap();
-    assert_eq!(
-        serde_json::to_value(value(&empty[0])).unwrap(),
-        json!({"value": "[]"})
-    );
-    let nested_array = &value(&empty[1]).struct_values["values"];
-    assert_eq!(
-        serde_json::to_value(nested_array).unwrap(),
-        json!({"value": "[]"})
-    );
-    assert_eq!(
-        serde_json::to_value(value(&empty[2])).unwrap(),
-        json!({"value": "{}"})
-    );
-
-    let null = parameters_for_row(&batch, 1, ParameterMode::Named).unwrap();
-    assert_eq!(serde_json::to_value(value(&null[0])).unwrap(), json!({}));
-    assert_eq!(serde_json::to_value(value(&null[2])).unwrap(), json!({}));
+    for (row, expected) in [
+        json!([
+            {"value": "[]"}, {"structValues": {"values": {"value": "[]"}}}, {"value": "{}"}
+        ]),
+        json!([{}, {"structValues": {"values": {}}}, {}]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let parameters = parameters_for_row(&batch, row, ParameterMode::Named).unwrap();
+        assert_eq!(
+            json!(parameters.iter().map(value).collect::<Vec<_>>()),
+            expected,
+            "row {row}"
+        );
+    }
 }
