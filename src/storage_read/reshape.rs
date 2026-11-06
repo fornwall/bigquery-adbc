@@ -8,6 +8,8 @@ use std::sync::Arc;
 use arrow_array::{Array, ArrayRef, ListArray, RecordBatch, StructArray};
 use arrow_schema::{ArrowError, DataType, FieldRef, Fields, IntervalUnit, SchemaRef, TimeUnit};
 
+use crate::types::timestamp_is_zoned;
+
 /// A column conversion fixed for the lifetime of a read session.
 #[derive(Debug)]
 pub(super) enum ColumnPlan {
@@ -178,13 +180,17 @@ fn column_plan(source: &DataType, target: &DataType) -> Option<ColumnPlan> {
             (added_scale >= 0 && widened <= i16::from(*target_precision))
                 .then(|| ColumnPlan::Cast(target.clone()))
         }
-        // Both spellings are the same UTC instant; only the zone label differs. A zoned and an
-        // unzoned timestamp are TIMESTAMP and DATETIME, which must never be reconciled.
+        // Zone labels may differ, including the two unzoned spellings (None and ""). A zoned
+        // and an unzoned timestamp are TIMESTAMP and DATETIME, which must never be reconciled.
         (
-            DataType::Timestamp(TimeUnit::Microsecond, Some(_)),
-            DataType::Timestamp(TimeUnit::Microsecond, Some(_)),
-        )
-        | (
+            DataType::Timestamp(TimeUnit::Microsecond, source_zone),
+            DataType::Timestamp(TimeUnit::Microsecond, target_zone),
+        ) if timestamp_is_zoned(source_zone.as_deref())
+            == timestamp_is_zoned(target_zone.as_deref()) =>
+        {
+            Some(ColumnPlan::Cast(target.clone()))
+        }
+        (
             DataType::Interval(IntervalUnit::YearMonth | IntervalUnit::DayTime),
             DataType::Interval(IntervalUnit::MonthDayNano),
         ) => Some(ColumnPlan::Cast(target.clone())),

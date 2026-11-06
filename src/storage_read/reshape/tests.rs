@@ -1,7 +1,7 @@
 use arrow_array::types::{IntervalMonthDayNanoType, IntervalYearMonthType};
 use arrow_array::{
     Decimal128Array, Int64Array, IntervalDayTimeArray, IntervalMonthDayNanoArray,
-    IntervalYearMonthArray, ListArray,
+    IntervalYearMonthArray, ListArray, TimestampMicrosecondArray,
 };
 use arrow_buffer::{IntervalDayTime, IntervalMonthDayNano};
 use arrow_schema::{Field, Schema};
@@ -31,6 +31,30 @@ fn identical_shapes_are_coercible() {
             column_plan(&data_type, &data_type).is_some(),
             "{data_type} should reshape into itself"
         );
+    }
+}
+
+#[test]
+fn timestamp_zone_labels_preserve_the_logical_type() {
+    for source_zone in [None, Some(""), Some("UTC"), Some("America/New_York")] {
+        for target_zone in [None, Some(""), Some("UTC"), Some("America/New_York")] {
+            let source = TimestampMicrosecondArray::from(vec![Some(-1), None, Some(1)])
+                .with_timezone_opt(source_zone);
+            let expected = TimestampMicrosecondArray::from(vec![Some(-1), None, Some(1)])
+                .with_timezone_opt(target_zone);
+            let session = Arc::new(Schema::new(vec![field_of(source.data_type().clone())]));
+            let canonical = Arc::new(Schema::new(vec![field_of(expected.data_type().clone())]));
+            let plan = reshape_plans(&session, &canonical);
+            if matches!(source_zone, Some("UTC" | "America/New_York"))
+                != matches!(target_zone, Some("UTC" | "America/New_York"))
+            {
+                assert!(plan.is_err(), "{source_zone:?} became {target_zone:?}");
+                continue;
+            }
+            let batch = RecordBatch::try_new(session, vec![Arc::new(source)]).unwrap();
+            let reshaped = reshape(batch, &canonical, &plan.unwrap()).unwrap();
+            assert_eq!(reshaped.column(0).as_ref(), &expected as &dyn Array);
+        }
     }
 }
 
