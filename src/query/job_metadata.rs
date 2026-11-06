@@ -116,34 +116,23 @@ mod tests {
             ..QueryMetadata::default()
         };
         let schema = schema_with_rest_metadata(Arc::new(arrow_schema::Schema::empty()), &metadata);
-        assert_eq!(
-            schema.metadata()[crate::BIGQUERY_SCHEMA_METADATA_QUERY_ID],
-            "query-id"
-        );
-        assert_eq!(
-            schema.metadata()[crate::BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE],
-            "UPDATE"
-        );
-        assert_eq!(
-            schema.metadata()[crate::BIGQUERY_SCHEMA_METADATA_TOTAL_BYTES_BILLED],
-            "11"
-        );
-        assert_eq!(
-            schema.metadata()[crate::BIGQUERY_SCHEMA_METADATA_QUERY_TOTAL_BYTES_PROCESSED],
-            "12"
-        );
-        assert_eq!(
-            schema.metadata()[crate::BIGQUERY_SCHEMA_METADATA_JOB_TOTAL_BYTES_PROCESSED],
-            "12"
-        );
-        assert_eq!(
-            schema.metadata()[crate::BIGQUERY_SCHEMA_METADATA_SLOT_MILLIS],
-            "13"
-        );
-        assert_eq!(
-            schema.metadata()[crate::BIGQUERY_SCHEMA_METADATA_NUM_DML_AFFECTED_ROWS],
-            "14"
-        );
+        for (key, expected) in [
+            ("BIGQUERY:query_id", "query-id"),
+            ("BIGQUERY:statistics:query:statement_type", "UPDATE"),
+            ("BIGQUERY:Statistics:Query:StatementType", "UPDATE"),
+            ("BIGQUERY:statistics:query:total_bytes_billed", "11"),
+            ("BIGQUERY:Statistics:Query:TotalBytesBilled", "11"),
+            ("BIGQUERY:statistics:query:total_bytes_processed", "12"),
+            ("BIGQUERY:Statistics:Query:TotalBytesProcessed", "12"),
+            ("BIGQUERY:statistics:total_bytes_processed", "12"),
+            ("BIGQUERY:Statistics:TotalBytesProcessed", "12"),
+            ("BIGQUERY:statistics:query:slot_millis", "13"),
+            ("BIGQUERY:Statistics:Query:SlotMillis", "13"),
+            ("BIGQUERY:statistics:query:num_dml_affected_rows", "14"),
+            ("BIGQUERY:Statistics:Query:NumDMLAffectedRows", "14"),
+        ] {
+            assert_eq!(schema.metadata()[key], expected, "{key}");
+        }
         assert_eq!(
             schema.metadata().len(),
             crate::BIGQUERY_SCHEMA_METADATA_JOB_KEYS.len()
@@ -165,35 +154,18 @@ mod tests {
             ..QueryMetadata::default()
         };
         let schema = schema_with_rest_metadata(original, &metadata);
-        assert_eq!(
-            schema.metadata(),
-            &std::collections::HashMap::from([
-                (
-                    "BIGQUERY:statistics:query:total_bytes_processed".to_owned(),
-                    "0".to_owned()
-                ),
-                (
-                    "BIGQUERY:Statistics:Query:TotalBytesProcessed".to_owned(),
-                    "0".to_owned()
-                ),
-                (
-                    "BIGQUERY:statistics:total_bytes_processed".to_owned(),
-                    "0".to_owned()
-                ),
-                (
-                    "BIGQUERY:Statistics:TotalBytesProcessed".to_owned(),
-                    "0".to_owned()
-                ),
-                (
-                    "BIGQUERY:statistics:query:num_dml_affected_rows".to_owned(),
-                    "0".to_owned()
-                ),
-                (
-                    "BIGQUERY:Statistics:Query:NumDMLAffectedRows".to_owned(),
-                    "0".to_owned()
-                ),
-            ]),
-        );
+        let keys = [
+            "BIGQUERY:statistics:query:total_bytes_processed",
+            "BIGQUERY:Statistics:Query:TotalBytesProcessed",
+            "BIGQUERY:statistics:total_bytes_processed",
+            "BIGQUERY:Statistics:TotalBytesProcessed",
+            "BIGQUERY:statistics:query:num_dml_affected_rows",
+            "BIGQUERY:Statistics:Query:NumDMLAffectedRows",
+        ];
+        assert_eq!(schema.metadata().len(), keys.len());
+        for key in keys {
+            assert_eq!(schema.metadata()[key], "0", "{key}");
+        }
     }
 
     #[test]
