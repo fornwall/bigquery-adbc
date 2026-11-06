@@ -70,7 +70,7 @@ pub(crate) fn execute_csv_load(
                 &configuration.credentials,
                 &upload,
                 &jobs,
-                Request::post_media_body(&url, &content_type, body, &context),
+                Request::post_media(&url, &content_type, body, &context),
                 request.reference(),
             ))?;
             Ok(FinishedJob {

@@ -34,8 +34,9 @@ pub(crate) struct RequestBody {
     content_length: u64,
 }
 
-impl RequestBody {
-    fn buffered(body: bytes::Bytes) -> Self {
+impl<T: Into<bytes::Bytes>> From<T> for RequestBody {
+    fn from(body: T) -> Self {
+        let body = body.into();
         let content_length = u64::try_from(body.len())
             .expect("a byte buffer's usize length fits in u64 on every supported target");
         Self {
@@ -43,16 +44,12 @@ impl RequestBody {
             content_length,
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn is_streaming(&self) -> bool {
-        self.body.as_bytes().is_none()
-    }
 }
 
-impl From<bytes::Bytes> for RequestBody {
-    fn from(body: bytes::Bytes) -> Self {
-        Self::buffered(body)
+#[cfg(test)]
+impl RequestBody {
+    pub(crate) fn is_streaming(&self) -> bool {
+        self.body.as_bytes().is_none()
     }
 }
 
@@ -286,7 +283,7 @@ impl<'a> Request<'a> {
             ..Self::new(
                 reqwest::Method::PATCH,
                 url,
-                Some(("application/json", RequestBody::buffered(body.into()))),
+                Some(("application/json", RequestBody::from(body))),
                 context,
             )
         }
@@ -297,7 +294,7 @@ impl<'a> Request<'a> {
         Self::new(
             reqwest::Method::POST,
             url,
-            Some(("application/json", RequestBody::buffered(body.into()))),
+            Some(("application/json", RequestBody::from(body))),
             context,
         )
     }
@@ -309,26 +306,11 @@ impl<'a> Request<'a> {
         Self::post_json(url, bytes::Bytes::new(), context)
     }
 
-    /// A buffered media `POST`, without the normal whole-request deadline.
+    /// A buffered or streamed media `POST`, without the normal whole-request deadline.
     pub(crate) fn post_media(
         url: &'a str,
         content_type: &'a str,
-        body: impl Into<bytes::Bytes>,
-        context: &'a str,
-    ) -> Self {
-        Self::post_media_body(
-            url,
-            content_type,
-            RequestBody::buffered(body.into()),
-            context,
-        )
-    }
-
-    /// A streamed media `POST`, without the normal whole-request deadline.
-    pub(crate) fn post_media_body(
-        url: &'a str,
-        content_type: &'a str,
-        body: RequestBody,
+        body: impl Into<RequestBody>,
         context: &'a str,
     ) -> Self {
         Self {
@@ -336,7 +318,7 @@ impl<'a> Request<'a> {
             ..Self::new(
                 reqwest::Method::POST,
                 url,
-                Some((content_type, body)),
+                Some((content_type, body.into())),
                 context,
             )
         }

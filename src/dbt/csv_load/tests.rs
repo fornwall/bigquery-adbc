@@ -69,7 +69,7 @@ fn submit(
         &credentials,
         &upload,
         jobs,
-        Request::post_media_body(
+        Request::post_media(
             url,
             "multipart/related; boundary=test",
             body,
