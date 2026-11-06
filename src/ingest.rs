@@ -91,18 +91,6 @@ pub(crate) struct IngestContext<'a> {
     pub(crate) operation: &'a Operation,
 }
 
-pub(crate) fn execute_ingest(
-    context: IngestContext<'_>,
-    options: &IngestOptions,
-    reader: Box<dyn RecordBatchReader + Send>,
-) -> Result<i64> {
-    match options.method {
-        BigQueryBulkIngestMethod::StorageWrite => {
-            execute_storage_write_ingest(context, options, reader)
-        }
-    }
-}
-
 /// Checks the target, schema and ingest mode for `bigquery.query.dry_run`.
 /// Reads table metadata but preserves the bound stream, so row values are not validated.
 pub(crate) fn validate_ingest(
@@ -110,19 +98,15 @@ pub(crate) fn validate_ingest(
     options: &IngestOptions,
     schema: &Schema,
 ) -> Result<()> {
-    match options.method {
-        BigQueryBulkIngestMethod::StorageWrite => {
-            context.operation.check()?;
-            let table = resolve_target(context.current_catalog, context.current_schema, options)?;
-            let metadata_client = context.state.metadata_client(context.runtime)?;
-            ingest_schema(&context, &metadata_client, table, options.mode, schema)?
-                .plan_target(&context, &metadata_client, table, options.mode, true)
-                .map(|_| ())
-        }
-    }
+    context.operation.check()?;
+    let table = resolve_target(context.current_catalog, context.current_schema, options)?;
+    let metadata_client = context.state.metadata_client(context.runtime)?;
+    ingest_schema(&context, &metadata_client, table, options.mode, schema)?
+        .plan_target(&context, &metadata_client, table, options.mode, true)
+        .map(|_| ())
 }
 
-fn execute_storage_write_ingest(
+pub(crate) fn execute_ingest(
     context: IngestContext<'_>,
     options: &IngestOptions,
     mut reader: Box<dyn RecordBatchReader + Send>,
@@ -423,30 +407,25 @@ fn prepare_table(
     table: TableId<'_>,
     mode: IngestMode,
     expected_schema: &TableSchema,
-    plan: TablePlan,
+    mut plan: TablePlan,
 ) -> Result<TablePlan> {
-    match plan {
-        TablePlan::Reuse | TablePlan::Truncate => {}
-        TablePlan::Create => {
-            if !create_table(context, metadata_client, table, mode, expected_schema)? {
-                // Another writer created the target between the read above and the insert.
-                // Every mode but `create` writes into a table that exists, so plan once more
-                // against the one now there.
-                return match plan_table(context, metadata_client, table, mode, expected_schema)? {
-                    TablePlan::Create => Err(error(
-                        format!(
-                            "BigQuery ingest target {table} was created by another writer and \
-                             then removed while this ingest prepared it; retry the ingest"
-                        ),
-                        Status::IO,
-                    )),
-                    TablePlan::Recreate => recreate_table(context, table, expected_schema)
-                        .map(|()| TablePlan::Recreate),
-                    plan => Ok(plan),
-                };
-            }
+    if plan == TablePlan::Create
+        && !create_table(context, metadata_client, table, mode, expected_schema)?
+    {
+        // Another writer created the target between lookup and insert. Replan against it.
+        plan = plan_table(context, metadata_client, table, mode, expected_schema)?;
+        if plan == TablePlan::Create {
+            return Err(error(
+                format!(
+                    "BigQuery ingest target {table} was created by another writer and \
+                     then removed while this ingest prepared it; retry the ingest"
+                ),
+                Status::IO,
+            ));
         }
-        TablePlan::Recreate => recreate_table(context, table, expected_schema)?,
+    }
+    if plan == TablePlan::Recreate {
+        recreate_table(context, table, expected_schema)?;
     }
     Ok(plan)
 }
