@@ -163,6 +163,7 @@ fn after_executed_rows(row: usize, mut failure: Error) -> Error {
     failure
 }
 
+/// Wrapped by `operation_reader`, which drops this reader on error or EOF.
 pub(super) struct ParameterizedRecordBatchReader {
     pub(super) context: ExecutionContext,
     pub(super) query_options: StatementQueryOptions,
@@ -172,7 +173,6 @@ pub(super) struct ParameterizedRecordBatchReader {
     pub(super) rows: ParameterRows,
     pub(super) current: Box<dyn RecordBatchReader + Send>,
     pub(super) schema: SchemaRef,
-    pub(super) failed: bool,
     pub(super) operation: Operation,
 }
 
@@ -180,12 +180,7 @@ impl Iterator for ParameterizedRecordBatchReader {
     type Item = std::result::Result<RecordBatch, ArrowError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.failed {
-            return None;
-        }
-        let batch = self.next_batch().transpose();
-        self.failed = batch.as_ref().is_some_and(|batch| batch.is_err());
-        batch
+        self.next_batch().transpose()
     }
 }
 

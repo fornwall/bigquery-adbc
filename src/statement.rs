@@ -312,7 +312,6 @@ impl BigQueryStatement {
             rows,
             current,
             schema,
-            failed: false,
             operation: operation.clone(),
         });
         // Later rows have not run yet, so the total is unknown even for DML.

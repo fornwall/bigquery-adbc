@@ -115,7 +115,7 @@ fn cancellation_after_reading_parameters_is_not_reported_as_successful_eof() {
     let schema = Arc::new(Schema::empty());
     let reader = RecordBatchIterator::new(batches, schema.clone());
     let rows = ParameterRows::new(Box::new(reader), ParameterMode::Positional).unwrap();
-    let mut reader = ParameterizedRecordBatchReader {
+    let reader = ParameterizedRecordBatchReader {
         context: statement.context,
         query_options: statement.query_options,
         transaction: statement.transaction,
@@ -124,9 +124,9 @@ fn cancellation_after_reading_parameters_is_not_reported_as_successful_eof() {
         rows,
         current: crate::query::empty_reader(schema.clone()),
         schema,
-        failed: false,
-        operation,
+        operation: operation.clone(),
     };
+    let mut reader = crate::cancellation::operation_reader(Box::new(reader), operation);
 
     let ArrowError::ExternalError(failure) = reader.next().unwrap().unwrap_err() else {
         panic!("expected the cancellation error");
@@ -172,7 +172,10 @@ fn result_stream_failures_identify_prior_parameter_executions_and_keep_details()
         let operation = statement.cancellation.begin();
         let schema = Arc::new(Schema::empty());
         let mut rows = ParameterRows::new(
-            crate::query::empty_reader(schema.clone()),
+            Box::new(RecordBatchIterator::new(
+                std::iter::from_fn(|| panic!("read parameters after a result stream failure")),
+                schema.clone(),
+            )),
             ParameterMode::Positional,
         )
         .unwrap();
@@ -185,7 +188,7 @@ fn result_stream_failures_identify_prior_parameter_executions_and_keep_details()
             [Err(ArrowError::ExternalError(Box::new(failure)))],
             schema.clone(),
         );
-        let mut reader = ParameterizedRecordBatchReader {
+        let reader = ParameterizedRecordBatchReader {
             context: statement.context,
             query_options: statement.query_options,
             transaction: statement.transaction,
@@ -194,9 +197,9 @@ fn result_stream_failures_identify_prior_parameter_executions_and_keep_details()
             rows,
             current: Box::new(current),
             schema,
-            failed: false,
-            operation,
+            operation: operation.clone(),
         };
+        let mut reader = crate::cancellation::operation_reader(Box::new(reader), operation);
 
         let ArrowError::ExternalError(source) = reader.next().unwrap().unwrap_err() else {
             panic!("expected the original ADBC error");
@@ -242,7 +245,7 @@ fn replacing_per_job_metadata_preserves_zero_column_rows() {
         ParameterMode::Positional,
     )
     .unwrap();
-    let mut reader = ParameterizedRecordBatchReader {
+    let reader = ParameterizedRecordBatchReader {
         context: statement.context,
         query_options: statement.query_options,
         transaction: statement.transaction,
@@ -251,9 +254,9 @@ fn replacing_per_job_metadata_preserves_zero_column_rows() {
         rows,
         current: Box::new(RecordBatchIterator::new(std::iter::once(Ok(batch)), later)),
         schema: first.clone(),
-        failed: false,
-        operation,
+        operation: operation.clone(),
     };
+    let mut reader = crate::cancellation::operation_reader(Box::new(reader), operation);
     let batch = reader.next().unwrap().unwrap();
     assert_eq!(batch.schema(), first);
     assert_eq!(batch.num_rows(), 3);
