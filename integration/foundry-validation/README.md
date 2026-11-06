@@ -1,11 +1,8 @@
 # Driver Foundry validation
 
-[Driver Foundry](https://github.com/adbc-drivers) is a collection of vendor- and community-built
-ADBC drivers, including the Go BigQuery driver, with a shared validation suite. This project, for
-contributors, runs the pinned [`adbc-drivers/validation`](https://github.com/adbc-drivers/validation)
-suite against an installed `bigquery-adbc` wheel. The native library is always found through the
-package's public `driver_path()` API. dbt's `bigquery_foundry` driver channel is a separate thing;
-see [DBT-CORE.md](../../docs/DBT-CORE.md#installing).
+The pinned [Driver Foundry validation suite](https://github.com/adbc-drivers/validation) runs
+against an installed `bigquery-adbc` wheel, loading its library through `driver_path()`.
+For dbt's separate `bigquery_foundry` channel, see [DBT-CORE.md](../../docs/DBT-CORE.md#installing).
 
 ## Running
 
@@ -28,26 +25,18 @@ PYTEST_ADDOPTS='-k test_create_dictionary --durations=10' \
     cargo test --locked --test clients foundry::suite_passes -- --ignored
 ```
 
-[`tests/clients/foundry.rs`](../../tests/clients/foundry.rs) drives the suite, and pytest reads its
-options from `PYTEST_ADDOPTS`. The test builds and installs a wheel, creates isolated BigQuery
-datasets, runs pytest sequentially with the required environment variables, and drops the
-datasets, also when a test fails or the run is interrupted. After Ctrl-C, the test stops pytest
-within five seconds, and Cargo returns to the prompt at once, while the drop finishes.
-`BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT` is required, including
-for collection and query inspection. Missing or empty values fail; there is no project default.
+[`tests/clients/foundry.rs`](../../tests/clients/foundry.rs) builds and installs a wheel, creates
+isolated datasets, runs pytest with `PYTEST_ADDOPTS`, and cleans up on success, failure or interruption.
+Ctrl-C stops pytest within five seconds; dataset cleanup finishes after Cargo returns.
+The project variable is required even for collection and query inspection; there is no default.
 
-Cargo reuses this checkout's `target/` by default, checking source and dependency freshness before
-each wheel build. Set `CARGO_TARGET_DIR` to use another build cache or a fresh directory for a
-clean build. The wheel is rebuilt and reinstalled on every live run. Build timing and reproduction
-commands are in [PERFORMANCE.md](../../docs/PERFORMANCE.md#foundry-validation-build-cache).
+Every live run rebuilds and reinstalls the wheel, reusing `target/` unless `CARGO_TARGET_DIR` is set.
+See [build-cache measurements](../../docs/PERFORMANCE.md#foundry-validation-build-cache).
 
-Run one invocation at a time per checkout: the installed wheel and Python environment are shared.
-Pytest workers are not configured; the upstream fixtures share table names and connections within
-each dataset. Parallel execution would need separate datasets per worker and aggregate coverage
-guards, so adding `pytest-xdist` alone is insufficient.
+Run one invocation per checkout: the wheel and environment are shared. Parallel pytest workers
+would also need separate datasets and aggregate coverage checks.
 
-Pass `--junitxml` to write a JUnit report. Relative paths are resolved from
-`integration/foundry-validation/`:
+JUnit paths are relative to `integration/foundry-validation/`:
 
 ```sh
 PYTEST_ADDOPTS=--junitxml=foundry-results.xml \
@@ -56,29 +45,22 @@ PYTEST_ADDOPTS=--junitxml=foundry-results.xml \
 
 ## Coverage
 
-- `GetObjects` table-type filtering uses the upstream test from
-  [adbc-drivers/validation#324](https://github.com/adbc-drivers/validation/pull/324), with
-  `get_objects_tabletypes_filter` enabled. It checks inclusion and exclusion of both tables and
-  views, including filters that accept both types.
+- [`GetObjects` type filtering](https://github.com/adbc-drivers/validation/pull/324) checks
+  inclusion and exclusion of tables and views, including combined filters.
 - Ingestion modes run with ordinary strings, string views, binary views, INT64, decimals
   (including negative scales), nanosecond times, and microsecond and nanosecond timestamps. They
   cover append, replacement, replacement with an explicit catalog and schema, schema conflicts,
   large batches and multiple batches. The upstream mode helpers require two-column fixtures, so the
   three-column timezone-aware timestamp fixtures run in `test_create`. Long-value cases cover
   ordinary, large and view string and binary inputs from 1 to 128 KiB.
-- Dictionary binding covers all 28 scalar input cases: strings and binary values (including large,
-  fixed-size and view representations), booleans, integers, floats (including Float16), decimals,
-  dates, times and timestamps, through the INSERT and `ExecuteUpdate` binding path.
-- Dictionary ingestion uses the upstream test from
-  [adbc-drivers/validation#317](https://github.com/adbc-drivers/validation/pull/317) for all 30
-  ingestion fixtures, including repeated indices and nulls, through the Storage Write API.
-  It encodes the first value column; the second timezone-aware timestamp column stays plain.
-- Stream binding uses the upstream tests from
-  [adbc-drivers/validation#306](https://github.com/adbc-drivers/validation/pull/306): all 28 scalar
-  fixtures, including Float16, bound as a single batch, multiple batches, and multiple batches with
-  empty batches before, between and after the data. Each stream is consumed by one INSERT
-  `ExecuteUpdate` call; the driver submits one BigQuery job per parameter row. Native and
-  installed-wheel tests cover `ExecuteQuery` and entirely empty inputs.
+- Dictionary binding covers all 28 scalar fixtures, including Float16, through INSERT and
+  `ExecuteUpdate`. [Dictionary ingestion](https://github.com/adbc-drivers/validation/pull/317)
+  covers all 30 ingestion fixtures, repeated indices and nulls; the second timezone-aware timestamp
+  column stays plain.
+- [Stream binding](https://github.com/adbc-drivers/validation/pull/306) covers all 28 scalar fixtures
+  in one or multiple batches, including interspersed empty batches. One INSERT `ExecuteUpdate`
+  consumes each stream, submitting one job per row. Native and installed-wheel tests cover
+  `ExecuteQuery` and entirely empty inputs.
 
 Dictionary ingestion and dictionary/stream binding select their fixtures from the query set,
 so adding a fixture also exercises those paths. Ingestion mode and long-value selections remain

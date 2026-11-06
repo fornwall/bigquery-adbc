@@ -1,7 +1,6 @@
 # Architecture
 
-How the driver is put together, for anyone reading or changing the code. Option behavior and
-guarantees are in the [driver reference](REFERENCE.md).
+Public behavior is documented in the [driver reference](REFERENCE.md).
 
 ## Overview
 
@@ -20,16 +19,12 @@ flowchart LR
     dbt --> rest
 ```
 
-The driver is an ordinary Rust library that implements the `adbc_core` traits. `BigQueryDriver`
-creates a `BigQueryDatabase`, which creates `BigQueryConnection`s, which create
-`BigQueryStatement`s. The C ABI in `src/ffi` is a translation layer on top of those types: nothing
-outside it knows the driver is exported over C.
+The Rust library implements the `adbc_core` driver, database, connection and statement traits.
+`src/ffi` exports them through the C ABI; no other module depends on that interface.
 
-ADBC is a blocking API and the Google clients are asynchronous. Each Rust driver owns a Tokio
-runtime, implemented in `src/runtime.rs`, shared by its databases, connections, statements and
-readers. The ADBC objects block on it, and result readers receive batches from tasks running on
-it. The C ABI keeps one driver for the process; releasing its handles does not stop the runtime,
-so the shared library must remain loaded.
+`src/runtime.rs` bridges blocking ADBC calls to asynchronous Google clients. Each Rust driver owns
+a Tokio runtime shared by its handles and readers. The C ABI keeps one driver for the process;
+releasing its handles does not stop the runtime, so the shared library must remain loaded.
 
 ## Running a query
 
@@ -92,9 +87,8 @@ describes the failure behavior for each mode.
 
 ## Design constraints
 
-- **Library size matters.** The driver is loaded into other processes, so dependencies and their
-  features are chosen deliberately, and `Cargo.toml` sets an optimization level per dependency.
-  [BINARY-SIZE.md](BINARY-SIZE.md) records the measurements.
+- `Cargo.toml` sets per-dependency optimization levels; [BINARY-SIZE.md](BINARY-SIZE.md) records
+  their effect on the shared library.
 - **Unsafe code stays in the `ffi` module.** The crate denies `unsafe_code` everywhere else. The
   export layer catches panics before they cross the C ABI and reports them as ADBC errors.
 - **Option values can be secrets.** Validation errors omit them, except endpoint hosts and ports.

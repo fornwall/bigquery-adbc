@@ -1,12 +1,8 @@
 # Contributing
 
-Thanks for taking a look at bigquery-adbc. Bug reports, fixes and improvements are welcome. The
-project is experimental and has a single maintainer, so please open an issue before starting
-anything large.
-
-For bug reports, use the [issue form](https://github.com/fornwall/bigquery-adbc/issues/new/choose),
-and remove credentials and private data. Report vulnerabilities privately, as described in
-[SECURITY.md](SECURITY.md).
+Please open an issue before starting a large change. Use the
+[issue form](https://github.com/fornwall/bigquery-adbc/issues/new/choose) for bugs, removing
+credentials and private data. Report vulnerabilities through [SECURITY.md](SECURITY.md).
 
 ## Getting started
 
@@ -25,9 +21,7 @@ cargo test --locked --all-features
 
 ## Building
 
-The Rust toolchain is pinned in [rust-toolchain.toml](rust-toolchain.toml). `Cargo.toml` declares
-only the `rlib` that tests, benchmarks and fuzzing use. Build the shared library separately so
-the release profile's link-time optimization applies:
+`Cargo.toml` declares only an `rlib`. Build the shared library with release link-time optimization:
 
 ```sh
 cargo rustc --release --locked --lib --crate-type cdylib
@@ -47,8 +41,6 @@ go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
 ### Rust
 
-From the repository root:
-
 ```sh
 cargo fmt --all --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
@@ -56,12 +48,10 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked --all-features
 ```
 
-These need no BigQuery credentials; live tests stay ignored. Clippy runs with default features too,
-because developer features can hide problems in the shipped build.
+Live tests stay ignored. Check both feature sets: developer features can hide shipped-build issues.
 
-For documentation-only changes, check affected links and run `git diff --check`; code tests are
-unnecessary. In change descriptions, state which checks ran and distinguish unit or mock tests
-from tests against BigQuery.
+For documentation-only changes, check affected links and `git diff --check`. Report validation,
+distinguishing offline tests from live BigQuery tests.
 
 ### Python
 
@@ -72,10 +62,8 @@ scripts/run-python-lint.sh
 scripts/run-offline-python-tests.sh
 ```
 
-The [Python development guide](python/DEVELOPMENT.md#local-tests) covers individual suites and
-loading a local driver build. Offline unit tests for the dbt runner live in
-[`tests/harness/test_dbt_runner.py`](tests/harness/test_dbt_runner.py); the dbt integration project
-and live runner are in [`integration/dbt/`](integration/dbt/README.md).
+See [Python development](python/DEVELOPMENT.md#local-tests) for individual suites and local builds.
+The scripts include the [dbt runner's offline tests](tests/harness/test_dbt_runner.py).
 
 After changing an option key, value, or Python exposure, regenerate the Python enums
 instead of editing `python/src/bigquery_adbc/_options.py`:
@@ -97,12 +85,10 @@ missing safety sections; `clippy.toml` enables documentation checks on private i
 
 ## Fuzzing and Miri
 
-After changing Arrow IPC parsing or REST row decoding, run the affected fuzz targets; after
-changing the FFI layer, run its tests under Miri. Both need a nightly toolchain, and fuzzing also
-needs [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz). On every pull request and push to
-`main`, CI runs the filtered Miri suite below and each fuzz target for 60 seconds with AddressSanitizer.
-The two jobs run in parallel with 30-minute timeouts and a nightly pinned in
-[ci.yml](.github/workflows/ci.yml); CI saves crash inputs as the `fuzz-artifacts` artifact.
+After IPC or REST decoder changes, run the affected fuzz targets; after FFI changes, run Miri.
+Both need nightly; fuzzing also needs [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz).
+[CI](.github/workflows/ci.yml) runs these commands with a pinned nightly, AddressSanitizer for
+fuzzing, and 30-minute job timeouts. Crashes are saved as `fuzz-artifacts`.
 
 ```sh
 (cd fuzz && cargo +nightly fuzz run ipc_batch -- -max_total_time=60)
@@ -136,19 +122,15 @@ Live tests are ignored by default. They create cloud resources and run billable 
 Application Default Credentials (ADC); configure these with
 `gcloud auth application-default login`.
 
-Every integration suite, including Rust, Python, C++ validation, Foundry, DuckDB, dbt and
-its benchmarks, requires `BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT`. There is no project
-default: missing or empty values fail before cloud access, and the active gcloud project does not
-select the test project.
+Every live integration suite and dbt benchmark requires `BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT`.
+Missing or empty values fail before cloud access; the active gcloud project is not a default.
 
 ```sh
 export BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT=my-test-project
 ```
 
-The Rust suite uses the existing `sq_scratch` dataset in that project and, for Cloud Storage
-cases, its `<project>-adbc-scratch` bucket. These names are defined in
-[tests/bigquery/support.rs](tests/bigquery/support.rs). Grant your credentials access to those
-resources, then run:
+The Rust suite needs access to the existing `sq_scratch` dataset and, for Cloud Storage cases,
+`<project>-adbc-scratch` bucket ([defaults](tests/bigquery/support.rs)). Run its ADC-only cases:
 
 ```sh
 cargo test --locked --all-features --test bigquery -- --ignored \
@@ -160,8 +142,7 @@ cargo test --locked --all-features --test bigquery -- --ignored \
   --skip bulk_ingests_after_rapid_table_recreation
 ```
 
-This runs the ADC-only integration cases. Run the credential-specific cases with the scripts
-below. The numeric-project case also needs the project's numeric ID:
+The numeric-project case also needs the project's numeric ID:
 
 ```sh
 BIGQUERY_ADBC_PROJECT_NUMBER="$(gcloud projects describe "$BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT" --format='value(projectNumber)')" \
@@ -185,11 +166,9 @@ The regional recovery test needs permission to create a disposable dataset in `a
 scripts/run-one-live-test.sh regional_recovery_survives_lost_submission_responses
 ```
 
-It forwards requests to real BigQuery through a loopback proxy and drops submission responses
-after receiving them from the service. It checks recovery through a real 409 and through
-cross-region `jobs.list`, identical retry bodies, exactly one application of each mutation, and
-remote cancellation after a lost response. No service response is fabricated. The test cancels
-its jobs and deletes its dataset and tables, including on failure; it refuses emulator mode.
+It drops real submission responses through a loopback proxy, then checks 409 and cross-region
+`jobs.list` recovery, identical retries, exactly-once mutations, and remote cancellation. It
+cancels jobs and deletes resources on failure too, and refuses emulator mode.
 
 These runners cover other credential types:
 
@@ -212,10 +191,8 @@ as `duckdb`, to run one. `PYTEST_ADDOPTS` passes options to the pytest suites.
 
 ## BigQuery emulator
 
-The Rust `tests/bigquery/` and Python DBAPI suites can opt into a local BigQuery emulator. Real
-BigQuery remains the default.
-Start a fresh emulator and run six existing smoke tests covering queries, dry runs, nested
-results, parameters, Storage Read and Storage Write:
+The Rust and Python DBAPI suites can use a local emulator; BigQuery remains the default. Run six
+smoke tests for queries, dry runs, nested results, parameters, Storage Read and Storage Write:
 
 ```sh
 export BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT=my-emulator-project
@@ -223,10 +200,8 @@ export ADBC_BIGQUERY_EMULATOR_BIN=/path/to/emulator
 scripts/run-emulator-tests.sh
 ```
 
-The runner starts the required `ADBC_BIGQUERY_EMULATOR_BIN` executable on ephemeral loopback ports
-and stops it when tests finish. It creates `sq_scratch` in the explicitly selected project in `US`
-and a synthetic one-row `bigquery-public-data.samples.shakespeare` table for catalog-switching
-tests.
+The runner starts `ADBC_BIGQUERY_EMULATOR_BIN` on ephemeral loopback ports and stops it afterward.
+It seeds `sq_scratch` in `US` and a one-row `bigquery-public-data.samples.shakespeare` fixture.
 
 The executable must accept
 `serve --host 127.0.0.1 --port 0 --grpc-port 0 --project <id> --log-requests`, with `--project`
@@ -249,15 +224,12 @@ ADBC_BIGQUERY_EMULATOR_STORAGE_ENDPOINT=http://127.0.0.1:9060 \
 scripts/run-one-live-test.sh executes_scalar_query_and_dry_run_schema
 ```
 
-Both variables must be absolute `http://` or `https://` origins, without paths or credentials.
-The test helpers select anonymous authentication and override all service endpoints, including
-cleanup connections. A missing or invalid endpoint fails configuration. These variables affect
-only the Rust and Python test suites; applications use the driver's endpoint options. The C++,
-Foundry, DuckDB and dbt integration runners still require Google Cloud.
-
-Other tests can fail on [emulator gaps or missing fixtures](docs/LIMITATIONS.md#emulator-coverage);
-they retain their BigQuery assertions. Credential, IAM and Cloud Storage tests refuse emulator
-mode. Emulator tests do not validate Google Cloud IAM, quotas or billing behavior.
+Both must be HTTP(S) origins without paths or credentials. Invalid or partial configuration fails.
+The test helpers use anonymous authentication and override every service endpoint, including
+cleanup. Applications use the driver's endpoint options instead. C++, Foundry, DuckDB and dbt
+runners, plus credential, IAM and Cloud Storage tests, still require Google Cloud. Other tests
+retain their assertions and may fail on [emulator gaps](docs/LIMITATIONS.md#emulator-coverage).
+Emulators do not validate IAM, quotas or billing.
 
 ## Changes and review
 
@@ -281,16 +253,13 @@ Build native release archives with the same license bundle as the Python wheels:
 uv run --project python --locked python tools/package_native.py
 ```
 
-The command builds the release cdylib with locked dependencies, checks its ADBC exports, and
-writes a platform-named archive in `dist/` (`.tar.gz` on Linux/macOS, `.zip` on Windows).
-The archive contains the library, the `bigquery-adbc.toml` driver manifest, `LICENSE`, `NOTICE`, and
-`licenses/` with the dependency texts, Rust standard-library notices, and a source inventory.
-`--output-dir` selects another directory. `--library /absolute/path/to/library` packages an existing
-library, and `--wheel path/to/wheel` packages the library inside a wheel for this platform; either
-must have been built from this checkout's locked dependencies and pinned Rust toolchain. The Python
-wheel's `BIGQUERY_ADBC_BUILD_LIBRARY` override has the same provenance requirement.
-The archive uses the platform's driver filename to match the manifest, even if the `--library`
-input has a different name.
+This builds the locked release cdylib, checks its exports, and writes a platform-named archive in
+`dist/` (`.tar.gz` on Linux/macOS, `.zip` on Windows). It includes the library, driver manifest,
+`LICENSE`, `NOTICE`, dependency texts, Rust standard-library notices and source inventory.
+`--output-dir` changes the destination. `--library /absolute/path/to/library` or `--wheel path/to/wheel`
+packages an existing library for this platform, using the manifest's expected filename. Like the
+wheel's `BIGQUERY_ADBC_BUILD_LIBRARY` override, these inputs must use this checkout's locked
+dependencies and pinned Rust toolchain.
 
 After changing `Cargo.toml`, `Cargo.lock`, or the pinned Rust version, regenerate the checked-in
 bundle. A change to this crate's own version alone needs no regeneration:
@@ -300,21 +269,16 @@ python3 tools/generate_licenses.py
 python3 tools/generate_licenses.py --check
 ```
 
-Generation uses locked Cargo metadata for the five release targets, traversing normal and build
-dependencies, including nested license/notice files and leading source copyright notices.
-It conservatively includes build dependencies and platform-specific components; it is not a list
-of code proven to survive linking. Identical texts are stored once and referenced by hash.
-The compiler's `COPYRIGHT-library.html` supplies the Rust standard-library notices. Generation
-needs the pinned compiler and dependency sources (Cargo may download them); packaging validates
-the checked-in input and content hashes without running the generator or accessing the network.
-Source distributions include the bundle and regeneration tools.
+Generation uses locked Cargo metadata for all five release targets and includes normal and build
+dependencies, nested notices and source copyright headers, deduplicated by hash. This includes
+code that may not survive linking. The pinned compiler supplies `COPYRIGHT-library.html`;
+Cargo may download dependency sources. Packaging checks the saved hashes offline. Source
+distributions include the bundle and generator.
 
-Review licensing when adding dependencies. A missing license text fails generation: add a
-reviewed copy under `tools/license-sources/` and record its exact upstream revision and URL in
-`sources.json` when the published crate omits it. Existing supplements are checked against the
-crate's Cargo VCS metadata. CI regenerates and compares the bundle, and package builds reject
-stale or damaged copies. These checks preserve collected notices; they do not establish rights
-to new source material or replace review of unusual license terms.
+Review new dependencies' licenses. Missing texts fail generation: add a reviewed copy to
+`tools/license-sources/` with its upstream revision and URL in `sources.json`. Supplements are
+checked against Cargo VCS metadata; CI regenerates the bundle and builds reject stale or damaged
+copies. These checks preserve notices but do not replace license review.
 
 ## Releasing
 

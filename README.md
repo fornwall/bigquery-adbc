@@ -8,10 +8,9 @@
 > [!WARNING]
 > **Experimental.** This project is AI-generated and has not seen real-world use.
 
-An [Arrow Database Connectivity (ADBC)](https://arrow.apache.org/adbc/current/format/specification.html)
-driver for Google BigQuery, written in Rust. One native library gives Python, C, C++ and Rust
-programs, and ADBC clients such as DuckDB and dbt, columnar access to BigQuery. Python wheels
-bundle the library for Linux, macOS and Windows.
+An [ADBC](https://arrow.apache.org/adbc/current/format/specification.html) driver for Google
+BigQuery, written in Rust, for Python, C, C++, Rust, DuckDB and dbt. Python wheels bundle the
+native library for Linux, macOS and Windows.
 
 ## Status
 
@@ -31,9 +30,8 @@ are not supported. dbt CSV seeds use a separate [load-job path](docs/DBT-CORE.md
 See the [known limitations](docs/LIMITATIONS.md) and the
 [differences from the Go driver](docs/GO-DRIVER-COMPARISON.md), the reference implementation.
 
-For measured library sizes and dbt timings, see [binary size](docs/BINARY-SIZE.md) and
-[performance](docs/PERFORMANCE.md#live-dbt-workload). Those results describe the recorded builds
-and workloads, not performance guarantees.
+See [binary size](docs/BINARY-SIZE.md) and [performance](docs/PERFORMANCE.md#live-dbt-workload)
+for measurements and reproduction commands.
 
 ## Quickstart
 
@@ -64,18 +62,15 @@ with dbapi.connect("bigquery:///my-project", autocommit=True) as connection:
         print(cursor.fetchone())  # (1,)
 ```
 
-Use `cursor.fetch_arrow_table()` to read a result as Arrow instead of Python tuples, and
-`cursor.fetch_df()` for pandas.
+Use `cursor.fetch_arrow_table()` for Arrow or `cursor.fetch_df()` for pandas.
 
 Use `autocommit=True` for independent queries. The DB-API default, `False`, opens a BigQuery
 transaction session when a query needs one, which adds round trips, and leaving the `with` block
 rolls back uncommitted work unless you call `connection.commit()`.
 
-The URI can also select a dataset and location, for example
-`bigquery:///my-project?DatasetId=my_dataset&Location=US`. See
-[connection URIs](docs/REFERENCE.md#connection-uris) and
-[database options](docs/REFERENCE.md#database-options) for other credentials and settings, and
-the [Python guide](python/README.md) for more on the package.
+The URI can select a dataset and location: `bigquery:///my-project?DatasetId=my_dataset&Location=US`.
+See [connection URIs](docs/REFERENCE.md#connection-uris),
+[database options](docs/REFERENCE.md#database-options) and the [Python guide](python/README.md).
 
 ## C and C++
 
@@ -104,13 +99,10 @@ AdbcDatabaseSetOption(&database, "uri", "bigquery:///my-project", &error);
 AdbcDatabaseInit(&database, &error);
 ```
 
-[`examples/query.c`](examples/query.c) is a complete program. Check each call's `AdbcStatusCode`
-before using its output, and release returned Arrow streams and ADBC handles, including on error
-paths; `AdbcError.release` frees the error when non-null. Keep the library loaded for the life of
-the process, because the `AdbcDriver.release` callback does not stop its worker threads. The
-reference C driver manager never unloads drivers. The
-[C++ validation harness](integration/adbc-validation/README.md) shows how this repository loads and
-tests the library.
+[`examples/query.c`](examples/query.c) is a complete program. Check each `AdbcStatusCode`, release
+Arrow streams and ADBC handles on every path, and call `AdbcError.release` when non-null. Keep the
+library loaded for the process lifetime: `AdbcDriver.release` does not stop its worker threads.
+The reference C driver manager never unloads drivers.
 
 ### Loading by name
 
@@ -147,10 +139,9 @@ manifest as `bigquery.toml` instead.
 
 ## Rust
 
-The C ABI and the Python package are the supported interfaces. The Rust crate is available only
-from Git, is unstable, and may change without notice. For Rust integration, see the
-[Rust API reference](docs/REFERENCE.md#rust-api), which lists the `adbc_core` revision and Arrow
-patches your workspace needs. From a checkout, [`examples/query.rs`](examples/query.rs) runs with:
+The supported interfaces are C and Python. The Rust crate is Git-only and unstable. See the
+[Rust API reference](docs/REFERENCE.md#rust-api) for required dependency revisions and patches.
+From a checkout, run [`examples/query.rs`](examples/query.rs) with:
 
 ```sh
 cargo run --locked --example query -- my-project "SELECT 1 AS n"
@@ -206,16 +197,10 @@ The standard `adbc.statement.bind_by_name=true` also selects named mode. See
 
 ## Testing
 
-CI runs Rust unit and mock tests on Linux, macOS and Windows, Python unit tests on Linux, and
-installation tests for each platform's Python wheel. It also runs the FFI layer under Miri and
-fuzzes the Arrow IPC and REST decoders.
-
-Separate live suites run against real BigQuery: the Rust tests, the Python package, Apache Arrow's
-[ADBC C++ validation suite](integration/adbc-validation/README.md),
-[Driver Foundry validation](integration/foundry-validation/README.md),
-[DuckDB](integration/duckdb/README.md) and [dbt-core 2.0](integration/dbt/README.md). They need a
-Google Cloud project, so CI does not run them. See the
-[runners and coverage notes](CONTRIBUTING.md#live-tests) for setup, exclusions and local patches.
+CI runs Rust unit and mock tests on Linux, macOS and Windows, Python unit tests on Linux, wheel
+installation tests, Miri on the FFI layer, and fuzzing of the IPC and REST decoders. Live suites cover
+Rust, Python, ADBC C++ validation, Driver Foundry, DuckDB and dbt; they require a Google Cloud
+project and run outside CI. See [setup and coverage](CONTRIBUTING.md#live-tests).
 
 ## Documentation
 
