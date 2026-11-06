@@ -128,6 +128,38 @@ fn a_missing_seed_file_is_rejected_without_reading_the_seed() {
     assert_eq!(seed.length, data.len() as u64);
     assert_eq!(delimiter, ",");
     std::fs::remove_file(&path).unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let (send, receive) = mpsc::channel();
+        let worker = std::thread::spawn(move || send.send(options.open_for_load()).unwrap());
+        let result = receive.recv_timeout(Duration::from_secs(1));
+        // Release a blocking reader before asserting, so a regression cannot hang the suite.
+        let _writer = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            result
+                .expect("opening a FIFO must not wait for a writer")
+                .unwrap_err()
+                .status,
+            Status::InvalidArguments
+        );
+        worker.join().unwrap();
+    }
 }
 
 #[test]

@@ -28,6 +28,7 @@ changes.
 
 ### Fixed
 
+- CSV seed validation rejects Unix FIFOs without waiting for a writer.
 - Pipelined Storage Write appends honor the same three-retry limit as the first append.
 - Cancelled queries stop retrying definitive submission rejections, while ambiguous submissions
   still recover their job reference for cancellation.

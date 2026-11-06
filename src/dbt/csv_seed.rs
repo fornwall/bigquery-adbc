@@ -126,7 +126,11 @@ impl CsvSeedOptions {
                 &source,
             )
         };
-        let file = std::fs::File::open(filepath).map_err(unreadable)?;
+        let mut options = std::fs::File::options();
+        // Opening a FIFO must not wait for a writer before the regular-file check.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
+        let file = options.read(true).open(filepath).map_err(unreadable)?;
         let metadata = file.metadata().map_err(unreadable)?;
         if !metadata.is_file() {
             return Err(invalid_argument(format!(
