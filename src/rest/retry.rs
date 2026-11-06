@@ -17,16 +17,12 @@ mod tests;
 /// Request timeouts and backoff bound each attempt; the loop has no separate deadline.
 pub(crate) const MAX_ATTEMPTS: u32 = 5;
 
-/// Whether a failure permits a retry, before checking its HTTP status and reason.
-///
-/// [`Status::IO`] covers 429, every 5xx except 501 and 504, transport failures, and the 400/403
-/// reasons `crate::error::service_status` marks retryable. [`Status::Timeout`] covers 408, 504,
-/// and the driver's own request timeout. Any other status is a verdict on the request itself.
+/// Candidate failures for retry; HTTP status and reason may still rule them out.
 pub(crate) fn retryable_failure(status: Status) -> bool {
     matches!(status, Status::IO | Status::Timeout)
 }
 
-/// What a failed attempt says about how long to wait before the next one.
+/// Retry eligibility and backoff class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RetryClass {
     /// Not retryable.
@@ -37,20 +33,17 @@ pub(crate) enum RetryClass {
     RateLimited,
 }
 
-/// The BigQuery `reason` values that name a capacity limit rather than a condition of the
-/// request. `jobRateLimitExceeded` is the one BigQuery reports under a 400.
+/// Capacity limits; `jobRateLimitExceeded` can accompany HTTP 400.
 const RATE_LIMIT_REASONS: [&str; 3] =
     ["rateLimitExceeded", "jobRateLimitExceeded", "quotaExceeded"];
 
-/// Choose the retry schedule from the mapped ADBC status and optional service response.
-/// HTTP status and reason are absent for failures before a response arrives.
+/// HTTP status and reason are absent for transport failures.
 pub(crate) fn retry_class(
     http: Option<reqwest::StatusCode>,
     reason: Option<&str>,
     status: Status,
 ) -> RetryClass {
-    // A job its `jobTimeoutMs` stopped reports TIMEOUT, but the same request would only wait
-    // out the same deadline again.
+    // Retrying a job stopped by `jobTimeoutMs` would hit the same deadline.
     if !retryable_failure(status) || reason == Some("stopped") {
         return RetryClass::Final;
     }
@@ -122,21 +115,14 @@ pub(crate) struct RetryDelays {
 }
 
 impl RetryDelays {
-    /// For the requests a query or metadata call is waiting on anyway: `jobs.insert`,
-    /// `jobs.query`, `jobs.getQueryResults` and metadata reads.
-    ///
-    /// Long enough to ride out a rate-limit episode, since dbt runs many models concurrently
-    /// against one project's quota. At most 5.25 s transient and 21 s rate-limited over four
-    /// retries.
+    /// Submission, result retrieval, and metadata requests. Four retries wait at most 5.25 s
+    /// for transient failures or 21 s for rate limits shared by concurrent dbt models.
     pub(crate) const SERVICE: Self = Self {
         transient: Schedule::new(Duration::from_millis(250), Duration::from_secs(2), 4.0),
         rate_limited: Schedule::new(Duration::from_secs(1), Duration::from_secs(8), 4.0),
     };
 
-    /// For loops a caller blocks on, which must answer rather than wait out a quota: `jobs.cancel`
-    /// (synchronous on the host thread in `AdbcStatementCancel`) and reconciling an ambiguous
-    /// submission (which waits out propagation delay, not quota). Both classes share one 1.05 s
-    /// window.
+    /// Synchronous `jobs.cancel` and ambiguous-submission reconciliation: at most 1.05 s of backoff.
     pub(crate) const PROMPT: Self = {
         let blocking = Schedule::new(Duration::from_millis(50), Duration::from_millis(400), 4.0);
         Self {
@@ -145,13 +131,8 @@ impl RetryDelays {
         }
     };
 
-    /// For polls, where a failed read costs only a re-read: `jobs.get` under
-    /// `crate::dbt::jobs::wait_for_job` and `crate::dbt::lro::LroPoller::poll`, and the `jobs.get`
-    /// that describes a finished query.
-    ///
-    /// The transient schedule matches the poll cadence. Rate limits take the [`Self::SERVICE`]
-    /// window, so a load, copy, or python model survives the same quota episode as a concurrent
-    /// query. At most 1.5 s and 21 s respectively.
+    /// Job and LRO polls: at most 1.5 s transient or 21 s rate-limited backoff, matching the poll
+    /// cadence and [`Self::SERVICE`]'s quota window respectively.
     pub(crate) const POLL: Self = Self {
         transient: Schedule::new(Duration::from_millis(100), Duration::from_millis(800), 2.0),
         rate_limited: Schedule::new(Duration::from_secs(1), Duration::from_secs(8), 4.0),

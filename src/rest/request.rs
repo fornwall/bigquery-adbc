@@ -12,6 +12,7 @@ use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
 use adbc_core::error::Result;
+use futures_core::Stream as _;
 use google_cloud_auth::credentials::{CacheableResource, Credentials};
 use google_cloud_gax::error::Error as GoogleError;
 use tokio::io::AsyncReadExt as _;
@@ -57,7 +58,7 @@ impl RequestBody {
 struct MultipartRelatedFileBody {
     prefix: Option<bytes::Bytes>,
     media: ReaderStream<tokio::io::Take<tokio::fs::File>>,
-    closing: Option<bytes::Bytes>,
+    closing: bytes::Bytes,
     remaining: u64,
 }
 
@@ -84,36 +85,32 @@ impl http_body::Body for MultipartRelatedFileBody {
         if let Some(prefix) = self.prefix.take() {
             return Poll::Ready(Some(Ok(self.frame(prefix))));
         }
-        if self.closing.is_none() {
+        if self.remaining == 0 {
             return Poll::Ready(None);
         }
-        match futures_core::Stream::poll_next(Pin::new(&mut self.media), context) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Some(Ok(bytes))) => Poll::Ready(Some(Ok(self.frame(bytes)))),
-            Poll::Ready(Some(Err(source))) => {
-                self.closing = None;
+        match ready!(Pin::new(&mut self.media).poll_next(context)) {
+            Some(Ok(bytes)) => Poll::Ready(Some(Ok(self.frame(bytes)))),
+            Some(Err(source)) => {
                 self.remaining = 0;
                 Poll::Ready(Some(Err(source)))
             }
-            Poll::Ready(None) => match self.closing.take() {
-                Some(closing) if self.remaining == closing.len() as u64 => {
-                    Poll::Ready(Some(Ok(self.frame(closing))))
-                }
-                Some(_) => {
-                    self.remaining = 0;
-                    Poll::Ready(Some(Err(std::io::Error::new(
-                        std::io::ErrorKind::UnexpectedEof,
-                        "BigQuery CSV seed file ended before its recorded length; \
-                         the file may have been truncated during upload",
-                    ))))
-                }
-                None => Poll::Ready(None),
-            },
+            None if self.remaining == self.closing.len() as u64 => {
+                let closing = std::mem::take(&mut self.closing);
+                Poll::Ready(Some(Ok(self.frame(closing))))
+            }
+            None => {
+                self.remaining = 0;
+                Poll::Ready(Some(Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "BigQuery CSV seed file ended before its recorded length; \
+                     the file may have been truncated during upload",
+                ))))
+            }
         }
     }
 
     fn is_end_stream(&self) -> bool {
-        self.prefix.is_none() && self.closing.is_none() && self.remaining == 0
+        self.remaining == 0
     }
 
     fn size_hint(&self) -> http_body::SizeHint {
@@ -569,7 +566,7 @@ pub(crate) fn multipart_related_file(
     let body = reqwest::Body::wrap(MultipartRelatedFileBody {
         prefix: Some(prefix),
         media,
-        closing: Some(closing),
+        closing,
         remaining: content_length,
     });
     Ok(RequestBody {

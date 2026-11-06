@@ -1,7 +1,4 @@
-//! The shared `reqwest` client and per-request timeout budgets.
-//!
-//! A JSON request has a whole-request deadline; a media upload does not. The deadline is set per
-//! request so both share one TLS configuration and connection pool.
+//! Shared HTTP connection pool with per-request deadlines and upload progress timeouts.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -14,38 +11,22 @@ use crate::error::{driver_defect, error, failed_to, request_error};
 #[cfg(test)]
 mod tests;
 
-/// How long a directly issued request may spend establishing its TCP and TLS connection.
-///
-/// Without it, a blackholed SYN waits for the OS connect timeout (over two minutes on Linux), or
-/// indefinitely behind a hung proxy.
+/// Bounds TCP/TLS setup, including a blackholed endpoint or hung proxy.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How long a whole non-upload request may take, from connecting to the last response byte.
-///
-/// It must exceed `QUERY_COMPLETION_WAIT_MS` (45 s), the server-side wait `jobs.query` and
-/// `jobs.getQueryResults` request; long-running work is polled, never awaited in one request.
-/// What remains of the window after that wait also bounds the download of a row page, which
-/// BigQuery caps at 10 MB.
+/// Covers connection setup through the last response byte. Must exceed the 45 s server wait
+/// (`QUERY_COMPLETION_WAIT_MS`) and leave time to download a row page.
 pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// How long a media upload may go without progress: without the transport taking more of its
-/// body while it is sent, and without response headers once all of it has been taken.
-///
-/// A CSV seed can be gigabytes, so no whole-request deadline fits. reqwest's read timeout cannot
-/// stand in: its first window starts with the request and ignores request-body progress.
+/// Bounds gaps between upload frames and the wait for response headers after the last frame.
+/// Gigabyte CSV seeds need no whole-request deadline; reqwest's read timeout ignores body progress.
 const UPLOAD_PROGRESS_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// How long the *response body* of a media upload may take once its headers have arrived.
-///
-/// The body is one small `Job` or Cloud Storage `Object` document, sent after the upload.
+/// Bounds the complete upload response body: one small `Job` or Cloud Storage `Object` document.
 const MEDIA_RESPONSE_BODY_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// The most response-body bytes a request on each budget may buffer.
-///
-/// Responses are buffered whole, and the byte budget in `src/pipeline.rs` charges only decoded
-/// batches, so these limits are the only bound on buffered size. Both are far above any valid
-/// response: BigQuery caps a `jobs.query`/`jobs.getQueryResults` page at 10 MB, and a media upload
-/// returns one resource document.
+/// Raw-response limits, separate from the pipeline's decoded-batch budget. Query pages are capped
+/// at 10 MB; media uploads return one resource document.
 const REQUEST_RESPONSE_LIMIT: usize = 64 << 20;
 const MEDIA_RESPONSE_LIMIT: usize = 8 << 20;
 
@@ -59,7 +40,6 @@ pub(super) enum TimeoutBudget {
 }
 
 impl TimeoutBudget {
-    /// The most response-body bytes this budget may buffer. See [`REQUEST_RESPONSE_LIMIT`].
     pub(super) fn response_limit(self) -> usize {
         match self {
             Self::Request => REQUEST_RESPONSE_LIMIT,
@@ -67,8 +47,7 @@ impl TimeoutBudget {
         }
     }
 
-    /// The whole-phase deadline on reading this budget's response body, where the budget itself
-    /// does not already bound it. See [`MEDIA_RESPONSE_BODY_TIMEOUT`].
+    /// An additional response-body deadline only for requests without a whole-request deadline.
     pub(super) fn response_body_timeout(self) -> Option<Duration> {
         match self {
             Self::Request => None,
@@ -77,20 +56,17 @@ impl TimeoutBudget {
     }
 }
 
-/// The reqwest client every direct REST operation shares. Clones share one host-keyed connection
-/// pool.
+/// Clones share one connection pool for all direct REST operations.
 #[derive(Clone)]
 pub(crate) struct RestClient {
     http: reqwest::Client,
-    /// Remedy added to an HTTP 401, for credentials that never mint their own token and so get no
-    /// token diagnosis. See [`Self::with_unauthenticated_remedy`].
+    /// HTTP 401 remedy for credentials without token-minting diagnostics.
     unauthenticated_remedy: Option<Arc<str>>,
     /// [`UPLOAD_PROGRESS_TIMEOUT`], which tests shorten.
     upload_progress_timeout: Duration,
 }
 
 impl RestClient {
-    /// Adds `remedy` to every HTTP 401 a request on this client is answered with.
     pub(crate) fn with_unauthenticated_remedy(mut self, remedy: Option<String>) -> Self {
         self.unauthenticated_remedy = remedy.map(Arc::from);
         self
@@ -110,10 +86,7 @@ impl RestClient {
         self
     }
 
-    /// Starts one request with the deadline selected by that request's shape.
-    ///
-    /// Every request asks for compact JSON. Google APIs indent theirs unless sent
-    /// `prettyPrint=false`, which makes every response larger to receive, buffer and decode.
+    /// Applies the request's deadline and disables Google APIs' default JSON indentation.
     pub(super) fn request(
         &self,
         method: reqwest::Method,
@@ -131,8 +104,7 @@ impl RestClient {
     }
 }
 
-/// Names the driver timeout that fired, since `reqwest`'s own timeout text says neither which
-/// budget elapsed nor how long it was.
+/// Adds the timeout's kind and duration, which reqwest's error omits.
 #[cold]
 #[inline(never)]
 fn timeout_detail(budget: TimeoutBudget, connecting: bool) -> String {
@@ -162,7 +134,6 @@ fn upload_progress_detail(timeout: Duration) -> String {
     )
 }
 
-/// Reports a media upload that stopped making progress. See [`UPLOAD_PROGRESS_TIMEOUT`].
 #[cold]
 #[inline(never)]
 pub(super) fn upload_stalled_error(context: &str, timeout: Duration) -> Error {
@@ -172,9 +143,7 @@ pub(super) fn upload_stalled_error(context: &str, timeout: Duration) -> Error {
     )
 }
 
-/// Reports a response body this request refuses to hold, naming the ceiling that refused it.
-/// `declared` is the `Content-Length` the service announced, or `None` when it announced none
-/// and the body was stopped as it streamed.
+/// `declared` is an oversized `Content-Length`, or `None` if the body exceeded the limit while read.
 #[cold]
 #[inline(never)]
 pub(super) fn oversized_response_error(
@@ -198,7 +167,6 @@ pub(super) fn oversized_response_error(
     )
 }
 
-/// Reports a response body that stopped arriving. See [`MEDIA_RESPONSE_BODY_TIMEOUT`].
 #[cold]
 #[inline(never)]
 pub(super) fn response_body_timeout_error(context: &str, deadline: Duration) -> Error {
@@ -214,7 +182,7 @@ pub(super) fn response_body_timeout_error(context: &str, deadline: Duration) -> 
     )
 }
 
-/// Classifies a failed request, naming that request's timeout when that is what fired.
+/// Classifies a transport failure and names any elapsed timeout.
 #[cold]
 #[inline(never)]
 pub(super) fn transport_error(
@@ -231,15 +199,11 @@ pub(super) fn transport_error(
     )
 }
 
-/// [`rest_client_with_user_agent`] naming only the driver, as a database without
-/// `bigquery.user_agent` does.
 #[cfg(test)]
 pub(crate) fn rest_client(what: &str) -> Result<RestClient> {
     rest_client_with_user_agent(what, USER_AGENT)
 }
 
-/// The client shared by small JSON requests and media uploads, sending `user_agent` as
-/// [`user_agent`] spells it.
 pub(crate) fn rest_client_with_user_agent(what: &str, user_agent: &str) -> Result<RestClient> {
     build_client(what, reqwest::Client::builder().user_agent(user_agent))
 }
