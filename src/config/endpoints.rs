@@ -10,6 +10,7 @@ use crate::error::invalid_argument;
 use crate::{BigQueryDatabaseOption, BigQueryStatementOption};
 
 /// One authenticated Google service whose endpoint the database may override.
+/// Discriminants are contiguous indices into [`ServiceEndpoints`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ServiceEndpointKind {
     BigQuery,
@@ -44,36 +45,23 @@ impl ServiceEndpointKind {
     }
 }
 
-/// The endpoint overrides, one per [`ServiceEndpointKind`], each field named after its option.
+/// Endpoint overrides indexed by [`ServiceEndpointKind`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ServiceEndpoints {
-    endpoint: Option<Arc<str>>,
-    storage_endpoint: Option<Arc<str>>,
-    gcs_endpoint: Option<Arc<str>>,
-    dataproc_endpoint: Option<Arc<str>>,
-    vertex_endpoint: Option<Arc<str>>,
-}
+pub(crate) struct ServiceEndpoints([Option<Arc<str>>; ServiceEndpointKind::ALL.len()]);
 
 impl ServiceEndpoints {
     pub(crate) fn get(&self, kind: ServiceEndpointKind) -> Option<&str> {
-        match kind {
-            ServiceEndpointKind::BigQuery => &self.endpoint,
-            ServiceEndpointKind::Storage => &self.storage_endpoint,
-            ServiceEndpointKind::Gcs => &self.gcs_endpoint,
-            ServiceEndpointKind::Dataproc => &self.dataproc_endpoint,
-            ServiceEndpointKind::Vertex => &self.vertex_endpoint,
-        }
-        .as_deref()
+        self.0
+            .get(kind as usize)
+            .expect("every service kind has an endpoint slot")
+            .as_deref()
     }
 
     pub(crate) fn set(&mut self, kind: ServiceEndpointKind, value: Option<Arc<str>>) {
-        *match kind {
-            ServiceEndpointKind::BigQuery => &mut self.endpoint,
-            ServiceEndpointKind::Storage => &mut self.storage_endpoint,
-            ServiceEndpointKind::Gcs => &mut self.gcs_endpoint,
-            ServiceEndpointKind::Dataproc => &mut self.dataproc_endpoint,
-            ServiceEndpointKind::Vertex => &mut self.vertex_endpoint,
-        } = value;
+        *self
+            .0
+            .get_mut(kind as usize)
+            .expect("every service kind has an endpoint slot") = value;
     }
 }
 
