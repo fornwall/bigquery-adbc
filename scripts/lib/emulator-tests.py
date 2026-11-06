@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -35,7 +36,7 @@ def emulator_executable() -> str:
     return str(Path(executable).expanduser().resolve())
 
 
-def endpoints(server: subprocess.Popen[bytes]) -> tuple[str, str]:
+def endpoints(server: subprocess.Popen[bytes], log: BinaryIO) -> tuple[str, str]:
     assert server.stdout is not None
     deadline = time.monotonic() + 30
     output = b""
@@ -48,15 +49,33 @@ def endpoints(server: subprocess.Popen[bytes]) -> tuple[str, str]:
             chunk = os.read(server.stdout.fileno(), 4096)
             if not chunk:
                 raise RuntimeError("emulator exited before announcing both endpoints")
+            log.write(chunk)
             output += chunk
-            if len(output) > 4096:
+            # A read may include request logs after the two announcements.
+            if output.count(b"\n") < 2 and len(output) > 4096:
                 raise RuntimeError("unexpected emulator startup output")
-    lines = output.decode().splitlines()
+    announcements = output.split(b"\n", 2)[:2]
+    if sum(len(line) for line in announcements) > 4096:
+        raise RuntimeError("unexpected emulator startup output")
+    lines = [line.decode().removesuffix("\r") for line in announcements]
     rest = re.fullmatch(r"REST listening on (http://127\.0\.0\.1:([0-9]+))", lines[0])
     storage = re.fullmatch(r"Storage gRPC listening on (127\.0\.0\.1:([0-9]+))", lines[1])
     if not rest or not storage or not all(0 < int(match[2]) < 65536 for match in (rest, storage)):
         raise RuntimeError(f"unexpected emulator endpoint announcements: {lines!r}")
     return rest[1], f"http://{storage[1]}"
+
+
+def drain_stdout(source: BinaryIO, log: BinaryIO, stopped: threading.Event) -> None:
+    # Bootstrap and tests can block the caller. Polling also lets cleanup stop the
+    # reader if a descendant of the emulator keeps the pipe open after it exits.
+    with selectors.DefaultSelector() as selector:
+        selector.register(source, selectors.EVENT_READ)
+        while not stopped.is_set():
+            if selector.select(0.1):
+                chunk = os.read(source.fileno(), 65536)
+                if not chunk:
+                    return
+                log.write(chunk)
 
 
 def bootstrap(rest: str, integration_project: str) -> None:
@@ -174,8 +193,10 @@ def main() -> int:
     signal.signal(signal.SIGTERM, interrupted)
     server = None
     test = None
+    stdout_thread = None
+    stdout_stopped = threading.Event()
     status = 1
-    with tempfile.TemporaryFile() as log:
+    with tempfile.TemporaryFile(buffering=0) as log:
         try:
             project = os.environ.get("BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT")
             if not project:
@@ -204,7 +225,10 @@ def main() -> int:
                 stderr=log,
                 start_new_session=True,
             )
-            rest, storage = endpoints(server)
+            rest, storage = endpoints(server, log)
+            assert server.stdout is not None
+            stdout_thread = threading.Thread(target=drain_stdout, args=(server.stdout, log, stdout_stopped))
+            stdout_thread.start()
             bootstrap(rest, project)
             print(f">> emulator REST: {rest}; Storage: {storage}", flush=True)
             environment = {
@@ -242,6 +266,11 @@ def main() -> int:
         finally:
             stop(test)
             stop(server)
+            stdout_stopped.set()
+            if stdout_thread is not None:
+                stdout_thread.join()
+            if server is not None and server.stdout is not None:
+                server.stdout.close()
             if status:
                 show_log(log)
 

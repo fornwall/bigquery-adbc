@@ -98,10 +98,12 @@ import os
 import pathlib
 import socket
 import sys
+import time
 
 root = pathlib.Path(os.environ["FAKE_ROOT"])
 (root / "server.pid").write_text(str(os.getpid()))
 if os.environ.get("FAKE_FAILURE") == "startup":
+    print("startup diagnostic", flush=True)
     print("startup failed", file=sys.stderr)
     sys.exit(3)
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -116,8 +118,12 @@ server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
 storage = socket.socket()
 storage.bind(("127.0.0.1", 0))
 storage.listen()
-print(f"REST listening on http://127.0.0.1:{server.server_port}", flush=True)
-print(f"Storage gRPC listening on 127.0.0.1:{storage.getsockname()[1]}", flush=True)
+print(f"REST listening on http://127.0.0.1:{server.server_port}", end="\\r\\n", flush=True)
+if os.environ.get("FAKE_STDOUT_LOGGING"):
+    time.sleep(0.05)
+print(f"Storage gRPC listening on 127.0.0.1:{storage.getsockname()[1]}", end="\\r\\n", flush=True)
+if os.environ.get("FAKE_STDOUT_LOGGING"):
+    print("request log café ☃ " * 65536, flush=True)
 server.serve_forever()
 """
 
@@ -169,7 +175,8 @@ def test_emulator_runner_requires_an_explicit_executable(tmp_path: Path, value: 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX process groups")
 @pytest.mark.parametrize("status", [0, 7])
-def test_emulator_runner_bootstraps_exports_and_cleans_up(tmp_path: Path, status: int) -> None:
+@pytest.mark.parametrize("stdout_logging", [False, True])
+def test_emulator_runner_bootstraps_exports_and_cleans_up(tmp_path: Path, status: int, stdout_logging: bool) -> None:
     result = subprocess.run(
         [
             str(REPOSITORY_ROOT / "scripts/run-emulator-tests.sh"),
@@ -181,13 +188,15 @@ def test_emulator_runner_bootstraps_exports_and_cleans_up(tmp_path: Path, status
             'json.dumps({"cwd": str(pathlib.Path.cwd()), "environment": dict(os.environ)})); '
             f"sys.exit({status})",
         ],
-        env=emulator_environment(tmp_path),
+        env={**emulator_environment(tmp_path), "FAKE_STDOUT_LOGGING": "1" if stdout_logging else ""},
         capture_output=True,
         text=True,
         timeout=15,
         check=False,
     )
     assert result.returncode == status, result.stderr
+    if status and stdout_logging:
+        assert "request log café ☃" in result.stderr
     child = json.loads((tmp_path / "child.json").read_text())
     assert child["cwd"] == str(REPOSITORY_ROOT)
     for key in ("ADBC_BIGQUERY_EMULATOR_REST_ENDPOINT", "ADBC_BIGQUERY_EMULATOR_STORAGE_ENDPOINT"):
@@ -239,6 +248,8 @@ def test_emulator_runner_cleans_up_a_failed_start_without_running_tests(tmp_path
     assert result.returncode == 1
     assert "test command must not run" not in result.stderr
     assert "startup failed" in result.stderr if failure == "startup" else "HTTP Error 500" in result.stderr
+    if failure == "startup":
+        assert "startup diagnostic" in result.stderr
     assert_process_stopped(tmp_path / "server.pid")
 
 
