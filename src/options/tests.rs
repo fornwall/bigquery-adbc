@@ -234,6 +234,15 @@ fn assert_remappings<T: StringEnum>(legacy: &str, canonical: &str, names: &[&str
 /// The 43 entries in the active Go driver's `go/driver.go` optionRemapping.
 #[test]
 fn every_go_option_remapping_key_resolves() {
+    // Go remaps these vestigial auth values, legacy SQL options, and its REST buffer setting.
+    const UNSUPPORTED: &[&str] = &[
+        "adbc.bigquery.sql.auth_type.json_credentials",
+        "adbc.bigquery.sql.auth_type.oauth_client_ids",
+        "adbc.bigquery.sql.query.allow_large_results",
+        "adbc.bigquery.sql.query.disable_flattened_results",
+        "adbc.bigquery.sql.query.result_buffer_size",
+        "adbc.bigquery.sql.query.use_legacy_sql",
+    ];
     let database = assert_remappings::<BigQueryDatabaseOption>(
         "adbc.bigquery.sql.",
         "bigquery.",
@@ -296,15 +305,6 @@ fn every_go_option_remapping_key_resolves() {
         "",
         &["named", "positional"],
     );
-    // Go remaps these vestigial auth values, legacy SQL options, and its REST buffer setting.
-    const UNSUPPORTED: &[&str] = &[
-        "adbc.bigquery.sql.auth_type.json_credentials",
-        "adbc.bigquery.sql.auth_type.oauth_client_ids",
-        "adbc.bigquery.sql.query.allow_large_results",
-        "adbc.bigquery.sql.query.disable_flattened_results",
-        "adbc.bigquery.sql.query.result_buffer_size",
-        "adbc.bigquery.sql.query.use_legacy_sql",
-    ];
     for &key in UNSUPPORTED {
         assert_eq!(BigQueryDatabaseOption::from_name(key), None, "{key}");
         assert_eq!(BigQueryConnectionOption::from_name(key), None, "{key}");
