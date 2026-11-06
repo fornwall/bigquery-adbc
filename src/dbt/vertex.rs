@@ -11,6 +11,7 @@
 //! a terminal `JOB_STATE_*`, because the operation reports only that the create finished. One
 //! client-side deadline covers all of it. See `DBT-CORE.md`.
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::time::Duration;
 
@@ -268,6 +269,7 @@ async fn runtime_template(
         &format!("/notebookRuntimeTemplates?filter={ONE_CLICK_FILTER}"),
     );
     let first_page_url_len = url.len();
+    let mut page_tokens = HashSet::new();
     let context = format!(
         "list the BigQuery Vertex AI notebook runtime templates in {}",
         request.parent
@@ -294,6 +296,12 @@ async fn runtime_template(
             None | Some(JsonValue::Null) => break,
             Some(JsonValue::String(token)) if token.is_empty() => break,
             Some(JsonValue::String(token)) => {
+                if !page_tokens.insert(token.to_owned()) {
+                    return Err(error(
+                        format!("the response to {context} repeated a page token"),
+                        Status::InvalidData,
+                    ));
+                }
                 url.truncate(first_page_url_len);
                 let _ = write!(url, "&pageToken={}", escape_url_component(token));
             }

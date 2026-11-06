@@ -393,6 +393,25 @@ fn template_lookup_reports_not_found_only_after_the_last_page() {
 }
 
 #[test]
+fn template_lookup_rejects_pagination_cycles_without_a_timeout() {
+    for tokens in [vec!["a", "a"], vec!["a", "b", "a"]] {
+        let (endpoint, captured) = capture_requests(
+            tokens
+                .iter()
+                .map(|token| (200, json!({"nextPageToken": token})))
+                .collect(),
+        );
+        let mut connection = connection_running_notebooks_at(endpoint);
+        let failure = bigframes_statement(&mut connection, None, "0")
+            .execute_update()
+            .unwrap_err();
+        assert_eq!(failure.status, Status::InvalidData);
+        assert_message(&failure, &["repeated a page token"]);
+        assert_eq!(captured.join().unwrap().len(), tokens.len());
+    }
+}
+
+#[test]
 fn malformed_template_listings_are_invalid_data() {
     for listed in [
         json!({"notebookRuntimeTemplates": {}}),
