@@ -93,12 +93,8 @@ pub(crate) fn check_interval_micros(micros: i64) -> Result<(), IntervalOutOfRang
 /// year far outside 1 to 9999, which callers reject.
 pub(crate) fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let shifted = days.saturating_add(719_468);
-    let era = if shifted >= 0 {
-        shifted
-    } else {
-        shifted.saturating_sub(146_096)
-    } / 146_097;
-    let day_of_era = shifted - era * 146_097;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
     let year_of_era =
         (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
     let mut year = year_of_era + era * 400;
@@ -124,8 +120,8 @@ pub(crate) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let clamp = |value: i64| value.clamp(-CIVIL_COMPONENT_BOUND, CIVIL_COMPONENT_BOUND);
     let (year, month, day) = (clamp(year), clamp(month), clamp(day));
     let year = year - i64::from(month <= 2);
-    let era = if year >= 0 { year } else { year - 399 } / 400;
-    let year_of_era = year - era * 400;
+    let era = year.div_euclid(400);
+    let year_of_era = year.rem_euclid(400);
     let shifted_month = month + if month > 2 { -3 } else { 9 };
     let day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
