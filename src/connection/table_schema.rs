@@ -1,7 +1,7 @@
 //! The table description `get_table_schema` reports: the dbt-core 2.0 schema metadata built from a
 //! `tables.get` response, and the resolution of a table reference from its arguments.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use adbc_core::error::Result;
 use arrow_schema::Metadata;
@@ -241,21 +241,9 @@ fn json_array(values: &[String]) -> String {
     serde_json::to_string(values).expect("a vector of strings serializes to JSON")
 }
 
-/// Serializes a label map with sorted keys, so the reported metadata is deterministic.
-///
-/// Filled by `insert` rather than `collect`: `BTreeMap`'s `FromIterator` sorts with `sort_by`,
-/// which instantiates several kilobytes of driftsort for this type (see BINARY-SIZE.md).
-fn sorted_json_object(map: &HashMap<String, String>) -> String {
-    let mut sorted = BTreeMap::<&str, &str>::new();
-    #[expect(
-        clippy::iter_over_hash_type,
-        reason = "the destination is a BTreeMap, so the arbitrary visit order of the source \
-                  cannot reach the rendered object"
-    )]
-    for (key, value) in map {
-        sorted.insert(key.as_str(), value.as_str());
-    }
-    serde_json::to_string(&sorted).expect("a map of strings serializes to JSON")
+/// Serializes labels and resource tags with deterministic key order.
+fn sorted_json_object(map: &BTreeMap<String, String>) -> String {
+    serde_json::to_string(map).expect("a map of strings serializes to JSON")
 }
 
 /// Formats Unix epoch milliseconds as RFC 3339 UTC, e.g. `2026-01-01T00:00:00Z`.

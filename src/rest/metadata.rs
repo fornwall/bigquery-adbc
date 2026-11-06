@@ -7,7 +7,7 @@
 //! an access list preserves fields this driver does not know.
 
 use std::borrow::{Borrow, Cow};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -728,8 +728,8 @@ pub(crate) struct Table {
     /// BigQuery's own name for the object kind: `TABLE`, `VIEW`, `MATERIALIZED_VIEW`, ...
     pub(crate) table_type: String,
     pub(crate) description: String,
-    pub(crate) labels: HashMap<String, String>,
-    pub(crate) resource_tags: HashMap<String, String>,
+    pub(crate) labels: BTreeMap<String, String>,
+    pub(crate) resource_tags: BTreeMap<String, String>,
     pub(crate) clustering: Option<Clustering>,
     pub(crate) schema: Option<TableSchema>,
     pub(crate) time_partitioning: Option<TimePartitioning>,
