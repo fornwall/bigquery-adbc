@@ -1310,6 +1310,34 @@ mod mock_writes {
         );
     }
 
+    #[test]
+    fn initial_and_pipelined_appends_stop_after_three_retries() {
+        use crate::test_support::grpc::UNAVAILABLE;
+
+        let runtime = crate::runtime::new_runtime().unwrap();
+        for offset in [0, ROWS_PER_BATCH] {
+            let mock = StorageMock::start(
+                &runtime,
+                MockPlan {
+                    repeat_append_refusal: Some((offset, UNAVAILABLE)),
+                    ..MockPlan::default()
+                },
+            );
+            let failure = ingest(&runtime, &mock, &ingest_schema()).unwrap_err();
+            assert_eq!(failure.status, Status::IO);
+            assert_eq!(
+                mock.append_offsets()
+                    .iter()
+                    .filter(|&&sent| sent == offset)
+                    .count(),
+                4,
+                "one initial append and three retries at offset {offset}"
+            );
+            assert_eq!(mock.write_streams(), (1, 3));
+            assert_eq!(mock.finalized(), (Some(offset), false));
+        }
+    }
+
     /// `ALREADY_EXISTS` on the first send of a driver-assigned offset is a failure: absorbing it
     /// would turn the signal of drifted offset accounting into a silently short ingest.
     #[test]

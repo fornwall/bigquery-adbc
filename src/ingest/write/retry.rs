@@ -2,7 +2,7 @@
 //!
 //! Every append carries an explicit offset, so a replayed request that had landed is answered
 //! `ALREADY_EXISTS` instead of being written twice; that makes a retry safe, and is what
-//! [`append_offset_already_written`] recognizes. The pipeline keeps a small bounded queue of
+//! [`replay_landed`] recognizes. The pipeline keeps a small bounded queue of
 //! unacknowledged appends so the next chunk is encoded while earlier ones are in flight, and it
 //! performs the retries.
 //!
@@ -103,31 +103,10 @@ fn append_error_is_retryable(source: &AppendError) -> bool {
 ///
 /// `StorageErrorCode::OffsetAlreadyExists` arrives as an undecoded status detail, so the transport
 /// code is matched instead; BigQuery uses it for nothing else on an offset-carrying append.
-fn append_offset_already_written(source: &AppendError) -> bool {
-    matches!(source, AppendError::Rpc { source, .. }
+fn replay_landed(replayed: bool, source: &AppendError) -> bool {
+    replayed
+        && matches!(source, AppendError::Rpc { source, .. }
         if matches!(google_error_code(source), Some(Code::AlreadyExists)))
-}
-
-/// What the append retry loop does with one attempt's failure.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AppendRetry {
-    /// A replay was answered ALREADY_EXISTS: the rows are on the stream, so the append succeeded.
-    Landed,
-    /// Reconnect to the same stream and replay the request at the same offset.
-    Reattach,
-    /// Report the failure.
-    Fail,
-}
-
-/// Decides one attempt's fate; `already_sent` is [`Replay::already_sent`].
-fn append_retry(source: &AppendError, already_sent: bool, attempts_left: usize) -> AppendRetry {
-    if replay_landed(already_sent, source) {
-        AppendRetry::Landed
-    } else if attempts_left > 0 && append_error_is_retryable(source) {
-        AppendRetry::Reattach
-    } else {
-        AppendRetry::Fail
-    }
 }
 
 /// A retryable append failure in a few words for a diagnostic: its gRPC code, never its message,
@@ -171,7 +150,8 @@ pub(super) async fn append_with_retry(
         mut already_sent,
         mut reconnect,
     } = replay;
-    let mut attempts_left = APPEND_RETRY_ATTEMPTS - 1;
+    // Pipeline recovery has already spent its first append attempt.
+    let mut attempts_left = APPEND_RETRY_ATTEMPTS - 1 - usize::from(reconnect);
     let mut delay = APPEND_RETRY_DELAY;
     loop {
         if reconnect {
@@ -198,25 +178,21 @@ pub(super) async fn append_with_retry(
             Ok(response) => {
                 return check_acknowledged_offset(response.offset, offset, target.table_path);
             }
-            Err(source) => match append_retry(&source, already_sent, attempts_left) {
-                AppendRetry::Landed => return Ok(()),
-                AppendRetry::Reattach => {
-                    diag!(
-                        Debug,
-                        "replaying a BigQuery ingest append to {} at stream offset {offset} on \
-                         a reconnected stream, after {}",
-                        target.table_path,
-                        append_error_cause(&source)
-                    );
-                    attempts_left -= 1;
-                    already_sent = true;
-                    reconnect = true;
-                    back_off(Some(target.operation), &mut delay).await?;
-                }
-                AppendRetry::Fail => {
-                    return Err(append_failure(target.table_path, source, offset));
-                }
-            },
+            Err(source) if replay_landed(already_sent, &source) => return Ok(()),
+            Err(source) if attempts_left > 0 && append_error_is_retryable(&source) => {
+                diag!(
+                    Debug,
+                    "replaying a BigQuery ingest append to {} at stream offset {offset} on \
+                     a reconnected stream, after {}",
+                    target.table_path,
+                    append_error_cause(&source)
+                );
+                attempts_left -= 1;
+                already_sent = true;
+                reconnect = true;
+                back_off(Some(target.operation), &mut delay).await?;
+            }
+            Err(source) => return Err(append_failure(target.table_path, source, offset)),
         }
     }
 }
@@ -361,11 +337,6 @@ struct InFlightAppend {
 /// empty pipeline takes any append, since a request is never larger than the budget.
 fn pipeline_has_room(requests: usize, bytes: usize, size: usize) -> bool {
     requests == 0 || (requests < APPEND_PIPELINE_REQUESTS && bytes + size <= APPEND_PIPELINE_BYTES)
-}
-
-/// Whether the failure of an append still means its rows are on the stream at its offset.
-fn replay_landed(replayed: bool, source: &AppendError) -> bool {
-    replayed && append_offset_already_written(source)
 }
 
 /// A bounded pipeline of AppendRows requests on one pending stream.

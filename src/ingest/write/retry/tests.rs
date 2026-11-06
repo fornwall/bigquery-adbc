@@ -65,68 +65,14 @@ fn classifies_retryable_append_errors_for_replay() {
 fn recognizes_an_append_that_already_landed() {
     use google_cloud_gax::error::rpc::Code;
 
-    assert!(append_offset_already_written(&rpc_append_error(
-        Code::AlreadyExists
-    )));
-    assert!(!append_offset_already_written(&rpc_append_error(
-        Code::DeadlineExceeded
-    )));
-    assert!(!append_offset_already_written(
-        &AppendError::UnexpectedEndOfStream
+    let landed = rpc_append_error(Code::AlreadyExists);
+    assert!(replay_landed(true, &landed));
+    assert!(!replay_landed(false, &landed));
+    assert!(!replay_landed(
+        true,
+        &rpc_append_error(Code::DeadlineExceeded)
     ));
-}
-
-/// Every outcome of the retry loop's decision function, walked in the order one timed-out append
-/// produces them.
-#[test]
-fn a_replayed_append_that_landed_is_a_success_not_a_failure() {
-    use google_cloud_gax::error::rpc::Code;
-
-    // Attempt 0: the request goes out and times out in flight. It may have landed.
-    let mut already_sent = false;
-    let mut attempt = 0;
-    assert_eq!(
-        append_retry(
-            &rpc_append_error(Code::DeadlineExceeded),
-            already_sent,
-            APPEND_RETRY_ATTEMPTS - attempt - 1,
-        ),
-        AppendRetry::Reattach
-    );
-    already_sent = true;
-    attempt += 1;
-
-    // Attempt 1, on the reconnected stream: the offset is taken, by the append that did land.
-    assert_eq!(
-        append_retry(
-            &rpc_append_error(Code::AlreadyExists),
-            already_sent,
-            APPEND_RETRY_ATTEMPTS - attempt - 1,
-        ),
-        AppendRetry::Landed
-    );
-
-    // The successors of that failure resolve to UnexpectedEndOfStream and are replayed too.
-    assert_eq!(
-        append_retry(
-            &AppendError::UnexpectedEndOfStream,
-            true,
-            APPEND_RETRY_ATTEMPTS - 1
-        ),
-        AppendRetry::Reattach
-    );
-
-    // On the first send of a driver-assigned offset, ALREADY_EXISTS means the driver's offset
-    // accounting is wrong; absorbing it there would hide a real defect.
-    assert_eq!(
-        append_retry(&rpc_append_error(Code::AlreadyExists), false, 3),
-        AppendRetry::Fail
-    );
-    // The retry budget is bounded: the last attempt reports whatever it got.
-    assert_eq!(
-        append_retry(&rpc_append_error(Code::Unavailable), true, 0),
-        AppendRetry::Fail
-    );
+    assert!(!replay_landed(true, &AppendError::UnexpectedEndOfStream));
 }
 
 /// The pipeline is bounded by the bytes its queued payloads pin, not by a handful of requests:

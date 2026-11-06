@@ -101,6 +101,8 @@ pub(crate) struct MockPlan {
     /// before this server has even read the successors it pipelined, and whether a competing
     /// rejection existed would depend on scheduling.
     pub(crate) reject_at: Option<(i64, u32)>,
+    /// Reject every append at this offset, including replays, with this gRPC status.
+    pub(crate) repeat_append_refusal: Option<(i64, u32)>,
     /// Row-level details to include with the rejected append's status.
     pub(crate) rejected_rows: Vec<google_cloud_bigquery::model::RowError>,
     /// Status of each `FinalizeWriteStream` call; later calls succeed.
@@ -575,6 +577,9 @@ async fn append_rows(
 
         let mut state = lock(state);
         state.append_offsets.push(offset);
+        if let Some((_, code)) = plan.repeat_append_refusal.filter(|&(at, _)| at == offset) {
+            return code;
+        }
         let refusal = plan
             .reject_at
             .filter(|&(at, _)| at == offset && !state.rejected);

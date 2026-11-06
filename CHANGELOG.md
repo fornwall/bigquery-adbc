@@ -28,6 +28,7 @@ changes.
 
 ### Fixed
 
+- Pipelined Storage Write appends honor the same three-retry limit as the first append.
 - Cancelled queries stop retrying definitive submission rejections, while ambiguous submissions
   still recover their job reference for cancellation.
 - Decimal ingestion validates source precision at all four Arrow widths and accepts zero at extreme
