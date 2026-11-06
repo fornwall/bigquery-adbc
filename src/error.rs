@@ -28,7 +28,7 @@ pub(crate) use status::{
     http_status, request_error, rpc_code_status, service_status,
 };
 
-use status::{bigquery_reason_status, code_number};
+use status::bigquery_reason_status;
 
 // Out of line to keep construction off callers' success paths, even under fat LTO.
 #[cold]
@@ -289,7 +289,7 @@ fn record_google_error_code(failure: &mut Error, source: &GoogleError) {
     if let Some(status) = source.http_status_code() {
         record_status_code(failure, DETAIL_HTTP_STATUS, i32::from(status));
     } else if let Some(code) = google_error_code(source) {
-        record_status_code(failure, DETAIL_RPC_CODE, code_number(code));
+        record_status_code(failure, DETAIL_RPC_CODE, code as i32);
     }
 }
 

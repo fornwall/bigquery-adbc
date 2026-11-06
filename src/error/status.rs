@@ -290,32 +290,6 @@ fn code_status(code: Code) -> Status {
     }
 }
 
-/// The wire number of a `google.rpc.Code`. The enum has no numeric accessor or repr; this is
-/// the inverse of its `From<i32>` implementation. Unknown variants retain the protocol's 2.
-pub(super) fn code_number(code: Code) -> i32 {
-    match code {
-        Code::Ok => 0,
-        Code::Cancelled => 1,
-        Code::InvalidArgument => 3,
-        Code::DeadlineExceeded => 4,
-        Code::NotFound => 5,
-        Code::AlreadyExists => 6,
-        Code::PermissionDenied => 7,
-        Code::ResourceExhausted => 8,
-        Code::FailedPrecondition => 9,
-        Code::Aborted => 10,
-        Code::OutOfRange => 11,
-        Code::Unimplemented => 12,
-        Code::Internal => 13,
-        Code::Unavailable => 14,
-        Code::DataLoss => 15,
-        Code::Unauthenticated => 16,
-        // `Code::Unknown`, and any variant a later upstream revision adds to this
-        // `#[non_exhaustive]` enum.
-        _ => 2,
-    }
-}
-
 pub(super) fn google_error_status(source: &GoogleError) -> Status {
     let source = last_attempt(source);
     if source.is_timeout() {

@@ -292,15 +292,20 @@ fn a_service_failure_reports_the_number_its_status_was_decided_from() {
     );
 }
 
-/// Every `google.rpc.Code` reports the wire number `From<i32> for Code` decodes. The protocol is
-/// frozen, so a mismatch means this table drifted.
 #[test]
 fn the_reported_rpc_code_numbers_are_the_ones_the_protocol_assigns() {
-    for number in 0..=16 {
-        assert_eq!(code_number(Code::from(number)), number, "{number}");
+    for number in (0..=16).chain([99]) {
+        let failure = google_error(
+            "test RPC code",
+            GoogleError::service(GoogleStatus::default().set_code(Code::from(number))),
+        );
+        let expected = if number == 99 { 2 } else { number };
+        assert_eq!(failure.vendor_code, expected, "{number}");
+        assert_eq!(
+            failure.details,
+            Some(vec![(DETAIL_RPC_CODE.to_owned(), expected.to_string().into_bytes())]),
+        );
     }
-    // Anything outside the enum decodes to `Unknown`, and reports its number.
-    assert_eq!(code_number(Code::from(99)), 2);
 }
 
 /// `Aborted` is BigQuery's concurrent-modification verdict, not `Unknown`. The typed and numeric
