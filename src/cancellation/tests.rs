@@ -740,10 +740,6 @@ fn terminal_status_during_a_provisional_cancel_suppresses_confirmation_retry() {
 }
 
 /// A cancellation landing while an operation is parked in `wait` has to wake it.
-///
-/// This is the path `CancelFlag::wait`'s eager `enable()` protects; a lost notification would
-/// hang the operation. The race `enable()` closes cannot be staged deterministically, so this
-/// pins the path itself: parked, woken, then Cancelled.
 #[test]
 fn a_cancellation_wakes_an_operation_parked_in_wait() {
     let cancellation = cancellation();

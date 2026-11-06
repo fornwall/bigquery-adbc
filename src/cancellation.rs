@@ -512,12 +512,9 @@ impl CancelFlag {
 
     /// Returns once the flag is set.
     pub(crate) async fn wait(&self) {
+        // `notify_waiters` reaches every future created before it, even before first poll.
+        // Create the future before checking the flag so a concurrent `set` cannot be lost.
         let notified = self.notify.notified();
-        tokio::pin!(notified);
-        // `notify_waiters` stores no permit and a `Notified` registers on first poll, so the
-        // waiter is enabled before the flag is read. Otherwise a `set` between the read and the
-        // first poll would wake nobody.
-        notified.as_mut().enable();
         if !self.is_set() {
             notified.await;
         }
