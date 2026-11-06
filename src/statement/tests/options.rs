@@ -2,6 +2,7 @@
 //! allowed to say about a rejected value.
 
 use super::*;
+use crate::BigQueryStatementOption as BqOption;
 use crate::dbt::statement::DbtOperation;
 use crate::test_support::driver::test_statement_at;
 use crate::test_support::errors::{assert_message, assert_message_omits};
@@ -10,7 +11,7 @@ use crate::test_support::http::job_reference;
 #[test]
 fn reservation_round_trips_clears_and_rejects_wrong_types_and_legacy_alias() {
     let mut statement = test_statement();
-    let key = BigQueryStatementOption::Reservation;
+    let key = BqOption::Reservation;
     // Unset, and cleared by the empty string, it has no value to read.
     assert_string_option(&statement, key, None);
     for value in [
@@ -47,7 +48,7 @@ fn reservation_round_trips_clears_and_rejects_wrong_types_and_legacy_alias() {
 fn unordered_read_round_trips_and_rejects_invalid_values() {
     let mut connection = test_connection();
     let mut statement = connection.new_statement().unwrap();
-    let key = BigQueryStatementOption::UnorderedRead;
+    let key = BqOption::UnorderedRead;
 
     assert_eq!(
         option_string(&statement, key),
@@ -70,7 +71,7 @@ fn unordered_read_round_trips_and_rejects_invalid_values() {
 fn storage_api_disabled_client_round_trips_without_changing_a_recorded_refusal() {
     let mut connection = test_connection();
     let mut statement = connection.new_statement().unwrap();
-    let key = BigQueryStatementOption::UseStorageApiDisabledClient;
+    let key = BqOption::UseStorageApiDisabledClient;
 
     assert_eq!(option_string(&statement, key), ADBC_OPTION_VALUE_DISABLED);
     assert!(statement.context.result_options.use_storage_read);
@@ -144,19 +145,19 @@ fn connection_and_statement_option_errors_do_not_disclose_payloads() {
             OptionValue::String(SECRET.to_owned()),
         ),
         (
-            BigQueryStatementOption::Priority.into(),
+            BqOption::Priority.into(),
             OptionValue::String(SECRET.to_owned()),
         ),
         (
-            BigQueryStatementOption::CreateSession.into(),
+            BqOption::CreateSession.into(),
             OptionValue::String(SECRET.to_owned()),
         ),
         (
-            BigQueryStatementOption::MaximumBytesBilled.into(),
+            BqOption::MaximumBytesBilled.into(),
             OptionValue::Bytes(SECRET.as_bytes().to_vec()),
         ),
         (
-            BigQueryStatementOption::DestinationTable.into(),
+            BqOption::DestinationTable.into(),
             OptionValue::String(format!("{SECRET}/path.dataset.table")),
         ),
     ] {
@@ -253,7 +254,7 @@ fn assert_bulk_ingest_method_scope<O: Optionable>(
 #[test]
 fn bulk_ingest_method_is_storage_write_at_connection_and_statement_scope() {
     let connection_option = BigQueryConnectionOption::BulkIngestMethod;
-    let statement_option = BigQueryStatementOption::BulkIngestMethod;
+    let statement_option = BqOption::BulkIngestMethod;
     let mut connection = test_connection();
     assert_bulk_ingest_method_scope(&mut connection, connection_option);
     let mut statement = connection.new_statement().unwrap();
@@ -285,7 +286,7 @@ fn assert_prefetch_rejects_invalid<O: Optionable>(
 fn query_prefetch_concurrency_validates_round_trips_and_snapshots_connection_default() {
     let mut connection = test_connection();
     let connection_option = BigQueryConnectionOption::PrefetchConcurrency;
-    let statement_option = BigQueryStatementOption::PrefetchConcurrency;
+    let statement_option = BqOption::PrefetchConcurrency;
     assert_eq!(
         option_int(&connection, connection_option),
         crate::pipeline::QueryResultOptions::default().prefetch_concurrency_option_value()
@@ -357,160 +358,119 @@ fn result_buffer_size_is_not_exposed() {
     }
 }
 
-/// How one statement option is set and read back, for the exhaustive round trip below.
-enum OptionSample {
-    /// Set this string, read that string back.
-    Str(&'static str, &'static str),
-    /// Set and read this integer.
-    Int(i64),
-    /// The Arrow IPC schema option, whose value the test builds.
-    IpcSchema,
-    /// An option that cannot round-trip. The reason is documented at the arm that returns it.
-    NoRoundTrip,
-}
-
-/// The value every statement option round-trips through.
-///
-/// The exhaustive match requires every new option to provide a round-trip sample or an
-/// explicit reason it cannot round-trip.
-fn option_sample(option: BigQueryStatementOption) -> OptionSample {
-    use BigQueryStatementOption as O;
-    use OptionSample::{Int, IpcSchema, NoRoundTrip, Str};
+/// Exhaustive so a new option must supply a round-trip sample.
+fn option_sample(option: BigQueryStatementOption) -> OptionValue {
     match option {
-        O::AuthorizeViewToDatasets => Str(
-            r#"{"fixture-project.analytics.model":[{"project":"fixture-project","dataset":"raw"}]}"#,
-            r#"{"fixture-project.analytics.model":[{"dataset":"raw","project":"fixture-project"}]}"#,
-        ),
-        O::BulkIngestMethod => Str(
-            BigQueryBulkIngestMethod::StorageWrite.as_str(),
-            BigQueryBulkIngestMethod::StorageWrite.as_str(),
-        ),
-        O::CopyTableDestination => Str("data_set.copy_out", "fixture-project.data_set.copy_out"),
-        O::CopyTableSource => Str("data_set.copy_in", "fixture-project.data_set.copy_in"),
-        O::CopyTableWriteDisposition => Str(
-            BigQueryWriteDisposition::WriteTruncate.as_str(),
-            BigQueryWriteDisposition::WriteTruncate.as_str(),
-        ),
-        O::CreateBatchBatchId => Str("batch-id", "batch-id"),
-        O::CreateBatchBatchYml => Str("runtimeConfig: {}", "runtimeConfig: {}"),
-        O::CreateBatchParent => Str(
-            "projects/fixture-project/locations/eu",
-            "projects/fixture-project/locations/eu",
-        ),
-        O::GetDatasetLocation => Str(
-            r#"{"project":"fixture-project","dataset":"raw"}"#,
-            r#"{"project":"fixture-project","dataset":"raw"}"#,
-        ),
-        O::CsvDelimiter => Str(";", ";"),
-        O::CsvFilepath => Str("/tmp/seed.csv", "/tmp/seed.csv"),
-        O::CsvSchema => IpcSchema,
-        O::DataprocComputeRegion => Str("europe-west1", "europe-west1"),
-        O::DataprocPoolingTimeout => Int(30),
-        O::DataprocProject => Str("dataproc-project", "dataproc-project"),
-        O::DataprocSubmitJobClusterName => Str("cluster", "cluster"),
-        O::DataprocSubmitJobGcsPath => Str("gs://bucket/job.py", "gs://bucket/job.py"),
-        O::CreateDisposition => Str(
-            BigQueryCreateDisposition::CreateNever.as_str(),
-            BigQueryCreateDisposition::CreateNever.as_str(),
-        ),
-        O::CreateSession => Str(ADBC_OPTION_VALUE_ENABLED, ADBC_OPTION_VALUE_ENABLED),
-        O::DefaultDatasetId => Str("data_set", "data_set"),
-        O::DefaultProjectId => Str("data-project", "data-project"),
-        O::DestinationTable => Str("data_set.result", "fixture-project.data_set.result"),
-        O::DisableQueryCache => Str(ADBC_OPTION_VALUE_ENABLED, ADBC_OPTION_VALUE_ENABLED),
-        O::DryRun => Str(ADBC_OPTION_VALUE_ENABLED, ADBC_OPTION_VALUE_ENABLED),
-        O::JobTimeout => Int(12_345),
-        O::Reservation => Str("none", "none"),
-        O::Labels => Str(r#"{"team":"data"}"#, r#"{"team":"data"}"#),
-        O::LinkFailedJob => Str(ADBC_OPTION_VALUE_ENABLED, ADBC_OPTION_VALUE_ENABLED),
-        // Deprecated by Google: recognized, and answered with NOT_IMPLEMENTED in both directions.
-        O::MaximumBillingTier => NoRoundTrip,
-        O::MaximumBytesBilled => Int(1_000_000),
-        O::NotebookExecuteJobGscBucket => Str("notebook-bucket", "notebook-bucket"),
-        O::NotebookExecuteJobGscPath => Str("models/model.ipynb", "models/model.ipynb"),
-        O::NotebookExecuteJobModelFileName => Str("model.ipynb", "model.ipynb"),
-        O::NotebookExecuteJobModelName => Str("model", "model"),
-        O::NotebookExecuteJobParent => Str(
-            "projects/fixture-project/locations/europe-west1",
-            "projects/fixture-project/locations/europe-west1",
-        ),
-        O::NotebookExecuteJobProject => Str("notebook-project", "notebook-project"),
-        O::NotebookExecuteJobRegion => Str("europe-west1", "europe-west1"),
-        O::NotebookExecuteJobServiceAccount => Str(
-            "runner@fixture-project.iam.gserviceaccount.com",
-            "runner@fixture-project.iam.gserviceaccount.com",
-        ),
-        O::NotebookExecuteJobTemplateId => Str("template-id", "template-id"),
-        O::ParameterMode => Str(ParameterMode::Named.as_str(), ParameterMode::Named.as_str()),
-        O::UpdateColumnsDescription => Str(r#"{"a":"first"}"#, r#"{"a":"first"}"#),
-        O::UpdateColumnsPolicyTags => Str(
-            r#"{"a":["projects/p/locations/eu/taxonomies/t/policyTags/x"]}"#,
-            r#"{"a":["projects/p/locations/eu/taxonomies/t/policyTags/x"]}"#,
-        ),
-        O::UpdateDescription => Str("the model table", "the model table"),
-        O::PrefetchConcurrency => Int(4),
-        O::Priority => Str(
-            BigQueryQueryPriority::Batch.as_str(),
-            BigQueryQueryPriority::Batch.as_str(),
-        ),
-        O::UnorderedRead => Str(ADBC_OPTION_VALUE_ENABLED, ADBC_OPTION_VALUE_ENABLED),
-        O::UseStorageApiDisabledClient => Str(ADBC_OPTION_VALUE_ENABLED, ADBC_OPTION_VALUE_ENABLED),
-        O::WriteDisposition => Str(
-            BigQueryWriteDisposition::WriteAppend.as_str(),
-            BigQueryWriteDisposition::WriteAppend.as_str(),
-        ),
-        O::WriteGcsBucket => Str("dbt-python", "dbt-python"),
-        O::WriteGcsContent => Str("print(1)", "print(1)"),
-        O::WriteGcsObjectName => Str("models/model.py", "models/model.py"),
+        BqOption::AuthorizeViewToDatasets => {
+            r#"{"fixture-project.analytics.model":[{"project":"fixture-project","dataset":"raw"}]}"#
+                .into()
+        }
+        BqOption::BulkIngestMethod => BigQueryBulkIngestMethod::StorageWrite.into(),
+        BqOption::CopyTableDestination => "data_set.copy_out".into(),
+        BqOption::CopyTableSource => "data_set.copy_in".into(),
+        BqOption::CopyTableWriteDisposition => BigQueryWriteDisposition::WriteTruncate.into(),
+        BqOption::CreateBatchBatchId => "batch-id".into(),
+        BqOption::CreateBatchBatchYml => "runtimeConfig: {}".into(),
+        BqOption::CreateBatchParent => "projects/fixture-project/locations/eu".into(),
+        BqOption::GetDatasetLocation => r#"{"project":"fixture-project","dataset":"raw"}"#.into(),
+        BqOption::CsvDelimiter => ";".into(),
+        BqOption::CsvFilepath => "/tmp/seed.csv".into(),
+        BqOption::CsvSchema => {
+            encode_schema_fixture(&Schema::new(vec![Field::new("id", DataType::Int64, true)]))
+                .into()
+        }
+        BqOption::DataprocComputeRegion | BqOption::NotebookExecuteJobRegion => {
+            "europe-west1".into()
+        }
+        BqOption::DataprocPoolingTimeout => 30.into(),
+        BqOption::DataprocProject => "dataproc-project".into(),
+        BqOption::DataprocSubmitJobClusterName => "cluster".into(),
+        BqOption::DataprocSubmitJobGcsPath => "gs://bucket/job.py".into(),
+        BqOption::CreateDisposition => BigQueryCreateDisposition::CreateNever.into(),
+        BqOption::CreateSession
+        | BqOption::DisableQueryCache
+        | BqOption::DryRun
+        | BqOption::LinkFailedJob
+        | BqOption::UnorderedRead
+        | BqOption::UseStorageApiDisabledClient => true.into(),
+        BqOption::DefaultDatasetId => "data_set".into(),
+        BqOption::DefaultProjectId => "data-project".into(),
+        BqOption::DestinationTable => "data_set.result".into(),
+        BqOption::JobTimeout => 12_345.into(),
+        BqOption::Reservation => "none".into(),
+        BqOption::Labels => r#"{"team":"data"}"#.into(),
+        BqOption::MaximumBillingTier => 1.into(),
+        BqOption::MaximumBytesBilled => 1_000_000.into(),
+        BqOption::NotebookExecuteJobGscBucket => "notebook-bucket".into(),
+        BqOption::NotebookExecuteJobGscPath => "models/model.ipynb".into(),
+        BqOption::NotebookExecuteJobModelFileName => "model.ipynb".into(),
+        BqOption::NotebookExecuteJobModelName => "model".into(),
+        BqOption::NotebookExecuteJobParent => {
+            "projects/fixture-project/locations/europe-west1".into()
+        }
+        BqOption::NotebookExecuteJobProject => "notebook-project".into(),
+        BqOption::NotebookExecuteJobServiceAccount => {
+            "runner@fixture-project.iam.gserviceaccount.com".into()
+        }
+        BqOption::NotebookExecuteJobTemplateId => "template-id".into(),
+        BqOption::ParameterMode => ParameterMode::Named.as_str().into(),
+        BqOption::UpdateColumnsDescription => r#"{"a":"first"}"#.into(),
+        BqOption::UpdateColumnsPolicyTags => {
+            r#"{"a":["projects/p/locations/eu/taxonomies/t/policyTags/x"]}"#.into()
+        }
+        BqOption::UpdateDescription => "the model table".into(),
+        BqOption::PrefetchConcurrency => 4.into(),
+        BqOption::Priority => BigQueryQueryPriority::Batch.into(),
+        BqOption::WriteDisposition => BigQueryWriteDisposition::WriteAppend.into(),
+        BqOption::WriteGcsBucket => "dbt-python".into(),
+        BqOption::WriteGcsContent => "print(1)".into(),
+        BqOption::WriteGcsObjectName => "models/model.py".into(),
     }
 }
 
-/// Every statement option is set and read back through the accessor its declared kind names.
-///
-/// Each option gets its own statement, since setting one may leave another execution mode.
+/// Each option gets its own statement because setters can switch execution modes.
 #[test]
 fn every_statement_option_round_trips_through_its_declared_kind() {
+    use crate::options::OptionKind;
+
     let mut connection = test_connection();
-    for &option in BigQueryStatementOption::ALL {
+    for &option in BqOption::ALL {
         let mut statement = connection.new_statement().unwrap();
         let name = option.as_str();
-        match option_sample(option) {
-            OptionSample::Str(set, read_back) => {
-                assert_eq!(
-                    option.option_kind(),
-                    crate::options::OptionKind::String,
-                    "{name}"
-                );
-                set_option(&mut statement, option, set);
-                assert_eq!(option_string(&statement, option), read_back, "{name}");
+        let value = option_sample(option);
+        // Deprecated by Google; recognized but refused in both directions.
+        if option == BqOption::MaximumBillingTier {
+            assert_eq!(
+                set_option_error(&mut statement, option, value).status,
+                Status::NotImplemented,
+                "{name}"
+            );
+            continue;
+        }
+        set_option(&mut statement, option, value.clone());
+        match value {
+            OptionValue::String(value) => {
+                let expected = match option {
+                    BqOption::AuthorizeViewToDatasets => {
+                        r#"{"fixture-project.analytics.model":[{"dataset":"raw","project":"fixture-project"}]}"#
+                    }
+                    BqOption::CopyTableSource => "fixture-project.data_set.copy_in",
+                    BqOption::CopyTableDestination => "fixture-project.data_set.copy_out",
+                    BqOption::DestinationTable => "fixture-project.data_set.result",
+                    _ => &value,
+                };
+                assert_eq!(option.option_kind(), OptionKind::String, "{name}");
+                assert_eq!(option_string(&statement, option), expected, "{name}");
             }
-            OptionSample::Int(value) => {
-                assert_eq!(
-                    option.option_kind(),
-                    crate::options::OptionKind::Int,
-                    "{name}"
-                );
-                set_option(&mut statement, option, OptionValue::Int(value));
+            OptionValue::Int(value) => {
+                assert_eq!(option.option_kind(), OptionKind::Int, "{name}");
                 assert_eq!(option_int(&statement, option), value, "{name}");
             }
-            OptionSample::IpcSchema => {
-                assert_eq!(
-                    option.option_kind(),
-                    crate::options::OptionKind::Bytes,
-                    "{name}"
-                );
-                let schema = Schema::new(vec![Field::new("id", DataType::Int64, true)]);
-                let encoded = encode_schema_fixture(&schema);
-                set_option(&mut statement, option, OptionValue::Bytes(encoded.clone()));
-                assert_eq!(statement.get_option_bytes(option.into()).unwrap(), encoded);
+            OptionValue::Bytes(value) => {
+                assert_eq!(option.option_kind(), OptionKind::Bytes, "{name}");
+                assert_eq!(statement.get_option_bytes(option.into()).unwrap(), value);
             }
-            OptionSample::NoRoundTrip => {
-                assert_eq!(
-                    set_option_error(&mut statement, option, OptionValue::Int(1)).status,
-                    Status::NotImplemented,
-                    "{name}"
-                );
-            }
+            other => panic!("unexpected sample for {name}: {other:?}"),
         }
     }
 }
@@ -524,29 +484,26 @@ fn statement_options_report_their_defaults_and_clear_back_to_them() {
     assert_eq!(statement.context.location.as_deref(), Some("EU"));
 
     for (option, default) in [
-        (BigQueryStatementOption::DisableQueryCache, Some("false")),
+        (BqOption::DisableQueryCache, Some("false")),
         (
-            BigQueryStatementOption::Priority,
+            BqOption::Priority,
             Some(BigQueryQueryPriority::Interactive.as_str()),
         ),
         (
-            BigQueryStatementOption::CreateDisposition,
+            BqOption::CreateDisposition,
             Some(BigQueryCreateDisposition::CreateIfNeeded.as_str()),
         ),
         (
-            BigQueryStatementOption::WriteDisposition,
+            BqOption::WriteDisposition,
             Some(BigQueryWriteDisposition::WriteEmpty.as_str()),
         ),
-        (BigQueryStatementOption::CreateSession, Some("false")),
-        (BigQueryStatementOption::DryRun, Some("false")),
-        (
-            BigQueryStatementOption::DefaultProjectId,
-            Some("fixture-project"),
-        ),
-        (BigQueryStatementOption::DefaultDatasetId, None),
-        (BigQueryStatementOption::DestinationTable, None),
-        (BigQueryStatementOption::WriteGcsBucket, None),
-        (BigQueryStatementOption::CreateBatchParent, None),
+        (BqOption::CreateSession, Some("false")),
+        (BqOption::DryRun, Some("false")),
+        (BqOption::DefaultProjectId, Some("fixture-project")),
+        (BqOption::DefaultDatasetId, None),
+        (BqOption::DestinationTable, None),
+        (BqOption::WriteGcsBucket, None),
+        (BqOption::CreateBatchParent, None),
     ] {
         assert_string_option(&statement, option, default);
     }
@@ -554,14 +511,14 @@ fn statement_options_report_their_defaults_and_clear_back_to_them() {
     // A destination table resolves against whatever project and dataset the statement carries
     // when it is set, so these three are applied in order.
     for (option, value) in [
-        (BigQueryStatementOption::DefaultProjectId, "data-project"),
-        (BigQueryStatementOption::DefaultDatasetId, "data_set"),
-        (BigQueryStatementOption::DestinationTable, "result_table"),
-        (BigQueryStatementOption::CreateSession, "true"),
-        (BigQueryStatementOption::DryRun, "true"),
-        (BigQueryStatementOption::WriteGcsBucket, "dbt-python"),
+        (BqOption::DefaultProjectId, "data-project"),
+        (BqOption::DefaultDatasetId, "data_set"),
+        (BqOption::DestinationTable, "result_table"),
+        (BqOption::CreateSession, "true"),
+        (BqOption::DryRun, "true"),
+        (BqOption::WriteGcsBucket, "dbt-python"),
         (
-            BigQueryStatementOption::CreateBatchParent,
+            BqOption::CreateBatchParent,
             "projects/data-project/locations/eu",
         ),
     ] {
@@ -569,16 +526,13 @@ fn statement_options_report_their_defaults_and_clear_back_to_them() {
     }
     assert_string_option(
         &statement,
-        BigQueryStatementOption::DestinationTable,
+        BqOption::DestinationTable,
         Some("data-project.data_set.result_table"),
     );
 
     // An integer option defaults to zero, and zero sets it back, so a getter's value is always
     // one the setter takes.
-    for option in [
-        BigQueryStatementOption::MaximumBytesBilled,
-        BigQueryStatementOption::JobTimeout,
-    ] {
+    for option in [BqOption::MaximumBytesBilled, BqOption::JobTimeout] {
         assert_eq!(option_int(&statement, option), 0);
         set_option(&mut statement, option, OptionValue::Int(1_000_000));
         set_option(&mut statement, option, OptionValue::Int(0));
@@ -588,21 +542,13 @@ fn statement_options_report_their_defaults_and_clear_back_to_them() {
     // (option, clear value, cleared read-back), in order: the destination and dataset are
     // released before the project, whose cleared value resolves back to the connection's.
     for (option, clear_value, cleared) in [
-        (
-            BigQueryStatementOption::CreateSession,
-            "false",
-            Some("false"),
-        ),
-        (BigQueryStatementOption::DryRun, "false", Some("false")),
-        (BigQueryStatementOption::DestinationTable, "", None),
-        (
-            BigQueryStatementOption::DefaultProjectId,
-            "",
-            Some("fixture-project"),
-        ),
-        (BigQueryStatementOption::DefaultDatasetId, "", None),
-        (BigQueryStatementOption::WriteGcsBucket, "", None),
-        (BigQueryStatementOption::CreateBatchParent, "", None),
+        (BqOption::CreateSession, "false", Some("false")),
+        (BqOption::DryRun, "false", Some("false")),
+        (BqOption::DestinationTable, "", None),
+        (BqOption::DefaultProjectId, "", Some("fixture-project")),
+        (BqOption::DefaultDatasetId, "", None),
+        (BqOption::WriteGcsBucket, "", None),
+        (BqOption::CreateBatchParent, "", None),
     ] {
         set_option(&mut statement, option, clear_value.to_owned());
         assert_string_option(&statement, option, cleared);
@@ -614,120 +560,53 @@ fn statement_options_report_their_defaults_and_clear_back_to_them() {
 #[test]
 fn statement_options_reject_invalid_values() {
     let mut statement = test_statement();
-    // (option, rejected value, status): every rejection leaves the statement unchanged.
-    let rows: [(BigQueryStatementOption, OptionValue, Status); 18] = [
+    let rows: [(BigQueryStatementOption, OptionValue); 17] = [
+        (BqOption::MaximumBytesBilled, OptionValue::Int(-1)),
+        (BqOption::JobTimeout, OptionValue::Int(-1)),
+        (BqOption::Priority, "batch_mode".into()),
+        (BqOption::DisableQueryCache, OptionValue::Int(1)),
+        (BqOption::CreateSession, OptionValue::Int(1)),
+        (BqOption::DryRun, OptionValue::Int(1)),
+        (BqOption::CreateDisposition, "CREATE_SOMETIMES".into()),
+        (BqOption::WriteDisposition, "WRITE_TRUNCATE_DATA".into()),
+        (BqOption::DestinationTable, "table.".into()),
+        (BqOption::DestinationTable, ".table".into()),
+        (BqOption::DestinationTable, "a..table".into()),
+        (BqOption::DestinationTable, "a/b.dataset.table".into()),
+        (BqOption::CopyTableSource, "a/b.dataset.table".into()),
         (
-            BigQueryStatementOption::MaximumBytesBilled,
-            OptionValue::Int(-1),
-            Status::InvalidArguments,
-        ),
-        (
-            BigQueryStatementOption::JobTimeout,
-            OptionValue::Int(-1),
-            Status::InvalidArguments,
-        ),
-        (
-            BigQueryStatementOption::Priority,
-            "batch_mode".into(),
-            Status::InvalidArguments,
-        ),
-        (
-            BigQueryStatementOption::DisableQueryCache,
-            OptionValue::Int(1),
-            Status::InvalidArguments,
-        ),
-        (
-            BigQueryStatementOption::CreateSession,
-            OptionValue::Int(1),
-            Status::InvalidArguments,
-        ),
-        (
-            BigQueryStatementOption::DryRun,
-            OptionValue::Int(1),
-            Status::InvalidArguments,
-        ),
-        (
-            BigQueryStatementOption::CreateDisposition,
-            "CREATE_SOMETIMES".into(),
-            Status::InvalidArguments,
-        ),
-        (
-            BigQueryStatementOption::WriteDisposition,
-            "WRITE_TRUNCATE_DATA".into(),
-            Status::InvalidArguments,
-        ),
-        (
-            BigQueryStatementOption::MaximumBillingTier,
-            OptionValue::Int(1),
-            Status::NotImplemented,
-        ),
-        (
-            BigQueryStatementOption::DestinationTable,
-            "table.".into(),
-            Status::InvalidArguments,
-        ),
-        (
-            BigQueryStatementOption::DestinationTable,
-            ".table".into(),
-            Status::InvalidArguments,
-        ),
-        (
-            BigQueryStatementOption::DestinationTable,
-            "a..table".into(),
-            Status::InvalidArguments,
-        ),
-        (
-            BigQueryStatementOption::DestinationTable,
-            "a/b.dataset.table".into(),
-            Status::InvalidArguments,
-        ),
-        (
-            BigQueryStatementOption::CopyTableSource,
-            "a/b.dataset.table".into(),
-            Status::InvalidArguments,
-        ),
-        (
-            BigQueryStatementOption::CopyTableWriteDisposition,
+            BqOption::CopyTableWriteDisposition,
             "WRITE_SOMETIMES".into(),
-            Status::InvalidArguments,
         ),
-        (
-            BigQueryStatementOption::DataprocPoolingTimeout,
-            "3600 seconds".into(),
-            Status::InvalidArguments,
-        ),
-        (
-            BigQueryStatementOption::DataprocPoolingTimeout,
-            OptionValue::Int(-1),
-            Status::InvalidArguments,
-        ),
-        (
-            BigQueryStatementOption::WriteGcsBucket,
-            OptionValue::Int(1),
-            Status::InvalidArguments,
-        ),
+        (BqOption::DataprocPoolingTimeout, "3600 seconds".into()),
+        (BqOption::DataprocPoolingTimeout, OptionValue::Int(-1)),
+        (BqOption::WriteGcsBucket, OptionValue::Int(1)),
     ];
-    for (option, value, expected) in rows {
+    for (option, value) in rows {
         assert_eq!(
             set_option_error(&mut statement, option, value).status,
-            expected,
+            Status::InvalidArguments,
             "{}",
             option.as_str()
         );
     }
+    assert_eq!(
+        set_option_error(&mut statement, BqOption::MaximumBillingTier, 1).status,
+        Status::NotImplemented
+    );
 
     // No rejection mutated the statement: the destination table and the copy endpoints are
     // still unset, and the deprecated billing tier is unreadable through the typed getter too.
     for option in [
-        BigQueryStatementOption::DestinationTable,
-        BigQueryStatementOption::CopyTableSource,
-        BigQueryStatementOption::CopyTableDestination,
-        BigQueryStatementOption::WriteGcsBucket,
+        BqOption::DestinationTable,
+        BqOption::CopyTableSource,
+        BqOption::CopyTableDestination,
+        BqOption::WriteGcsBucket,
     ] {
         assert_string_option(&statement, option, None);
     }
     assert_eq!(
-        option_int(&statement, BigQueryStatementOption::DataprocPoolingTimeout),
+        option_int(&statement, BqOption::DataprocPoolingTimeout),
         0,
         "a rejected timeout leaves the statement without a client-side deadline"
     );
@@ -735,14 +614,14 @@ fn statement_options_reject_invalid_values() {
     // value a getter reports is always one the setter accepts.
     set_option(
         &mut statement,
-        BigQueryStatementOption::DataprocPoolingTimeout,
+        BqOption::DataprocPoolingTimeout,
         OptionValue::Int(0),
     );
     // The setter refuses the deprecated option with NotImplemented, but adbc.h gives
     // `AdbcStatementGetOptionInt` only NotFound.
     assert_eq!(
         statement
-            .get_option_int(BigQueryStatementOption::MaximumBillingTier.into())
+            .get_option_int(BqOption::MaximumBillingTier.into())
             .unwrap_err()
             .status,
         Status::NotFound
@@ -814,7 +693,7 @@ fn python_model_options_round_trip_and_clear_under_the_dbt_key_spellings() {
 
     let mut statement = test_statement();
     for (key, value) in KEYS {
-        let Some(option) = BigQueryStatementOption::from_name(key) else {
+        let Some(option) = BqOption::from_name(key) else {
             panic!("{key} is not a registered statement option")
         };
         assert_eq!(
@@ -833,7 +712,7 @@ fn python_model_options_round_trip_and_clear_under_the_dbt_key_spellings() {
     }
 
     // The twentieth key is the only integer one, and reads back through the typed getter.
-    let timeout = BigQueryStatementOption::DataprocPoolingTimeout;
+    let timeout = BqOption::DataprocPoolingTimeout;
     assert_eq!(timeout.as_str(), "adbc.bigquery.dataproc.pooling_timeout");
     assert_eq!(option_int(&statement, timeout), 0);
     set_option(&mut statement, timeout, "86400");
@@ -844,7 +723,7 @@ fn python_model_options_round_trip_and_clear_under_the_dbt_key_spellings() {
     }
     set_option(&mut statement, timeout, "");
     for (key, _) in KEYS {
-        let Some(option) = BigQueryStatementOption::from_name(key) else {
+        let Some(option) = BqOption::from_name(key) else {
             panic!("{key}")
         };
         assert_string_option(&statement, option, None);
@@ -862,7 +741,7 @@ fn python_model_options_round_trip_and_clear_under_the_dbt_key_spellings() {
 #[test]
 fn pooling_timeout_is_accepted_as_a_string_and_as_an_integer() {
     const SECRET: &str = "pooling-timeout-payload-sentinel";
-    let key = BigQueryStatementOption::DataprocPoolingTimeout;
+    let key = BqOption::DataprocPoolingTimeout;
     let mut statement = test_statement();
 
     set_option(&mut statement, key, "3600");
@@ -926,24 +805,20 @@ fn pooling_timeout_is_accepted_as_a_string_and_as_an_integer() {
 #[test]
 fn dbt_statement_options_round_trip() {
     let mut statement = test_statement();
-    assert_string_option(&statement, BigQueryStatementOption::Labels, None);
+    assert_string_option(&statement, BqOption::Labels, None);
     set_option(
         &mut statement,
         OptionStatement::Other("adbc.bigquery.sql.query.labels".to_owned()),
         r#"{"team":"analytics","dbt_invocation_id":"abc"}"#.to_owned(),
     );
     assert_eq!(
-        option_string(&statement, BigQueryStatementOption::Labels),
+        option_string(&statement, BqOption::Labels),
         r#"{"dbt_invocation_id":"abc","team":"analytics"}"#,
         "labels are reported sorted and through the canonical key"
     );
     for cleared in ["", "{}"] {
-        set_option(
-            &mut statement,
-            BigQueryStatementOption::Labels,
-            cleared.to_owned(),
-        );
-        assert_string_option(&statement, BigQueryStatementOption::Labels, None);
+        set_option(&mut statement, BqOption::Labels, cleared.to_owned());
+        assert_string_option(&statement, BqOption::Labels, None);
     }
 
     set_option(
@@ -951,14 +826,11 @@ fn dbt_statement_options_round_trip() {
         OptionStatement::Other("adbc.bigquery.sql.query.job_timeout".to_owned()),
         OptionValue::Int(90_000),
     );
-    assert_eq!(
-        option_int(&statement, BigQueryStatementOption::JobTimeout),
-        90_000
-    );
+    assert_eq!(option_int(&statement, BqOption::JobTimeout), 90_000);
 
     assert_string_option(
         &statement,
-        BigQueryStatementOption::LinkFailedJob,
+        BqOption::LinkFailedJob,
         Some(ADBC_OPTION_VALUE_DISABLED),
     );
     set_option(
@@ -968,7 +840,7 @@ fn dbt_statement_options_round_trip() {
     );
     assert_string_option(
         &statement,
-        BigQueryStatementOption::LinkFailedJob,
+        BqOption::LinkFailedJob,
         Some(ADBC_OPTION_VALUE_ENABLED),
     );
 }
@@ -984,20 +856,12 @@ fn dbt_csv_seed_options_round_trip_and_switch_operations_cleanly() {
     let mut statement = test_statement();
     set_option(
         &mut statement,
-        BigQueryStatementOption::DestinationTable,
+        BqOption::DestinationTable,
         "seed_dataset.seed_table",
     );
-    set_option(&mut statement, BigQueryStatementOption::CsvDelimiter, "|");
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::CsvSchema,
-        encoded_schema.clone(),
-    );
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::CsvFilepath,
-        "seeds/example.csv",
-    );
+    set_option(&mut statement, BqOption::CsvDelimiter, "|");
+    set_option(&mut statement, BqOption::CsvSchema, encoded_schema.clone());
+    set_option(&mut statement, BqOption::CsvFilepath, "seeds/example.csv");
     statement.set_sql_query("").unwrap();
 
     assert_eq!(
@@ -1008,38 +872,27 @@ fn dbt_csv_seed_options_round_trip_and_switch_operations_cleanly() {
     assert_eq!(statement.ingest.target_table, None);
     assert_string_option(
         &statement,
-        BigQueryStatementOption::DestinationTable,
+        BqOption::DestinationTable,
         Some("fixture-project.seed_dataset.seed_table"),
     );
-    assert_eq!(
-        option_string(&statement, BigQueryStatementOption::CsvDelimiter),
-        "|"
-    );
-    assert_string_option(
-        &statement,
-        BigQueryStatementOption::CsvFilepath,
-        Some("seeds/example.csv"),
-    );
+    assert_eq!(option_string(&statement, BqOption::CsvDelimiter), "|");
+    assert_string_option(&statement, BqOption::CsvFilepath, Some("seeds/example.csv"));
     assert_eq!(
         statement
-            .get_option_bytes(BigQueryStatementOption::CsvSchema.into())
+            .get_option_bytes(BqOption::CsvSchema.into())
             .unwrap(),
         encoded_schema
     );
 
     statement.set_sql_query("SELECT 1").unwrap();
-    assert_string_option(&statement, BigQueryStatementOption::CsvFilepath, None);
+    assert_string_option(&statement, BqOption::CsvFilepath, None);
     assert!(
         statement
-            .get_option_bytes(BigQueryStatementOption::CsvSchema.into())
+            .get_option_bytes(BqOption::CsvSchema.into())
             .is_err()
     );
 
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::CsvFilepath,
-        "seeds/again.csv",
-    );
+    set_option(&mut statement, BqOption::CsvFilepath, "seeds/again.csv");
     set_option(
         &mut statement,
         OptionStatement::TargetDbSchema,
@@ -1050,7 +903,7 @@ fn dbt_csv_seed_options_round_trip_and_switch_operations_cleanly() {
         OptionStatement::TargetTable,
         "standard_ingest",
     );
-    assert_string_option(&statement, BigQueryStatementOption::CsvFilepath, None);
+    assert_string_option(&statement, BqOption::CsvFilepath, None);
     assert_eq!(
         statement.ingest.target_table.as_deref(),
         Some("standard_ingest")
@@ -1061,28 +914,19 @@ fn dbt_csv_seed_options_round_trip_and_switch_operations_cleanly() {
 fn dbt_csv_seed_options_reject_wrong_accessor_types() {
     let mut statement = test_statement();
     for (option, value) in [
-        (
-            BigQueryStatementOption::CsvFilepath,
-            OptionValue::Bytes(Vec::new()),
-        ),
-        (
-            BigQueryStatementOption::CsvDelimiter,
-            OptionValue::Bytes(Vec::new()),
-        ),
-        (
-            BigQueryStatementOption::CsvSchema,
-            OptionValue::String(String::new()),
-        ),
+        (BqOption::CsvFilepath, OptionValue::Bytes(Vec::new())),
+        (BqOption::CsvDelimiter, OptionValue::Bytes(Vec::new())),
+        (BqOption::CsvSchema, OptionValue::String(String::new())),
     ] {
         assert_eq!(
             set_option_error(&mut statement, option, value).status,
             Status::InvalidArguments
         );
     }
-    assert_string_option(&statement, BigQueryStatementOption::CsvSchema, None);
+    assert_string_option(&statement, BqOption::CsvSchema, None);
     assert_eq!(
         statement
-            .get_option_bytes(BigQueryStatementOption::CsvFilepath.into())
+            .get_option_bytes(BqOption::CsvFilepath.into())
             .unwrap_err()
             .status,
         Status::NotFound
@@ -1102,7 +946,7 @@ fn job_labels_reject_non_object_values_without_echoing_them() {
     ] {
         let error = set_option_error(
             &mut statement,
-            BigQueryStatementOption::Labels,
+            BqOption::Labels,
             OptionValue::String(invalid),
         );
         assert_eq!(error.status, Status::InvalidArguments);
@@ -1115,7 +959,7 @@ fn job_labels_reject_non_object_values_without_echoing_them() {
 fn project_options_preserve_identifiers_and_reject_unsafe_resource_segments() {
     let mut statement = test_statement();
     for option in [
-        BigQueryStatementOption::DefaultProjectId.into(),
+        BqOption::DefaultProjectId.into(),
         OptionStatement::TargetCatalog,
     ] {
         for value in [
@@ -1130,13 +974,10 @@ fn project_options_preserve_identifiers_and_reject_unsafe_resource_segments() {
         }
     }
     for (option, value) in [
-        (
-            BigQueryStatementOption::DefaultProjectId.into(),
-            "SECRET/path",
-        ),
+        (BqOption::DefaultProjectId.into(), "SECRET/path"),
         (OptionStatement::TargetCatalog, "SECRET\\path"),
         (
-            BigQueryStatementOption::DestinationTable.into(),
+            BqOption::DestinationTable.into(),
             "SECRET/path.dataset.table",
         ),
     ] {
@@ -1188,11 +1029,7 @@ fn ingest_target_names_are_validated_when_they_are_set() {
 #[test]
 fn the_statement_default_dataset_is_validated_like_every_other_dataset_id() {
     let mut statement = test_statement();
-    let failure = set_option_error(
-        &mut statement,
-        BigQueryStatementOption::DefaultDatasetId,
-        "bad-dataset",
-    );
+    let failure = set_option_error(&mut statement, BqOption::DefaultDatasetId, "bad-dataset");
     assert_eq!(failure.status, Status::InvalidArguments);
     assert_eq!(
         failure.message,
@@ -1202,7 +1039,7 @@ fn the_statement_default_dataset_is_validated_like_every_other_dataset_id() {
 
     let failure = set_option_error(
         &mut statement,
-        BigQueryStatementOption::DefaultDatasetId,
+        BqOption::DefaultDatasetId,
         "d".repeat(1_025),
     );
     assert_eq!(
@@ -1212,7 +1049,7 @@ fn the_statement_default_dataset_is_validated_like_every_other_dataset_id() {
     );
 
     // A valid one still applies, and the empty string still clears it.
-    let key = BigQueryStatementOption::DefaultDatasetId;
+    let key = BqOption::DefaultDatasetId;
     set_option(&mut statement, key, "good_dataset");
     assert_string_option(&statement, key, Some("good_dataset"));
     set_option(&mut statement, key, "");
@@ -1291,11 +1128,7 @@ fn statement_without_a_project() -> BigQueryStatement {
 #[test]
 fn naming_a_default_dataset_without_a_project_reports_the_options_that_supply_one() {
     let mut statement = statement_without_a_project();
-    let error = set_option_error(
-        &mut statement,
-        BigQueryStatementOption::DefaultDatasetId,
-        "some_dataset",
-    );
+    let error = set_option_error(&mut statement, BqOption::DefaultDatasetId, "some_dataset");
     assert_eq!(error.status, Status::InvalidState);
     assert_eq!(
         error.message,
@@ -1307,16 +1140,12 @@ fn naming_a_default_dataset_without_a_project_reports_the_options_that_supply_on
 
     // Clearing the statement project a default dataset depends on is the same condition.
     for (option, value) in [
-        (BigQueryStatementOption::DefaultProjectId, "some-project"),
-        (BigQueryStatementOption::DefaultDatasetId, "some_dataset"),
+        (BqOption::DefaultProjectId, "some-project"),
+        (BqOption::DefaultDatasetId, "some_dataset"),
     ] {
         set_option(&mut statement, option, value);
     }
-    let error = set_option_error(
-        &mut statement,
-        BigQueryStatementOption::DefaultProjectId,
-        "",
-    );
+    let error = set_option_error(&mut statement, BqOption::DefaultProjectId, "");
     assert_eq!(error.status, Status::InvalidState);
     assert_eq!(
         error.message,
@@ -1422,7 +1251,7 @@ fn a_dry_run_publishes_no_execution_progress() {
         }),
     )]);
     let mut statement = test_statement_at(&endpoint);
-    set_option(&mut statement, BigQueryStatementOption::DryRun, "true");
+    set_option(&mut statement, BqOption::DryRun, "true");
     statement.set_sql_query("SELECT 21 + 21 AS answer").unwrap();
     drop(statement.execute().unwrap());
 
@@ -1496,7 +1325,7 @@ fn unreadable_statement_options_are_reported_by_their_own_key() {
         OptionStatement::Progress,
         OptionStatement::MaxProgress,
     ];
-    let keys = BigQueryStatementOption::ALL
+    let keys = BqOption::ALL
         .iter()
         .map(|option| (option.as_str(), OptionStatement::from(*option)))
         .chain(standard.iter().map(|key| (key.as_ref(), key.clone())));
