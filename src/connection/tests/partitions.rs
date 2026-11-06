@@ -2,6 +2,24 @@
 
 use super::*;
 
+#[test]
+fn partition_job_ids_cannot_change_the_request_path() {
+    let (endpoint, requests) = capture_requests(Vec::new());
+    let connection = anonymous_connection_at(&endpoint);
+
+    for job_id in [".", ".."] {
+        let Err(failure) = connection.read_partition(partition_descriptor(job_id)) else {
+            panic!("a URL dot segment was accepted as a partition job ID");
+        };
+        assert_eq!(failure.status, Status::InvalidArguments);
+        assert_message(
+            &failure,
+            &["invalid BigQuery partition descriptor", "job ID"],
+        );
+    }
+    assert!(requests.join().unwrap().is_empty());
+}
+
 /// adbc.h's partitioned-results section exists so partitions "can be divided among threads or
 /// machines and fetched in parallel": a second partition read, and any later connection call,
 /// must leave an already-returned partition stream readable.

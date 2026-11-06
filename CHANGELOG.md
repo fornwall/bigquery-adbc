@@ -28,6 +28,8 @@ changes.
 
 ### Fixed
 
+- Partition reads reject malformed descriptors containing `.` or `..` job IDs before sending a
+  request, preventing URL path normalization from selecting a different resource.
 - Queries identified as `SELECT` by a later job-metadata lookup reject a missing result schema
   with `INVALID_DATA` instead of silently returning an empty result.
 - Query metadata preserves completed status and resolved job identities, avoiding redundant

@@ -8,7 +8,7 @@
 use adbc_core::error::{Result, Status};
 
 use crate::error::{error, invalid_argument};
-use crate::identifiers::ProjectIdentifier;
+use crate::identifiers::{ProjectIdentifier, is_dot_segment};
 use crate::pipeline::QueryResultOptions;
 use crate::rest::jobs::JobReference;
 
@@ -77,6 +77,10 @@ pub(super) fn decode_partition(mut partition: &[u8]) -> Result<(JobReference, Qu
     };
     if job_id.is_empty() {
         return Err(invalid_partition("job ID must not be empty"));
+    }
+    // Percent-encoding leaves dots intact, and the HTTP URL parser resolves dot segments.
+    if is_dot_segment(job_id) {
+        return Err(invalid_partition("job ID must not be \".\" or \"..\""));
     }
     if flags & !(USE_STORAGE_READ | UNORDERED_READ) != 0 {
         return Err(invalid_partition("unknown result option flags"));

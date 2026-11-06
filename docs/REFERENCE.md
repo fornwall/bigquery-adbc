@@ -540,6 +540,10 @@ billed at the data-extraction rate. A partition is read with the
 `bigquery.query.prefetch_concurrency`, `unordered_read` and `use_storage_api_disabled_client`
 values of the statement that created it, whichever connection reads it.
 
+Partition descriptors are opaque: pass the bytes returned by `AdbcStatementExecutePartitions`
+to `AdbcConnectionReadPartition` unchanged. Malformed descriptors return `INVALID_ARGUMENT`
+before a request is sent, including job IDs that would change the URL path after normalization.
+
 ### Result-schema metadata
 
 `SELECT` results require a schema even when they contain no rows. A `SELECT` with no available
