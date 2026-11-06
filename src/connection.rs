@@ -173,7 +173,7 @@ impl BigQueryConnection {
     ) -> Result<Vec<(String, Option<Vec<ScannedTable>>)>> {
         // A scan that can match nothing sends no request, so it proves nothing about the dataset.
         let direct = scan.filter(|scan| {
-            !scan.table_types.is_some_and(HashSet::is_empty)
+            !scan.table_types.is_some_and(<[_]>::is_empty)
                 && !scan
                     .table_name
                     .and_then(SqlPattern::exact)
@@ -285,11 +285,10 @@ impl Connection for BigQueryConnection {
             ));
         }
 
-        let table_types = table_type.map(|types| types.into_iter().collect::<HashSet<_>>());
         let include_columns = matches!(depth, ObjectDepth::All | ObjectDepth::Columns);
         let scan = (depth != ObjectDepth::Schemas).then(|| TableScan {
             table_name: table_name.map(filter),
-            table_types: table_types.as_ref(),
+            table_types: table_type.as_deref(),
             describe: if include_columns {
                 Some(TableView::Basic)
             } else if !self.get_objects_skip_table_metadata {
@@ -420,10 +419,9 @@ impl Connection for BigQueryConnection {
         // BigQuery describes views and external tables with zero rows and zero bytes, even over
         // a non-empty source (observed, not documented), which would read as exact empty tables.
         // They get no statistics, as with Go's `INFORMATION_SCHEMA.PARTITIONS` source.
-        let table_types = HashSet::from([TABLE, MATERIALIZED_VIEW, SNAPSHOT]);
         let scan = TableScan {
             table_name: table_name.map(SqlPattern::new),
-            table_types: Some(&table_types),
+            table_types: Some(&[TABLE, MATERIALIZED_VIEW, SNAPSHOT]),
             describe: Some(TableView::StorageStats),
             item: "table statistics",
         };

@@ -48,7 +48,7 @@ impl PageTokens {
 #[derive(Clone, Copy)]
 pub(super) struct TableScan<'a> {
     pub(super) table_name: Option<SqlPattern<'a>>,
-    pub(super) table_types: Option<&'a HashSet<&'a str>>,
+    pub(super) table_types: Option<&'a [&'a str]>,
     /// The projection each kept table is described with, or `None` to report the listing entry
     /// alone.
     pub(super) describe: Option<TableView>,
@@ -214,7 +214,7 @@ impl BigQueryConnection {
             .collect::<Vec<_>>();
         // Such a table name, or an empty type set, matches nothing.
         if exact_table.is_some_and(names_no_table)
-            || scan.table_types.is_some_and(HashSet::is_empty)
+            || scan.table_types.is_some_and(<[_]>::is_empty)
         {
             return Ok(datasets.into_iter().map(|dataset| dataset.scan).collect());
         }
@@ -312,7 +312,7 @@ impl BigQueryConnection {
                             if scan.table_name.is_some_and(|pattern| !pattern.matches(&table_id))
                                 || scan
                                     .table_types
-                                    .is_some_and(|types| !types.contains(table_type.as_str()))
+                                    .is_some_and(|types| !types.contains(&table_type.as_str()))
                             {
                                 continue;
                             }
@@ -383,7 +383,7 @@ impl BigQueryConnection {
                         });
                         if scan
                             .table_types
-                            .is_some_and(|types| !types.contains(table_type.as_str()))
+                            .is_some_and(|types| !types.contains(&table_type.as_str()))
                         {
                             continue;
                         }
