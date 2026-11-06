@@ -39,7 +39,6 @@ use write::{FirstBatch, read_batch, write_batches};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct IngestOptions {
-    pub(crate) method: BigQueryBulkIngestMethod,
     pub(crate) mode: IngestMode,
     pub(crate) target_catalog: Option<ProjectIdentifier>,
     pub(crate) target_db_schema: Option<String>,
@@ -49,7 +48,6 @@ pub(crate) struct IngestOptions {
 impl Default for IngestOptions {
     fn default() -> Self {
         Self {
-            method: BigQueryBulkIngestMethod::default(),
             mode: IngestMode::Create,
             target_catalog: None,
             target_db_schema: None,

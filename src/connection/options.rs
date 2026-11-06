@@ -16,7 +16,7 @@ use crate::error::{
 use crate::ingest::parse_ingest_method;
 use crate::options::OptionKind;
 use crate::options::{boolean_option, boolean_value, integer_value, string_value};
-use crate::{BigQueryConnectionOption, BigQueryDatabaseOption};
+use crate::{BigQueryBulkIngestMethod, BigQueryConnectionOption, BigQueryDatabaseOption};
 
 impl Optionable for BigQueryConnection {
     type Option = OptionConnection;
@@ -35,7 +35,7 @@ impl Optionable for BigQueryConnection {
                 }
                 BigQueryConnectionOption::BulkIngestMethod => {
                     let value = string_value(key.as_ref(), value)?;
-                    self.ingest_method = parse_ingest_method(key.as_ref(), &value)?;
+                    parse_ingest_method(key.as_ref(), &value)?;
                 }
                 BigQueryConnectionOption::PrefetchConcurrency => {
                     self.context.result_options.set_prefetch_concurrency(
@@ -122,7 +122,7 @@ impl Optionable for BigQueryConnection {
                     Ok(boolean_option(self.get_objects_disable_wildcards))
                 }
                 BigQueryConnectionOption::BulkIngestMethod => {
-                    Ok(self.ingest_method.as_str().to_owned())
+                    Ok(BigQueryBulkIngestMethod::StorageWrite.as_str().to_owned())
                 }
                 BigQueryConnectionOption::PrefetchConcurrency => {
                     Err(wrong_option_type(key.as_ref(), OptionKind::Int, "a string"))

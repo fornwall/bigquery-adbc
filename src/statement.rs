@@ -31,7 +31,7 @@ use crate::rest::model::QueryParameter;
 use crate::transaction::{TransactionContext, TransactionState};
 use crate::{
     BIGQUERY_SCHEMA_METADATA_NUM_DML_AFFECTED_ROWS, BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE,
-    BigQueryBulkIngestMethod, BigQueryStatementOption,
+    BigQueryStatementOption,
 };
 
 use binding::ParameterBinding;
@@ -100,15 +100,10 @@ impl BigQueryStatement {
     pub(crate) fn new(
         context: ExecutionContext,
         namespace: Arc<CurrentNamespace>,
-        ingest_method: BigQueryBulkIngestMethod,
         transaction: Arc<TransactionState>,
     ) -> Self {
         let cancellation =
             Cancellation::new(context.runtime.clone(), context.state.clone(), "statement");
-        let ingest = IngestOptions {
-            method: ingest_method,
-            ..IngestOptions::default()
-        };
         Self {
             context,
             namespace,
@@ -116,7 +111,7 @@ impl BigQueryStatement {
             transaction,
             cancellation,
             sql: None,
-            ingest,
+            ingest: IngestOptions::default(),
             dbt: DbtStatementState::default(),
             parameter_mode: ParameterMode::default(),
             parameters: ParameterBinding::default(),

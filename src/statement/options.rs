@@ -7,7 +7,6 @@ use adbc_core::constants::ADBC_OPTION_VALUE_DISABLED;
 use adbc_core::error::Result;
 use adbc_core::options::{OptionStatement, OptionValue};
 
-use crate::BigQueryStatementOption;
 use crate::dbt::statement::dbt_statement_option;
 use crate::error::{
     invalid_argument, invalid_state, not_found, not_implemented, option_not_set,
@@ -23,6 +22,7 @@ use crate::options::{
 };
 use crate::parameters::ParameterMode;
 use crate::query::QualifiedTableName;
+use crate::{BigQueryBulkIngestMethod, BigQueryStatementOption};
 
 use super::BigQueryStatement;
 use super::operations::StatementMode;
@@ -203,7 +203,7 @@ impl BigQueryStatement {
             }
             BigQueryStatementOption::BulkIngestMethod => {
                 let value = string_value(key.as_ref(), value)?;
-                self.ingest.method = parse_ingest_method(key.as_ref(), &value)?;
+                parse_ingest_method(key.as_ref(), &value)?;
             }
             BigQueryStatementOption::ParameterMode => {
                 self.parameter_mode = enum_value(key.as_ref(), value)?;
@@ -330,7 +330,9 @@ impl BigQueryStatement {
     ) -> Result<Option<String>> {
         let value = match option {
             dbt_statement_option!() => return self.dbt.option_string(option, key),
-            BigQueryStatementOption::BulkIngestMethod => self.ingest.method.as_str().to_owned(),
+            BigQueryStatementOption::BulkIngestMethod => {
+                BigQueryBulkIngestMethod::StorageWrite.as_str().to_owned()
+            }
             BigQueryStatementOption::ParameterMode => self.parameter_mode.as_str().to_owned(),
             BigQueryStatementOption::DestinationTable => {
                 return Ok(self

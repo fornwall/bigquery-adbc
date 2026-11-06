@@ -25,7 +25,6 @@ use adbc_core::{CancelHandle, Connection};
 use arrow_array::RecordBatchReader;
 use arrow_schema::Schema;
 
-use crate::BigQueryBulkIngestMethod;
 use crate::cancellation::{
     Cancellation, Operation, OperationCancelHandle, buffered_operation_reader, operation_reader,
 };
@@ -64,7 +63,6 @@ pub struct BigQueryConnection {
     /// The current catalog changed after the current schema was set, so naming the same schema
     /// again validates it in the new catalog instead of being a no-op.
     schema_predates_catalog: bool,
-    ingest_method: BigQueryBulkIngestMethod,
     get_objects_skip_table_metadata: bool,
     get_objects_disable_wildcards: bool,
     transaction: Arc<TransactionState>,
@@ -96,7 +94,6 @@ impl BigQueryConnection {
             context,
             namespace,
             schema_predates_catalog: false,
-            ingest_method: BigQueryBulkIngestMethod::default(),
             get_objects_skip_table_metadata: true,
             get_objects_disable_wildcards: false,
             transaction: Arc::new(TransactionState::default()),
@@ -240,7 +237,6 @@ impl Connection for BigQueryConnection {
         Ok(BigQueryStatement::new(
             self.context.clone(),
             self.namespace.clone(),
-            self.ingest_method,
             self.transaction.clone(),
         ))
     }
