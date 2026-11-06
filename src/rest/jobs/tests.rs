@@ -979,6 +979,7 @@ fn jobs_query_retries_the_identical_request_body() {
 
     runtime
         .block_on(client.query(
+            None,
             "billing/project",
             body,
             &crate::rest::request::RequestStart::default(),
@@ -1000,6 +1001,59 @@ fn duplicate_body(message: &str) -> serde_json::Value {
         "errors": [{"reason": "duplicate", "message": message}]}})
 }
 
+#[test]
+fn cancelled_queries_stop_rejected_retries_but_recover_ambiguous_submissions() {
+    let limited = || (429, error_body("rateLimitExceeded", "later"));
+    let duplicate = || {
+        (
+            409,
+            duplicate_body("Already Exists: Job p:EU.cancelled-job"),
+        )
+    };
+    for (responses, recover) in [
+        (vec![limited()], false),
+        (
+            vec![
+                (503, error_body("backendError", "later")),
+                limited(),
+                duplicate(),
+            ],
+            true,
+        ),
+        (
+            vec![
+                (403, error_body("responseTooLarge", "exceeds max row limit")),
+                duplicate(),
+            ],
+            true,
+        ),
+    ] {
+        let count = responses.len();
+        let (cancel, wait_for_cancel) = mpsc::sync_channel::<OperationCancelHandle>(1);
+        let (endpoint, captured) = capture_requests_gated(responses, move || {
+            wait_for_cancel.recv().unwrap().try_cancel().unwrap();
+            true
+        });
+        let (runtime, jobs) = client(&endpoint);
+        let (cancellation, operation) = operation_at(&runtime, &endpoint);
+        cancel.send(OperationCancelHandle(cancellation)).unwrap();
+        let answer = runtime.block_on(jobs.query(
+            Some(&operation),
+            "p",
+            bytes::Bytes::from_static(b"{}"),
+            &crate::rest::request::RequestStart::default(),
+        ));
+        operation.finish();
+        if recover {
+            assert!(matches!(answer.unwrap(), super::QueryAnswer::Replayed(job)
+                if job.job_id == "cancelled-job"));
+        } else {
+            assert_eq!(answer.unwrap_err().status, Status::Cancelled);
+        }
+        assert_eq!(captured.join().unwrap().len(), count);
+    }
+}
+
 /// BigQuery answers a replayed request ID whose first submission created a job with 409
 /// `duplicate` naming that job; only a replay's 409 names the job to read, and only when the name
 /// parses.
@@ -1013,7 +1067,12 @@ fn a_replayed_jobs_query_answered_409_names_the_job_its_first_attempt_created() 
     ]);
     let (runtime, jobs) = client(&endpoint);
     let answer = runtime
-        .block_on(jobs.query("billing:project", bytes::Bytes::from_static(b"{}"), &start))
+        .block_on(jobs.query(
+            None,
+            "billing:project",
+            bytes::Bytes::from_static(b"{}"),
+            &start,
+        ))
         .unwrap();
     assert_eq!(captured.join().unwrap().len(), 2);
     let super::QueryAnswer::Replayed(job) = answer else {
@@ -1050,7 +1109,12 @@ fn a_replayed_jobs_query_answered_409_names_the_job_its_first_attempt_created() 
         let (endpoint, captured) = capture_requests(responses);
         let (runtime, jobs) = client(&endpoint);
         let failure = runtime
-            .block_on(jobs.query("billing:project", bytes::Bytes::from_static(b"{}"), &start))
+            .block_on(jobs.query(
+                None,
+                "billing:project",
+                bytes::Bytes::from_static(b"{}"),
+                &start,
+            ))
             .unwrap_err();
         captured.join().unwrap();
         assert_eq!(failure.status, Status::AlreadyExists, "{what}");
@@ -1069,7 +1133,7 @@ fn a_replayed_numeric_project_query_adopts_its_canonical_project() {
     ]);
     let (runtime, jobs) = client(&endpoint);
     let answer = runtime
-        .block_on(jobs.query("123456789", bytes::Bytes::from_static(b"{}"), &start))
+        .block_on(jobs.query(None, "123456789", bytes::Bytes::from_static(b"{}"), &start))
         .unwrap();
     let super::QueryAnswer::Replayed(job) = answer else {
         panic!("expected the replayed job, got {answer:?}");
@@ -1100,7 +1164,7 @@ fn a_jobs_query_whose_row_is_too_large_is_replayed_once_to_name_its_job() {
     ]);
     let (runtime, jobs) = client(&endpoint);
     let answer = runtime
-        .block_on(jobs.query("p", bytes::Bytes::from_static(b"{}"), &start))
+        .block_on(jobs.query(None, "p", bytes::Bytes::from_static(b"{}"), &start))
         .unwrap();
     assert_eq!(captured.join().unwrap().len(), 2);
     assert!(
@@ -1111,7 +1175,7 @@ fn a_jobs_query_whose_row_is_too_large_is_replayed_once_to_name_its_job() {
     let (endpoint, captured) = capture_requests(vec![too_large(), too_large()]);
     let (runtime, jobs) = client(&endpoint);
     let failure = runtime
-        .block_on(jobs.query("p", bytes::Bytes::from_static(b"{}"), &start))
+        .block_on(jobs.query(None, "p", bytes::Bytes::from_static(b"{}"), &start))
         .unwrap_err();
     assert_eq!(captured.join().unwrap().len(), 2);
     assert_eq!(failure.status, Status::InvalidArguments);
@@ -1126,7 +1190,7 @@ fn a_rejected_query_says_bigquery_rejected_it_and_a_transport_failure_says_it_fa
     let (runtime, jobs) = client(&endpoint);
     let start = crate::rest::request::RequestStart::default();
     let rejected = runtime
-        .block_on(jobs.query("p", bytes::Bytes::from_static(b"{}"), &start))
+        .block_on(jobs.query(None, "p", bytes::Bytes::from_static(b"{}"), &start))
         .unwrap_err();
     assert_eq!(captured.join().unwrap().len(), 1);
     assert_eq!(rejected.status, Status::InvalidArguments);
@@ -1137,7 +1201,7 @@ fn a_rejected_query_says_bigquery_rejected_it_and_a_transport_failure_says_it_fa
 
     let (runtime, jobs) = client(crate::test_support::UNREACHABLE_ENDPOINT);
     let unsent = runtime
-        .block_on(jobs.query("p", bytes::Bytes::from_static(b"{}"), &start))
+        .block_on(jobs.query(None, "p", bytes::Bytes::from_static(b"{}"), &start))
         .unwrap_err();
     assert_eq!(unsent.status, Status::IO);
     assert!(

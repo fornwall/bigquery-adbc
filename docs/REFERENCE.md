@@ -360,7 +360,8 @@ initial `jobs.query` request is pending, the driver keeps that submission alive 
 and requests cancellation when its response supplies an unfinished job's reference. Local work
 stops immediately, but remote cancellation can be delayed by the initial completion wait and
 transport delays. A query that completes before its reference arrives cannot be stopped this way.
-If submission retries end without ever supplying a job reference, the driver cannot cancel the
+Retries after definitive submission rejections stop on cancellation; ambiguous submissions keep
+recovering their job reference. If retries end without supplying one, the driver cannot cancel the
 remote work. BigQuery may ignore a `requestId` on read-only queries, so resending a submission
 does not guarantee recovery of the original execution.
 

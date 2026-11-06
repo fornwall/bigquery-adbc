@@ -360,7 +360,8 @@ the lookup.
 As in Go, cancellation, statement supersession, reader release or an operation ending early stops
 local work and requests cancellation of any unfinished job. Cancellation while the initial
 `jobs.query` is pending keeps its response alive in the background and requests cancellation when
-an unfinished job's reference arrives. Remote cancellation can therefore be delayed by the
+an unfinished job's reference arrives. Retries after definitive rejections stop on cancellation;
+ambiguous submissions keep recovering their job reference. Remote cancellation can be delayed by the
 ten-second completion wait (G46) and transport delays, even though local work stops immediately.
 Queries that finish during that wait cannot be stopped this way.
 Unlike Go, a failed remote cancel is retried, and a cancel during a `jobs.insert` without a location

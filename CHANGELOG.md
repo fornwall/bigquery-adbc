@@ -28,6 +28,8 @@ changes.
 
 ### Fixed
 
+- Cancelled queries stop retrying definitive submission rejections, while ambiguous submissions
+  still recover their job reference for cancellation.
 - Decimal ingestion validates source precision at all four Arrow widths and accepts zero at extreme
   negative scales when the field declares a valid BigQuery decimal shape.
 - Metadata discovery uses a described table's current type after concurrent replacement, keeping

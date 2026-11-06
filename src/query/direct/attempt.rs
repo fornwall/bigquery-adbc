@@ -343,9 +343,15 @@ pub(super) async fn submit_jobs_query(
     let decoder = decoder.clone();
     let request_start = RequestStart::default();
     let request_start_for_send = request_start.clone();
+    let request_operation = operation.cloned();
     let mut request = Box::pin(async move {
         let mut response = match client
-            .query(project_id.as_str(), body, &request_start_for_send)
+            .query(
+                request_operation.as_ref(),
+                project_id.as_str(),
+                body,
+                &request_start_for_send,
+            )
             .await?
         {
             QueryAnswer::Response(body) => {

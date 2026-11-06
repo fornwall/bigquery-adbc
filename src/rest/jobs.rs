@@ -531,10 +531,11 @@ impl JobClient {
     /// kept its job, so it is replayed once to name that job, whose rows only Storage Read can
     /// return.
     ///
-    /// Not operation-gated: the caller races it against cancellation and, if cancellation wins,
-    /// detaches a continuation that registers any job reference in the answer.
+    /// Sends ungated so a cancelled caller can retain the answer and cancel its job. After a
+    /// definitive rejection, cancellation stops retries; ambiguous attempts still recover the job.
     pub(crate) async fn query(
         &self,
+        operation: Option<&Operation>,
         project_id: &str,
         body: bytes::Bytes,
         start: &RequestStart,
@@ -549,10 +550,15 @@ impl JobClient {
         let send_context = "submit the BigQuery jobs.query request";
         let error_context = "BigQuery rejected the query";
         let mut replayed_too_large = false;
+        let mut may_exist = false;
         for attempt in 1..=MAX_ATTEMPTS {
+            if !may_exist && let Some(operation) = operation {
+                operation.check()?;
+            }
             let request =
                 Request::post_json(&url, body.clone(), send_context).with_start_signal(start);
             let response = send(None, &self.credentials, &self.http, request).await;
+            may_exist |= may_have_created(start, &response);
             if attempt > 1
                 && let Ok((reqwest::StatusCode::CONFLICT, body)) = &response
                 && let Some(job) = duplicate_in(body, project_id)
@@ -568,6 +574,7 @@ impl JobClient {
                 && failure_reason(&failure) == Some("responseTooLarge")
             {
                 replayed_too_large = true;
+                may_exist = true;
                 continue;
             }
             if class == RetryClass::Final || attempt == MAX_ATTEMPTS {
@@ -585,7 +592,11 @@ impl JobClient {
                  after attempt {attempt} ({:?})",
                 failure.status
             );
-            tokio::time::sleep(self.service_delays.delay(class, attempt)).await;
+            cancellation::sleep(
+                operation.filter(|_| !may_exist),
+                self.service_delays.delay(class, attempt),
+            )
+            .await?;
         }
         unreachable!("the bounded jobs.query loop returns on its final attempt")
     }
@@ -752,8 +763,8 @@ impl JobClient {
     ///   reconciles an exhausted submission that may have created its job.
     /// - [`InferredSubmission::run`] sends and sleeps ungated, so that it can outlive a cancelled
     ///   caller, stops resubmitting once cancelled, and takes the job's location from a 409.
-    /// - [`JobClient::query`] sends and sleeps ungated, reads a replay's 409 as the job to read,
-    ///   and repeats a `responseTooLarge` once without a backoff.
+    /// - [`JobClient::query`] retains ambiguous attempts after cancellation, reads a replay's
+    ///   409 as the job to read, and repeats a `responseTooLarge` once without a backoff.
     async fn retrying<'r>(
         &self,
         operation: Option<&Operation>,
