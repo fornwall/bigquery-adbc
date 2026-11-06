@@ -151,7 +151,7 @@ fn table_metadata_errors_keep_the_not_found_spelling_dbt_matches() {
 #[test]
 fn a_table_type_outside_the_advertised_set_is_reported_as_table() {
     for advertised in ["TABLE", "VIEW", "EXTERNAL", "MATERIALIZED_VIEW", "SNAPSHOT"] {
-        assert_eq!(bigquery_table_type(advertised.to_owned()), advertised);
+        assert_eq!(bigquery_table_type(advertised), advertised);
     }
     // The empty type BigQuery omits, a type it might grow, the INFORMATION_SCHEMA spellings this
     // listing never uses, and a casing BigQuery does not send.
@@ -163,11 +163,7 @@ fn a_table_type_outside_the_advertised_set_is_reported_as_table() {
         "CLONE",
         "view",
     ] {
-        assert_eq!(
-            bigquery_table_type(unknown.to_owned()),
-            "TABLE",
-            "{unknown}"
-        );
+        assert_eq!(bigquery_table_type(unknown), "TABLE", "{unknown}");
     }
 }
 

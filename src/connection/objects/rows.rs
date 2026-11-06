@@ -17,7 +17,7 @@ use crate::types::schema::googlesql_type_literal;
 /// [`bigquery_table_type`]: crate::connection::table_metadata::bigquery_table_type
 pub(in crate::connection) fn object_table(
     name: String,
-    table_type: String,
+    table_type: &'static str,
     metadata: Option<Table>,
     include_columns: bool,
     column_name: Option<SqlPattern<'_>>,

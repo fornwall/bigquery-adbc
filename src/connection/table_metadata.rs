@@ -62,7 +62,7 @@ pub(super) struct ScannedTable {
     /// The table's ID as BigQuery reported it; see [`resolved_name`].
     pub(super) name: String,
     /// Normalized by [`bigquery_table_type`].
-    pub(super) table_type: String,
+    pub(super) table_type: &'static str,
     /// The `tables.get` answer, present exactly when the scan describes tables.
     pub(super) metadata: Option<Table>,
 }
@@ -95,7 +95,7 @@ enum Request {
     /// filter, which is looked up without a listing.
     Get {
         table_id: String,
-        listed_type: Option<String>,
+        listed_type: Option<&'static str>,
     },
 }
 
@@ -103,7 +103,7 @@ enum Response {
     List(std::result::Result<Page<ListedTable>, MetadataError>),
     Get {
         table_id: String,
-        listed_type: Option<String>,
+        listed_type: Option<&'static str>,
         result: std::result::Result<Box<Table>, MetadataError>,
     },
 }
@@ -307,11 +307,11 @@ impl BigQueryConnection {
                             resolved_dataset_id
                                 .get_or_insert_with(|| resolved_name(reference.dataset_id, dataset_id));
                             let table_id = reference.table_id;
-                            let table_type = bigquery_table_type(table.table_type);
+                            let table_type = bigquery_table_type(&table.table_type);
                             if scan.table_name.is_some_and(|pattern| !pattern.matches(&table_id))
                                 || scan
                                     .table_types
-                                    .is_some_and(|types| !types.contains(&table_type.as_str()))
+                                    .is_some_and(|types| !types.contains(&table_type))
                             {
                                 continue;
                             }
@@ -375,14 +375,14 @@ impl BigQueryConnection {
                             .get_or_insert_with(|| resolved_name(reference.dataset_id, dataset_id));
                         // A table may have been replaced since it was listed. Keep its type
                         // consistent with the schema and statistics from this description.
-                        let table_type = bigquery_table_type(if metadata.table_type.is_empty() {
-                            listed_type.unwrap_or_default()
+                        let table_type = if metadata.table_type.is_empty() {
+                            listed_type.unwrap_or(TABLE)
                         } else {
-                            metadata.table_type.clone()
-                        });
+                            bigquery_table_type(&metadata.table_type)
+                        };
                         if scan
                             .table_types
-                            .is_some_and(|types| !types.contains(&table_type.as_str()))
+                            .is_some_and(|types| !types.contains(&table_type))
                         {
                             continue;
                         }
@@ -583,9 +583,9 @@ pub(super) fn table_metadata_error(
 /// An omitted type, or one the REST API added later, is reported as `TABLE`, which keeps the
 /// relation listed: dbt-core 2.0's `RelationType::from_adapter_type`
 /// (`crates/dbt-schemas/src/dbt_types.rs`) panics on an unknown BigQuery type.
-pub(super) fn bigquery_table_type(table_type: String) -> String {
-    if TABLE_TYPES.contains(&table_type.as_str()) {
-        return table_type;
+pub(super) fn bigquery_table_type(table_type: &str) -> &'static str {
+    if let Some(known) = TABLE_TYPES.iter().find(|&&known| known == table_type) {
+        return known;
     }
     if !table_type.is_empty() {
         diag!(
@@ -593,5 +593,5 @@ pub(super) fn bigquery_table_type(table_type: String) -> String {
             "BigQuery reported the unknown table type {table_type:?}; reporting it as TABLE"
         );
     }
-    TABLE.to_owned()
+    TABLE
 }

@@ -23,7 +23,7 @@ pub(super) fn table_schema_metadata(table: Table) -> Metadata {
     let mut metadata = Metadata::new();
     // Always present, since dbt-core 2.0's get_relation fails without it; an empty type becomes
     // TABLE, as in GetObjects.
-    metadata.insert("Type", bigquery_table_type(table.table_type));
+    metadata.insert("Type", bigquery_table_type(&table.table_type));
     if !table.description.is_empty() {
         metadata.insert("Description", table.description);
     }

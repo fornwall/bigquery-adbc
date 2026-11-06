@@ -847,7 +847,7 @@ fn column_ordinals_number_the_table_rather_than_the_filtered_result() {
     let listed = |column_name| {
         object_table(
             "events".to_owned(),
-            "TABLE".to_owned(),
+            "TABLE",
             Some(metadata()),
             true,
             column_name,
@@ -879,7 +879,7 @@ fn object_table_lists_an_object_whose_metadata_has_no_schema() {
     // per-object failure, so the view is listed with no columns.
     let table = object_table(
         "broken_view".to_owned(),
-        "VIEW".to_owned(),
+        "VIEW",
         Some(Table::default()),
         true,
         None,
@@ -890,7 +890,7 @@ fn object_table_lists_an_object_whose_metadata_has_no_schema() {
 
     let table = object_table(
         "events".to_owned(),
-        "TABLE".to_owned(),
+        "TABLE",
         Some(
             Table::decode(br#"{"schema": {"fields": [{"name": "id", "type": "INT64"}]}}"#).unwrap(),
         ),

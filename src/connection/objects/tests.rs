@@ -58,7 +58,7 @@ fn builds_complete_get_objects_hierarchy() {
     let catalogs = vec![project_catalog(Some(vec![dataset_schema(Some(vec![
         ObjectTable {
             name: "records".to_owned(),
-            table_type: "TABLE".to_owned(),
+            table_type: "TABLE",
             columns: Some(columns),
             constraints: Some(constraints),
         },
@@ -95,7 +95,7 @@ fn column_nullability_distinguishes_repeated_from_nullable() {
     let mut reader = objects_reader(&[project_catalog(Some(vec![dataset_schema(Some(vec![
         ObjectTable {
             name: "records".to_owned(),
-            table_type: "TABLE".to_owned(),
+            table_type: "TABLE",
             columns: Some(columns),
             constraints: None,
         },
@@ -126,7 +126,7 @@ fn an_unnamed_foreign_key_component_is_null_rather_than_empty() {
     let mut reader = objects_reader(&[project_catalog(Some(vec![dataset_schema(Some(vec![
         ObjectTable {
             name: "records".to_owned(),
-            table_type: "TABLE".to_owned(),
+            table_type: "TABLE",
             columns: None,
             constraints: Some(vec![ObjectConstraint {
                 name: None,
@@ -167,7 +167,7 @@ fn numeric_parameters_are_reported_only_where_bigquery_has_them() {
     let mut reader = objects_reader(&[project_catalog(Some(vec![dataset_schema(Some(vec![
         ObjectTable {
             name: "records".to_owned(),
-            table_type: "TABLE".to_owned(),
+            table_type: "TABLE",
             columns: Some(vec![
                 column("bare", "NUMERIC", 0, 0),
                 column("parameterized", "NUMERIC", 38, 9),
@@ -224,7 +224,7 @@ fn only_a_declared_bytes_length_is_an_octet_length() {
     let mut reader = objects_reader(&[project_catalog(Some(vec![dataset_schema(Some(vec![
         ObjectTable {
             name: "records".to_owned(),
-            table_type: "TABLE".to_owned(),
+            table_type: "TABLE",
             columns: Some(vec![
                 column("bounded_bytes", "BYTES", 16),
                 column("bytes", "BYTES", 0),
@@ -257,7 +257,7 @@ fn requested_depth_is_represented_by_null_child_lists() {
     let mut tables = objects_reader(&[project_catalog(Some(vec![dataset_schema(Some(vec![
         ObjectTable {
             name: "table".to_owned(),
-            table_type: "TABLE".to_owned(),
+            table_type: "TABLE",
             columns: None,
             constraints: None,
         },

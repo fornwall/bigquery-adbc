@@ -37,7 +37,7 @@ pub(crate) struct ObjectDbSchema {
 #[derive(Debug)]
 pub(crate) struct ObjectTable {
     pub(crate) name: String,
-    pub(crate) table_type: String,
+    pub(crate) table_type: &'static str,
     pub(crate) columns: Option<Vec<ObjectColumn>>,
     pub(crate) constraints: Option<Vec<ObjectConstraint>>,
 }
@@ -103,7 +103,7 @@ fn build_db_schemas(db_schemas: &[&ObjectDbSchema]) -> Result<StructArray> {
 
 fn build_tables(tables: &[&ObjectTable]) -> Result<StructArray> {
     let names = string_column(&mut tables.iter().map(|table| table.name.as_str()));
-    let types = string_column(&mut tables.iter().map(|table| table.table_type.as_str()));
+    let types = string_column(&mut tables.iter().map(|table| table.table_type));
 
     let table_columns = nested_list_array(
         tables,
