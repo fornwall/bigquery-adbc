@@ -64,40 +64,23 @@ impl<T: std::fmt::Display> Serialize for JsonInt<T> {
 }
 
 /// An integer type [`JsonInt`] can carry, with its out-of-range wording.
-pub(crate) trait JsonIntValue: Copy + std::str::FromStr {
+pub(crate) trait JsonIntValue:
+    Copy + std::str::FromStr + TryFrom<i64> + TryFrom<u64>
+{
     /// The BigQuery type name, as its own diagnostics spell it.
     const NAME: &'static str;
     /// How this type describes a JSON number outside its range, as a verb phrase.
     const OUT_OF_RANGE: &'static str;
-
-    fn from_i64(value: i64) -> Option<Self>;
-    fn from_u64(value: u64) -> Option<Self>;
 }
 
 impl JsonIntValue for i64 {
     const NAME: &'static str = "int64";
     const OUT_OF_RANGE: &'static str = "is outside the supported range";
-
-    fn from_i64(value: i64) -> Option<Self> {
-        Some(value)
-    }
-
-    fn from_u64(value: u64) -> Option<Self> {
-        Self::try_from(value).ok()
-    }
 }
 
 impl JsonIntValue for u64 {
     const NAME: &'static str = "uint64";
     const OUT_OF_RANGE: &'static str = "cannot be negative";
-
-    fn from_i64(value: i64) -> Option<Self> {
-        Self::try_from(value).ok()
-    }
-
-    fn from_u64(value: u64) -> Option<Self> {
-        Some(value)
-    }
 }
 
 impl<'de, T: JsonIntValue> Deserialize<'de> for JsonInt<T> {
@@ -122,15 +105,15 @@ impl<T: JsonIntValue> serde::de::Visitor<'_> for JsonIntVisitor<T> {
     }
 
     fn visit_i64<E: serde::de::Error>(self, value: i64) -> std::result::Result<Self::Value, E> {
-        T::from_i64(value)
+        T::try_from(value)
             .map(JsonInt)
-            .ok_or_else(|| E::custom(format!("BigQuery REST {} {}", T::NAME, T::OUT_OF_RANGE)))
+            .map_err(|_| E::custom(format!("BigQuery REST {} {}", T::NAME, T::OUT_OF_RANGE)))
     }
 
     fn visit_u64<E: serde::de::Error>(self, value: u64) -> std::result::Result<Self::Value, E> {
-        T::from_u64(value)
+        T::try_from(value)
             .map(JsonInt)
-            .ok_or_else(|| E::custom(format!("BigQuery REST {} {}", T::NAME, T::OUT_OF_RANGE)))
+            .map_err(|_| E::custom(format!("BigQuery REST {} {}", T::NAME, T::OUT_OF_RANGE)))
     }
 
     fn visit_str<E: serde::de::Error>(self, value: &str) -> std::result::Result<Self::Value, E> {
