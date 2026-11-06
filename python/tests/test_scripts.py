@@ -17,12 +17,14 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.mark.parametrize(
     "lock",
-    sorted(REPOSITORY_ROOT.glob("integration/*/uv.lock")),
+    sorted(
+        path
+        for path in REPOSITORY_ROOT.glob("integration/*/uv.lock")
+        if 'name = "duckdb"' in path.read_text(encoding="utf-8")
+    ),
     ids=lambda path: path.parent.name,
 )
 def test_suites_using_duckdb_select_a_python_build_with_the_gil(lock: Path) -> None:
-    if 'name = "duckdb"' not in lock.read_text(encoding="utf-8"):
-        return
     version_file = lock.with_name(".python-version")
     lines = version_file.read_text(encoding="utf-8").splitlines()
     requests = [line for line in lines if not line.startswith("#")]

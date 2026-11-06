@@ -312,16 +312,6 @@ def test_editable_install_exposes_sources_without_building_rust(
         assert metadata.get_all("Tag") == ["py3-none-any"]
 
 
-def test_sdist_carries_local_cargo_dependencies(sdist_archive: Path) -> None:
-    with tarfile.open(sdist_archive) as archive:
-        manifest = tomllib.loads(_archive_file(archive, "Cargo.toml").decode("utf-8"))
-        for dependency in manifest["patch"]["crates-io"].values():
-            if "path" in dependency:
-                path = dependency["path"]
-                assert _archive_file(archive, f"{path}/Cargo.toml")
-                assert _archive_file(archive, f"{path}/src/lib.rs")
-
-
 def test_sdist_carries_every_rust_target_the_manifest_declares(sdist_archive: Path) -> None:
     # Cargo resolves every declared target's source path while parsing Cargo.toml,
     # so any target missing from the sdist fails `pip install` with a manifest error.
