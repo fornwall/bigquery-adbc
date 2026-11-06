@@ -170,6 +170,47 @@ fn plain_strings_take_the_columns_maximum_length() {
     );
 }
 
+#[test]
+fn unknown_extensions_do_not_hide_column_length_limits() {
+    use crate::ingest::schema::{
+        arrow_schema_to_bigquery, normalize_schema, validate_existing_schema,
+    };
+    use crate::rest::metadata::TableId;
+    use crate::types::ARROW_EXTENSION_NAME_KEY;
+
+    let target = TableId {
+        project_id: "p",
+        dataset_id: "d",
+        table_id: "t",
+    };
+    for (data_type, kind) in [(DataType::Utf8, "STRING"), (DataType::Binary, "BYTES")] {
+        for repeated in [false, true] {
+            let mut value = Field::new("value", data_type.clone(), true)
+                .with_metadata([(ARROW_EXTENSION_NAME_KEY, "example.label")]);
+            if repeated {
+                value = Field::new_list("value", value, true);
+            }
+            let table = table_schema([with_max_length(
+                field_mode(
+                    "value",
+                    kind,
+                    if repeated { "REPEATED" } else { "NULLABLE" },
+                ),
+                5,
+            )]);
+            let bound = normalize_schema(&Schema::new(vec![value])).unwrap();
+            let aligned = align_with_table(&bound, &table).unwrap();
+            let values = match aligned.field(0).data_type() {
+                DataType::List(item) => item,
+                _ => aligned.field(0),
+            };
+            assert_eq!(max_length(values), Some("5"));
+            let checked = arrow_schema_to_bigquery(&aligned).unwrap();
+            validate_existing_schema(target, Some(&table), &checked).unwrap();
+        }
+    }
+}
+
 fn decimal_column(name: &str, kind: &str, precision: i64, scale: i64) -> TableFieldSchema {
     TableFieldSchema {
         precision,

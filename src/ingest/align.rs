@@ -16,7 +16,7 @@ use crate::error::{error, invalid_argument};
 use crate::rest::model::{TableFieldSchema, TableSchema};
 use crate::types::decimal::{BigQueryDecimalType, bigquery_decimal_data_type};
 use crate::types::schema::convert_field;
-use crate::types::{ARROW_EXTENSION_NAME_KEY, BIGQUERY_TYPE_METADATA_KEY, BigQueryType};
+use crate::types::{BIGQUERY_TYPE_METADATA_KEY, BigQueryType, has_bigquery_extension};
 use crate::{
     BIGQUERY_FIELD_METADATA_MAX_LENGTH, BIGQUERY_FIELD_METADATA_PRECISION,
     BIGQUERY_FIELD_METADATA_SCALE,
@@ -164,7 +164,7 @@ fn with_column_decimal(values: &Field, column: &TableFieldSchema) -> Result<Fiel
 /// Metadata on either the value or enclosing column can exclude logical types such as JSON.
 fn with_column_length(values: &Field, field: &Field, column: &TableFieldSchema) -> Field {
     let typed = |field: &Field| {
-        field.metadata().contains_key(ARROW_EXTENSION_NAME_KEY)
+        has_bigquery_extension(field)
             || field
                 .metadata()
                 .get(BIGQUERY_TYPE_METADATA_KEY)
