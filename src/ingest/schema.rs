@@ -549,17 +549,10 @@ fn arrow_field_to_bigquery(field: &Field) -> Result<TableFieldSchema> {
                 if item.mode == "REPEATED" {
                     return Err(nested_array_error(field));
                 }
-                // The name is already the field's own, and every other property below
-                // replaces one the shared prefix left at its default.
-                result.r#type = item.r#type;
-                result.mode = "REPEATED".to_owned();
-                result.fields = item.fields;
-                result.max_length = item.max_length;
-                result.range_element_type = item.range_element_type;
-                if item.precision != 0 {
-                    result.precision = item.precision;
-                    result.scale = item.scale;
-                }
+                result = TableFieldSchema {
+                    mode: "REPEATED".to_owned(),
+                    ..item
+                };
             }
             // pandas, pyarrow and Polars infer `Null` for a column that holds only nulls.
             DataType::Null => {
@@ -618,7 +611,10 @@ fn apply_max_length(field: &Field, mut result: TableFieldSchema) -> Result<Table
                 field.name()
             ))
         })?;
-    if !matches!(canonical_bigquery_type(&result.r#type), "STRING" | "BYTES") {
+    if !matches!(
+        BigQueryType::from_rest(&result.r#type),
+        Some(BigQueryType::String | BigQueryType::Bytes)
+    ) {
         return Err(invalid_argument(format!(
             "{BIGQUERY_FIELD_METADATA_MAX_LENGTH} metadata applies only to STRING and BYTES \
              columns, not Arrow field {:?} of type {}",
@@ -901,15 +897,6 @@ fn field_shape(field: &TableFieldSchema, exact_mode: bool) -> FieldShape<'_> {
     }
 }
 
-/// Reduces any spelling BigQuery may report to the one REST name, so two schemas that describe the
-/// same table compare equal.
-fn canonical_bigquery_type(value: &str) -> &str {
-    match BigQueryType::from_rest(value) {
-        Some(kind) => kind.rest(),
-        None => value,
-    }
-}
-
 /// The GoogleSQL spelling of a type BigQuery reported, for messages a caller reads: the REST API
 /// answers with the legacy names (`INTEGER`, `RECORD`) that no schema in this driver ever uses.
 fn googlesql_type_name(value: &str) -> &str {
@@ -926,10 +913,10 @@ pub(super) fn canonical_mode(value: &str) -> &str {
 /// Decimal constraints, treating plain NUMERIC as (38, 9). Plain BIGNUMERIC has no
 /// equivalent parameterized domain, so it retains `None` and compares separately.
 fn decimal_shape(field: &TableFieldSchema) -> Option<(i64, i64)> {
-    let (precision, scale) = match canonical_bigquery_type(&field.r#type) {
-        "NUMERIC" => (38, 9),
-        "BIGNUMERIC" if field.precision == 0 && field.scale == 0 => return None,
-        "BIGNUMERIC" => (76, 38),
+    let (precision, scale) = match BigQueryType::from_rest(&field.r#type)? {
+        BigQueryType::Numeric => (38, 9),
+        BigQueryType::BigNumeric if field.precision == 0 && field.scale == 0 => return None,
+        BigQueryType::BigNumeric => (76, 38),
         _ => return None,
     };
     Some(if field.precision == 0 {
