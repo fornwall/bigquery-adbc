@@ -240,20 +240,13 @@ def main() -> int:
             for command in commands:
                 test = subprocess.Popen(command, cwd=REPOSITORY_ROOT, env=environment, start_new_session=True)
                 while True:
-                    try:
+                    with contextlib.suppress(subprocess.TimeoutExpired):
                         status = test.wait(timeout=0.2)
-                        if server.poll() is not None:
-                            status = 1
-                            raise RuntimeError(
-                                f"emulator exited while tests were running (status {server.returncode})"
-                            )
-                        status = status if status >= 0 else 128 - status
+                    if server.poll() is not None:
+                        raise RuntimeError(f"emulator exited while tests were running (status {server.returncode})")
+                    if test.returncode is not None:
+                        status = test.returncode if test.returncode >= 0 else 128 - test.returncode
                         break
-                    except subprocess.TimeoutExpired:
-                        if server.poll() is not None:
-                            raise RuntimeError(
-                                f"emulator exited while tests were running (status {server.returncode})"
-                            ) from None
                 stop(test)
                 test = None
                 if status:

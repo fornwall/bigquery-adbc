@@ -140,6 +140,17 @@ def emulator_environment(tmp_path: Path) -> dict[str, str]:
     }
 
 
+def run_emulator(code: str, environment: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(REPOSITORY_ROOT / "scripts/run-emulator-tests.sh"), "--", sys.executable, "-c", code],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+
 def assert_process_stopped(pid_path: Path) -> None:
     pid = int(pid_path.read_text())
     with pytest.raises(ProcessLookupError):
@@ -153,20 +164,7 @@ def test_emulator_runner_requires_an_explicit_executable(tmp_path: Path, value: 
     del environment["ADBC_BIGQUERY_EMULATOR_BIN"]
     if value is not None:
         environment["ADBC_BIGQUERY_EMULATOR_BIN"] = value
-    result = subprocess.run(
-        [
-            str(REPOSITORY_ROOT / "scripts/run-emulator-tests.sh"),
-            "--",
-            sys.executable,
-            "-c",
-            'raise AssertionError("test command must not run")',
-        ],
-        env=environment,
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=False,
-    )
+    result = run_emulator('raise AssertionError("test command must not run")', environment)
     assert result.returncode == 1
     assert "ADBC_BIGQUERY_EMULATOR_BIN must be set" in result.stderr
     assert "test command must not run" not in result.stderr
@@ -177,22 +175,12 @@ def test_emulator_runner_requires_an_explicit_executable(tmp_path: Path, value: 
 @pytest.mark.parametrize("status", [0, 7])
 @pytest.mark.parametrize("stdout_logging", [False, True])
 def test_emulator_runner_bootstraps_exports_and_cleans_up(tmp_path: Path, status: int, stdout_logging: bool) -> None:
-    result = subprocess.run(
-        [
-            str(REPOSITORY_ROOT / "scripts/run-emulator-tests.sh"),
-            "--",
-            sys.executable,
-            "-c",
-            "import json, os, pathlib, sys; "
-            'pathlib.Path(os.environ["FAKE_ROOT"], "child.json").write_text('
-            'json.dumps({"cwd": str(pathlib.Path.cwd()), "environment": dict(os.environ)})); '
-            f"sys.exit({status})",
-        ],
-        env={**emulator_environment(tmp_path), "FAKE_STDOUT_LOGGING": "1" if stdout_logging else ""},
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=False,
+    result = run_emulator(
+        "import json, os, pathlib, sys; "
+        'pathlib.Path(os.environ["FAKE_ROOT"], "child.json").write_text('
+        'json.dumps({"cwd": str(pathlib.Path.cwd()), "environment": dict(os.environ)})); '
+        f"sys.exit({status})",
+        {**emulator_environment(tmp_path), "FAKE_STDOUT_LOGGING": "1" if stdout_logging else ""},
     )
     assert result.returncode == status, result.stderr
     if status and stdout_logging:
@@ -231,19 +219,9 @@ def test_emulator_runner_bootstraps_exports_and_cleans_up(tmp_path: Path, status
 @pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX process groups")
 @pytest.mark.parametrize("failure", ["startup", "bootstrap"])
 def test_emulator_runner_cleans_up_a_failed_start_without_running_tests(tmp_path: Path, failure: str) -> None:
-    result = subprocess.run(
-        [
-            str(REPOSITORY_ROOT / "scripts/run-emulator-tests.sh"),
-            "--",
-            sys.executable,
-            "-c",
-            'raise AssertionError("test command must not run")',
-        ],
-        env={**emulator_environment(tmp_path), "FAKE_FAILURE": failure},
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=False,
+    result = run_emulator(
+        'raise AssertionError("test command must not run")',
+        {**emulator_environment(tmp_path), "FAKE_FAILURE": failure},
     )
     assert result.returncode == 1
     assert "test command must not run" not in result.stderr
