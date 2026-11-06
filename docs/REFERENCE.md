@@ -567,7 +567,8 @@ is reused. If fetching fails, the keys only it would supply are absent and the s
 ### Bulk ingest
 
 Bulk ingest uses the Storage Write API. Batches are normalized in request-sized windows, counting
-expanded dictionary values, overlapping list-view ranges and offsets for empty or null values.
+destination type widths, expanded dictionary values, overlapping list-view ranges and offsets for
+empty or null values. Null fields resolved from the destination schema count at their resolved width.
 Input failures stop ingestion without waiting for queued append responses. Failed or cancelled
 ingests release queued payloads before bounded remote stream cleanup.
 

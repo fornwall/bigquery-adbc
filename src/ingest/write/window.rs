@@ -11,12 +11,13 @@ use arrow_array::{
     Array, DictionaryArray, GenericByteViewArray, GenericListViewArray, OffsetSizeTrait,
     RecordBatch, downcast_dictionary_array,
 };
-use arrow_schema::DataType;
+use arrow_schema::{DataType, Schema};
 
 /// The rows from `offset` the next window of `input` takes: `suggested`, or as many as fit
 /// twice `target_size`, the slack leaving the chunk encoder to make the exact cut.
 pub(super) fn window_rows(
     input: &RecordBatch,
+    schema: &Schema,
     offset: usize,
     suggested: usize,
     target_size: usize,
@@ -27,7 +28,10 @@ pub(super) fn window_rows(
         let bytes = input
             .columns()
             .iter()
-            .map(|column| addressed_bytes(column.as_ref(), offset, rows, limit))
+            .zip(schema.fields())
+            .map(|(column, field)| {
+                addressed_bytes(column.as_ref(), field.data_type(), offset, rows, limit)
+            })
             .fold(0, usize::saturating_add);
         if rows == 1 || bytes <= limit {
             return rows;
@@ -47,12 +51,20 @@ pub(super) fn scaled(rows: usize, target: usize, actual: usize) -> usize {
 
 /// The bytes rows `offset..offset + rows` of `column` take once normalized, estimated from what
 /// they address rather than from buffer capacities, which a slice shares with the rows around it.
+/// Nulls and widened primitives count at their destination type's width, including nested fields.
 /// Dictionaries and list views count repeated references separately because normalization
 /// materializes each one. Their traversal stops above `limit`, so nested overlapping views
 /// cannot make sizing as expensive as materializing the whole expansion.
-fn addressed_bytes(column: &dyn Array, offset: usize, rows: usize, limit: usize) -> usize {
+fn addressed_bytes(
+    column: &dyn Array,
+    target: &DataType,
+    offset: usize,
+    rows: usize,
+    limit: usize,
+) -> usize {
     let width = |bytes: usize| bytes.saturating_mul(rows);
     match column.data_type() {
+        DataType::Null => null_bytes(target, rows),
         DataType::Utf8 => offset_span(column.as_string::<i32>().value_offsets(), offset, rows)
             .saturating_add(width(4)),
         DataType::LargeUtf8 => offset_span(column.as_string::<i64>().value_offsets(), offset, rows)
@@ -68,40 +80,48 @@ fn addressed_bytes(column: &dyn Array, offset: usize, rows: usize, limit: usize)
         }
         DataType::Utf8View => view_bytes::<StringViewType>(column.as_string_view(), offset, rows),
         DataType::BinaryView => view_bytes::<BinaryViewType>(column.as_binary_view(), offset, rows),
-        DataType::List(_) => list_bytes(column.as_list::<i32>(), offset, rows, limit),
-        DataType::LargeList(_) => list_bytes(column.as_list::<i64>(), offset, rows, limit),
-        DataType::ListView(_) => list_view_bytes(column.as_list_view::<i32>(), offset, rows, limit),
+        DataType::List(_) => list_bytes(column.as_list::<i32>(), target, offset, rows, limit),
+        DataType::LargeList(_) => list_bytes(column.as_list::<i64>(), target, offset, rows, limit),
+        DataType::ListView(_) => {
+            list_view_bytes(column.as_list_view::<i32>(), target, offset, rows, limit)
+        }
         DataType::LargeListView(_) => {
-            list_view_bytes(column.as_list_view::<i64>(), offset, rows, limit)
+            list_view_bytes(column.as_list_view::<i64>(), target, offset, rows, limit)
         }
         DataType::FixedSizeList(_, size) => {
             let size = usize::try_from(*size).unwrap_or_default();
             addressed_bytes(
                 column.as_fixed_size_list().values().as_ref(),
+                list_item_type(target),
                 offset.saturating_mul(size),
                 rows.saturating_mul(size),
                 limit,
             )
             .saturating_add(width(4))
         }
-        DataType::Struct(_) => column
+        DataType::Struct(fields) => column
             .as_struct()
             .columns()
             .iter()
-            .map(|child| addressed_bytes(child.as_ref(), offset, rows, limit))
+            .zip(match target {
+                DataType::Struct(fields) => fields,
+                _ => fields,
+            })
+            .map(|(child, field)| {
+                addressed_bytes(child.as_ref(), field.data_type(), offset, rows, limit)
+            })
             .fold(rows.div_ceil(8), usize::saturating_add),
         DataType::Dictionary(_, _) => {
-            let values = column.as_any_dictionary().values();
-            if let Some(bytes) = values.data_type().primitive_width() {
+            if let Some(bytes) = target.primitive_width() {
                 return width(bytes);
             }
             downcast_dictionary_array!(
-                column => dictionary_bytes(column, offset, rows, limit),
+                column => dictionary_bytes(column, target, offset, rows, limit),
                 _ => unreachable!("the column has a dictionary data type"),
             )
         }
         DataType::Boolean => rows.div_ceil(8),
-        data_type => match data_type.primitive_width() {
+        _ => match target.primitive_width() {
             Some(bytes) => width(bytes),
             // Other layouts normalization rewrites: their buffers, in proportion.
             None => scaled(column.get_array_memory_size(), rows, column.len().max(1)),
@@ -111,6 +131,7 @@ fn addressed_bytes(column: &dyn Array, offset: usize, rows: usize, limit: usize)
 
 fn dictionary_bytes<K: ArrowDictionaryKeyType>(
     array: &DictionaryArray<K>,
+    target: &DataType,
     offset: usize,
     rows: usize,
     limit: usize,
@@ -119,11 +140,11 @@ fn dictionary_bytes<K: ArrowDictionaryKeyType>(
     let null_width = if array.null_count() == 0 {
         0
     } else {
-        null_bytes(array.values().data_type(), 1)
+        null_bytes(target, 1)
     };
     for row in offset..offset + rows {
         let added = match array.key(row) {
-            Some(key) => addressed_bytes(array.values().as_ref(), key, 1, limit),
+            Some(key) => addressed_bytes(array.values().as_ref(), target, key, 1, limit),
             None => null_width,
         };
         bytes = bytes.saturating_add(added);
@@ -158,6 +179,7 @@ fn null_bytes(data_type: &DataType, rows: usize) -> usize {
 
 fn list_view_bytes<O: OffsetSizeTrait>(
     array: &GenericListViewArray<O>,
+    target: &DataType,
     offset: usize,
     rows: usize,
     limit: usize,
@@ -170,6 +192,7 @@ fn list_view_bytes<O: OffsetSizeTrait>(
         if array.is_valid(row) {
             bytes = bytes.saturating_add(addressed_bytes(
                 array.values().as_ref(),
+                list_item_type(target),
                 array.value_offset(row).as_usize(),
                 array.value_size(row).as_usize(),
                 limit,
@@ -207,6 +230,7 @@ fn view_bytes<T: ByteViewType + ?Sized>(
 
 fn list_bytes<O: OffsetSizeTrait>(
     array: &arrow_array::GenericListArray<O>,
+    target: &DataType,
     offset: usize,
     rows: usize,
     limit: usize,
@@ -218,11 +242,23 @@ fn list_bytes<O: OffsetSizeTrait>(
     let (start, end) = (start.as_usize(), end.as_usize());
     addressed_bytes(
         array.values().as_ref(),
+        list_item_type(target),
         start,
         end.saturating_sub(start),
         limit,
     )
     .saturating_add(rows.saturating_mul(4))
+}
+
+fn list_item_type(target: &DataType) -> &DataType {
+    match target {
+        DataType::List(item)
+        | DataType::LargeList(item)
+        | DataType::ListView(item)
+        | DataType::LargeListView(item)
+        | DataType::FixedSizeList(item, _) => item.data_type(),
+        _ => target,
+    }
 }
 
 #[cfg(test)]

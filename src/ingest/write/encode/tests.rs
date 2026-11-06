@@ -145,7 +145,9 @@ fn splits_ingest_batches_by_serialized_size_without_losing_rows() {
     let schema_bytes = arrow_schema.serialized_schema.to_vec();
     let mut chunks = Vec::new();
     let mut offset = 0;
-    assert!(window_rows(&batch, 0, batch.num_rows(), target_size) < batch.num_rows());
+    assert!(
+        window_rows(&batch, &batch.schema(), 0, batch.num_rows(), target_size) < batch.num_rows()
+    );
     // Start with the whole skewed candidate: the encoder must shrink it without
     // materializing the oversized framed payload it discards.
     let mut window = batch.clone();
@@ -556,5 +558,75 @@ fn repeated_empty_list_values_bound_their_normalized_offsets() {
             assert_eq!(values.len(), 1_000 * window.num_rows());
             offset += encoder.encode(window, offset).unwrap().row_count;
         }
+    }
+}
+
+#[test]
+fn resolved_null_columns_normalize_in_bounded_windows() {
+    use arrow_array::types::Int8Type;
+    use arrow_array::{DictionaryArray, Int8Array, NullArray, StructArray};
+
+    let scalar: ArrayRef = Arc::new(NullArray::new(1_000));
+    let resolved = DataType::Struct(vec![Field::new("child", DataType::Utf8, true)].into());
+    let nested: ArrayRef = Arc::new(StructArray::from(vec![(
+        Arc::new(Field::new("child", DataType::Null, true)),
+        scalar.clone(),
+    )]));
+    let lists: ArrayRef = Arc::new(ListArray::new(
+        Arc::new(Field::new("item", nested.data_type().clone(), false)),
+        arrow_buffer::OffsetBuffer::from_lengths([1; 1_000]),
+        nested.clone(),
+        None,
+    ));
+    let dictionary: ArrayRef = Arc::new(DictionaryArray::<Int8Type>::new(
+        Int8Array::from(vec![None; 1_000]),
+        Arc::new(NullArray::new(0)),
+    ));
+    for (column, target_type) in [
+        (scalar.clone(), DataType::Utf8),
+        (scalar, resolved.clone()),
+        (nested, resolved.clone()),
+        (dictionary, resolved.clone()),
+        (
+            lists,
+            DataType::List(Arc::new(Field::new("item", resolved, false))),
+        ),
+    ] {
+        let input = RecordBatch::try_from_iter([("value", column)]).unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("value", target_type, true)]));
+        let encoder = ChunkEncoder::with_limits(schema, 100, 200);
+        let window = encoder.window(&input, 0, 100).unwrap();
+        assert!(
+            window.num_rows() <= 50,
+            "normalized {} rows",
+            window.num_rows()
+        );
+        assert_eq!(window.schema(), encoder.schema);
+    }
+}
+
+#[test]
+fn widened_columns_are_sized_at_their_normalized_width() {
+    use arrow_array::{Decimal32Array, DictionaryArray, Int8Array};
+
+    let decimal: ArrayRef = Arc::new(
+        Decimal32Array::from(vec![123; 1_000])
+            .with_precision_and_scale(9, 0)
+            .unwrap(),
+    );
+    let dictionary: ArrayRef = Arc::new(DictionaryArray::new(
+        Int8Array::from(vec![Some(0); 1_000]),
+        decimal.clone(),
+    ));
+    for column in [decimal, dictionary] {
+        let input = RecordBatch::try_from_iter([("value", column)]).unwrap();
+        let schema = Arc::new(crate::ingest::schema::normalize_schema(&input.schema()).unwrap());
+        let encoder = ChunkEncoder::with_limits(schema, 100, 200);
+        let window = encoder.window(&input, 0, 100).unwrap();
+        assert!(
+            window.num_rows() <= 12,
+            "normalized {} rows",
+            window.num_rows()
+        );
     }
 }

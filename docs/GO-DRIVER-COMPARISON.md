@@ -73,8 +73,9 @@ new recovery budget, so a queued append may be sent more than four times overall
 batch fails at the service, and its appends carry no offset and only the first is retried, on
 `NotFound`, so a transport failure mid-ingest fails it.
 
-Window sizing counts expanded dictionary values, overlapping list-view ranges and offsets for
-empty or null values; small shared buffers cannot hide a large normalization allocation.
+Window sizing counts destination type widths, expanded dictionary values, overlapping list-view
+ranges and offsets for empty or null values. This includes Null fields resolved from the destination
+schema and primitive widening, so small input buffers cannot hide a large normalization allocation.
 
 ### G23. The first ingest batch is validated before target-table mutation
 

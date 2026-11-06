@@ -16,7 +16,13 @@ fn batch(column: ArrayRef) -> RecordBatch {
 
 /// The bytes the window's rows of the batch's only column address.
 fn window_bytes(batch: &RecordBatch, offset: usize, rows: usize) -> usize {
-    addressed_bytes(batch.column(0).as_ref(), offset, rows, usize::MAX)
+    addressed_bytes(
+        batch.column(0).as_ref(),
+        batch.column(0).data_type(),
+        offset,
+        rows,
+        usize::MAX,
+    )
 }
 
 /// Empty strings followed by long ones: the density of the first rows would put every remaining
@@ -33,13 +39,16 @@ fn a_window_is_capped_by_the_bytes_its_rows_address() {
     let target = 100_000;
 
     // The density of an empty-string chunk suggests every remaining row.
-    let rows = window_rows(&skewed, 2_990, 1_000_000, target);
+    let rows = window_rows(&skewed, &skewed.schema(), 2_990, 1_000_000, target);
     assert!(rows < 210, "the window took {rows} rows");
     assert!(window_bytes(&skewed, 2_990, rows) <= 2 * target);
     // Empty strings still need offsets, but this many fit.
-    assert_eq!(window_rows(&skewed, 0, 1_000, target), 1_000);
+    assert_eq!(
+        window_rows(&skewed, &skewed.schema(), 0, 1_000, target),
+        1_000
+    );
     // A single row is a window, however long.
-    assert_eq!(window_rows(&skewed, 3_000, 1, 1), 1);
+    assert_eq!(window_rows(&skewed, &skewed.schema(), 3_000, 1, 1), 1);
 }
 
 /// Fixed-width values count at their width, not at the capacity of a buffer a slice shares with
@@ -49,7 +58,10 @@ fn a_slice_counts_only_its_own_rows() {
     let whole = batch(Arc::new(Int64Array::from_iter_values(0..1_000_000)));
     let slice = whole.slice(500_000, 10_000);
     assert_eq!(window_bytes(&slice, 0, 10_000), 80_000);
-    assert_eq!(window_rows(&slice, 0, 10_000, 100_000), 10_000);
+    assert_eq!(
+        window_rows(&slice, &slice.schema(), 0, 10_000, 100_000),
+        10_000
+    );
 }
 
 /// Views, lists, structs and dictionaries count the values their rows reach.
@@ -90,7 +102,7 @@ fn every_layout_counts_the_values_its_rows_reach() {
         (0..1_000).map(|row| labels[row % 2].as_str()).collect();
     let categories = batch(Arc::new(dictionary));
     assert_eq!(window_bytes(&categories, 0, 1_000), 1_004_000);
-    let rows = window_rows(&categories, 0, 1_000, 100_000);
+    let rows = window_rows(&categories, &categories.schema(), 0, 1_000, 100_000);
     assert!((100..=200).contains(&rows), "the window took {rows} rows");
 }
 
@@ -109,7 +121,7 @@ fn dictionary_windows_count_selected_values_including_repeated_keys() {
     assert_eq!(window_bytes(&input, 0, 2), 8);
     assert_eq!(window_bytes(&input, 2, 1_000), 1_004_000);
     let slice = input.slice(2, 1_000);
-    let rows = window_rows(&slice, 10, 990, 100_000);
+    let rows = window_rows(&slice, &slice.schema(), 10, 990, 100_000);
     assert!((100..=200).contains(&rows), "the window took {rows} rows");
 }
 
@@ -127,7 +139,7 @@ fn list_view_windows_count_overlapping_ranges_and_skip_null_lists() {
     assert_eq!(window_bytes(&input, 0, 10), 40);
     assert_eq!(window_bytes(&input, 10, 990), 990 * 1_008);
     let slice = input.slice(10, 990);
-    let rows = window_rows(&slice, 10, 980, 100_000);
+    let rows = window_rows(&slice, &slice.schema(), 10, 980, 100_000);
     assert!((99..=199).contains(&rows), "the window took {rows} rows");
 }
 
@@ -143,7 +155,7 @@ fn nested_repeated_ranges_stop_counting_once_over_budget() {
             None,
         ));
     }
-    let bytes = addressed_bytes(column.as_ref(), 0, 1_000, 100_000);
+    let bytes = addressed_bytes(column.as_ref(), column.data_type(), 0, 1_000, 100_000);
     assert!((100_001..200_000).contains(&bytes), "counted {bytes} bytes");
 }
 
@@ -162,7 +174,7 @@ fn null_dictionary_rows_count_offsets_including_struct_children() {
         let values = arrow_array::new_empty_array(&data_type);
         let keys = Int8Array::from(vec![None; 1_000]);
         let input = batch(Arc::new(DictionaryArray::<Int8Type>::new(keys, values)));
-        let rows = window_rows(&input, 0, 1_000, 100);
+        let rows = window_rows(&input, &input.schema(), 0, 1_000, 100);
         assert!(rows <= 50, "{data_type} took {rows} null rows");
         assert!(window_bytes(&input, 0, rows) <= 200);
     }

@@ -151,7 +151,7 @@ impl ChunkEncoder {
             Some((rows, size)) => scaled(rows, target_size, size),
             None => input.num_rows(),
         };
-        let rows = window_rows(input, offset, suggested, target_size);
+        let rows = window_rows(input, &self.schema, offset, suggested, target_size);
         let window = if rows == input.num_rows() {
             input.clone()
         } else {
