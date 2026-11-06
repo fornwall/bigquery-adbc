@@ -14,7 +14,7 @@ use crate::cancellation::Operation;
 use crate::error::{error, option_value_json};
 use crate::options::json_object_value;
 use crate::query::{ExecutionContext, QualifiedTableName};
-use crate::rest::metadata::{MetadataClient, TableId, TableView};
+use crate::rest::metadata::TableView;
 use crate::rest::model::{PolicyTagList, TableFieldSchema, TableSchema};
 use crate::types::{BigQueryType, folded_name};
 
@@ -108,83 +108,54 @@ impl TableMutationOptions {
     ) -> Result<()> {
         let client = context.state.metadata_client(&context.runtime)?;
         let table = table.id();
-        if self.descriptions.is_some() || self.policy_tags.is_some() {
-            self.execute_column_metadata(context, &client, table, operation)?;
-        }
-        if let Some(description) = self.description.as_deref() {
-            execute_description(context, &client, table, operation, description)?;
-        }
-        Ok(())
-    }
-
-    /// Fetches the schema through the BASIC metadata view, changes only the named column
-    /// metadata, and patches the complete schema back, so array columns keep `mode=REPEATED`
-    /// (dbt-core #13657).
-    fn execute_column_metadata(
-        &self,
-        context: &ExecutionContext,
-        client: &MetadataClient,
-        table: TableId<'_>,
-        operation: &Operation,
-    ) -> Result<()> {
-        operation.check()?;
-        let mut metadata = context
-            .runtime
-            .block_on(client.get_table(Some(operation), table, TableView::Schema))
-            .map_err(|source| {
-                source.into_error(&format!(
-                    "failed to fetch BigQuery table metadata for {table} before updating its \
-                     columns"
-                ))
-            })?;
-        let mut schema = metadata.schema.take().ok_or_else(|| {
-            error(
-                format!("BigQuery returned table metadata without a schema for {table}"),
-                Status::InvalidData,
-            )
-        })?;
-        apply_column_metadata(
-            &mut schema,
-            self.descriptions.as_deref(),
-            self.policy_tags.as_deref(),
-        );
-        operation.check()?;
-        // The patch omits the fetched ETag: dbt Core and the dbt-core 2.0 fork both write the
-        // schema blind.
-        context
-            .runtime
-            .block_on(client.patch_table_schema(Some(operation), table, &schema))
-            .map_err(|source| {
-                source.into_error(&format!(
-                    "failed to update BigQuery column metadata for {table}"
-                ))
-            })?;
-        Ok(())
-    }
-}
-
-/// Patches only the table description, without reading the table first.
-///
-/// The patch carries no `If-Match`, unlike the fork's and dbt Core's. It sets one scalar field, so
-/// a precondition protects nothing a concurrent writer set, and dbt wants the last write to win. A
-/// precondition also fails spuriously: a materialized view's automatic initial refresh changes its
-/// ETag a second or two after creation, while ETag reads briefly still return the old one.
-fn execute_description(
-    context: &ExecutionContext,
-    client: &MetadataClient,
-    table: TableId<'_>,
-    operation: &Operation,
-    description: &str,
-) -> Result<()> {
-    operation.check()?;
-    context
-        .runtime
-        .block_on(client.patch_table_description(Some(operation), table, description))
-        .map_err(|source| {
-            source.into_error(&format!(
-                "failed to update the description of BigQuery table {table}"
-            ))
+        context.runtime.block_on(async {
+            if self.descriptions.is_some() || self.policy_tags.is_some() {
+                let metadata = client
+                    .get_table(Some(operation), table, TableView::Schema)
+                    .await
+                    .map_err(|source| {
+                        source.into_error(&format!(
+                            "failed to fetch BigQuery table metadata for {table} before updating its \
+                             columns"
+                        ))
+                    })?;
+                let mut schema = metadata.schema.ok_or_else(|| {
+                    error(
+                        format!("BigQuery returned table metadata without a schema for {table}"),
+                        Status::InvalidData,
+                    )
+                })?;
+                apply_column_metadata(
+                    &mut schema,
+                    self.descriptions.as_deref(),
+                    self.policy_tags.as_deref(),
+                );
+                // Preserve the complete schema, including REPEATED modes. Like dbt Core, write
+                // it without an ETag precondition.
+                client
+                    .patch_table_schema(Some(operation), table, &schema)
+                    .await
+                    .map_err(|source| {
+                        source.into_error(&format!(
+                            "failed to update BigQuery column metadata for {table}"
+                        ))
+                    })?;
+            }
+            if let Some(description) = self.description.as_deref() {
+                // Last write wins for this scalar field. An ETag precondition can fail after
+                // a materialized view's automatic refresh while reads still return its old ETag.
+                client
+                    .patch_table_description(Some(operation), table, description)
+                    .await
+                    .map_err(|source| {
+                        source.into_error(&format!(
+                            "failed to update the description of BigQuery table {table}"
+                        ))
+                    })?;
+            }
+            Ok(())
         })
+    }
 }
 
 /// The configured description and policy tags of each column, keyed by [`folded_name`] path. One
