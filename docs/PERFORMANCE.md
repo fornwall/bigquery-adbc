@@ -286,9 +286,10 @@ and fuzz builds affected timings, so no latency claim is made.
 ### Dataset location cache retention
 
 The dataset-location cache holds at most 32 entries across a database's connections, evicting
-the oldest inserted entry when full. Cache hits remain read-only hash lookups; revisiting an
-evicted dataset repeats `datasets.get`. This bounds retained metadata for long-lived clients
-that visit many scratch datasets without changing the location selected for a job.
+the oldest inserted entry when full. One queue stores keys and locations; lookups scan at most
+32 entries without changing their order. Revisiting an evicted dataset repeats `datasets.get`.
+This bounds retained metadata for long-lived clients that visit many scratch datasets without
+changing the location selected for a job.
 
 A regression inserts 4,096 distinct dataset locations and retains the newest 32; an unbounded
 cache retained all of them. Weak-reference assertions verify that eviction releases the dataset

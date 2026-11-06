@@ -1,7 +1,7 @@
 //! Lazily initialized clients sharing one immutable configuration snapshot.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
@@ -45,34 +45,26 @@ pub(crate) struct ClientState {
 /// A dataset's project and dataset IDs.
 pub(crate) type DatasetKey = (ProjectIdentifier, Arc<str>);
 
-/// FIFO eviction bounds retained state while keeping cache hits read-only and constant-time.
+/// FIFO eviction bounds retained state; lookups scan at most 32 entries.
 const DATASET_LOCATION_CACHE_ENTRIES: usize = 32;
 
 #[derive(Default)]
-struct DatasetLocationCache {
-    values: HashMap<DatasetKey, Arc<str>>,
-    insertion_order: VecDeque<DatasetKey>,
-}
+struct DatasetLocationCache(VecDeque<(DatasetKey, Arc<str>)>);
 
 impl DatasetLocationCache {
     fn insert(&mut self, dataset: DatasetKey, location: Arc<str>) {
-        if let Some(cached) = self.values.get_mut(&dataset) {
+        if let Some((_, cached)) = self.0.iter_mut().find(|(key, _)| key == &dataset) {
             *cached = location;
             return;
         }
-        if self.values.len() == DATASET_LOCATION_CACHE_ENTRIES
-            && let Some(oldest) = self.insertion_order.pop_front()
-        {
-            self.values.remove(&oldest);
+        if self.0.len() == DATASET_LOCATION_CACHE_ENTRIES {
+            self.0.pop_front();
         }
-        self.insertion_order.push_back(dataset.clone());
-        self.values.insert(dataset, location);
+        self.0.push_back((dataset, location));
     }
 
     fn remove(&mut self, dataset: &DatasetKey) {
-        if self.values.remove(dataset).is_some() {
-            self.insertion_order.retain(|key| key != dataset);
-        }
+        self.0.retain(|(key, _)| key != dataset);
     }
 }
 
@@ -251,9 +243,10 @@ impl ClientState {
         self.dataset_locations
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .values
-            .get(dataset)
-            .cloned()
+            .0
+            .iter()
+            .find(|(key, _)| key == dataset)
+            .map(|(_, location)| location.clone())
     }
 
     fn remember_dataset_location(&self, dataset: DatasetKey, location: Arc<str>) {
@@ -460,10 +453,9 @@ mod tests {
             );
             let cache = state.dataset_locations.lock().unwrap();
             assert_eq!(
-                cache.values.len(),
+                cache.0.len(),
                 (index + 1).min(DATASET_LOCATION_CACHE_ENTRIES)
             );
-            assert_eq!(cache.insertion_order.len(), cache.values.len());
         }
 
         assert!(dataset_owner.upgrade().is_none());
@@ -519,8 +511,7 @@ mod tests {
         );
         assert!(state.dataset_location(&datasets[1]).is_none());
         let cache = state.dataset_locations.lock().unwrap();
-        assert_eq!(cache.values.len(), DATASET_LOCATION_CACHE_ENTRIES);
-        assert_eq!(cache.insertion_order.len(), cache.values.len());
+        assert_eq!(cache.0.len(), DATASET_LOCATION_CACHE_ENTRIES);
     }
 
     #[test]
