@@ -706,11 +706,8 @@ impl<'a> TransactionContext<'a> {
         self.context
             .runtime
             .spawn_detached_blocking(Box::new(move || {
-                let outcome = TransactionContext::new(&context, context.defaults()).execute(
-                    None,
-                    &session_id,
-                    sql,
-                );
+                let outcome =
+                    TransactionContext::new(&context, context.defaults()).execute(&session_id, sql);
                 // The caller stopped waiting at the deadline and reports the outcome as unknown.
                 let _ = finished.send(outcome);
             }));
@@ -741,7 +738,7 @@ impl<'a> TransactionContext<'a> {
             "CALL BQ.ABORT_SESSION({})",
             googlesql_string_literal(session_id)
         );
-        if let Err(failure) = self.execute(None, session_id, &sql) {
+        if let Err(failure) = self.execute(session_id, &sql) {
             // Service error messages may contain SQL or other user data, so only the status.
             diag!(
                 Warn,
@@ -751,7 +748,7 @@ impl<'a> TransactionContext<'a> {
         }
     }
 
-    fn execute(&self, operation: Option<&Operation>, session_id: &str, sql: &str) -> Result<()> {
+    fn execute(&self, session_id: &str, sql: &str) -> Result<()> {
         execute_driver_statement(
             &self.context.runtime,
             &self.context.state,
@@ -760,7 +757,7 @@ impl<'a> TransactionContext<'a> {
                 defaults: self.defaults,
                 location: self.context.location.as_deref(),
                 session_id: Some(session_id),
-                operation,
+                operation: None,
             },
             sql,
         )
