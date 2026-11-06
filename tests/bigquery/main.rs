@@ -25,5 +25,6 @@ mod parameters;
 #[path = "../support/project.rs"]
 mod project_config;
 mod query;
+mod regional_recovery;
 mod storage_read;
 mod support;

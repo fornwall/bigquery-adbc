@@ -179,6 +179,18 @@ cargo test --locked --all-features --lib ffi::roundtrip:: -- --ignored
 ```
 
 Run one test with `scripts/run-one-live-test.sh <name>`; it fails if the name matches nothing.
+The regional recovery test needs permission to create a disposable dataset in `asia-northeast1`:
+
+```sh
+scripts/run-one-live-test.sh regional_recovery_survives_lost_submission_responses
+```
+
+It forwards requests to real BigQuery through a loopback proxy and drops submission responses
+after receiving them from the service. It checks recovery through a real 409 and through
+cross-region `jobs.list`, identical retry bodies, exactly one application of each mutation, and
+remote cancellation after a lost response. No service response is fabricated. The test cancels
+its jobs and deletes its dataset and tables, including on failure; it refuses emulator mode.
+
 These runners cover other credential types:
 
 | Script | Requirements |

@@ -77,13 +77,12 @@ failure behavior of each ingest mode.
   `jobRateLimitExceeded`, `jobBackendError`, `jobInternalError` and `tableUnavailable`,
   terminal-failure confirmation through `jobs.get`, and retry classification from the first job
   error (`src/error/status.rs`, `src/query/direct/poll.rs`, `src/query/response.rs`).
-- Recovering a query job after a lost submission response has mock coverage only. Both the
-  [`jobs.insert` path without a location](GO-DRIVER-COMPARISON.md#g48-jobs-submitted-without-bigquerylocation)
-  and the [`jobs.query` path](GO-DRIVER-COMPARISON.md#g47-submission-retries-preserve-identity-and-named-jobs-can-be-recovered)
-  parse BigQuery's undocumented 409 wording, `Already Exists: Job project:location.job`.
-  The `jobs.insert` fallback to listing recent jobs, including regional recovery after
-  cancellation, also has mock coverage only; cross-region listing visibility and propagation
-  delays have not been validated against live BigQuery.
+- Recovery of a replayed [`jobs.query`](GO-DRIVER-COMPARISON.md#g47-submission-retries-preserve-identity-and-named-jobs-can-be-recovered)
+  through BigQuery's undocumented 409 wording has mock coverage only. The corresponding
+  `jobs.insert` conflict, cross-region `jobs.list` recovery, and cancellation after a lost
+  submission response have [live coverage in `asia-northeast1`](../tests/bigquery/regional_recovery.rs).
+  That test drops real responses in one region; it does not induce delayed listing propagation,
+  regional outages, or multi-page recovery searches, which still have mock coverage only.
 - Storage Read reshaping beyond the types BigQuery sends (decimal widening, timestamp-zone
   conversion, interval reshaping) has unit coverage only (`src/storage_read/reshape.rs`).
 - Exact metadata filters in a dataset created with `isCaseInsensitive` have mock coverage only
