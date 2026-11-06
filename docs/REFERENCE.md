@@ -123,7 +123,7 @@ for the effective configuration.
 [Standard ADBC options](#standard-adbc-options) are also accepted. Use one spelling per option
 during initialization, because driver managers can reorder options. Validation errors name the
 option and the expected type or values, and repeat the supplied value only for endpoint hosts and
-ports and a URI's `OAuthType`, since a value sent under the wrong key can be a credential.
+ports, since a value sent under the wrong key can be a credential.
 That includes a credential file path, here and in `GOOGLE_APPLICATION_CREDENTIALS`: its errors give
 the operating system's cause and the remedy instead. Optional string settings clear with `""`; JSON
 object options also accept `{}`. Booleans and enums with defaults require a listed value, and integer options have
@@ -439,8 +439,9 @@ and `-1` for any other SQL, a query included.
 Placeholders are positional (`?`) by default; with `bigquery.query.parameter_mode=named` (or
 `adbc.statement.bind_by_name=true`) each Arrow field binds the `@name` it is named after,
 case-insensitively. Each bound row runs as its own query job, and every row must yield the same
-result schema. `ExecuteQuery` of a statement that returns rows runs the first row before it returns
-and each later row once the previous result is read, so results arrive in row order. DML, DDL,
+result schema. `ExecuteQuery` of a statement that returns rows, including a stored-procedure
+`CALL`, runs the first row before it returns and each later row once the previous result is read,
+so results arrive in row order. DML, DDL,
 queries with an explicit destination table, and every other execute run all bound rows before
 returning. Closing their empty result stream does not skip writes.
 
@@ -581,7 +582,7 @@ An appended field adopts what the target column declares, and every value is che
 - A decimal takes the column's type, precision and scale. A value with a fractional digit the
   column would round away, or too many integer digits, returns `INVALID_DATA` naming its row.
 - A string or bytes field without `BIGQUERY:max_length` takes the column's length; a declared one
-  must fit the column's.
+  must fit the column's. Unrelated Arrow extension annotations do not change this rule.
 - A field of Arrow type `Null`, which pandas and Polars infer for a column holding only nulls,
   takes the column's type, unless the column is `REQUIRED`.
 

@@ -215,9 +215,10 @@ type ([supported types](REFERENCE.md#supported-types)). Go picks parameter types
 
 ### G50. Bound query results stream in parameter order
 
-With bound parameters, `ExecuteQuery` of a statement that returns rows returns when the first row's
-query completes and runs each later row after the previous result is read, so results keep
-parameter order and cancellation or failure stops later rows. DML, DDL and queries with an explicit
+With bound parameters, `ExecuteQuery` of a statement that returns rows, including a stored-procedure
+`CALL`, returns when the first row's query completes and runs each later row after the previous
+result is read, so results keep parameter order and cancellation or failure stops later rows.
+DML, DDL and queries with an explicit
 destination table run every row before returning, as Go does
 ([bound parameters](REFERENCE.md#bound-parameters)). Go runs
 every row's read into one bounded channel and waits for all of them before returning the reader, so

@@ -28,6 +28,12 @@ changes.
 
 ### Fixed
 
+- Parameterized stored-procedure calls preserve every returned result in bound-row order.
+- Storage Read treats an empty Arrow timezone as DATETIME, rejecting conversions to TIMESTAMP.
+- Appends inherit STRING/BYTES length limits through unrelated Arrow extension annotations.
+- URI validation no longer echoes rejected `OAuthType` values, which may contain credentials.
+- Metadata discovery preserves `google.rpc.ErrorInfo` reasons, so disabled APIs fail instead of
+  appearing as inaccessible tables.
 - Notebook-template lookup follows empty result pages before reporting `NOT_FOUND` and rejects
   malformed listings as `INVALID_DATA`.
 - REST requests refuse redirects, preventing query and upload bodies from being forwarded beyond

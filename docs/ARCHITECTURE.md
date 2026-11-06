@@ -91,8 +91,8 @@ then writes through the Storage Write API:
   [BINARY-SIZE.md](BINARY-SIZE.md) records the measurements.
 - **Unsafe code stays in the `ffi` module.** The crate denies `unsafe_code` everywhere else. The
   export layer catches panics before they cross the C ABI and reports them as ADBC errors.
-- **Errors never echo credentials or row contents.** Credentials can arrive under any option key,
-  so option errors leave values out.
+- **Option values can be secrets.** Validation errors omit them, except endpoint hosts and ports.
+  Row-decoding errors omit cell values.
 - **Backpressure limits queued work.** Result readers have separate budgets for completed
   batches and pending REST conversion inputs; each allows one oversized batch to proceed.
   Response pages, conversions in progress and batches returned to the caller are outside the
