@@ -28,6 +28,8 @@ changes.
 
 ### Fixed
 
+- Storage Read sends the driver and custom user agent on every row-stream request, including
+  parallel reads and resumed streams.
 - CSV seed validation rejects Unix FIFOs without waiting for a writer.
 - Pipelined Storage Write appends honor the same three-retry limit as the first append.
 - Cancelled queries stop retrying definitive submission rejections, while ambiguous submissions

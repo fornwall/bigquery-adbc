@@ -62,7 +62,8 @@ fn a_full_wire_queue_does_not_materialize_another_response() {
             });
             let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
             let sink = ResultSink::for_test();
-            let mut receiving = std::pin::pin!(receive_rows(&client, "stream", sender, &sink));
+            let request = client.read_rows().set_read_stream("stream");
+            let mut receiving = std::pin::pin!(receive_rows(&request, "stream", sender, &sink));
             let mut context = Context::from_waker(Waker::noop());
 
             assert!(receiving.as_mut().poll(&mut context).is_pending());
@@ -107,7 +108,8 @@ fn a_stopped_decoder_releases_a_pending_wire_response() {
             });
             let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
             let sink = ResultSink::for_test();
-            let mut receiving = std::pin::pin!(receive_rows(&client, "stream", sender, &sink));
+            let request = client.read_rows().set_read_stream("stream");
+            let mut receiving = std::pin::pin!(receive_rows(&request, "stream", sender, &sink));
             let mut context = Context::from_waker(Waker::noop());
             assert!(receiving.as_mut().poll(&mut context).is_pending());
             assert_eq!(responses.load(Ordering::Relaxed), 1);
@@ -491,49 +493,74 @@ mod mock_reads {
         }
     }
 
-    /// `CreateReadSession` is the audit-logged call of a read, so it names the driver and the
-    /// caller's `bigquery.user_agent`, as REST requests do.
+    /// Both RPCs identify the driver and caller, including parallel streams, refused opens and
+    /// mid-stream resumes. Observe HTTP/2 headers, not only the SDK's request options.
     #[test]
-    fn a_read_session_carries_the_driver_and_caller_user_agent() {
+    fn every_storage_read_request_carries_the_driver_and_caller_user_agent() {
         let fixture = Fixture::new();
-        let mock = fixture.mock(|_| {});
-        let mut config = crate::config::DatabaseConfig {
-            authentication_type: crate::BigQueryAuthenticationType::Anonymous,
-            user_agent: Some(Arc::from("my-app/1.0")),
-            ..crate::config::DatabaseConfig::default()
-        };
-        for kind in ServiceEndpointKind::ALL {
-            config.endpoints.set(
-                kind,
-                Some(Arc::from(crate::test_support::UNREACHABLE_ENDPOINT)),
-            );
+        for caller in [None, Some("my-app/1.0")] {
+            for (streams, interrupted) in [(1, false), (1, true), (3, false)] {
+                let mock = fixture.mock(|plan| {
+                    plan.read_stream_count = streams;
+                    if interrupted {
+                        plan.read_open_refusals = vec![UNAVAILABLE];
+                        plan.read_breaks = vec![(0, UNAVAILABLE), (3, UNAVAILABLE)];
+                    }
+                });
+                let mut config = crate::config::DatabaseConfig {
+                    authentication_type: crate::BigQueryAuthenticationType::Anonymous,
+                    user_agent: caller.map(Arc::from),
+                    ..crate::config::DatabaseConfig::default()
+                };
+                for kind in ServiceEndpointKind::ALL {
+                    config.endpoints.set(
+                        kind,
+                        Some(Arc::from(crate::test_support::UNREACHABLE_ENDPOINT)),
+                    );
+                }
+                config.endpoints.set(
+                    ServiceEndpointKind::Storage,
+                    Some(Arc::from(mock.endpoint())),
+                );
+                let clients = ClientState::new(&config);
+                let options = if streams > 1 {
+                    unordered()
+                } else {
+                    QueryResultOptions::default()
+                };
+                let batches = storage_reader(
+                    &fixture.runtime,
+                    &clients,
+                    None,
+                    options,
+                    fixture.schema.clone(),
+                )
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+
+                assert_eq!(batches.len(), BATCH_ROWS.len() * streams);
+                let sessions = mock.session_user_agents();
+                let reads = mock.read_user_agents();
+                assert_eq!(sessions.len(), 1);
+                assert_eq!(reads.len(), if interrupted { 3 } else { streams });
+                if interrupted {
+                    assert_eq!(
+                        mock.read_offsets(),
+                        vec![0, 0, BATCH_ROWS[0] + BATCH_ROWS[1]]
+                    );
+                }
+                let expected = match caller {
+                    Some(caller) => format!("bigquery-adbc/{} {caller}", env!("CARGO_PKG_VERSION")),
+                    None => format!("bigquery-adbc/{}", env!("CARGO_PKG_VERSION")),
+                };
+                for agent in sessions.iter().chain(&reads) {
+                    assert!(
+                        agent.starts_with(&expected),
+                        "{agent:?} did not start with {expected:?}"
+                    );
+                }
+            }
         }
-        config.endpoints.set(
-            ServiceEndpointKind::Storage,
-            Some(Arc::from(mock.endpoint())),
-        );
-        let clients = ClientState::new(&config);
-
-        let batches = storage_reader(
-            &fixture.runtime,
-            &clients,
-            None,
-            QueryResultOptions::default(),
-            fixture.schema.clone(),
-        )
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-
-        assert_eq!(batches.len(), BATCH_ROWS.len());
-        let user_agents = mock.session_user_agents();
-        assert_eq!(user_agents.len(), 1);
-        assert!(
-            user_agents[0].starts_with(&format!(
-                "bigquery-adbc/{} my-app/1.0",
-                env!("CARGO_PKG_VERSION")
-            )),
-            "{user_agents:?}"
-        );
     }
 
     /// A destination naming one partition carries a table decorator, which `CreateReadSession`
@@ -913,14 +940,11 @@ mod mock_reads {
         fixture.runtime.block_on(async {
             let client = clients(&mock).read_client(&fixture.runtime).await.unwrap();
             let (sender, _receiver) = tokio::sync::mpsc::channel(2);
-            let failure = super::receive_rows(
-                &client,
-                "projects/p/locations/l/sessions/mock/streams/0",
-                sender,
-                &ResultSink::for_test(),
-            )
-            .await
-            .unwrap_err();
+            let stream = "projects/p/locations/l/sessions/mock/streams/0";
+            let request = client.read_rows().set_read_stream(stream);
+            let failure = super::receive_rows(&request, stream, sender, &ResultSink::for_test())
+                .await
+                .unwrap_err();
             assert!(
                 failure.to_string().contains("invalid row count"),
                 "{failure}"

@@ -749,10 +749,10 @@ Jupyter shows these lines in the kernel's console, not the cell.
 | `warn` | Storage Read fallbacks; failed `jobs.get` metadata reads; a failed background job cancel, naming the job that may keep running and billing; a script whose effect on the transaction could not be read; a failed session end; a transaction begun in a new session because BigQuery ended the previous one. |
 | `debug` | The read path of a result that outgrows its first response, once per result and naming the job: further REST pages, or Storage Read. Request, poll and job-search retries, including replayed ingest appends and waits for a new ingest target to become visible to Storage Write; an unknown BigQuery table type reported as `TABLE`; a transaction session left for BigQuery to place because the default dataset's location could not be read. |
 
-REST requests and Storage Read session requests send `User-Agent: bigquery-adbc/<version>`,
-followed by a space and the `bigquery.user_agent` text when set, which Cloud Audit Logs record as
-`callerSuppliedUserAgent`. Storage Write requests cannot carry it (UP-93 in
-[UPSTREAM.md](UPSTREAM.md)).
+REST requests and Storage Read requests, including every row-stream open and resume, send
+`User-Agent: bigquery-adbc/<version>`, followed by a space and the `bigquery.user_agent` text when
+set, which Cloud Audit Logs record as `callerSuppliedUserAgent`. Storage Write requests cannot
+carry it (UP-93 in [UPSTREAM.md](UPSTREAM.md)).
 
 ## dbt-core 2.0
 

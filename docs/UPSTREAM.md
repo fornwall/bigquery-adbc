@@ -54,7 +54,7 @@ cannot show whether the service is fixed. Unmerged fixes are under
 | UP-90 | `ARRAY<TIMESTAMP>` appends fail | BigQuery Storage Write | Service status unknown; driver refuses up front | None |
 | UP-91 | Removed `persist_docs` policy tags are never cleared | `dbt-labs/dbt` | Local finding; no driver workaround | None |
 | UP-92 | DB-API type objects answer `!=` with `True` | ADBC Python driver manager | Local finding; package wraps them | None |
-| UP-93 | Storage Write appends take no request options | `google-cloud-bigquery` | SDK limitation; no workaround | None |
+| UP-93 | Storage Write exposes no user-agent configuration | `google-cloud-bigquery` | SDK limitation; no workaround | None |
 | UP-94 | Padded empty HTTP/2 DATA frames end the connection | `h2` | Open; candidate fix unmerged; gzip left off | [#961](https://github.com/hyperium/h2/issues/961), [#972](https://github.com/hyperium/h2/pull/972) |
 | UP-95 | `adbc_ingest` keeps an earlier call's catalog and schema | ADBC Python driver manager | Local finding; documented workaround | None |
 | UP-96 | Arrow appends refuse flexible column names | BigQuery Storage Write | Service status unknown; driver refuses up front | None |
@@ -311,11 +311,15 @@ but inherit `frozenset.__ne__`, so `pyarrow.string() != STRING` is `True`, as is
 other Arrow type. `bigquery_adbc.dbapi` wraps each type object with a consistent `__ne__`, and also
 compares an extension type such as JSON's `arrow.json` by its storage type.
 
-## UP-93: Storage Write appends take no request options
+## UP-93: Storage Write exposes no user-agent configuration
 
-The writer's `AppendRows` transport (`write/stream.rs`) always sends `RequestOptions::default()`,
-and neither `Write::builder()` nor a writer accepts options, so its requests cannot carry a user
-agent. The driver's REST and Storage Read requests send `bigquery.user_agent`; its appends do not.
+The pinned `google-cloud-bigquery` writer exposes no user-agent setting on `Write::builder()` or
+its writers. `CreateWriteStream`, `GetWriteStream`, `FinalizeWriteStream` and
+`BatchCommitWriteStreams` construct internal requests without caller options, and `AppendRows`
+(`write/stream.rs`) sends `RequestOptions::default()`. None can carry the driver's identity or
+`bigquery.user_agent`; they retain the SDK's user agent. The driver's REST and all Storage Read
+requests carry both, including `ReadRows` opens and resumes. Fixing Storage Write needs an SDK
+configuration hook that reaches both its control-plane calls and every append stream.
 
 ## UP-94: `h2` ends a connection after 100 padded empty DATA frames
 

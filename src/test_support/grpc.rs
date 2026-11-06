@@ -130,6 +130,8 @@ struct MockState {
     read_stream_calls: Vec<String>,
     /// The `user-agent` header of every `CreateReadSession` request.
     session_user_agents: Vec<String>,
+    /// The `user-agent` header of every `ReadRows` request, including refused opens and resumes.
+    read_user_agents: Vec<String>,
     /// The `offset` of every `AppendRows` request, in arrival order.
     append_offsets: Vec<i64>,
     /// The offsets answered `ALREADY_EXISTS`, which the driver has to absorb rather than report.
@@ -193,6 +195,11 @@ impl StorageMock {
     /// The `user-agent` every `CreateReadSession` call sent.
     pub(crate) fn session_user_agents(&self) -> Vec<String> {
         lock(&self.state).session_user_agents.clone()
+    }
+
+    /// The `user-agent` every `ReadRows` call sent, including refused opens and resumes.
+    pub(crate) fn read_user_agents(&self) -> Vec<String> {
+        lock(&self.state).read_user_agents.clone()
     }
 
     /// The `offset` every `AppendRows` request carried, in arrival order.
@@ -267,14 +274,19 @@ async fn serve_call(
         .next()
         .unwrap_or_default()
         .to_owned();
-    if method == "CreateReadSession" {
+    if matches!(method.as_str(), "CreateReadSession" | "ReadRows") {
         let user_agent = request
             .headers()
             .get("user-agent")
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default()
             .to_owned();
-        lock(&state).session_user_agents.push(user_agent);
+        let mut state = lock(&state);
+        if method == "CreateReadSession" {
+            state.session_user_agents.push(user_agent);
+        } else {
+            state.read_user_agents.push(user_agent);
+        }
     }
     let mut body = request.into_body();
     // `ReadRows` reads its request before answering, because a plan can refuse it at the open,

@@ -11,6 +11,7 @@ use adbc_core::error::{Result, Status};
 use arrow_array::RecordBatchReader;
 use arrow_buffer::Buffer;
 use arrow_schema::{ArrowError, SchemaRef};
+use google_cloud_bigquery::builder::read::ReadRows;
 use google_cloud_bigquery::client::Read;
 use google_cloud_bigquery::model::{
     ArrowSerializationOptions, DataFormat, ReadRowsResponse, ReadSession,
@@ -205,31 +206,34 @@ async fn open_reader(
         .into_iter()
         .map(|stream| stream.name)
         .collect();
+    let read_rows = read_client
+        .read_rows()
+        .with_user_agent(clients.user_agent());
 
     Ok(Opened::Reader(spawn_result_reader(
         runtime,
         schema,
         operation,
-        |sink| read_streams(read_client, streams, session_schema, plan, sink),
+        |sink| read_streams(read_rows, streams, session_schema, plan, sink),
     )))
 }
 
 /// Read granted streams concurrently under the shared pipeline limits.
 /// Multiple streams require `unordered_read`; the first failure aborts the others.
 async fn read_streams(
-    client: Read,
+    request: ReadRows,
     streams: Vec<String>,
     session_schema: SchemaRef,
     plan: Arc<ReshapePlan>,
     sink: ResultSink,
 ) -> std::result::Result<(), ArrowError> {
     if let [stream] = streams.as_slice() {
-        return stream_batches(client, stream.clone(), session_schema, plan, sink).await;
+        return stream_batches(request, stream.clone(), session_schema, plan, sink).await;
     }
     let mut readers = tokio::task::JoinSet::new();
     for stream in streams {
         let reader: ProducerTask = Box::pin(stream_batches(
-            client.clone(),
+            request.clone(),
             stream,
             session_schema.clone(),
             plan.clone(),
@@ -300,7 +304,6 @@ async fn create_read_session(
         .set_parent(format!("projects/{}", job_reference.project_id))
         .set_read_session(session)
         .set_max_stream_count(max_streams)
-        // The audit-logged call of a read, so it names the driver and `bigquery.user_agent`.
         .with_user_agent(clients.user_agent())
         .send();
     let response = gate(operation.as_ref(), request).await?;
@@ -327,7 +330,7 @@ async fn create_read_session(
 }
 
 async fn stream_batches(
-    client: Read,
+    request: ReadRows,
     stream: String,
     session_schema: SchemaRef,
     plan: Arc<ReshapePlan>,
@@ -336,9 +339,10 @@ async fn stream_batches(
     // Overlap receiving with decoding, retaining at most one queued wire payload outside the
     // pipeline's byte budget. A full result buffer stalls both stages through this channel.
     let (sender, receiver) = tokio::sync::mpsc::channel::<(Buffer, i64)>(1);
+    let request = request.set_read_stream(&stream);
     // Each stage owns its endpoint, so completing either stage closes its side of the channel.
     tokio::try_join!(
-        receive_rows(&client, &stream, sender, &sink),
+        receive_rows(&request, &stream, sender, &sink),
         decode_batches(receiver, session_schema, &plan, &sink),
     )?;
     Ok(())
@@ -347,15 +351,14 @@ async fn stream_batches(
 /// Receive payloads and resume transient failures at the next row offset.
 /// The SDK retries neither stream opens nor interrupted streams, so both share one budget here.
 async fn receive_rows(
-    client: &Read,
+    request: &ReadRows,
     stream: &str,
     sender: tokio::sync::mpsc::Sender<(Buffer, i64)>,
     sink: &ResultSink,
 ) -> std::result::Result<(), ArrowError> {
     let mut offset = 0_i64;
     let mut budget = ResumeBudget::new();
-    let Some(mut responses) =
-        open_with_resumes(client, stream, offset, sink, &mut budget, None).await?
+    let Some(mut responses) = open_with_resumes(request, offset, sink, &mut budget, None).await?
     else {
         return Ok(());
     };
@@ -385,8 +388,7 @@ async fn receive_rows(
             Ok(response) => response,
             Err(source) => {
                 let reopened =
-                    open_with_resumes(client, stream, offset, sink, &mut budget, Some(source))
-                        .await?;
+                    open_with_resumes(request, offset, sink, &mut budget, Some(source)).await?;
                 let Some(reopened) = reopened else {
                     return Ok(());
                 };
@@ -472,8 +474,7 @@ impl ResumeBudget {
 /// `failure` is the error that interrupted an existing stream; the first open has none.
 /// `None` means cancellation ended the stage.
 async fn open_with_resumes(
-    client: &Read,
-    stream: &str,
+    request: &ReadRows,
     offset: i64,
     sink: &ResultSink,
     budget: &mut ResumeBudget,
@@ -481,7 +482,7 @@ async fn open_with_resumes(
 ) -> std::result::Result<Option<ResponseStream<ReadRowsResponse>>, ArrowError> {
     let mut failure = match failure {
         Some(failure) => failure,
-        None => match open_read_rows(client, stream, offset, sink).await {
+        None => match open_read_rows(request, offset, sink).await {
             Ok(opened) => return Ok(opened),
             Err(source) => source,
         },
@@ -496,7 +497,7 @@ async fn open_with_resumes(
             () = sink.cancellation.cancelled() => return Ok(None),
             () = tokio::time::sleep(waited) => {}
         }
-        match open_read_rows(client, stream, offset, sink).await {
+        match open_read_rows(request, offset, sink).await {
             Ok(opened) => return Ok(opened),
             Err(reopened) => failure = reopened,
         }
@@ -506,16 +507,12 @@ async fn open_with_resumes(
 /// Opens one read stream at `offset`. `None` means the pipeline was cancelled while the call was
 /// in flight.
 async fn open_read_rows(
-    client: &Read,
-    stream: &str,
+    request: &ReadRows,
     offset: i64,
     sink: &ResultSink,
 ) -> std::result::Result<Option<ResponseStream<ReadRowsResponse>>, GoogleError> {
-    let request = client
-        .read_rows()
-        .set_read_stream(stream)
-        .set_offset(offset)
-        .send();
+    // Every reopen retains the stream and request options, including the user agent.
+    let request = request.clone().set_offset(offset).send();
     tokio::select! {
         biased;
         () = sink.cancellation.cancelled() => Ok(None),

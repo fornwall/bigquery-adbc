@@ -878,7 +878,7 @@ The dbt-labs fork passes the configured source to impersonation, unlike the Go d
 ### G94. The custom user agent is sent with REST and Storage Read requests only
 
 `bigquery.user_agent` is a database option of printable ASCII text that follows
-`bigquery-adbc/<version>` on REST and Storage Read session requests
+`bigquery-adbc/<version>` on REST and all Storage Read requests, including resumed row streams
 ([diagnostics](REFERENCE.md#diagnostics)); Storage Write requests cannot carry it (UP-93 in
 [UPSTREAM.md](UPSTREAM.md)). Go also accepts it per connection, appends it to
 `Google-BigQuery-ADBC-Go/<version>` on every request, Storage Write included, and reads `""` when
