@@ -280,37 +280,30 @@ impl StreamWriter<'_> {
         let table_path = self.target.table_path;
         let total_rows = self.total_rows;
         self.target.operation.check()?;
-        let Some(writer) = self.writer.take() else {
+        let Some(writer) = &self.writer else {
             return Err(driver_defect(format_args!(
                 "BigQuery ingest reached finalize for {table_path} without ever opening a \
                  write stream"
             )));
         };
-        let checked = async {
-            let stream = writer.write_stream();
-            let finalized =
-                close_stream_call(|| writer.finalize(), "finalize", stream, table_path).await?;
-            if finalized.row_count != total_rows {
-                return Err(error(
-                    format!(
-                        "BigQuery finalized ingest stream {stream} for {table_path} with {} rows, \
-                         but {total_rows} were appended; no rows were committed, so the ingest \
-                         can be retried",
-                        finalized.row_count
-                    ),
-                    Status::InvalidData,
-                ));
-            }
-            Ok(())
+        let stream = writer.write_stream();
+        let finalized =
+            close_stream_call(|| writer.finalize(), "finalize", stream, table_path).await?;
+        if finalized.row_count != total_rows {
+            return Err(error(
+                format!(
+                    "BigQuery finalized ingest stream {stream} for {table_path} with {} rows, \
+                     but {total_rows} were appended; no rows were committed, so the ingest \
+                     can be retried",
+                    finalized.row_count
+                ),
+                Status::InvalidData,
+            ));
         }
-        .await;
-        match checked {
-            Ok(()) => Ok(FinalizedStream { writer, total_rows }),
-            Err(source) => {
-                self.writer = Some(writer);
-                Err(source)
-            }
-        }
+        Ok(FinalizedStream {
+            writer: self.writer.take().expect("the writer was borrowed above"),
+            total_rows,
+        })
     }
 }
 
