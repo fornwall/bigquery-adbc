@@ -25,7 +25,7 @@ An option described as refused returns `NOT_IMPLEMENTED` with the reason when se
 | [Metadata](#metadata) | Filter matching, null fields, statistics, and schema metadata differ. This driver can discover tables in a project other than the configured project. |
 | [Configuration and authentication](#configuration-and-authentication) | Option scopes, validation, credential handling, and URI replacement differ. Legacy-SQL-only options are unsupported. |
 | [C interface and object lifecycle](#c-interface-and-object-lifecycle) | This driver exports init entrypoints only; callers use a driver manager. Invalid inputs and handle-state checks also differ. |
-| [Artifact size](#artifact-size) | Measured Go library sizes, with build commands. |
+| [Artifact size](#artifact-size) | How to compare release builds. |
 
 ## Bulk ingestion
 
@@ -958,13 +958,16 @@ another producer, or a released one, returns NULL and leaves the status unwritte
 
 ## Artifact size
 
-The Go library, measured on Linux x86-64 with go1.27.0:
+Build both libraries on the same target with symbols stripped. Record each source revision and
+toolchain alongside the result. From the Go driver's `go/` directory on Linux:
 
-| Go artifact | Size | `.text` |
-| --- | --- | --- |
-| `go build -tags driverlib -buildmode=c-shared ./pkg` | 61,381,480 B (58.5 MiB) | |
-| The same plus `-ldflags="-s -w"` | 45,239,704 B (43.1 MiB) | 18,880,249 B |
+```sh
+git rev-parse HEAD
+go version
+go build -tags driverlib -buildmode=c-shared -ldflags="-s -w" -o libadbc_driver_bigquery.so ./pkg
+stat -c '%s' libadbc_driver_bigquery.so
+size -A libadbc_driver_bigquery.so
+```
 
-The stripped build compares with this driver's stripped release library
-([BINARY-SIZE.md](BINARY-SIZE.md)); most of it is Go runtime metadata, and it links OpenTelemetry
-exporters and grpc-gateway, which this driver does not.
+Use the [binary-size report](BINARY-SIZE.md#usage) for this driver. Compare total file bytes and
+section sizes separately; a smaller `.text` section does not necessarily mean a smaller library.

@@ -79,10 +79,7 @@ the [Python guide](python/README.md) for more on the package.
 
 ## C and C++
 
-Each [GitHub release](https://github.com/fornwall/bigquery-adbc/releases) has an archive of the
-shared library for Linux x86-64 and AArch64 (glibc 2.28 or newer), macOS x86-64 and arm64, and
-Windows x86-64, with a `SHA256SUMS` file. To build the library yourself, run this from the
-repository root:
+Build the shared library from the repository root:
 
 ```sh
 cargo rustc --release --locked --lib --crate-type cdylib
@@ -90,6 +87,11 @@ cargo rustc --release --locked --lib --crate-type cdylib
 
 This writes `target/release/libadbc_driver_bigquery.so` on Linux, `libadbc_driver_bigquery.dylib`
 on macOS, or `adbc_driver_bigquery.dll` on Windows. `cargo build` produces only the Rust library.
+
+Releases through 0.1.1 published Python distributions only. The release workflow now prepares
+native archives for Linux x86-64 and AArch64 (glibc 2.28 or newer), macOS x86-64 and arm64, and
+Windows x86-64, with a `SHA256SUMS` file, for the next
+[GitHub release](https://github.com/fornwall/bigquery-adbc/releases).
 
 The library exports `AdbcDriverBigqueryInit` and the generic `AdbcDriverInit`. Link your
 application with `-ladbc_driver_manager`, include `<arrow-adbc/adbc.h>`, and point the driver
@@ -112,7 +114,8 @@ tests the library.
 
 ### Loading by name
 
-Each release archive also has `bigquery-adbc.toml`, a
+The [native packaging command](CONTRIBUTING.md#distribution-packaging) creates an archive with
+the library, license notices and `bigquery-adbc.toml`, a
 [driver manifest](https://arrow.apache.org/adbc/current/format/driver_manifests.html) that lets ADBC
 clients load the driver by name instead of by path. It expects the library in `/usr/local/lib` on
 Linux and macOS, and in `C:\Program Files\ADBC\Drivers` on Windows. For any other location, edit
