@@ -374,7 +374,8 @@ cancelled.
 `adbc.statement.exec.progress` reports processed bytes from each `jobs.query`, `jobs.insert` or
 `jobs.getQueryResults` response, about every 45 seconds while a query runs, and
 `adbc.statement.exec.max_progress` is `0` until the final total is known; reading either never
-waits for a running execute or sends a request
+waits for a running execute or sends a request. Parameter-schema discovery preserves these values,
+including when its dry run retries
 ([standard options](REFERENCE.md#standard-adbc-options)). Go returns `NOT_FOUND` for both.
 
 ### G58. Arrow IPC supports a BigQuery-specific subset

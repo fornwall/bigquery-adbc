@@ -262,6 +262,8 @@ defaults in effect, including the connection's.
 | `adbc.statement.exec.progress` | Statement | Read-only double: bytes processed so far, from the responses execution already receives, then the final count once BigQuery reports it. Adds no polling requests. With several bound parameter rows every row's job counts, except that `ExecuteQuery` of a statement that returns rows counts the first. |
 | `adbc.statement.exec.max_progress` | Statement | Read-only double: the final processed-byte count once a terminal response reports it, otherwise `0` (adbc.h's "maximum not known"). A fresh statement, a dry run and an option-only operation report `0`. |
 
+`GetParameterSchema` preserves the previous execution's progress, including when its dry run retries.
+
 ## Supported types
 
 Every result column and `GetTableSchema` field carries its BigQuery type as a GoogleSQL type

@@ -28,6 +28,7 @@ changes.
 
 ### Fixed
 
+- Parameter-schema discovery preserves prior execution progress even when its dry run retries.
 - Parameterized stored-procedure calls preserve every returned result in bound-row order.
 - Storage Read treats an empty Arrow timezone as DATETIME, rejecting conversions to TIMESTAMP.
 - Appends inherit STRING/BYTES length limits through unrelated Arrow extension annotations.

@@ -96,7 +96,9 @@ async fn execute_jobs_query(
             )));
         }
     }
-    publish_current(plan, progress, metadata.total_bytes_processed);
+    if let (Some(progress), Some(value)) = (progress, metadata.total_bytes_processed) {
+        progress.publish_current(value);
+    }
     if let Some(terminal) = confirmed_terminal_query_errors(
         client,
         &mut response,
@@ -111,7 +113,9 @@ async fn execute_jobs_query(
         return Err(AttemptFailure::Terminal(terminal));
     }
     if response.job_complete {
-        publish_complete(plan, progress, response.total_bytes_processed());
+        if let Some(progress) = progress {
+            progress.complete(response.total_bytes_processed());
+        }
         return Ok(completed(decoder, metadata, response.page(), None));
     }
     let reference = metadata.job_reference.clone().ok_or_else(|| {
@@ -200,7 +204,9 @@ async fn execute_jobs_insert(
     {
         operation.register_completed_job(reference)?;
     }
-    publish_current(plan, progress, response.total_bytes_processed());
+    if let (Some(progress), Some(value)) = (progress, response.total_bytes_processed()) {
+        progress.publish_current(value);
+    }
     if let Some(errors) = response.take_terminal_errors() {
         return Err(AttemptFailure::Terminal(TerminalFailure::new(
             errors,
@@ -209,8 +215,10 @@ async fn execute_jobs_insert(
             "",
         )));
     }
-    if response.is_done() {
-        publish_complete(plan, progress, response.total_bytes_processed());
+    if response.is_done()
+        && let Some(progress) = progress
+    {
+        progress.complete(response.total_bytes_processed());
     }
     let mut metadata = QueryMetadata::default();
     // A RUNNING job's statistics are partial, so publish them only for a dry run or a finished
@@ -279,24 +287,6 @@ fn completed(
         },
         completed_job,
         returns_rows,
-    }
-}
-
-/// Publishes the query's cost so far, except for a dry run, which executes nothing.
-fn publish_current(plan: &QueryPlan, progress: Option<&ExecutionProgress>, value: Option<i64>) {
-    if !plan.dry_run
-        && let (Some(progress), Some(value)) = (progress, value)
-    {
-        progress.publish_current(value);
-    }
-}
-
-/// Publishes the final cost of a query that completed within its submission.
-fn publish_complete(plan: &QueryPlan, progress: Option<&ExecutionProgress>, value: Option<i64>) {
-    if !plan.dry_run
-        && let Some(progress) = progress
-    {
-        progress.complete(value);
     }
 }
 

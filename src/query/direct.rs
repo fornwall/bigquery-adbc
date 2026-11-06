@@ -204,9 +204,10 @@ pub(super) async fn complete_query_with_progress(
     if let Some(operation) = operation {
         operation.check()?;
     }
-    if !plan.dry_run
-        && let Some(progress) = progress
-    {
+    // Describing parameters can run beside an earlier execution; even retries must leave its
+    // progress untouched. Dry runs report estimates, not executed work.
+    let progress = progress.filter(|_| !plan.dry_run);
+    if let Some(progress) = progress {
         progress.begin_job();
     }
     let decoder = QueryResponseDecoder::new(runtime, result_mode);

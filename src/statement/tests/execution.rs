@@ -1584,7 +1584,7 @@ fn cancelling_a_multi_page_drain_reports_the_cancellation() {
 /// (adbc.h:2003/2024/2045), so the parameter-schema dry run must not cancel the lazy reader of a
 /// parameterized execute, which runs the remaining parameter sets as it is drained.
 #[test]
-fn getting_the_parameter_schema_leaves_a_draining_result_alive() {
+fn getting_the_parameter_schema_preserves_a_draining_result_and_its_progress() {
     let result = || {
         (
             200,
@@ -1592,6 +1592,7 @@ fn getting_the_parameter_schema_leaves_a_draining_result_alive() {
                 "jobReference": job_reference("fixture-project", "execution-job-21"),
                 "statementType": "SELECT",
                 "jobComplete": true,
+                "totalBytesProcessed": "7",
                 "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
                 "rows": [{"f": [{"v": "7"}]}],
                 "totalRows": "1"
@@ -1603,11 +1604,22 @@ fn getting_the_parameter_schema_leaves_a_draining_result_alive() {
         (
             200,
             json!({
+                "statistics": {"query": {"statementType": "SELECT"}},
+                "status": {
+                    "state": "DONE",
+                    "errorResult": {"reason": "backendError", "message": "retry"}
+                }
+            }),
+        ),
+        (
+            200,
+            json!({
                 "statistics": {
                     "query": {
                         "undeclaredQueryParameters": [
                             {"name": "", "parameterType": {"type": "INT64"}}
-                        ]
+                        ],
+                        "totalBytesProcessed": "999"
                     }
                 },
                 "status": {"state": "DONE"}
@@ -1625,6 +1637,9 @@ fn getting_the_parameter_schema_leaves_a_draining_result_alive() {
     assert_eq!(reader.next().unwrap().unwrap().num_rows(), 1);
 
     assert_eq!(statement.get_parameter_schema().unwrap().fields().len(), 1);
+    for key in [OptionStatement::Progress, OptionStatement::MaxProgress] {
+        assert_eq!(statement.get_option_double(key).unwrap(), 7.0);
+    }
 
     // The second parameter set still runs, and the stream still ends of its own accord.
     assert_eq!(
@@ -1636,7 +1651,7 @@ fn getting_the_parameter_schema_leaves_a_draining_result_alive() {
         1
     );
     assert!(reader.next().is_none());
-    assert_eq!(requests.join().unwrap().len(), 3);
+    assert_eq!(requests.join().unwrap().len(), 4);
 }
 
 /// Describing a statement needs no values, so one that was never bound, or whose binding an earlier
