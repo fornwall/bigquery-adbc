@@ -108,16 +108,8 @@ fn list_array(
     let mut offsets = OffsetBufferBuilder::<i32>::new(lengths.len());
     let mut nulls = NullBufferBuilder::new(lengths.len());
     for length in lengths {
-        match *length {
-            Some(length) => {
-                offsets.push_length(length);
-                nulls.append_non_null();
-            }
-            None => {
-                offsets.push_length(0);
-                nulls.append_null();
-            }
-        }
+        offsets.push_length(length.unwrap_or_default());
+        nulls.append(length.is_some());
     }
     Ok(ListArray::try_new(
         Arc::new(Field::new("item", item_type.clone(), true)),
