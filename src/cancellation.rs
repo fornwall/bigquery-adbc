@@ -234,15 +234,13 @@ impl Cancellation {
     }
 
     fn try_cancel(self: &Arc<Self>) -> Result<()> {
-        let operations = {
-            let mut active = self.active();
-            active.retain(|operation| operation.strong_count() > 0);
-            active
-                .iter()
-                .filter_map(Weak::upgrade)
-                .filter(|operation| !operation.finished.load(Ordering::Acquire))
-                .collect::<Vec<_>>()
-        };
+        let mut operations = self
+            .active()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect::<Vec<_>>();
+        // Drop rejected references outside the lock: OperationInner::drop also takes it.
+        operations.retain(|operation| !operation.finished.load(Ordering::Acquire));
         if operations.is_empty() {
             return Err(invalid_state(format!(
                 "no active BigQuery {} operation to cancel",

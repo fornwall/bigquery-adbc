@@ -201,12 +201,11 @@ impl QueryPlan {
         }
     }
 
-    /// Clones the execution with a fresh idempotency identity, for a terminal job failure whose
+    /// Reuses the execution with a fresh idempotency identity, for a terminal job failure whose
     /// BigQuery reason permits running the SQL again. Transport retries reuse the original plan.
-    pub(super) fn reissue(&self) -> Self {
-        let mut plan = self.clone();
-        plan.identity = new_identity(self.route());
-        plan
+    pub(super) fn reissue(mut self) -> Self {
+        self.identity = new_identity(self.route());
+        self
     }
 }
 
