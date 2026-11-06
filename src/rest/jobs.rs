@@ -146,9 +146,7 @@ impl JobReference {
                 job_name(returned)
             )));
         }
-        if !matches_project(&self.project_id, &returned.project_id)
-            || returned.job_id != self.job_id
-        {
+        if !self.matches_identity(returned) {
             return Err(invalid_data(format!(
                 "{response} names job {}, but the request was for job {}",
                 job_name(returned),
@@ -158,6 +156,11 @@ impl JobReference {
         let mut confirmed = self.clone();
         confirmed.project_id.clone_from(&returned.project_id);
         confirmed.with_location(returned.location.as_deref(), response)
+    }
+
+    /// Matches the project and job ID; locations are checked separately.
+    pub(crate) fn matches_identity(&self, returned: &Self) -> bool {
+        self.job_id == returned.job_id && matches_project(&self.project_id, &returned.project_id)
     }
 
     /// Adopts `location`, which `response` names for this job: a location BigQuery inferred is

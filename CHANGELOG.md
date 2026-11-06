@@ -28,6 +28,8 @@ changes.
 
 ### Fixed
 
+- Query metadata preserves completed status and resolved job identities, avoiding redundant
+  cancellation of finished jobs and directing cancellation of running jobs to the correct region.
 - Ingest window sizing accounts for resolved Null fields and widened primitive types before
   allocating normalized buffers.
 - Regional job recovery preserves cancellation after a duplicate-job response even when fetching

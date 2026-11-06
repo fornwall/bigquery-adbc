@@ -439,6 +439,21 @@ impl OperationInner {
         if state == JobState::Provisional && self.cancelled.is_set() {
             return None;
         }
+        // Resolving a project number or location cannot make a completed job run again.
+        let state = match job.as_ref() {
+            Some(job)
+                if job.reference.matches_identity(reference)
+                    && job
+                        .reference
+                        .location
+                        .as_deref()
+                        .zip(reference.location.as_deref())
+                        .is_none_or(|(old, new)| old.eq_ignore_ascii_case(new)) =>
+            {
+                job.state.max(state)
+            }
+            _ => state,
+        };
         if job
             .as_ref()
             .is_none_or(|registered| registered.reference != *reference)
@@ -450,7 +465,7 @@ impl OperationInner {
                 confirmation_retry_started: false,
             });
         } else if let Some(registered) = job.as_mut() {
-            registered.state = registered.state.max(state);
+            registered.state = state;
         }
         if !self.cancelled.is_set() {
             return None;

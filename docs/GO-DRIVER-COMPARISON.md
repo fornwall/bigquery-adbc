@@ -369,6 +369,8 @@ an unfinished job's reference arrives. Retries after definitive rejections stop 
 ambiguous submissions keep recovering their job reference. Remote cancellation can be delayed by the
 ten-second completion wait (G46) and transport delays, even though local work stops immediately.
 Queries that finish during that wait cannot be stopped this way.
+Verified job metadata updates cancellation's regional identity and completed status. Resolving a
+project number or location preserves completion, even if a later response still reports RUNNING.
 Unlike Go, a failed remote cancel is retried, and a cancel during a `jobs.insert` without a location
 lets the submission finish in the background, then requests cancellation where its answer or the
 search in G48 puts the job.

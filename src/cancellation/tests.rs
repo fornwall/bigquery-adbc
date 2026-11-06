@@ -661,6 +661,32 @@ fn a_terminal_job_leaves_its_reader_cancellable_without_a_remote_request() {
 }
 
 #[test]
+fn canonical_references_preserve_terminal_status() {
+    for (project, location, completed) in [
+        ("billing-project", None, true),
+        ("123456789", None, true),
+        ("billing-project", Some("eu"), true),
+        ("billing-project", Some("US"), false),
+    ] {
+        let cancellation = cancellation();
+        let operation = cancellation.begin();
+        let initial = JobReference::new(project, location, "job".to_owned());
+        operation.register_completed_job(&initial).unwrap();
+        let canonical = JobReference::new("billing-project", Some("EU"), "job".to_owned());
+        operation.register_job(&canonical).unwrap();
+        {
+            let job = operation.inner.job();
+            let job = job.as_ref().unwrap();
+            assert_eq!(job.reference, canonical);
+            assert_eq!(job.state == super::JobState::Finished, completed);
+        }
+        // Retire the distinct-region control without issuing an unrelated network request.
+        operation.register_completed_job(&canonical).unwrap();
+        OperationCancelHandle(cancellation).try_cancel().unwrap();
+    }
+}
+
+#[test]
 fn cancel_failure_reports_unknown_after_stopping_local_work() {
     let (endpoint, requests) =
         capture_requests(vec![(403, error_body("accessDenied", "cancel denied"))]);

@@ -104,6 +104,61 @@ fn a_rejected_read_of_a_failed_job_becomes_the_terminal_failure_the_job_reports(
     assert!(requests[READS].line.contains("/jobs/polled-job"));
 }
 
+#[test]
+fn verified_terminal_jobs_are_not_cancelled_again() {
+    use crate::cancellation::{Cancellation, OperationCancelHandle};
+    use crate::clients::ClientState;
+    use crate::config::ServiceEndpointKind;
+    use crate::test_support::http::capture_requests_until_stopped;
+    use adbc_core::CancelHandle as _;
+
+    for (state, failed) in [("DONE", false), ("DONE", true), ("RUNNING", false)] {
+        let (endpoint, server) = capture_requests_until_stopped(vec![
+            (
+                200,
+                json!({
+                    "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
+                    "status": {
+                        "state": state,
+                        "errorResult": failed.then(|| json!({"reason": "backendError"}))
+                    }
+                }),
+            ),
+            (200, json!({})),
+        ]);
+        let (runtime, client) = client(&endpoint);
+        let cancellation = Cancellation::new(
+            runtime.clone(),
+            ClientState::for_test_at(ServiceEndpointKind::BigQuery, &endpoint),
+            "statement",
+        );
+        let operation = cancellation.begin();
+        let reference = JobReference::new("project", None, "polled-job".to_owned());
+        operation.register_job(&reference).unwrap();
+        let verdict = runtime.block_on(verify_job(&client, Some(&operation), &reference, "SELECT"));
+        match verdict {
+            JobVerdict::Failed(terminal) => {
+                assert!(failed);
+                assert_eq!(terminal.job.unwrap().location.as_deref(), Some("EU"));
+            }
+            JobVerdict::Succeeded => assert_eq!((state, failed), ("DONE", false)),
+            JobVerdict::Unverified => assert_eq!(state, "RUNNING"),
+            JobVerdict::Cancelled(_) => panic!("the operation has not been cancelled"),
+        }
+        OperationCancelHandle(cancellation).try_cancel().unwrap();
+        operation.finish();
+        let requests = server.stop();
+        assert_eq!(requests.len(), if state == "DONE" { 1 } else { 2 });
+        if state == "RUNNING" {
+            assert!(
+                requests[1]
+                    .path()
+                    .ends_with("/jobs/polled-job/cancel?location=EU")
+            );
+        }
+    }
+}
+
 /// The rejection's own reason never decides: a `rateLimitExceeded` on the read says nothing about
 /// the job, and rerunning DML on it could duplicate writes. Any `jobs.get` answer short of "DONE
 /// and failed" reports the original rejection.

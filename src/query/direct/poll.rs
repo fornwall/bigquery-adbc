@@ -209,7 +209,7 @@ enum JobVerdict {
 }
 
 /// Fetches the job `reference` names with a retried `jobs.get`, as `what` names it, confirming
-/// the resource is that job before anything it says is used.
+/// the resource is that job before recording its canonical identity and terminal status.
 pub(in crate::query) async fn fetch_job(
     client: &JobClient,
     operation: Option<&Operation>,
@@ -219,7 +219,15 @@ pub(in crate::query) async fn fetch_job(
     const RESPONSE: &str = "the BigQuery jobs.get response";
     let body = client.poll(operation, reference, what).await?;
     let mut job = JobResponse::decode(&body, RESPONSE)?;
-    job.job_reference = Some(reference.confirm(job.job_reference.as_ref(), RESPONSE)?);
+    let reference = reference.confirm(job.job_reference.as_ref(), RESPONSE)?;
+    if let Some(operation) = operation {
+        if job.is_done() {
+            operation.register_completed_job(&reference)?;
+        } else {
+            operation.register_job(&reference)?;
+        }
+    }
+    job.job_reference = Some(reference);
     Ok(job)
 }
 
@@ -240,7 +248,7 @@ async fn verify_job(
     match job.take_terminal_errors() {
         Some(errors) => JobVerdict::Failed(TerminalFailure::new(
             errors,
-            Some(reference.clone()),
+            job.job_reference.take(),
             job.statement_type(),
             statement_type,
         )),

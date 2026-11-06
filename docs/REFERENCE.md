@@ -355,7 +355,9 @@ options available only on a job use `jobs.insert`. Job creation mode and complet
 not configurable.
 
 Cancellation stops local work and [requests cancellation](https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/jobs/cancel)
-of any unfinished remote job. BigQuery handles that request asynchronously. If it arrives while the
+of any unfinished remote job. Verified job metadata updates its regional identity and completed
+status; later metadata cannot make a completed job eligible for cancellation again.
+BigQuery handles cancellation asynchronously. If it arrives while the
 initial `jobs.query` request is pending, the driver keeps that submission alive in the background
 and requests cancellation when its response supplies an unfinished job's reference. Local work
 stops immediately, but remote cancellation can be delayed by the initial completion wait and
