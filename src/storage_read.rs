@@ -238,13 +238,8 @@ async fn read_streams(
         readers.spawn(reader);
     }
     while let Some(joined) = readers.join_next().await {
-        let result = joined
-            .map_err(|source| task_failure("Storage Read stream", &source))
-            .and_then(|result| result);
-        if result.is_err() {
-            readers.abort_all();
-            return result;
-        }
+        // Dropping the JoinSet aborts the remaining streams on either kind of failure.
+        joined.map_err(|source| task_failure("Storage Read stream", &source))??;
     }
     Ok(())
 }

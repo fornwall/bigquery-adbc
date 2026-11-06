@@ -681,7 +681,7 @@ mod mock_reads {
     }
 
     /// One stream of a parallel read failing unresumably fails the whole read once and stops the
-    /// others. The other streams break resumably, so without `abort_all` each would open a second
+    /// others. The other streams break resumably, so without cancellation each would open a second
     /// `ReadRows`.
     #[test]
     fn one_stream_failing_unresumably_fails_the_parallel_read_and_stops_the_rest() {
