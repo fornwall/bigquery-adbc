@@ -372,9 +372,9 @@ duplicate-job response, US/EU lookup, and known dataset locations. As a final fa
 across regions to find the exact ID. This search includes five minutes before submission for
 clock skew and makes up to three scans, with 100 pages in total and a shared 30-second deadline
 for listing, credentials and the final job fetch. Listing one's own jobs needs no additional IAM
-permission. Recovery continues after local cancellation so a discovered job can be cancelled,
-even if fetching its details fails. If recovery fails, the error identifies the job that may
-still be running. Setting `bigquery.location` avoids the cross-region search.
+permission. Recovery registers a job found through a duplicate response or listing for cancellation
+before fetching its details, even after local cancellation. If recovery fails, the error identifies
+the job that may still be running. Setting `bigquery.location` avoids the cross-region search.
 
 After a result stream reports EOF, an error or cancellation, it releases its inner reader,
 including queued results and unread bound inputs. Its schema remains available until the stream

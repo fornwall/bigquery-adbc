@@ -349,9 +349,9 @@ default dataset's location. If those lookups fail to find it, `jobs.list` search
 recent jobs across regions for that exact ID and recovers the full job reference. The search
 starts five minutes before submission to allow clock skew, retries an incomplete search up to
 three scans, and stops at 100 pages or 30 seconds including credentials and the final job fetch.
-It registers a found reference for cancellation before fetching the job, so a failed fetch does
-not prevent cancellation. If recovery fails, the error names the job as possibly still running;
-Go's SDK returns an error at once. dbt-core 2.0 seed loads and table copies run in the
+It registers references found through duplicate responses or listings for cancellation before
+fetching the job, so a failed fetch does not prevent cancellation. If recovery fails, the error
+names the job as possibly still running; Go's SDK returns an error at once. dbt-core 2.0 seed loads and table copies run in the
 destination dataset's location, found by one cached `datasets.get` per dataset, where the dbt-labs
 fork lets BigQuery infer it. The database shares at most 32 cached locations across its
 connections, evicting the oldest inserted entry when full; revisiting an evicted dataset repeats

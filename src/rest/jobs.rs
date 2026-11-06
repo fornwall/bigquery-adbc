@@ -1052,6 +1052,8 @@ impl InferredSubmission {
                     let Some(located) = duplicate(&body, &self.reference) else {
                         break failure;
                     };
+                    // Keep the known location cancellable even if fetching the job fails.
+                    let _ = confirm_submission(self.operation.as_ref(), &located);
                     // The job exists there, so one that never appears there is still the
                     // original submission's failure.
                     return match self
@@ -1265,9 +1267,7 @@ impl InferredSubmission {
                     *resolved = located;
                     // A subsequent jobs.get failure must not prevent cancelling the job whose
                     // identity we now know. Registration also handles an already-cancelled caller.
-                    if let Some(operation) = &self.operation {
-                        let _ = operation.register_job(resolved);
-                    }
+                    let _ = confirm_submission(self.operation.as_ref(), resolved);
                     let body = self
                         .client
                         .fetch_submitted(None, resolved, &self.what, None)

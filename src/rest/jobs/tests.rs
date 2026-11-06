@@ -848,19 +848,32 @@ fn a_cancel_before_a_lost_answer_finds_the_job_without_resubmitting_it() {
 }
 
 #[test]
-fn a_cancelled_lost_job_is_listed_and_cancelled_even_when_its_fetch_fails() {
-    let runtime = new_runtime().unwrap();
-    let mut cancel_responses = vec![(404, error_body("notFound", "not visible")); MAX_ATTEMPTS];
-    cancel_responses.push((200, json!({})));
-    let (cancel_endpoint, cancels) = capture_requests(cancel_responses);
-    let (cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
-    let handle = OperationCancelHandle(cancellation);
-    let mut listings = 0;
-    let (endpoint, requests) =
-        capture_requests_responding(MAX_RECONCILIATION_ATTEMPTS + 4, move |request| {
+fn a_recovered_location_remains_cancellable_when_the_job_fetch_fails() {
+    for duplicate in [false, true] {
+        let runtime = new_runtime().unwrap();
+        let mut cancel_responses = vec![(404, error_body("notFound", "not visible")); MAX_ATTEMPTS];
+        cancel_responses.push((200, json!({})));
+        let (cancel_endpoint, cancels) = capture_requests(cancel_responses);
+        let (cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
+        let handle = OperationCancelHandle(cancellation);
+        let mut listings = 0;
+        let request_count = if duplicate {
+            2
+        } else {
+            MAX_RECONCILIATION_ATTEMPTS + 4
+        };
+        let (endpoint, requests) = capture_requests_responding(request_count, move |request| {
             if request.line.starts_with("POST ") {
                 handle.try_cancel().unwrap();
-                return None;
+                return duplicate.then(|| {
+                    (
+                        409,
+                        error_body(
+                            "duplicate",
+                            "Already Exists: Job billing/project:asia-northeast1.lost-job",
+                        ),
+                    )
+                });
             }
             if request.path().contains("/jobs?") {
                 listings += 1;
@@ -879,28 +892,29 @@ fn a_cancelled_lost_job_is_listed_and_cancelled_even_when_its_fetch_fails() {
                 (404, error_body("notFound", "not in a multi-region"))
             })
         });
-    let failure = runtime
-        .block_on(JobClient::for_test(&endpoint).insert(
-            Some(&operation),
-            &request("lost-job", None, false),
-            "query",
-        ))
-        .unwrap_err();
-    assert_eq!(failure.status, Status::Cancelled);
-    let cancels = cancels.join().unwrap();
-    let requests = requests.join().unwrap();
-    operation.finish();
-    assert_eq!(
-        cancels.last().unwrap().path(),
-        "/bigquery/v2/projects/billing%2Fproject/jobs/lost-job/cancel?location=asia-northeast1"
-    );
-    assert_eq!(
-        requests
-            .iter()
-            .filter(|r| r.line.starts_with("POST "))
-            .count(),
-        1
-    );
+        let failure = runtime
+            .block_on(JobClient::for_test(&endpoint).insert(
+                Some(&operation),
+                &request("lost-job", None, false),
+                "query",
+            ))
+            .unwrap_err();
+        assert_eq!(failure.status, Status::Cancelled);
+        let cancels = cancels.join().unwrap();
+        let requests = requests.join().unwrap();
+        operation.finish();
+        assert_eq!(
+            cancels.last().unwrap().path(),
+            "/bigquery/v2/projects/billing%2Fproject/jobs/lost-job/cancel?location=asia-northeast1"
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.line.starts_with("POST "))
+                .count(),
+            1
+        );
+    }
 }
 
 #[test]

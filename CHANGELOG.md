@@ -28,6 +28,8 @@ changes.
 
 ### Fixed
 
+- Regional job recovery preserves cancellation after a duplicate-job response even when fetching
+  the job's details fails.
 - Failed or cancelled ingests release queued append payloads before remote stream cleanup.
 - Storage Read sends the driver and custom user agent on every row-stream request, including
   parallel reads and resumed streams.
