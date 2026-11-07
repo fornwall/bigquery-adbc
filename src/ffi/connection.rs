@@ -28,14 +28,12 @@ unsafe impl FfiHandle for AdbcConnection {
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `connection` must be null or point to a valid `AdbcConnection`, and `database` must be null or
-/// point to a valid, initialized `AdbcDatabase` that outlives the connection.
 pub(super) unsafe extern "C" fn connection_init(
     connection: *mut AdbcConnection,
     database: *mut AdbcDatabase,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller keeps both typed handles live and grants error output access.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_state(connection, error, |state| {
             let options = state.pending(KIND)?;
@@ -59,31 +57,26 @@ pub(super) unsafe extern "C" fn connection_init(
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `connection` must be null or point to a valid `AdbcConnection`.
 pub(super) unsafe extern "C" fn connection_commit(
     connection: *mut AdbcConnection,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller provides a live connection slot and initialized, writable error output or
-    // null.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe { with_state(connection, error, |state| state.ready(KIND)?.commit()) }
 }
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `connection` must be null or point to a valid `AdbcConnection`.
 pub(super) unsafe extern "C" fn connection_rollback(
     connection: *mut AdbcConnection,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller provides a live connection slot and initialized, writable error output or
-    // null.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe { with_state(connection, error, |state| state.ready(KIND)?.rollback()) }
 }
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `connection` must be null or point to a valid `AdbcConnection`.
 pub(super) unsafe extern "C" fn connection_cancel(
     connection: *mut AdbcConnection,
     error: *mut AdbcError,
@@ -96,8 +89,6 @@ pub(super) unsafe extern "C" fn connection_cancel(
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `connection` and `out` must be null or valid for the call, and `info_codes` must be null or
-/// point to `info_codes_length` initialized `u32`s.
 pub(super) unsafe extern "C" fn connection_get_info(
     connection: *mut AdbcConnection,
     info_codes: *const u32,
@@ -105,8 +96,7 @@ pub(super) unsafe extern "C" fn connection_get_info(
     out: *mut FFI_ArrowArrayStream,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller supplies a live handle, readable u32 allocation and disjoint writable
-    // stream/error outputs.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_stream(connection, out, error, |state| {
             // A null array requests every code; an empty non-null array requests none.
@@ -128,8 +118,7 @@ pub(super) unsafe extern "C" fn connection_get_info(
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `connection` and `out` must be null or valid for the call, the string arguments must be null or
-/// NUL-terminated, and `table_type` must be null or a NULL-terminated array of such strings.
+/// `table_type` must be null or a NULL-terminated array of C strings.
 pub(super) unsafe extern "C" fn connection_get_objects(
     connection: *mut AdbcConnection,
     depth: c_int,
@@ -141,8 +130,7 @@ pub(super) unsafe extern "C" fn connection_get_objects(
     out: *mut FFI_ArrowArrayStream,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller keeps strings and the terminated pointer list live and grants stream/error
-    // output access.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_stream(connection, out, error, |state| {
             // `ObjectDepth::try_from` reports `InvalidData` and names no valid depths, but this
@@ -173,8 +161,6 @@ pub(super) unsafe extern "C" fn connection_get_objects(
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `connection` and `schema` must be null or valid for the call, and the string arguments must be
-/// null or NUL-terminated.
 pub(super) unsafe extern "C" fn connection_get_table_schema(
     connection: *mut AdbcConnection,
     catalog: *const c_char,
@@ -183,7 +169,7 @@ pub(super) unsafe extern "C" fn connection_get_table_schema(
     schema: *mut FFI_ArrowSchema,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller supplies live strings/handle and disjoint writable schema/error outputs.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_state(connection, error, |state| {
             required_output(schema, "schema")?;
@@ -202,13 +188,12 @@ pub(super) unsafe extern "C" fn connection_get_table_schema(
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `connection` and `out` must be null or valid for the call.
 pub(super) unsafe extern "C" fn connection_get_table_types(
     connection: *mut AdbcConnection,
     out: *mut FFI_ArrowArrayStream,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller supplies a live connection and disjoint writable stream/error outputs.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_stream(connection, out, error, |state| {
             state.ready(KIND)?.get_table_types()
@@ -218,8 +203,6 @@ pub(super) unsafe extern "C" fn connection_get_table_types(
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `connection` and `out` must be null or valid for the call, and the string arguments must be
-/// null or NUL-terminated.
 pub(super) unsafe extern "C" fn connection_get_statistics(
     connection: *mut AdbcConnection,
     catalog: *const c_char,
@@ -229,7 +212,7 @@ pub(super) unsafe extern "C" fn connection_get_statistics(
     out: *mut FFI_ArrowArrayStream,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller supplies live strings/handle and disjoint writable stream/error outputs.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_stream(connection, out, error, |state| {
             let catalog = optional_str(catalog, "catalog")?;
@@ -249,13 +232,12 @@ pub(super) unsafe extern "C" fn connection_get_statistics(
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `connection` and `out` must be null or valid for the call.
 pub(super) unsafe extern "C" fn connection_get_statistic_names(
     connection: *mut AdbcConnection,
     out: *mut FFI_ArrowArrayStream,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller supplies a live connection and disjoint writable stream/error outputs.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_stream(connection, out, error, |state| {
             state.ready(KIND)?.get_statistic_names()
@@ -265,8 +247,6 @@ pub(super) unsafe extern "C" fn connection_get_statistic_names(
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `connection` and `out` must be null or valid for the call, and `serialized_partition` must be
-/// null or point to `serialized_length` initialized bytes.
 pub(super) unsafe extern "C" fn connection_read_partition(
     connection: *mut AdbcConnection,
     serialized_partition: *const u8,
@@ -274,8 +254,7 @@ pub(super) unsafe extern "C" fn connection_read_partition(
     out: *mut FFI_ArrowArrayStream,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller supplies a readable partition allocation and disjoint writable
-    // stream/error outputs.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_stream(connection, out, error, |state| {
             let partition = byte_slice(

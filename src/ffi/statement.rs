@@ -58,8 +58,6 @@ impl super::options::OptionTarget for BigQueryStatement {
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `connection` must be null or point to a valid, initialized `AdbcConnection`, and `statement`
-/// must be null or point to a valid `AdbcStatement`.
 pub(super) unsafe extern "C" fn statement_new(
     connection: *mut AdbcConnection,
     statement: *mut AdbcStatement,
@@ -84,7 +82,7 @@ pub(super) unsafe extern "C" fn statement_new(
         // SAFETY: The slot is the live field of the caller's statement.
         unsafe { install(slot, KIND, exported) }
     });
-    // SAFETY: the caller provides initialized, exclusively writable error storage or null.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe { finish(created, error) }
 }
 
@@ -93,7 +91,6 @@ pub(super) unsafe extern "C" fn statement_new(
 ///
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `statement`, `key` and `value` must be null or valid for the call.
 pub(super) unsafe extern "C" fn statement_get_option_double(
     statement: *mut AdbcStatement,
     key: *const c_char,
@@ -126,14 +123,12 @@ pub(super) unsafe extern "C" fn statement_get_option_double(
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `statement` must be null or point to a valid `AdbcStatement`, and `query` null or a
-/// NUL-terminated string.
 pub(super) unsafe extern "C" fn statement_set_sql_query(
     statement: *mut AdbcStatement,
     query: *const c_char,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller provides a live statement, NUL-terminated query and writable error output.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_state(statement, error, |state| {
             state.set_sql_query(required_str(query, "query")?)
@@ -143,16 +138,13 @@ pub(super) unsafe extern "C" fn statement_set_sql_query(
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `statement` must be null or point to a valid `AdbcStatement`, and `plan` null or point to
-/// `length` initialized bytes.
 pub(super) unsafe extern "C" fn statement_set_substrait_plan(
     statement: *mut AdbcStatement,
     plan: *const u8,
     length: usize,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller provides a live statement, readable plan allocation and writable error
-    // output.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_state(statement, error, |state| {
             state.set_substrait_plan(byte_slice(plan, length, "plan")?)
@@ -162,19 +154,16 @@ pub(super) unsafe extern "C" fn statement_set_substrait_plan(
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `statement` must be null or point to a valid `AdbcStatement`.
 pub(super) unsafe extern "C" fn statement_prepare(
     statement: *mut AdbcStatement,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller provides a live statement slot and initialized, writable error output or
-    // null.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe { with_state(statement, error, State::prepare) }
 }
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `statement` must be null or point to a valid `AdbcStatement`.
 pub(super) unsafe extern "C" fn statement_cancel(
     statement: *mut AdbcStatement,
     error: *mut AdbcError,
@@ -191,8 +180,6 @@ pub(super) unsafe extern "C" fn statement_cancel(
 ///
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `statement` must be null or point to a valid `AdbcStatement`, and `values`/`schema` null or
-/// point to a valid Arrow C data interface array and schema.
 pub(super) unsafe extern "C" fn statement_bind(
     statement: *mut AdbcStatement,
     values: *mut FFI_ArrowArray,
@@ -258,8 +245,6 @@ fn unusable_bind_argument(name: &str, missing: bool) -> Error {
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `statement` must be null or point to a valid `AdbcStatement`, and `stream` null or point to a
-/// valid, non-released Arrow C stream.
 pub(super) unsafe extern "C" fn statement_bind_stream(
     statement: *mut AdbcStatement,
     stream: *mut FFI_ArrowArrayStream,
@@ -280,16 +265,13 @@ pub(super) unsafe extern "C" fn statement_bind_stream(
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `statement` must be null or point to a valid `AdbcStatement`; `out` must be null or point to
-/// writable storage for an `FFI_ArrowArrayStream`, and `rows_affected` null or writable.
 pub(super) unsafe extern "C" fn statement_execute_query(
     statement: *mut AdbcStatement,
     out: *mut FFI_ArrowArrayStream,
     rows_affected: *mut i64,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller supplies a live statement and disjoint writable stream, row count and
-    // error outputs.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_state(statement, error, |state| {
             // A null output requests execution without a result stream.
@@ -308,14 +290,12 @@ pub(super) unsafe extern "C" fn statement_execute_query(
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `statement` must be null or point to a valid `AdbcStatement`, and `schema` null or point to
-/// writable storage for an `FFI_ArrowSchema`.
 pub(super) unsafe extern "C" fn statement_execute_schema(
     statement: *mut AdbcStatement,
     schema: *mut FFI_ArrowSchema,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller supplies a live statement and disjoint writable schema/error outputs.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_state(statement, error, |state| {
             required_output(schema, "schema")?;
@@ -326,14 +306,12 @@ pub(super) unsafe extern "C" fn statement_execute_schema(
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `statement` must be null or point to a valid `AdbcStatement`, and `schema` null or point to
-/// writable storage for an `FFI_ArrowSchema`.
 pub(super) unsafe extern "C" fn statement_get_parameter_schema(
     statement: *mut AdbcStatement,
     schema: *mut FFI_ArrowSchema,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller supplies a live statement and disjoint writable schema/error outputs.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_state(statement, error, |state| {
             required_output(schema, "schema")?;
@@ -344,8 +322,6 @@ pub(super) unsafe extern "C" fn statement_get_parameter_schema(
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `statement` must be null or point to a valid `AdbcStatement`; `schema` and `partitions` must be
-/// null or point to writable storage for their types, and `rows_affected` null or writable.
 pub(super) unsafe extern "C" fn statement_execute_partitions(
     statement: *mut AdbcStatement,
     schema: *mut FFI_ArrowSchema,
@@ -353,8 +329,7 @@ pub(super) unsafe extern "C" fn statement_execute_partitions(
     rows_affected: *mut i64,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller supplies a live statement and disjoint writable schema, partitions, row
-    // count and error outputs.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_state(statement, error, |state| {
             // Checked before executing, so a missing output never bills a query.
@@ -375,7 +350,6 @@ pub(super) unsafe extern "C" fn statement_execute_partitions(
 /// Write the optional row count.
 ///
 /// # Safety
-/// The [shared FFI safety contracts](super) apply.
 /// `dst` must be null or point to a writable `i64`.
 unsafe fn write_rows_affected(dst: *mut i64, value: i64) {
     if !dst.is_null() {
@@ -422,7 +396,6 @@ fn export_partitions(payloads: Vec<Vec<u8>>) -> AdbcPartitions {
 }
 
 /// # Safety
-/// The [shared FFI safety contracts](super) apply.
 /// `partitions` must be null or point to an `AdbcPartitions` produced by [`export_partitions`].
 // Guard-exempt: dropping the owner box frees plain memory and cannot panic; the rest is pointer
 // writes.

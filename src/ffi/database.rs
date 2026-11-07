@@ -40,13 +40,11 @@ fn shared_driver() -> Result<&'static BigQueryDriver> {
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `database` must be null or point to a valid `AdbcDatabase`.
 pub(super) unsafe extern "C" fn database_init(
     database: *mut AdbcDatabase,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: the caller supplies a live database slot and initialized, writable error output or
-    // null.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_state(database, error, |state| {
             let options = state.pending(KIND)?;

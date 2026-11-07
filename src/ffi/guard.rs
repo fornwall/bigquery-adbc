@@ -18,10 +18,12 @@ pub(crate) fn catch<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
 #[cold]
 #[inline(never)]
 fn caught_panic(cause: Box<dyn Any + Send>) -> Error {
-    driver_defect(format_args!(
+    let failure = driver_defect(format_args!(
         "uncaught panic in the BigQuery driver: {}",
         panic_message(cause.as_ref())
-    ))
+    ));
+    drop(cause);
+    failure
 }
 
 /// Extract a string panic payload for entry-point and Arrow stream errors.

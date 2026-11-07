@@ -29,10 +29,11 @@
 //! # Shared FFI safety contracts
 //!
 //! Every entry point requires non-null pointers to address live storage for the advertised type
-//! and ABI revision, aligned wherever typed access requires it. Borrowed input strings, pointer
-//! arrays and buffers stay readable and unmodified for the call, each within one allocation and
-//! spanning at most `isize::MAX` bytes. Writable outputs are exclusively accessible and do not
-//! overlap inputs or each other. A non-null `error` is initialized or previously populated storage
+//! and ABI revision, aligned wherever typed access requires it. Non-null input strings are
+//! NUL-terminated and pointer/length pairs cover their length. Borrowed strings, pointer arrays
+//! and buffers stay readable and unmodified for the call, each within one allocation and spanning
+//! at most `isize::MAX` bytes. Writable outputs are exclusively accessible and do not overlap
+//! inputs or each other. A non-null `error` is initialized or previously populated storage
 //! satisfying [`error::export_error`].
 //!
 //! Handle `private_data` is null or installed by this driver's matching `New` entry point, and only

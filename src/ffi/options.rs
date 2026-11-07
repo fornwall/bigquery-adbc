@@ -182,13 +182,12 @@ pub(super) fn slot_of<H: FfiHandle>(handle: *mut H) -> *mut *mut c_void {
 ///
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `handle` must be null or point to a valid ABI struct.
 pub(super) unsafe fn with_state<H, F>(handle: *mut H, error: *mut AdbcError, f: F) -> AdbcStatusCode
 where
     H: FfiHandle,
     F: FnOnce(&mut H::State) -> Result<()>,
 {
-    // SAFETY: The caller supplies H's live slot and optional error storage.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe { dispatch::<H::State, _>(slot_of(handle), H::KIND, error, f) }
 }
 
@@ -200,8 +199,6 @@ where
 ///
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `handle` must be null or point to a valid ABI struct, and `out` null or point to writable
-/// storage for an `FFI_ArrowArrayStream`.
 pub(super) unsafe fn with_stream<H, F>(
     handle: *mut H,
     out: *mut FFI_ArrowArrayStream,
@@ -212,7 +209,7 @@ where
     H: FfiHandle,
     F: FnOnce(&mut H::State) -> Result<Box<dyn RecordBatchReader + Send + 'static>>,
 {
-    // SAFETY: The caller provides H's live slot and writable stream/error outputs.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_state(handle, error, |state| {
             required_output(out, "out")?;
@@ -225,7 +222,6 @@ where
 ///
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `handle` must be null or point to a valid ABI struct.
 // Guard-exempt: nothing here can unwind. The default state allocates nothing, `Exported`
 // allocation failure aborts, and the rest is pointer writes.
 pub(super) unsafe extern "C" fn new_handle<H>(
@@ -236,8 +232,7 @@ where
     H: FfiHandle<State: Default>,
 {
     let exported = Exported::new(H::State::default(), None, None);
-    // SAFETY: The caller supplies a live ABI struct or null, which `install` rejects, and
-    // initialized, exclusively writable error storage or null.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe { finish(install(slot_of(handle), H::KIND, exported), error) }
 }
 
@@ -246,13 +241,11 @@ where
 ///
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `handle` must be null or point to a valid ABI struct.
 pub(super) unsafe extern "C" fn release_handle<H: FfiHandle>(
     handle: *mut H,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller supplies H's live slot, holding H::State's reference, or a null handle,
-    // and initialized, exclusively writable error storage or null.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe { super::handle::release::<H::State>(slot_of(handle), H::KIND, error) }
 }
 
@@ -261,18 +254,16 @@ pub(super) unsafe extern "C" fn release_handle<H: FfiHandle>(
 ///
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `handle` must be null or point to a valid ABI struct.
 pub(super) unsafe fn with_handle<H: FfiHandle, R>(
     handle: *mut H,
     f: impl FnOnce(&mut H::State) -> Result<R>,
 ) -> Result<R> {
-    // SAFETY: The caller supplies H's live slot or a null handle.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe { with_locked::<H::State, R>(slot_of(handle), H::KIND, f) }
 }
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `key` must be null or a NUL-terminated string.
 unsafe fn parse_key<H: FfiHandle>(key: *const c_char) -> Result<KeyOf<H>> {
     // SAFETY: The caller supplies a readable NUL-terminated key for this call, or null is rejected.
     Ok(KeyOf::<H>::from(unsafe { required_str(key, "key") }?))
@@ -282,7 +273,6 @@ unsafe fn parse_key<H: FfiHandle>(key: *const c_char) -> Result<KeyOf<H>> {
 ///
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `handle` and `key` must be null or valid for the call.
 unsafe fn apply_option<H: FfiHandle>(
     handle: *mut H,
     key: *const c_char,
@@ -295,8 +285,7 @@ unsafe fn apply_option<H: FfiHandle>(
         // SAFETY: the caller provides initialized, exclusively writable error storage or null.
         Err(failure) => return unsafe { finish(Err(failure), error) },
     };
-    // SAFETY: The caller keeps the typed handle and NUL-terminated key live and grants error output
-    // access.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_state(handle, error, |state| {
             state.set(parse_key::<H>(key)?, value)
@@ -308,27 +297,23 @@ unsafe fn apply_option<H: FfiHandle>(
 ///
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `handle`, `key` and `value` must be null or valid for the call.
 pub(super) unsafe extern "C" fn set_option<H: FfiHandle>(
     handle: *mut H,
     key: *const c_char,
     value: *const c_char,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller supplies a readable NUL-terminated value for this call, or null is
-    // rejected.
-    let value = unsafe { required_str(value, "value") }.map(OptionValue::from);
-    // SAFETY: The caller supplies the live typed handle, NUL-terminated key, and optional error
-    // output.
-    unsafe { apply_option(handle, key, value, error) }
+    // SAFETY: The caller upholds the shared contracts for every argument.
+    unsafe {
+        let value = required_str(value, "value").map(OptionValue::from);
+        apply_option(handle, key, value, error)
+    }
 }
 
 /// `Adbc*SetOptionBytes`.
 ///
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `handle` and `key` must be null or valid for the call, and `value` null or point to `length`
-/// initialized bytes.
 pub(super) unsafe extern "C" fn set_option_bytes<H: FfiHandle>(
     handle: *mut H,
     key: *const c_char,
@@ -336,26 +321,24 @@ pub(super) unsafe extern "C" fn set_option_bytes<H: FfiHandle>(
     length: usize,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller provides length readable bytes in one live allocation, or a checked null
-    // value.
-    let value = unsafe { byte_slice(value, length, "value") }.map(OptionValue::from);
-    // SAFETY: The caller supplies the live typed handle, NUL-terminated key, and optional error
-    // output.
-    unsafe { apply_option(handle, key, value, error) }
+    // SAFETY: The caller upholds the shared contracts for every argument.
+    unsafe {
+        let value = byte_slice(value, length, "value").map(OptionValue::from);
+        apply_option(handle, key, value, error)
+    }
 }
 
 /// `Adbc*SetOptionInt`.
 ///
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `handle` and `key` must be null or valid for the call.
 pub(super) unsafe extern "C" fn set_option_int<H: FfiHandle>(
     handle: *mut H,
     key: *const c_char,
     value: i64,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: the caller provides a live handle, NUL-terminated key and writable error output.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe { apply_option(handle, key, Ok(value.into()), error) }
 }
 
@@ -363,14 +346,13 @@ pub(super) unsafe extern "C" fn set_option_int<H: FfiHandle>(
 ///
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `handle` and `key` must be null or valid for the call.
 pub(super) unsafe extern "C" fn set_option_double<H: FfiHandle>(
     handle: *mut H,
     key: *const c_char,
     value: f64,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: the caller provides a live handle, NUL-terminated key and writable error output.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe { apply_option(handle, key, Ok(value.into()), error) }
 }
 
@@ -378,7 +360,6 @@ pub(super) unsafe extern "C" fn set_option_double<H: FfiHandle>(
 ///
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `handle`, `key`, `value` and `length` must be null or valid for the call.
 pub(super) unsafe extern "C" fn get_option<H: FfiHandle>(
     handle: *mut H,
     key: *const c_char,
@@ -386,8 +367,7 @@ pub(super) unsafe extern "C" fn get_option<H: FfiHandle>(
     length: *mut usize,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller provides a live typed handle/key and disjoint writable value, length and
-    // error storage.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_state(handle, error, |state| {
             let key = parse_key::<H>(key)?;
@@ -401,7 +381,6 @@ pub(super) unsafe extern "C" fn get_option<H: FfiHandle>(
 ///
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `handle`, `key`, `value` and `length` must be null or valid for the call.
 pub(super) unsafe extern "C" fn get_option_bytes<H: FfiHandle>(
     handle: *mut H,
     key: *const c_char,
@@ -409,8 +388,7 @@ pub(super) unsafe extern "C" fn get_option_bytes<H: FfiHandle>(
     length: *mut usize,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller provides a live typed handle/key and disjoint writable value, length and
-    // error storage.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_state(handle, error, |state| {
             let key = parse_key::<H>(key)?;
@@ -424,15 +402,13 @@ pub(super) unsafe extern "C" fn get_option_bytes<H: FfiHandle>(
 ///
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `handle`, `key` and `value` must be null or valid for the call.
 pub(super) unsafe extern "C" fn get_option_int<H: FfiHandle>(
     handle: *mut H,
     key: *const c_char,
     value: *mut i64,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller provides a live typed handle/key and disjoint writable scalar/error
-    // outputs.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_state(handle, error, |state| {
             let key = parse_key::<H>(key)?;
@@ -446,15 +422,13 @@ pub(super) unsafe extern "C" fn get_option_int<H: FfiHandle>(
 ///
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.
-/// `handle`, `key` and `value` must be null or valid for the call.
 pub(super) unsafe extern "C" fn get_option_double<H: FfiHandle>(
     handle: *mut H,
     key: *const c_char,
     value: *mut f64,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    // SAFETY: The caller provides a live typed handle/key and disjoint writable scalar/error
-    // outputs.
+    // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
         with_state(handle, error, |state| {
             let key = parse_key::<H>(key)?;
