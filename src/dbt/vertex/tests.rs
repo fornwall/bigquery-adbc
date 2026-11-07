@@ -10,9 +10,10 @@ use super::job_outcome;
 use crate::BigQueryStatementOption as Key;
 use crate::test_support::credentials::TEST_PRIVATE_KEY;
 use crate::test_support::driver::{test_connection_with, test_statement};
-use crate::test_support::errors::{assert_failure, assert_message};
+use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
 use crate::test_support::http::{
-    capture_requests, capture_requests_gated, capture_requests_until_stopped, error_body, ok,
+    capture_requests, capture_requests_gated, capture_requests_responding,
+    capture_requests_until_stopped, error_body, ok,
 };
 use crate::test_support::options::{assert_string_option, set_option};
 use crate::{BigQueryConnection, BigQueryDatabaseOption, BigQueryStatement};
@@ -278,6 +279,32 @@ fn only_the_template_listing_is_resent_after_a_transient_failure() {
         "{}",
         requests[2].line
     );
+}
+
+/// A create with no verdict may have started a job nothing names, which only the error can say. A
+/// refusal started nothing.
+#[test]
+fn a_create_without_a_verdict_says_the_job_may_have_started() {
+    let mut served = 0;
+    let (endpoint, captured) = capture_requests_responding(2, move |_| {
+        served += 1;
+        (served == 2).then(|| (403, json!({"error": {"code": 403, "message": "Denied"}})))
+    });
+    let mut connection = connection_running_notebooks_at(endpoint);
+    let mut run = || {
+        bigframes_statement(&mut connection, Some("4242"), "0")
+            .execute_update()
+            .unwrap_err()
+    };
+
+    let lost = run();
+    assert_failure(
+        &lost,
+        Status::IO,
+        &["; the BigQuery Vertex AI notebook execution job may have started"],
+    );
+    assert_message_omits(&run(), &["may have started"]);
+    captured.join().unwrap();
 }
 
 /// A rate-limit rejection applied nothing, so it alone resends the create.

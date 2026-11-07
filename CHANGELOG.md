@@ -18,6 +18,8 @@ changes.
 - Python-model waits tolerate more glitches: Cloud Storage uploads are resent after a transient
   failure, a Dataproc submission or poll whose 2xx answer cannot be read is repeated, a rate-limited
   Vertex AI create is resent, and a notebook job with no reported state keeps being polled.
+- A python-model submission that ends without a verdict, such as a Vertex AI create whose answer
+  was lost, says the job may have started.
 - `grant_access_to` backs off between lost `If-Match` races and allows 16 rounds rather than 3, so
   dbt threads granting on one dataset no longer fail with `INVALID_STATE`.
 - A refused CSV seed upload no longer sends a `jobs.cancel` for a job that does not exist, nor warns

@@ -176,8 +176,9 @@ impl<'a> LroPoller<'a> {
         failure
     }
 
-    /// Sends `request` under `delivery`, within the deadline and the [`MAX_ATTEMPTS`] limit. Errors
-    /// must not expose raw response bodies.
+    /// Sends `request` under `delivery`, within the deadline and the [`MAX_ATTEMPTS`] limit. A
+    /// submission that ends without a verdict says the work may have started, since nothing names
+    /// it yet. Errors must not expose raw response bodies.
     /// The borrowed factory shares one retry state machine across all callers.
     pub(super) async fn request<'r>(
         &self,
@@ -186,37 +187,52 @@ impl<'a> LroPoller<'a> {
     ) -> Result<JsonValue> {
         let gate = (delivery == Delivery::Idempotent).then_some(self.operation);
         let mut failures = 0;
-        loop {
-            self.operation.check()?;
-            if self.backoff.expired() {
-                return Err(self.timeout());
+        let mut unsettled = false;
+        let answer: Result<JsonValue> = async {
+            loop {
+                self.operation.check()?;
+                if self.backoff.expired() {
+                    return Err(self.timeout());
+                }
+                let (class, failure) = match Box::pin(self.attempt(gate, request())).await {
+                    Ok(answer) => return Ok(answer),
+                    Err(rejected) => rejected,
+                };
+                failures += 1;
+                unsettled |= class == RetryClass::Transient;
+                let resend = match class {
+                    RetryClass::Final => false,
+                    RetryClass::Transient => delivery != Delivery::Once,
+                    RetryClass::RateLimited => true,
+                };
+                if !resend || failures >= MAX_ATTEMPTS || self.backoff.expired() {
+                    return Err(failure);
+                }
+                diag!(
+                    Debug,
+                    "resending a request after transient failure {failures}: {}",
+                    failure.message
+                );
+                let delay = RetryDelays::SERVICE.delay(class, failures);
+                let wake = Instant::now() + delay;
+                let wake = self
+                    .backoff
+                    .deadline
+                    .map_or(wake, |deadline| wake.min(deadline));
+                self.operation.wait(tokio::time::sleep_until(wake)).await?;
             }
-            let (class, failure) = match Box::pin(self.attempt(gate, request())).await {
-                Ok(answer) => return Ok(answer),
-                Err(rejected) => rejected,
-            };
-            failures += 1;
-            let resend = match class {
-                RetryClass::Final => false,
-                RetryClass::Transient => delivery != Delivery::Once,
-                RetryClass::RateLimited => true,
-            };
-            if !resend || failures >= MAX_ATTEMPTS || self.backoff.expired() {
-                return Err(failure);
-            }
-            diag!(
-                Debug,
-                "resending a request after transient failure {failures}: {}",
-                failure.message
-            );
-            let delay = RetryDelays::SERVICE.delay(class, failures);
-            let wake = Instant::now() + delay;
-            let wake = self
-                .backoff
-                .deadline
-                .map_or(wake, |deadline| wake.min(deadline));
-            self.operation.wait(tokio::time::sleep_until(wake)).await?;
         }
+        .await;
+        answer.map_err(|mut failure| {
+            if unsettled && delivery != Delivery::Idempotent {
+                let _ = write!(
+                    failure.message,
+                    "; the BigQuery {} may have started",
+                    self.running()
+                );
+            }
+            failure
+        })
     }
 
     /// One send, with the failure classified for a retry loop. A 2xx body that does not decode

@@ -295,7 +295,8 @@ in-flight request may still finish after the deadline.
   also leaves the job running; such errors say so.
 - Dataproc submissions carry a request ID, so one that failed transiently, or whose answer cannot
   be read, is resent without starting a second job. The Vertex AI create has no such ID, so only a
-  rate-limit rejection resends it.
+  rate-limit rejection resends it. A submission that ends without a verdict says the job may have
+  started.
 - The upload is resent after a transient failure: it replaces the object atomically with the same
   bytes.
 - The notebook job runs on `template_id`, else the project's first `ONE_CLICK` runtime template,

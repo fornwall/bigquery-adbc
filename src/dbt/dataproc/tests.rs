@@ -712,6 +712,20 @@ fn a_transiently_failed_submission_is_resent_under_its_request_id() {
     );
 }
 
+/// Attempts that all failed may still have started the job, whichever way the resends end.
+#[test]
+fn a_deadline_during_failed_submissions_says_the_job_may_have_started() {
+    let unavailable = (503, error_body("backendError", "Try again."));
+    let (endpoint, server) = capture_requests_until_stopped(vec![unavailable; 5]);
+    let mut connection = dataproc_connection(&endpoint);
+
+    let error = batch_statement(&mut connection, Some("1"))
+        .execute_update()
+        .unwrap_err();
+    assert_message(&error, &["; the BigQuery Dataproc batch may have started"]);
+    server.stop();
+}
+
 /// A 2xx that cannot be read may answer a submission Dataproc accepted, so it is resent under the
 /// same request ID to learn the operation, as a lost answer is.
 #[test]
