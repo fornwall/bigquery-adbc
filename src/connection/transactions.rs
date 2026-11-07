@@ -6,8 +6,8 @@ use adbc_core::error::{Result, Status};
 use super::BigQueryConnection;
 use crate::query::ExecutionContext;
 use crate::transaction::{
-    EnableAutocommit, FinishTransaction, SessionRelease, TransactionContext, no_active_transaction,
-    outcome_unknown, session_expired,
+    EnableAutocommit, FinishTransaction, SessionEnd, SessionRelease, TransactionContext,
+    no_active_transaction, outcome_unknown, session_expired,
 };
 
 impl BigQueryConnection {
@@ -136,7 +136,7 @@ fn commit_refused(failure: &adbc_core::error::Error) -> bool {
 }
 
 /// Explains `failure` of a `COMMIT` (`committing`) or `ROLLBACK` after which the driver tried to
-/// end the session, says whether that `ended` it, and what the connection does `next`.
+/// end the session, says what became of it (`ended`), and what the connection does `next`.
 ///
 /// A lost transaction ended outside the driver's view: its session expired, which rolled it
 /// back, or a script ended it and then failed or could not be inspected (see
@@ -145,7 +145,7 @@ fn commit_refused(failure: &adbc_core::error::Error) -> bool {
 fn ended_session_error(
     mut failure: adbc_core::error::Error,
     committing: bool,
-    ended: bool,
+    ended: SessionEnd,
     next: &str,
 ) -> adbc_core::error::Error {
     let what = if transaction_lost(&failure) {
@@ -159,12 +159,10 @@ fn ended_session_error(
     } else {
         "ending the session discards the transaction's changes"
     };
-    let session = if ended {
-        "The session was ended"
-    } else {
-        "The driver could not end the session, which BigQuery ends when it expires, so any open \
-         transaction keeps its locks until then,"
-    };
-    failure.message = format!("{}; {what}. {session} and {next}", failure.message);
+    failure.message = format!(
+        "{}; {what}. {} and {next}",
+        failure.message,
+        ended.describe()
+    );
     failure
 }

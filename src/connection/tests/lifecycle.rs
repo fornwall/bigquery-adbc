@@ -1057,7 +1057,9 @@ fn a_commit_bigquery_refused_keeps_the_transaction() {
 
 /// A `COMMIT TRANSACTION` in the caller's SQL runs on `jobs.query`, so losing its answer reports
 /// "No active transaction found" from the replay. That answer proves the session has no
-/// transaction, so the next statement begins one rather than autocommitting there unseen.
+/// transaction, so the next statement begins one rather than autocommitting there unseen. It says
+/// nothing of the lost attempt, which may have committed: a host that took it for a refusal and
+/// ran the transaction again would duplicate its writes.
 #[test]
 fn a_statement_told_no_transaction_is_active_makes_the_next_one_begin_again() {
     let (endpoint, requests) = bigquery_losing_the_answer_to("COMMIT TRANSACTION", 9);
@@ -1089,7 +1091,8 @@ fn a_statement_told_no_transaction_is_active_makes_the_next_one_begin_again() {
 }
 
 /// `CALL BQ.ABORT_SESSION` queues behind whatever its session is running, and no one can cancel
-/// it, so the caller stops waiting for it, and does not claim the session ended.
+/// it, so the caller stops waiting for it. The job keeps running, so the session may yet end, and
+/// the caller claims neither outcome.
 #[test]
 fn a_session_end_that_gets_no_answer_does_not_hold_the_caller_or_read_as_done() {
     let (release, released) = std::sync::mpsc::channel();
@@ -1113,9 +1116,77 @@ fn a_session_end_that_gets_no_answer_does_not_hold_the_caller_or_read_as_done() 
 
     let failure = connection.commit().unwrap_err();
     release.send(()).unwrap();
-    assert_message(&failure, &["could not end the session", "keeps its locks"]);
-    assert_message_omits(&failure, &["session was ended"]);
+    assert_message(
+        &failure,
+        &[
+            "could not confirm that the session ended",
+            "keeps its locks",
+        ],
+    );
+    assert_message_omits(
+        &failure,
+        &["session was ended", "could not end the session"],
+    );
     assert_transaction_cleanup(requests, "COMMIT TRANSACTION");
+}
+
+/// BigQuery refusing to end the session proves it lives on, unlike a wait that ran out.
+#[test]
+fn a_refused_session_end_says_the_session_lives_on() {
+    let (mut connection, requests) = connection_with_open_transaction_then(vec![
+        (400, transaction_lost()),
+        (403, error_body("accessDenied", "mock refusal")),
+    ]);
+    let failure = connection.commit().unwrap_err();
+    assert_message(&failure, &["could not end the session", "keeps its locks"]);
+    assert_transaction_cleanup(requests, "COMMIT TRANSACTION");
+}
+
+/// A session placed by its default dataset's location runs its jobs there, where `jobs.get`
+/// without a location answers 404 (verified live in `asia-northeast1`). The same dataset says where
+/// to look for a commit whose answers were all lost, without needing `bigquery.jobs.list`.
+#[test]
+fn a_lost_commit_is_found_in_the_default_datasets_location() {
+    let (endpoint, requests) =
+        bigquery_giving_no_verdict_on("COMMIT TRANSACTION", 0, 14, |request| {
+            let path = request.path();
+            Some(if !request.line.starts_with("GET") {
+                (503, error_body("backendError", "Service unavailable"))
+            } else if path.contains("/datasets/analytics") {
+                ok(json!({"location": "asia-northeast1"}))
+            } else if path.contains("location=asia-northeast1") {
+                let job = path.rsplit('/').next().unwrap().split('?').next().unwrap();
+                ok(json!({
+                    "jobReference": {
+                        "projectId": "fixture-project",
+                        "jobId": job,
+                        "location": "asia-northeast1"
+                    },
+                    "status": {"state": "DONE"}
+                }))
+            } else {
+                (404, not_found_response())
+            })
+        });
+    let mut connection = crate::test_support::driver::test_connection_with(
+        &endpoint,
+        [
+            (BigQueryDatabaseOption::Location.into(), "".into()),
+            (BigQueryDatabaseOption::DatasetId.into(), "analytics".into()),
+        ],
+    );
+    set_option(&mut connection, OptionConnection::AutoCommit, false);
+    execute(&mut connection, "INSERT dataset.table VALUES (42)").unwrap();
+    connection.commit().unwrap();
+    drop(connection);
+
+    let mut expected = PREAMBLE.to_vec();
+    expected.extend(vec![
+        "COMMIT TRANSACTION";
+        crate::rest::retry::MAX_ATTEMPTS as usize
+    ]);
+    expected.push("CALL BQ.ABORT_SESSION('mock-session')");
+    assert_sql(requests, &expected);
 }
 
 /// The location is a placement hint: a default dataset that cannot be read leaves the session

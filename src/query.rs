@@ -203,7 +203,7 @@ pub(crate) fn read_query_partition(
 /// 409, which leaves the first job's own verdict to read.
 pub(crate) fn execute_driver_statement(
     runtime: &SharedRuntime,
-    state: &ClientState,
+    state: &Arc<ClientState>,
     billing_project_id: Option<&ProjectIdentifier>,
     context: QueryContext<'_>,
     sql: &str,
@@ -324,7 +324,7 @@ fn dry_run_schema(
 /// Creates a BigQuery session, outside any cancellation, and returns its ID.
 pub(crate) fn create_session(
     runtime: &SharedRuntime,
-    state: &ClientState,
+    state: &Arc<ClientState>,
     billing_project_id: Option<&ProjectIdentifier>,
     location: Option<&str>,
 ) -> Result<Arc<str>> {

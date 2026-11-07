@@ -128,19 +128,8 @@ fn complete_in_session(
     result_mode: QueryResultMode,
     what: &str,
 ) -> Result<CompletedQuery> {
-    let mut client = context
-        .execution
-        .state
-        .rest_job_client(&context.execution.runtime)?;
-    if plan.infers_job_location() {
-        client = client.with_dataset_locations(
-            context
-                .execution
-                .state
-                .dataset_locations(&context.execution.runtime)?,
-        );
-    }
     let runtime = &context.execution.runtime;
+    let client = client_for(runtime, &context.execution.state, &plan)?;
     let job_timeout_ms = plan.job_timeout_ms;
     runtime.block_on(async {
         let complete = complete_query_with_progress(
@@ -166,11 +155,25 @@ fn complete_in_session(
     })
 }
 
+/// The client for `plan`, which can look for a job without a location where its datasets are.
+fn client_for(
+    runtime: &SharedRuntime,
+    state: &Arc<ClientState>,
+    plan: &QueryPlan,
+) -> Result<JobClient> {
+    let client = state.rest_job_client(runtime)?;
+    Ok(if plan.infers_job_location() {
+        client.with_dataset_locations(state.dataset_locations(runtime)?)
+    } else {
+        client
+    })
+}
+
 /// Completes a query the driver issues itself (session control, ingest DDL) for its metadata
 /// alone.
 pub(super) fn complete_context_query(
     runtime: &SharedRuntime,
-    state: &ClientState,
+    state: &Arc<ClientState>,
     billing_project_id: Option<&ProjectIdentifier>,
     context: QueryContext<'_>,
     sql: &str,
@@ -187,7 +190,7 @@ pub(super) fn complete_context_query(
         options,
         QueryJobCreation::Optional,
     )?;
-    let client = state.rest_job_client(runtime)?;
+    let client = client_for(runtime, state, &plan)?;
     runtime.block_on(complete_query_with_progress(
         runtime,
         client,

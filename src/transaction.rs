@@ -373,6 +373,33 @@ impl TransactionState {
     }
 }
 
+/// What became of a session the driver tried to end.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum SessionEnd {
+    Ended,
+    /// No answer said, and the job may yet end it once the session finishes what it is running.
+    Unconfirmed,
+    /// BigQuery refused, so the session lives on until it expires.
+    Refused,
+}
+
+impl SessionEnd {
+    /// The sentence a failure closes on, up to what the connection does next.
+    pub(crate) fn describe(self) -> &'static str {
+        match self {
+            Self::Ended => "The session was ended",
+            Self::Unconfirmed => {
+                "The driver could not confirm that the session ended; if it did not, BigQuery ends \
+                 it when it expires, and any open transaction keeps its locks until then,"
+            }
+            Self::Refused => {
+                "The driver could not end the session, which BigQuery ends when it expires, so any \
+                 open transaction keeps its locks until then,"
+            }
+        }
+    }
+}
+
 /// What releasing a connection has left running on the service.
 #[derive(Debug)]
 pub(crate) struct SessionRelease {
@@ -586,14 +613,13 @@ impl<'a> TransactionContext<'a> {
                 ),
                 Err(source) if !outcome_unknown(&source) => return Err((source, Some(session_id))),
                 Err(mut source) => {
-                    source.message.push_str(if self.abort(&session_id) {
-                        "; whether the transaction began is unknown, so the BigQuery session was \
-                         ended, with its temporary tables and variables"
-                    } else {
-                        "; whether the transaction began is unknown, so the BigQuery session was \
-                         abandoned, with its temporary tables and variables; the driver could \
-                         not end it, so BigQuery ends it when it expires"
-                    });
+                    let end = self.abort(&session_id).describe();
+                    source.message = format!(
+                        "{}; whether the transaction began is unknown, so the driver gave up the \
+                         session, with its temporary tables and variables. {end} and the next \
+                         statement opens a new one",
+                        source.message
+                    );
                     return Err((source, None));
                 }
             }
@@ -718,25 +744,28 @@ impl<'a> TransactionContext<'a> {
         }
     }
 
-    /// Ends the session and says whether it ended, for at most [`ABORT_WAIT`]. Best-effort: a
-    /// failure is only written as a diagnostic, and a caller that reports on the session says so.
-    pub(crate) fn abort(&self, session_id: &Arc<str>) -> bool {
+    /// Ends the session, waiting at most [`ABORT_WAIT`], and says what became of it. Best-effort:
+    /// a failure is only written as a diagnostic, and a caller that reports on the session says so.
+    pub(crate) fn abort(&self, session_id: &Arc<str>) -> SessionEnd {
         let sql = format!(
             "CALL BQ.ABORT_SESSION({})",
             googlesql_string_literal(session_id)
         );
-        match self.run_within(ABORT_WAIT, session_id, &sql) {
-            Err(failure) if !session_expired(&failure) => {
-                // Service error messages may contain SQL or other user data, so only the status.
-                diag!(
-                    Warn,
-                    "failed to end a BigQuery session (status {:?}); BigQuery ends it when it \
-                     expires",
-                    failure.status
-                );
-                false
-            }
-            _ => true,
+        let failure = match self.run_within(ABORT_WAIT, session_id, &sql) {
+            Err(failure) if !session_expired(&failure) => failure,
+            _ => return SessionEnd::Ended,
+        };
+        // Service error messages may contain SQL or other user data, so only the status.
+        diag!(
+            Warn,
+            "could not confirm that a BigQuery session ended (status {:?}); BigQuery ends it when \
+             it expires",
+            failure.status
+        );
+        if outcome_unknown(&failure) {
+            SessionEnd::Unconfirmed
+        } else {
+            SessionEnd::Refused
         }
     }
 }
