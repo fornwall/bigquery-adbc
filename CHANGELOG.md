@@ -36,8 +36,6 @@ changes.
 - A connection the external-account identity provider dropped before answering is treated as
   transient. It previously ended credential refresh for good, failing every later query once the
   cached token expired.
-- A token service that accepts a connection and never answers fails the request with `IO` after two
-  minutes instead of hanging it. This covers the OAuth, STS and metadata-server exchanges.
 - A second `AdbcErrorFromArrayStream` call on a stream no longer frees the message and detail
   pointers the first one returned.
 - A network outage or a run of 5xx responses no longer fails a query, table copy or CSV load after a
@@ -63,6 +61,10 @@ changes.
 - A token service that accepts a connection and never answers fails the request with `IO` after
   about two minutes instead of hanging it. Retries and later requests then fail within seconds until
   a token arrives. This covers the OAuth, STS and metadata-server exchanges.
+- A token service that accepts a connection and never answers fails a request with `IO` after about
+  two minutes instead of hanging it. Retries and later requests then fail within seconds until a
+  token arrives, and a wait for a running job outlasts it like any other outage. This covers the
+  OAuth, STS and metadata-server exchanges.
 - A database opened in a `fork` child works instead of hanging forever on a runtime whose worker
   threads did not survive the fork. Using a handle inherited from the parent returns an error, and
   releasing one leaves the parent's BigQuery session open.

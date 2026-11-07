@@ -375,7 +375,8 @@ default `reqwest::Client`, with no credential-builder option to set a deadline. 
 accepts a connection and never answers would hang every waiting request. The driver bounds the wait
 at two minutes (`src/config/redaction.rs`). The library's background refresh stays blocked until the
 connection dies, so the driver's retries could not help; they and later requests look once for a
-token and fail at once with `IO`, even if the service has recovered, until that connection ends.
+token and fail at once with `IO`, even if the service has recovered, until that connection ends. A
+wait for a running job keeps looking through its outage window.
 
 ## UP-102: gRPC server streams have no deadline or keepalive
 

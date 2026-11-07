@@ -44,9 +44,8 @@ pub(crate) fn redacted_credentials(
 struct RedactedTokenExchangeCredentials {
     credentials: Credentials,
     layer: CredentialLayer,
-    /// Whether the last request timed out. Retries would only rejoin the same blocked refresh, up
-    /// to ten times over for a poll and its verification, so until one succeeds they look once
-    /// for a token instead of waiting.
+    /// Whether the last request timed out. Retries would only rejoin the same blocked refresh, so
+    /// until one succeeds they look once for a token instead of waiting.
     stalled: AtomicBool,
 }
 
