@@ -91,13 +91,11 @@ impl DataprocOptions {
         initial: Duration,
         maximum: Duration,
     ) -> PollBudget<'a> {
-        let deadline = self
-            .pooling_timeout_seconds
-            .and_then(|seconds| u64::try_from(seconds).ok())
-            .filter(|seconds| *seconds > 0)
-            // An unrepresentable deadline would never be reached, so it becomes no deadline
-            // rather than an overflow panic.
-            .and_then(|seconds| Instant::now().checked_add(Duration::from_secs(seconds)));
+        // An unrepresentable deadline would never be reached, so it becomes no deadline rather
+        // than an overflow panic.
+        let deadline = self.pooling_timeout_seconds.and_then(|seconds| {
+            Instant::now().checked_add(Duration::from_secs(seconds.unsigned_abs()))
+        });
         PollBudget {
             initial,
             maximum,

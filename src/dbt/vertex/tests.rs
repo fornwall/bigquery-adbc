@@ -507,25 +507,16 @@ fn one_deadline_covers_both_waits_and_expiry_stops_the_job() {
     let mut statement = bigframes_statement(&mut connection, Some("4242"), "1");
 
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(
-        error.status,
+    assert_failure(
+        &error,
         Status::Timeout,
-        "an expired deadline is a timeout, not a job failure: {}",
-        error.message
+        &[
+            "adbc.bigquery.dataproc.pooling_timeout",
+            JOB,
+            "1 s",
+            "asked to stop",
+        ],
     );
-    for expected in [
-        "adbc.bigquery.dataproc.pooling_timeout",
-        JOB,
-        "1 s",
-        "asked to stop",
-    ] {
-        assert!(
-            error.message.contains(expected),
-            "a timeout has to name the job left running and the budget that expired, not just \
-             the option: {expected} missing from {}",
-            error.message
-        );
-    }
 
     let requests = captured.join().unwrap();
     assert_eq!(requests.len(), 2, "the create, then the cancel");
@@ -594,18 +585,12 @@ fn a_deadline_spent_listing_the_runtime_templates_never_creates_the_job() {
     let mut statement = bigframes_statement(&mut connection, None, "1");
 
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(
-        error.status,
+    assert_failure(
+        &error,
         Status::Timeout,
-        "the budget was spent before anything was submitted: {}",
-        error.message
+        &[Key::DataprocPoolingTimeout.as_str(), "1 s"],
     );
-    assert_message(&error, &[Key::DataprocPoolingTimeout.as_str(), "1 s"]);
-    assert!(
-        !error.message.contains("asked to stop"),
-        "no job was created, so none was asked to stop: {}",
-        error.message
-    );
+    assert_message_omits(&error, &["asked to stop"]);
 
     let requests = captured.join().unwrap();
     assert_eq!(
@@ -664,21 +649,18 @@ fn a_half_configured_notebook_job_names_the_option_it_is_missing() {
         set_option(&mut statement, option, value.to_owned());
     }
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::InvalidState);
-    for expected in [
-        "Vertex AI notebook execution job",
-        "adbc.bigquery.create_batch.batch_id",
-        "display name",
-        "submission_method: bigframes",
-        "Colab Enterprise console",
-    ] {
-        assert!(
-            error.message.contains(expected),
-            "the key is Dataproc-namespaced, so the message has to say whose option it is and \
-             what it is for: {expected} missing from {}",
-            error.message
-        );
-    }
+    // The key is Dataproc-namespaced, so the message says whose option it is and what it is for.
+    assert_failure(
+        &error,
+        Status::InvalidState,
+        &[
+            "Vertex AI notebook execution job",
+            "adbc.bigquery.create_batch.batch_id",
+            "display name",
+            "submission_method: bigframes",
+            "Colab Enterprise console",
+        ],
+    );
 }
 
 #[test]
@@ -721,12 +703,11 @@ fn terminal_job_states_are_classified_and_running_ones_keep_polling() {
         assert_failure(
             &failure,
             Status::InvalidData,
-            &[JOB, &format!("the unrecognized state {unrecognized:?}")],
-        );
-        assert!(
-            failure.message.contains("JOB_STATE_RUNNING"),
-            "the message names the states that would have kept the wait going: {}",
-            failure.message
+            &[
+                JOB,
+                &format!("the unrecognized state {unrecognized:?}"),
+                "JOB_STATE_RUNNING",
+            ],
         );
     }
     // A failure the service reported no status for stays honestly unknown.

@@ -12,7 +12,7 @@ use crate::test_support::http::{
 use crate::{BigQueryStatement, BigQueryStatementOption};
 
 use super::parse_view_authorizations;
-use crate::test_support::errors::{assert_failure, assert_message};
+use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
 use crate::test_support::options::{
     assert_string_option, option_string, set_option, set_option_error,
 };
@@ -102,7 +102,7 @@ fn malformed_payloads_are_rejected_before_execution_without_echoing_them() {
     ] {
         let error = set_option_error(&mut statement, OPTION, value);
         assert_eq!(error.status, Status::InvalidArguments, "{name}");
-        assert!(!error.message.contains(SECRET), "{name}: {}", error.message);
+        assert_message_omits(&error, &[SECRET]);
     }
     assert_eq!(
         option_string(&statement, OPTION),

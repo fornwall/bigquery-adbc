@@ -199,12 +199,8 @@ fn copied_rows_reports_counts_unknown_counts_and_service_failures() {
         }"#,
     )
     .unwrap_err();
-    assert_eq!(error.status, Status::NotFound);
-    assert!(
-        error.message.contains("notFound:"),
-        "dbt-core 2.0 classifies a missing relation by this prefix: {}",
-        error.message
-    );
+    // dbt-core 2.0 classifies a missing relation by this prefix.
+    assert_failure(&error, Status::NotFound, &["notFound:"]);
 }
 
 #[test]

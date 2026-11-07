@@ -289,18 +289,11 @@ fn malformed_batch_yml_is_rejected_without_echoing_the_document() {
     ] {
         let error = batch_resource(&document).unwrap_err();
         assert_eq!(error.status, Status::InvalidArguments, "{name}");
-        assert!(
-            error
-                .message
-                .contains(BigQueryStatementOption::CreateBatchBatchYml.as_str()),
-            "{name}: {}",
-            error.message
+        assert_message(
+            &error,
+            &[BigQueryStatementOption::CreateBatchBatchYml.as_str()],
         );
-        assert!(
-            !error.message.contains(SECRET),
-            "{name} echoed the document: {}",
-            error.message
-        );
+        assert_message_omits(&error, &[SECRET]);
     }
 }
 
@@ -476,18 +469,15 @@ fn a_refused_cancel_still_reports_the_timeout_and_is_not_retried() {
         "the caller's timeout is the answer; the cancel is a courtesy: {}",
         error.message
     );
-    for expected in [
-        BigQueryStatementOption::DataprocPoolingTimeout.as_str(),
-        "cancel the BigQuery Dataproc batch",
-        "denied",
-        "may keep running",
-    ] {
-        assert!(
-            error.message.contains(expected),
-            "{expected} missing from {}",
-            error.message
-        );
-    }
+    assert_message(
+        &error,
+        &[
+            BigQueryStatementOption::DataprocPoolingTimeout.as_str(),
+            "cancel the BigQuery Dataproc batch",
+            "denied",
+            "may keep running",
+        ],
+    );
     assert_message_omits(&error, &["asked to stop"]);
 
     let requests = server.stop();
@@ -837,13 +827,7 @@ fn a_half_configured_submission_names_the_option_it_is_missing() {
         let mut statement = connection.new_statement().unwrap();
         set_option(&mut statement, configured, "configured");
         let error = statement.execute_update().unwrap_err();
-        assert_eq!(error.status, Status::InvalidState);
-        assert!(
-            error.message.contains(missing.as_str()),
-            "{} should have been reported missing: {}",
-            missing.as_str(),
-            error.message
-        );
+        assert_failure(&error, Status::InvalidState, &[missing.as_str()]);
     }
 
     // Both halves configured, but the region every Dataproc request is addressed by is not.
