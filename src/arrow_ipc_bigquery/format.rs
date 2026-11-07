@@ -10,6 +10,8 @@ mod encode;
 
 use std::fmt;
 
+use arrow_schema::{IntervalUnit, TimeUnit};
+
 #[cfg(test)]
 pub(super) use decode::decode_message;
 pub(super) use decode::decode_message_and_body_length;
@@ -132,21 +134,6 @@ pub(super) enum Precision {
 pub(super) enum DateUnit {
     Day,
     Millisecond,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum TimeUnit {
-    Second,
-    Millisecond,
-    Microsecond,
-    Nanosecond,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum IntervalUnit {
-    YearMonth,
-    DayTime,
-    MonthDayNano,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

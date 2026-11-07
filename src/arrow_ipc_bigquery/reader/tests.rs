@@ -98,12 +98,12 @@ fn csv_seed_only_types() -> Vec<DataType> {
         DataType::LargeUtf8,
         DataType::Utf8View,
         DataType::Date64,
-        DataType::Time32(ArrowTimeUnit::Second),
-        DataType::Time32(ArrowTimeUnit::Millisecond),
-        DataType::Time64(ArrowTimeUnit::Nanosecond),
-        DataType::Timestamp(ArrowTimeUnit::Second, None),
-        DataType::Timestamp(ArrowTimeUnit::Millisecond, None),
-        DataType::Timestamp(ArrowTimeUnit::Nanosecond, Some("UTC".into())),
+        DataType::Time32(TimeUnit::Second),
+        DataType::Time32(TimeUnit::Millisecond),
+        DataType::Time64(TimeUnit::Nanosecond),
+        DataType::Timestamp(TimeUnit::Second, None),
+        DataType::Timestamp(TimeUnit::Millisecond, None),
+        DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
         DataType::Decimal32(7, 2),
         DataType::Decimal64(16, 4),
     ]
@@ -111,7 +111,7 @@ fn csv_seed_only_types() -> Vec<DataType> {
 
 #[test]
 fn standalone_schema_supports_csv_seed_physical_type_inputs() {
-    let intervals = [ArrowIntervalUnit::YearMonth, ArrowIntervalUnit::DayTime];
+    let intervals = [IntervalUnit::YearMonth, IntervalUnit::DayTime];
     let fields = csv_seed_only_types()
         .into_iter()
         .chain(intervals.map(DataType::Interval))
@@ -250,7 +250,7 @@ fn a_well_formed_schema_outside_the_bigquery_subset_is_not_yet_implemented() {
         (DataType::Union(union, UnionMode::Dense), "type Union"),
         (DataType::FixedSizeList(item(), 2), "type FixedSizeList"),
         (DataType::Map(Arc::new(entries), false), "type Map"),
-        (DataType::Duration(ArrowTimeUnit::Second), "type Duration"),
+        (DataType::Duration(TimeUnit::Second), "type Duration"),
         (DataType::LargeList(item()), "type LargeList"),
         (
             DataType::RunEndEncoded(

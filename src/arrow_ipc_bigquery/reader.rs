@@ -30,14 +30,12 @@ use arrow_array::{RecordBatch, RecordBatchOptions, make_array};
 use arrow_buffer::Buffer;
 use arrow_data::{ArrayData, ArrayDataBuilder};
 use arrow_schema::{
-    ArrowError, DataType, Field, Fields, IntervalUnit as ArrowIntervalUnit, Schema, SchemaRef,
-    TimeUnit as ArrowTimeUnit,
+    ArrowError, DataType, Field, Fields, IntervalUnit, Schema, SchemaRef, TimeUnit,
 };
 
 use super::compression::decompress_buffer;
 use super::format::{
-    self, DateUnit, FormatError, I64Pairs, IntervalUnit, IpcType, MessageHeader, Precision,
-    RecordBatchMessage, TimeUnit,
+    self, DateUnit, FormatError, I64Pairs, IpcType, MessageHeader, Precision, RecordBatchMessage,
 };
 use super::ipc_error;
 
@@ -255,25 +253,17 @@ fn decode_data_type(encoded: IpcType<'_>, children: Vec<Field>) -> Result<DataTy
         IpcType::Date(DateUnit::Day) => DataType::Date32,
         IpcType::Date(DateUnit::Millisecond) => DataType::Date64,
         IpcType::Time { unit, bit_width } => match (unit, bit_width) {
-            (TimeUnit::Second, 32) => DataType::Time32(ArrowTimeUnit::Second),
-            (TimeUnit::Millisecond, 32) => DataType::Time32(ArrowTimeUnit::Millisecond),
-            (TimeUnit::Microsecond, 64) => DataType::Time64(ArrowTimeUnit::Microsecond),
-            (TimeUnit::Nanosecond, 64) => DataType::Time64(ArrowTimeUnit::Nanosecond),
+            (TimeUnit::Second | TimeUnit::Millisecond, 32) => DataType::Time32(unit),
+            (TimeUnit::Microsecond | TimeUnit::Nanosecond, 64) => DataType::Time64(unit),
             _ => {
                 return Err(ArrowError::SchemaError(format!(
                     "invalid Arrow IPC time unit {unit:?} for bit width {bit_width}"
                 )));
             }
         },
-        IpcType::Timestamp { unit, timezone } => DataType::Timestamp(
-            match unit {
-                TimeUnit::Second => ArrowTimeUnit::Second,
-                TimeUnit::Millisecond => ArrowTimeUnit::Millisecond,
-                TimeUnit::Microsecond => ArrowTimeUnit::Microsecond,
-                TimeUnit::Nanosecond => ArrowTimeUnit::Nanosecond,
-            },
-            timezone.map(Into::into),
-        ),
+        IpcType::Timestamp { unit, timezone } => {
+            DataType::Timestamp(unit, timezone.map(Into::into))
+        }
         IpcType::Decimal {
             precision,
             scale,
@@ -301,11 +291,7 @@ fn decode_data_type(encoded: IpcType<'_>, children: Vec<Field>) -> Result<DataTy
                 }
             }
         }
-        IpcType::Interval(unit) => DataType::Interval(match unit {
-            IntervalUnit::YearMonth => ArrowIntervalUnit::YearMonth,
-            IntervalUnit::DayTime => ArrowIntervalUnit::DayTime,
-            IntervalUnit::MonthDayNano => ArrowIntervalUnit::MonthDayNano,
-        }),
+        IpcType::Interval(unit) => DataType::Interval(unit),
     };
     Ok(data_type)
 }
@@ -418,13 +404,13 @@ impl BatchDecoder<'_> {
             | DataType::Int64
             | DataType::Float64
             | DataType::Date32
-            | DataType::Time64(ArrowTimeUnit::Microsecond)
-            | DataType::Timestamp(ArrowTimeUnit::Microsecond, _)
+            | DataType::Time64(TimeUnit::Microsecond)
+            | DataType::Timestamp(TimeUnit::Microsecond, _)
             | DataType::Decimal128(_, _)
             | DataType::Decimal256(_, _)
-            | DataType::Interval(ArrowIntervalUnit::YearMonth)
-            | DataType::Interval(ArrowIntervalUnit::DayTime)
-            | DataType::Interval(ArrowIntervalUnit::MonthDayNano) => {
+            | DataType::Interval(IntervalUnit::YearMonth)
+            | DataType::Interval(IntervalUnit::DayTime)
+            | DataType::Interval(IntervalUnit::MonthDayNano) => {
                 let validity = self.next_buffer(field)?;
                 let values = self.next_buffer(field)?;
                 let builder = ArrayData::builder(data_type.clone())

@@ -443,15 +443,11 @@ mod tests {
             panic!("expected record-batch message");
         };
         assert_eq!(
-            (0..decoded.nodes.len())
-                .map(|index| decoded.nodes.get(index).unwrap())
-                .collect::<Vec<_>>(),
+            decoded.nodes.iter().collect::<Vec<_>>(),
             nodes.map(|node| (node.length, node.null_count))
         );
         assert_eq!(
-            (0..decoded.buffers.len())
-                .map(|index| decoded.buffers.get(index).unwrap())
-                .collect::<Vec<_>>(),
+            decoded.buffers.iter().collect::<Vec<_>>(),
             buffers.map(|buffer| (buffer.offset, buffer.length))
         );
     }
