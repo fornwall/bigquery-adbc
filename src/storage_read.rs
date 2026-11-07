@@ -54,13 +54,12 @@ const READ_ROWS_RESUME_BACKOFF: Schedule =
 /// the consecutive-failure limit still stops streams that make no progress.
 const READ_ROWS_RESUME_DELAY_BUDGET: Duration = Duration::from_secs(30);
 
-/// How long `CreateReadSession` may go unanswered, and a `ReadRows` open or stream stay silent while
-/// the read has room for its rows.
+/// How long `CreateReadSession` or a `ReadRows` open may go unanswered, and where a `ReadRows`
+/// stream's limit starts; see [`ResumeBudget::stall_limit`].
 ///
 /// The SDK sets no deadline on a server stream, and its channel has no keepalive or connect
 /// timeout. Its unary deadline starts only once a connection is ready, so a stalled TLS handshake
-/// escapes that too. This sits above the 60 s bounding `CreateReadSession`'s retries, and a
-/// `ReadRows` expiry is an ordinary failed attempt, so a false alarm costs one exact-offset resume.
+/// escapes that too. This sits above the 60 s bounding `CreateReadSession`'s retries.
 const STALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Request no more streams than the available decode parallelism, capped at 32.
@@ -313,7 +312,7 @@ async fn create_read_session(
         .send();
     let request = tokio::time::timeout(STALL_TIMEOUT, request);
     let response = gate(operation, request).await?;
-    match response.unwrap_or_else(|_| Err(stalled())) {
+    match response.unwrap_or_else(|_| Err(stalled(STALL_TIMEOUT))) {
         Ok(session) => Ok(Ok(session)),
         Err(source) => match session_refusal(&source) {
             Some(refusal) => {
@@ -383,7 +382,7 @@ async fn receive_rows(
             biased;
             () = sink.cancellation.cancelled() => None,
             () = sender.closed() => None,
-            response = next_response(&mut responses, sink) => response,
+            response = next_response(&mut responses, sink, budget.stall_limit()) => response,
         };
         // Cancellation and the end of the stream stop this stage the same way: by returning,
         // which ends the channel and lets the decode stage finish what it already has.
@@ -437,36 +436,40 @@ async fn receive_rows(
     }
 }
 
-/// The stream's next item, or a failure once it has been silent too long.
+/// The stream's next item, or a failure once `limit` passes without a complete response.
 ///
-/// A full pipeline suspends the limit: streams of one read share a connection's flow-control
-/// window, so rows a paused reader left unread can starve a stream that is already waiting here.
+/// A full pipeline suspends the limit, because this reader has stopped reading. That covers only
+/// this read: every read on a database shares one HTTP/2 connection and its flow-control window,
+/// so rows another paused reader leaves unread can starve a healthy read, which then fails here.
 async fn next_response(
     responses: &mut ResponseStream<ReadRowsResponse>,
     sink: &ResultSink,
+    limit: Duration,
 ) -> Option<std::result::Result<ReadRowsResponse, GoogleError>> {
     loop {
-        match tokio::time::timeout(STALL_TIMEOUT, responses.next()).await {
+        match tokio::time::timeout(limit, responses.next()).await {
             Ok(response) => return response,
             Err(_) if sink.is_full() => {}
-            Err(_) => return Some(Err(stalled())),
+            Err(_) => return Some(Err(stalled(limit))),
         }
     }
 }
 
 /// A transient failure, so a stalled stream resumes at the next unread row under the shared budget.
-fn stalled() -> GoogleError {
+fn stalled(limit: Duration) -> GoogleError {
     GoogleError::timeout(format!(
-        "(no response from BigQuery Storage Read in {} seconds)",
-        STALL_TIMEOUT.as_secs()
+        "(no complete response from BigQuery Storage Read in {} seconds; the connection may be \
+         slow or dead, or other unread results on this database, which share it, may be holding \
+         it back)",
+        limit.as_secs()
     ))
 }
 
 /// Consecutive-failure allowance and aggregate backoff budget for one stream.
 #[derive(Debug)]
 struct ResumeBudget {
-    /// Consecutive failed opens, which also step the backoff. Reset by any response that carried
-    /// rows.
+    /// Consecutive failed opens, which also step the backoff and the stall limit. Reset by any
+    /// response that carried rows.
     failures: u32,
     /// Unlike `failures`, this is never reset: it is the read's aggregate bound on time spent
     /// waiting, however many fresh budgets progress earns.
@@ -483,6 +486,16 @@ impl ResumeBudget {
 
     fn has_attempt_left(&self) -> bool {
         self.failures < READ_ROWS_RESUME_ATTEMPTS
+    }
+
+    /// How long an open stream may go without a complete response.
+    ///
+    /// The SDK yields a response only once all of it has arrived, so on a slow link a large one
+    /// looks silent while its bytes flow, and each attempt restarts it at the same offset. A fixed
+    /// limit would fail it every time; doubling lets it land. Opens stay flat: their headers carry
+    /// no payload, so a dead connection still fails after five short waits.
+    fn stall_limit(&self) -> Duration {
+        STALL_TIMEOUT * (1 << self.failures)
     }
 
     /// Progress resets consecutive failures, but not the aggregate backoff budget.
@@ -550,7 +563,7 @@ async fn open_read_rows(
     tokio::select! {
         biased;
         () = sink.cancellation.cancelled() => Ok(None),
-        opened = request => opened.unwrap_or_else(|_| Err(stalled())).map(Some),
+        opened = request => opened.unwrap_or_else(|_| Err(stalled(STALL_TIMEOUT))).map(Some),
     }
 }
 

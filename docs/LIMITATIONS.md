@@ -32,6 +32,10 @@ contributors looking for gaps. User-facing behavior is documented in the
 - When Storage Read is disabled or unavailable, a row over 20 MiB on a later REST page fails the
   read. Readers cannot switch after delivering rows without proving identical order across APIs.
   With Storage Read available, [paginated results select it before delivery](DBT-CORE.md#2-paginated-results-select-storage-read-before-delivering-rows).
+- All Storage Read traffic on a database shares one HTTP/2 connection, so three paused readers
+  holding unread rows can starve its other reads and new read sessions, which then fail with
+  `TIMEOUT` ([details](REFERENCE.md#reading-large-results-through-the-storage-read-api)). A healthy
+  read can fail this way even though BigQuery is fine; finish or release a result first.
 - Storage Write schemas are fixed for an ingestion. Like the Go driver, the driver ignores
   `AppendRowsResponse.updated_schema`, so a concurrent incompatible change fails with
   `SCHEMA_MISMATCH_*` before commit.

@@ -504,9 +504,18 @@ Each Storage Read stream reserves its single wire-queue slot before receiving an
 response, so a stalled decoder retains at most one additional materialized response in that
 stage. The response being decoded and the SDK's transport buffers remain outside that slot.
 
-A `ReadRows` call silent for two minutes while the reader has room counts as a failed attempt: it
-resumes at the next unread row, and after five such attempts in a row the read fails with `TIMEOUT`.
-A reader that has stopped reading never trips this limit.
+A `ReadRows` open unanswered for two minutes counts as a failed attempt, as does a stream that
+delivers no complete response for two minutes while the reader has room. Either resumes at the next
+unread row. A large response on a slow link can take longer than that, so each consecutive failure
+doubles the stream's limit, to 32 minutes on the fifth attempt, and a response carrying rows resets
+it. Five failures in a row fail the read with `TIMEOUT`: after about 10 minutes on a dead connection,
+whose reopens go unanswered, and after up to 62 minutes on a stream that opens and then stays silent.
+
+A reader that has stopped reading never trips its own limit, but every read on a database shares one
+HTTP/2 connection and its 5 MiB flow-control window, of which each stream can hold 2 MiB unread.
+Three paused readers can therefore starve every other read on that database, and new
+`CreateReadSession` calls too, until they resume. If they stay paused, those reads fail with
+`TIMEOUT`, so finish or release a result before starting another that must make progress.
 
 REST is used instead when BigQuery returns a complete result without creating a job, when the
 `jobs.get` naming the job's result table fails, when the results were written to one partition of

@@ -10,6 +10,9 @@ enum ReadCall {
     Stall(usize),
     /// This many one-row responses, then the end of the stream.
     Finish(usize),
+    /// One row that takes this long to arrive in full, then the end of the stream. A response
+    /// counts only once complete, and each attempt starts it again.
+    Slow(Duration),
     /// The open fails with this status.
     Refuse(Code),
 }
@@ -47,16 +50,18 @@ impl google_cloud_bigquery::stub::Read for ScriptedRead {
     ) -> std::result::Result<ResponseStream<ReadRowsResponse>, GoogleError> {
         self.log.offsets.lock().unwrap().push(request.offset);
         let call = self.calls.lock().unwrap().pop_front();
-        let (rows, stall) = match call.expect("the script covers every call") {
+        let (rows, stall, delay) = match call.expect("the script covers every call") {
             ReadCall::Hang => std::future::pending().await,
-            ReadCall::Stall(rows) => (rows, true),
-            ReadCall::Finish(rows) => (rows, false),
+            ReadCall::Stall(rows) => (rows, true, None),
+            ReadCall::Finish(rows) => (rows, false, None),
+            ReadCall::Slow(delay) => (1, false, Some(Box::pin(tokio::time::sleep(delay)))),
             ReadCall::Refuse(code) => return Err(service_failure(code)),
         };
         let log = self.log.clone();
         Ok(ResponseStream::from_stream(ScriptedRows {
             rows,
             stall,
+            delay,
             log,
         }))
     }
@@ -65,6 +70,7 @@ impl google_cloud_bigquery::stub::Read for ScriptedRead {
 struct ScriptedRows {
     rows: usize,
     stall: bool,
+    delay: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
     log: Arc<ReadLog>,
 }
 
@@ -73,12 +79,17 @@ impl futures_core::Stream for ScriptedRows {
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
-        _context: &mut std::task::Context<'_>,
+        context: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
+        use std::future::Future;
         use std::task::Poll;
         self.log
             .polls
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Some(delay) = &mut self.delay {
+            std::task::ready!(delay.as_mut().poll(context));
+            self.delay = None;
+        }
         if self.rows == 0 {
             return if self.stall {
                 Poll::Pending
@@ -165,17 +176,48 @@ fn a_stopped_stage_polls_no_further_responses() {
     }
 }
 
+/// Reads `script` to its end on the paused clock: the outcome, the rows received, the offset of
+/// each call and how long it all took.
+fn receive_scripted(
+    script: &[ReadCall],
+) -> (std::result::Result<(), ArrowError>, i64, Vec<i64>, Duration) {
+    let (client, log) = scripted_client(script);
+    paused_runtime().block_on(async {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        let sink = ResultSink::for_test();
+        let request = client.read_rows().set_read_stream("stream");
+        let draining = async {
+            let mut rows = 0;
+            while let Some((_, count)) = receiver.recv().await {
+                rows += count;
+            }
+            rows
+        };
+        let started = tokio::time::Instant::now();
+        let (result, rows) =
+            tokio::join!(receive_rows(&request, "stream", sender, &sink), draining);
+        (result, rows, log.offsets(), started.elapsed())
+    })
+}
+
 /// Neither the SDK nor its channel bounds a silent call, so a connection that died without a reset
 /// would block the reader forever. A silent open or stream is a failed attempt like any other: it
 /// resumes at the next unread row, and spends the same allowance.
+///
+/// A response counts only once complete, so a large one on a slow link looks silent while its bytes
+/// flow, and each attempt starts it again. Only a limit that grows lets it land: the limits run
+/// 1, 2, 4, 8 and 16 times `STALL_TIMEOUT`, so three times that lands on the third attempt, and
+/// more than the last limit never does.
 #[test]
 fn a_silent_read_stream_resumes_and_then_exhausts_its_allowance() {
-    use ReadCall::{Finish, Hang, Stall};
+    use ReadCall::{Finish, Hang, Slow, Stall};
 
     let attempts = usize::try_from(READ_ROWS_RESUME_ATTEMPTS).unwrap();
     let stalled = vec![Stall(0); attempts + 3];
     let exhausted = vec![0; attempts + 1];
-    let cases: [(&[ReadCall], &[i64], i64, bool); 4] = [
+    let lands = vec![Slow(STALL_TIMEOUT * 3); attempts + 3];
+    let never_lands = vec![Slow(STALL_TIMEOUT * 17); attempts + 3];
+    let cases: [(&[ReadCall], &[i64], i64, bool); 6] = [
         (&[Stall(2), Finish(1)], &[0, 2], 3, true),
         (&[Hang, Finish(1)], &[0, 0], 1, true),
         (
@@ -185,36 +227,47 @@ fn a_silent_read_stream_resumes_and_then_exhausts_its_allowance() {
             true,
         ),
         (&stalled, &exhausted, 0, false),
+        (&lands, &[0, 0, 0], 1, true),
+        (&never_lands, &exhausted, 0, false),
     ];
     for (script, expected_offsets, expected_rows, completes) in cases {
-        let (client, log) = scripted_client(script);
-        let (result, rows) = paused_runtime().block_on(async {
-            let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-            let sink = ResultSink::for_test();
-            let request = client.read_rows().set_read_stream("stream");
-            let draining = async {
-                let mut rows = 0;
-                while let Some((_, count)) = receiver.recv().await {
-                    rows += count;
-                }
-                rows
-            };
-            tokio::join!(receive_rows(&request, "stream", sender, &sink), draining)
-        });
-        assert_eq!(log.offsets(), expected_offsets, "{script:?}");
+        let (result, rows, offsets, _) = receive_scripted(script);
+        assert_eq!(offsets, expected_offsets, "{script:?}");
         assert_eq!(rows, expected_rows, "{script:?}");
         if completes {
             result.unwrap();
         } else {
-            assert_failure(adbc_failure(&result.unwrap_err()), Status::Timeout, &[]);
+            let failure = result.unwrap_err();
+            let fragments = ["other unread results"];
+            assert_failure(adbc_failure(&failure), Status::Timeout, &fragments);
         }
     }
 }
 
-/// A reader that stopped reading is not a stalled service. Streams of one read share a connection's
-/// flow-control window, so a stream can go silent because its siblings' rows sit unread, and a
-/// queue the decoder has not emptied stops this stream being polled at all. Only once the reader
-/// makes room does silence count.
+/// The totals `docs/REFERENCE.md` states. Only a stream's limit grows, because a slow link slows a
+/// response body and not its headers, so a dead connection, whose reopens are never answered, fails
+/// after five flat limits. A stream that opens and then stays silent takes 1+2+4+8+16 of them.
+#[test]
+fn a_dead_connection_fails_well_before_a_stream_that_opens_and_stays_silent() {
+    use ReadCall::{Hang, Stall};
+
+    for (script, limits) in [([Stall(0), Hang, Hang, Hang, Hang], 5), ([Stall(0); 5], 31)] {
+        let (result, _, offsets, elapsed) = receive_scripted(&script);
+        assert_eq!(offsets.len(), script.len(), "{script:?}");
+        result.unwrap_err();
+        // The four backoffs add at most 3.75 s.
+        let expected = STALL_TIMEOUT * limits;
+        assert!(
+            (expected..expected + Duration::from_secs(4)).contains(&elapsed),
+            "{script:?} took {elapsed:?}"
+        );
+    }
+}
+
+/// A reader that stopped reading is not a stalled service. Reads share a connection's flow-control
+/// window, so a stream can go silent because its siblings' rows sit unread, and a queue the decoder
+/// has not emptied stops this stream being polled at all. Only once the reader makes room does
+/// silence count.
 #[test]
 fn a_read_stream_is_not_stalled_while_the_reader_holds_it_back() {
     let schema = Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(

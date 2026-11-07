@@ -271,9 +271,9 @@ Go lacks, reads all granted streams in parallel (up to the available parallelism
 SDK scans the SQL for a top-level `ORDER BY` and reads other queries over several streams, and the
 scan fails on unbalanced parentheses, so `SELECT x FROM t WHERE s = '(' ORDER BY x` returns rows
 out of order. Each batch's row count is checked (`INVALID_DATA` on mismatch), and a transient
-failure, including `RESOURCE_EXHAUSTED`, a transport reset and two minutes of silence, resumes at
-the next unread row within four consecutive attempts and 30 seconds of backoff; Go's SDK does
-neither.
+failure, including `RESOURCE_EXHAUSTED`, a transport reset and a stall (two minutes without a
+complete response, doubling per attempt), resumes at the next unread row within four consecutive
+attempts and 30 seconds of backoff; Go's SDK does neither.
 
 ### G27. Resolving the result table costs one round trip instead of two
 

@@ -47,9 +47,11 @@ changes.
   few seconds and cancels its healthy job. Waiting for a job now outlasts ten minutes of consecutive
   retryable failures, and for as long as `jobs.get` reports the job unfinished. If the wait does give
   up, the error says the job's outcome is unknown.
-- A stalled Storage Read stream no longer blocks its reader forever. After two minutes of silence
-  while the reader has room, it resumes at the next unread row, and it fails with `TIMEOUT` once
-  its attempts are spent.
+- A stalled Storage Read stream no longer blocks its reader forever. After two minutes without a
+  complete response while the reader has room, it resumes at the next unread row, and each
+  consecutive failure doubles that limit so a large response on a slow link still lands. Once its
+  attempts are spent it fails with `TIMEOUT`, after about 10 minutes on a dead connection and up to
+  62 on a stream that opens and then stays silent.
 - A `jobs.query` submission whose retries end without a verdict now reads `failed to submit` and
   says BigQuery may still have run the statement. It read as a rejection, inviting a resubmission
   that could apply DML twice.

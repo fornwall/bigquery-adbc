@@ -384,7 +384,9 @@ wait for a running job keeps looking through its outage window.
 TCP keepalive and no connect timeout, with no client-builder option for any of them. A reader with
 nothing outstanding therefore never learns its peer is gone, and because tonic applies request
 deadlines inside each connection, a stalled TLS handshake outlasts even a unary deadline. The driver
-limits `CreateReadSession` and `ReadRows` silence itself (`src/storage_read.rs`), but a resume reuses
-the same channel, so on a dead connection the attempts run out and the read fails rather than
-recovers. An `AppendRows` call has the same gap, so the driver also bounds every Storage Write wait
-(`src/ingest/write/retry.rs`). A keepalive and a connect timeout would make these limits backstops.
+limits `CreateReadSession` and `ReadRows` silence itself (`src/storage_read.rs`), but it sees only
+complete messages, so it doubles a stream's limit to let slow responses land. A resume reuses the
+same channel, so a dead connection fails after about 10 minutes rather than recovering, and a stream
+that opens and then stays silent takes up to 62. An `AppendRows` call has the same gap, so the driver
+also bounds every Storage Write wait (`src/ingest/write/retry.rs`). A keepalive and a connect timeout
+would make these limits backstops.
