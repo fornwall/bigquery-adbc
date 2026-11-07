@@ -243,12 +243,8 @@ impl ParameterizedRecordBatchReader {
                 )
             })
             .and_then(|(reader, _)| {
-                let schema = reader.schema();
-                if result_schemas_match(&schema, &self.schema) {
-                    Ok(reader)
-                } else {
-                    Err(divergent_parameter_schema(&self.schema, &schema))
-                }
+                require_same_result_schema(&self.schema, &reader.schema())?;
+                Ok(reader)
             })
             .map_err(|source| ArrowError::ExternalError(Box::new(self.rows.failed_row(source))))?;
         }
@@ -261,26 +257,15 @@ impl RecordBatchReader for ParameterizedRecordBatchReader {
     }
 }
 
-/// Whether two result schemas agree apart from their per-job metadata.
-///
-/// Each parameter row of a parameterized statement runs as its own query job, so identical results
-/// legitimately differ in the query ID and in every job statistic derived from it.
-pub(super) fn result_schemas_match(left: &Schema, right: &Schema) -> bool {
-    fn metadata_matches(left: &Schema, right: &Schema) -> bool {
-        left.metadata().iter().all(|(key, value)| {
-            crate::BIGQUERY_SCHEMA_METADATA_JOB_KEYS.contains(&key.as_str())
-                || right.metadata().get(key) == Some(value)
-        })
-    }
-    left.fields() == right.fields()
-        && metadata_matches(left, right)
-        && metadata_matches(right, left)
-}
-
 /// One execute runs every bound parameter row into one result stream, so every row has to produce
-/// the same result schema. [`ParameterRows::failed_row`] adds which row broke that.
-pub(super) fn divergent_parameter_schema(expected: &Schema, found: &Schema) -> Error {
-    error(
+/// the same result fields. Each runs as its own job, so identical results legitimately differ in
+/// their schema metadata, which carries only the query ID and job statistics.
+/// [`ParameterRows::failed_row`] adds which row broke the rule.
+pub(super) fn require_same_result_schema(expected: &Schema, found: &Schema) -> Result<()> {
+    if expected.fields() == found.fields() {
+        return Ok(());
+    }
+    Err(error(
         format!(
             "its result schema differs from that of parameter row 0: expected {}, got {}; every \
              parameter row bound to one execute must yield the same result schema",
@@ -288,7 +273,7 @@ pub(super) fn divergent_parameter_schema(expected: &Schema, found: &Schema) -> E
             describe_schema(found)
         ),
         Status::InvalidData,
-    )
+    ))
 }
 
 /// A result schema as a diagnostic names it: its fields, in order, as `name: type`. Only the
@@ -304,20 +289,10 @@ fn describe_schema(schema: &Schema) -> String {
 }
 
 /// Sums two affected-row counts; either one unknown (`None`, or adbc.h's negative) makes the sum
-/// unknown rather than a partial total.
-pub(super) fn add_rows_affected(total: Option<i64>, affected: Option<i64>) -> Result<Option<i64>> {
-    let (Some(total), Some(affected)) = (total, affected) else {
-        return Ok(None);
-    };
-    if total < 0 || affected < 0 {
-        return Ok(None);
-    }
-    total.checked_add(affected).map(Some).ok_or_else(|| {
-        error(
-            "combined BigQuery affected row count overflows i64",
-            Status::InvalidData,
-        )
-    })
+/// unknown rather than a partial total, as does a sum no `i64` holds.
+pub(super) fn add_rows_affected(total: Option<i64>, affected: Option<i64>) -> Option<i64> {
+    let known = |count: Option<i64>| count.filter(|count| *count >= 0);
+    known(total)?.checked_add(known(affected)?)
 }
 
 #[cfg(test)]

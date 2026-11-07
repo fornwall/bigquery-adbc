@@ -8,6 +8,7 @@ mod options;
 mod parameter_stream;
 pub(crate) mod sql_text;
 
+use std::cell::RefCell;
 use std::sync::Arc;
 
 use adbc_core::constants::ADBC_CONNECTION_OPTION_AUTOCOMMIT;
@@ -38,8 +39,7 @@ use binding::ParameterBinding;
 pub(crate) use operations::OptionOnlyOutcome;
 use operations::StatementMode;
 use parameter_stream::{
-    ParameterRows, ParameterizedRecordBatchReader, add_rows_affected, divergent_parameter_schema,
-    result_schemas_match,
+    ParameterRows, ParameterizedRecordBatchReader, add_rows_affected, require_same_result_schema,
 };
 use sql_text::{normalize_sql, require_sql};
 
@@ -66,9 +66,9 @@ pub struct BigQueryStatement {
     parameter_mode: ParameterMode,
     parameters: ParameterBinding,
     /// The memoized [`Statement::get_parameter_schema`] dry run, with the namespace and session it
-    /// resolved names against. `set_option` and `set_sql_query` drop it; a `Mutex` because the
+    /// resolved names against. `set_option` and `set_sql_query` drop it; a cell because the
     /// accessor takes `&self`.
-    parameter_schema: std::sync::Mutex<Option<CachedParameterSchema>>,
+    parameter_schema: RefCell<Option<CachedParameterSchema>>,
     /// Published through `adbc.statement.exec.progress` and `adbc.statement.exec.max_progress`.
     /// Shared with the export layer, which reads it without taking the statement's state lock.
     progress: Arc<ExecutionProgress>,
@@ -115,7 +115,7 @@ impl BigQueryStatement {
             dbt: DbtStatementState::default(),
             parameter_mode: ParameterMode::default(),
             parameters: ParameterBinding::default(),
-            parameter_schema: std::sync::Mutex::new(None),
+            parameter_schema: RefCell::new(None),
             progress: Arc::default(),
             link_failed_job: false,
         }
@@ -223,27 +223,17 @@ impl BigQueryStatement {
         let sql = require_sql(self.sql.as_ref(), "execute")?;
         self.parameters.require_available()?;
         self.refuse_session_creation()?;
-        if let Some(parameters) = self.dry_run_parameters()? {
+        // A dry run reads no row, so the binding stays for the execution it validates.
+        let stream = (!self.query_options.dry_run)
+            .then(|| self.parameters.take())
+            .flatten();
+        let Some(stream) = stream else {
+            let parameters = self.typed_nulls()?;
             let operation = self.cancellation.begin();
-            let session_id = self.execution_session(&operation)?;
-            let (reader, _) = execute_query(
-                self.query_context(session_id.as_deref(), &operation),
-                sql,
-                Some(parameters),
-            )
-            .map_err(|failure| self.parameter_mode.explain_refusal(failure))?;
-            return Ok((operation_reader(reader, operation), UNKNOWN_ROWS_AFFECTED));
-        }
-        let Some(parameters) = self.parameters.take() else {
-            let operation = self.cancellation.begin();
-            let session_id = self.execution_session(&operation)?;
             // The query completes before this returns, and the completing response carries
             // `totalRows` for a result and `numDmlAffectedRows` for DML.
-            let (reader, rows_affected) = execute_query(
-                self.query_context(session_id.as_deref(), &operation),
-                sql,
-                None,
-            )?;
+            let (reader, rows_affected) =
+                self.run_query(&operation, sql, parameters, execute_query)?;
             // Draining still issues requests (`jobs.getQueryResults` pages, Storage Read
             // `ReadRows`), so the reader takes prompt cancellation: a cancelled drain must
             // report itself, not end cleanly over a partial result.
@@ -253,22 +243,17 @@ impl BigQueryStatement {
             ));
         };
         let operation = self.cancellation.begin();
-        let mut rows = ParameterRows::new(parameters, self.parameter_mode)?;
+        let mut rows = ParameterRows::new(stream, self.parameter_mode)?;
         let Some(parameters) = rows.next(&operation)? else {
             // No parameter row means nothing executed, so the count is known: none, as
             // `execute_update` and `execute_partitions` report it.
-            let schema = self.empty_parameter_schema(&rows, &operation, sql)?;
+            let schema = self.empty_binding_schema(&rows, &operation, sql)?;
             operation.finish();
             return Ok((empty_reader(Arc::new(schema)), 0));
         };
 
-        let session_id = self.execution_session(&operation)?;
-        let (current, rows_affected) = execute_query(
-            self.query_context(session_id.as_deref(), &operation),
-            sql,
-            Some((self.parameter_mode.as_bigquery_value(), parameters)),
-        )
-        .map_err(|failure| self.parameter_mode.explain_refusal(failure))?;
+        let (current, rows_affected) =
+            self.run_query(&operation, sql, Some(parameters), execute_query)?;
         // A one-row binding, such as a DB-API `execute(sql, parameters)`, ran in full, so its
         // count is the statement's.
         if !rows.has_next(&operation)? {
@@ -283,17 +268,10 @@ impl BigQueryStatement {
         if self.query_options.destination_table.is_some() || !returns_rows(&schema) {
             let mut total = rows_affected;
             rows.for_each(&operation, |parameters| {
-                let session_id = self.execution_session(&operation)?;
-                let (reader, affected) = execute_query(
-                    self.query_context(session_id.as_deref(), &operation),
-                    sql,
-                    Some((self.parameter_mode.as_bigquery_value(), parameters)),
-                )
-                .map_err(|failure| self.parameter_mode.explain_refusal(failure))?;
-                if !result_schemas_match(&schema, &reader.schema()) {
-                    return Err(divergent_parameter_schema(&schema, &reader.schema()));
-                }
-                total = add_rows_affected(total, affected)?;
+                let (reader, affected) =
+                    self.run_query(&operation, sql, Some(parameters), execute_query)?;
+                require_same_result_schema(&schema, &reader.schema())?;
+                total = add_rows_affected(total, affected);
                 Ok(())
             })?;
             return Ok((
@@ -314,48 +292,70 @@ impl BigQueryStatement {
             schema,
             operation: operation.clone(),
         });
-        // Later rows have not run yet, so the total is unknown even for DML.
+        // Later rows have not run yet, so the total is unknown.
         Ok((operation_reader(reader, operation), UNKNOWN_ROWS_AFFECTED))
     }
 
-    /// The parameters a dry run sends for a bound stream: typed nulls from its schema, so no row
-    /// is read and the binding stays for the execution the dry run validates, as an ingest dry
-    /// run keeps its data. `None` outside a dry run or without a binding.
-    fn dry_run_parameters(&self) -> Result<Option<(&'static str, Vec<QueryParameter>)>> {
-        if !self.query_options.dry_run {
-            return Ok(None);
-        }
-        let Some(schema) = self.parameters.schema() else {
-            return Ok(None);
-        };
-        let parameters = parameters_for_schema(&schema, self.parameter_mode)?;
-        Ok(Some((self.parameter_mode.as_bigquery_value(), parameters)))
-    }
-
-    /// Drops the memoized parameter schema, because what the dry run would report has changed.
-    fn forget_parameter_schema(&mut self) {
-        *self
-            .parameter_schema
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-    }
-
-    /// The result schema of a statement whose bound parameter stream holds no rows: nothing
-    /// executes, so a dry run with parameters typed from the stream's schema describes it.
-    fn empty_parameter_schema(
+    /// Runs `query` once in the statement's session.
+    fn run_query<T>(
         &self,
-        rows: &ParameterRows,
         operation: &Operation,
         sql: &Arc<str>,
+        parameters: Option<Vec<QueryParameter>>,
+        query: impl FnOnce(
+            StatementQueryContext<'_>,
+            &Arc<str>,
+            Option<(&str, Vec<QueryParameter>)>,
+        ) -> Result<T>,
+    ) -> Result<T> {
+        let session_id = self.execution_session(operation)?;
+        let mode = parameters.is_some().then_some(self.parameter_mode);
+        query(
+            self.query_context(session_id.as_deref(), operation),
+            sql,
+            parameters.map(|parameters| (self.parameter_mode.as_bigquery_value(), parameters)),
+        )
+        .map_err(|failure| match mode {
+            Some(mode) => mode.explain_refusal(failure),
+            None => failure,
+        })
+    }
+
+    /// Typed nulls from the bound stream's schema, which is all a dry run or a description of the
+    /// statement sends, so no row is read and the binding stays. `None` without a binding.
+    fn typed_nulls(&self) -> Result<Option<Vec<QueryParameter>>> {
+        self.parameters
+            .schema()
+            .map(|schema| parameters_for_schema(&schema, self.parameter_mode))
+            .transpose()
+    }
+
+    /// The result schema a dry run reports for `parameters`.
+    fn describe(
+        &self,
+        operation: &Operation,
+        sql: &Arc<str>,
+        parameters: Vec<QueryParameter>,
     ) -> Result<Schema> {
         let session_id = self.transaction.session_id()?;
-        let parameters = parameters_for_schema(rows.schema().as_ref(), self.parameter_mode)?;
         execute_schema(
             self.query_context(session_id.as_deref(), operation),
             sql,
             Some((self.parameter_mode.as_bigquery_value(), parameters)),
         )
         .map_err(|failure| self.parameter_mode.explain_refusal(failure))
+    }
+
+    /// The result schema of a statement whose bound parameter stream holds no rows: nothing
+    /// executes, so a dry run with parameters typed from the stream's schema describes it.
+    fn empty_binding_schema(
+        &self,
+        rows: &ParameterRows,
+        operation: &Operation,
+        sql: &Arc<str>,
+    ) -> Result<Schema> {
+        let parameters = parameters_for_schema(rows.schema().as_ref(), self.parameter_mode)?;
+        self.describe(operation, sql, parameters)
     }
 }
 
@@ -389,43 +389,27 @@ impl Statement for BigQueryStatement {
         let sql = require_sql(self.sql.as_ref(), "execute")?;
         self.parameters.require_available()?;
         self.refuse_session_creation()?;
-        if let Some(parameters) = self.dry_run_parameters()? {
-            return self.cancellation.run(|operation| {
-                let session_id = self.execution_session(operation)?;
-                execute_update_with_parameters(
-                    self.query_context(session_id.as_deref(), operation),
-                    sql,
-                    Some(parameters),
-                )
-                .map_err(|failure| self.parameter_mode.explain_refusal(failure))
-            });
-        }
-        let parameters = self.parameters.take();
+        // A dry run reads no row, so the binding stays for the execution it validates.
+        let stream = (!self.query_options.dry_run)
+            .then(|| self.parameters.take())
+            .flatten();
+        let parameters = self.typed_nulls()?;
         self.cancellation.run(|operation| {
-            let Some(parameters) = parameters else {
-                let session_id = self.execution_session(operation)?;
-                return execute_update_with_parameters(
-                    self.query_context(session_id.as_deref(), operation),
-                    sql,
-                    None,
-                );
+            let Some(stream) = stream else {
+                return self.run_query(operation, sql, parameters, execute_update_with_parameters);
             };
             // An empty binding runs nothing, so it affects no row and opens no transaction.
             let mut total = Some(0_i64);
-            ParameterRows::new(parameters, self.parameter_mode)?.for_each(
-                operation,
-                |parameters| {
-                    let session_id = self.execution_session(operation)?;
-                    let affected = execute_update_with_parameters(
-                        self.query_context(session_id.as_deref(), operation),
-                        sql,
-                        Some((self.parameter_mode.as_bigquery_value(), parameters)),
-                    )
-                    .map_err(|failure| self.parameter_mode.explain_refusal(failure))?;
-                    total = add_rows_affected(total, affected)?;
-                    Ok(())
-                },
-            )?;
+            ParameterRows::new(stream, self.parameter_mode)?.for_each(operation, |parameters| {
+                let affected = self.run_query(
+                    operation,
+                    sql,
+                    Some(parameters),
+                    execute_update_with_parameters,
+                )?;
+                total = add_rows_affected(total, affected);
+                Ok(())
+            })?;
             Ok(total)
         })
     }
@@ -448,22 +432,12 @@ impl Statement for BigQueryStatement {
         }
         let sql = require_sql(self.sql.as_ref(), "describe")?;
         self.refuse_session_creation()?;
-        let session_id = self.transaction.session_id()?;
         // Describing needs no values: an unbound statement's placeholders, including those of a
         // binding an earlier execute consumed, are left undeclared for the dry run to type, as
         // `get_parameter_schema` does. Without the parameter mode BigQuery refuses `?`.
-        let parameters = match self.parameters.schema() {
-            Some(schema) => parameters_for_schema(&schema, self.parameter_mode)?,
-            None => Vec::new(),
-        };
-        self.cancellation.run(|operation| {
-            execute_schema(
-                self.query_context(session_id.as_deref(), operation),
-                sql,
-                Some((self.parameter_mode.as_bigquery_value(), parameters)),
-            )
-            .map_err(|failure| self.parameter_mode.explain_refusal(failure))
-        })
+        let parameters = self.typed_nulls()?.unwrap_or_default();
+        self.cancellation
+            .run(|operation| self.describe(operation, sql, parameters))
     }
 
     fn execute_partitions(&mut self) -> Result<PartitionedResult> {
@@ -497,14 +471,14 @@ impl Statement for BigQueryStatement {
         }
         self.parameters.require_available()?;
         self.refuse_session_creation()?;
-        let parameters = self.parameters.take();
+        let stream = self.parameters.take();
         self.cancellation.run(|operation| {
-            let Some(parameters) = parameters else {
-                let session_id = self.execution_session(operation)?;
-                let partition = execute_query_partition_with_parameters(
-                    self.query_context(session_id.as_deref(), operation),
+            let Some(stream) = stream else {
+                let partition = self.run_query(
+                    operation,
                     sql,
                     None,
+                    execute_query_partition_with_parameters,
                 )?;
                 return Ok(PartitionedResult {
                     partitions: vec![partition.descriptor],
@@ -513,34 +487,30 @@ impl Statement for BigQueryStatement {
                 });
             };
 
-            let mut rows = ParameterRows::new(parameters, self.parameter_mode)?;
+            let mut rows = ParameterRows::new(stream, self.parameter_mode)?;
             let mut partitions = Vec::new();
             let mut schema: Option<Schema> = None;
             let mut rows_affected = Some(0_i64);
             rows.for_each(operation, |parameters| {
-                let session_id = self.execution_session(operation)?;
-                let partition = execute_query_partition_with_parameters(
-                    self.query_context(session_id.as_deref(), operation),
+                let partition = self.run_query(
+                    operation,
                     sql,
-                    Some((self.parameter_mode.as_bigquery_value(), parameters)),
-                )
-                .map_err(|failure| self.parameter_mode.explain_refusal(failure))?;
+                    Some(parameters),
+                    execute_query_partition_with_parameters,
+                )?;
                 match &schema {
-                    Some(first) if !result_schemas_match(first, &partition.schema) => {
-                        return Err(divergent_parameter_schema(first, &partition.schema));
-                    }
-                    Some(_) => {}
+                    Some(first) => require_same_result_schema(first, &partition.schema)?,
                     None => schema = Some(partition.schema),
                 }
                 partitions.push(partition.descriptor);
-                rows_affected = add_rows_affected(rows_affected, partition.rows_affected)?;
+                rows_affected = add_rows_affected(rows_affected, partition.rows_affected);
                 Ok(())
             })?;
             // An empty binding runs no job, so a dry run typed from the binding's schema describes
             // the result.
             let schema = match schema {
                 Some(schema) => schema,
-                None => self.empty_parameter_schema(&rows, operation, sql)?,
+                None => self.empty_binding_schema(&rows, operation, sql)?,
             };
             Ok(PartitionedResult {
                 partitions,
@@ -558,11 +528,7 @@ impl Statement for BigQueryStatement {
         let namespace = self.namespace.get();
         self.refuse_session_creation()?;
         let session_id = self.transaction.session_id()?;
-        // The memo is plain data a panic cannot leave torn, so a poisoned guard is recovered.
-        if let Some(cached) = &*self
-            .parameter_schema
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        if let Some(cached) = &*self.parameter_schema.borrow()
             && cached.namespace == namespace
             && cached.session_id == session_id
         {
@@ -584,10 +550,7 @@ impl Statement for BigQueryStatement {
                 .map_err(|failure| self.parameter_mode.explain_refusal(failure));
         operation.finish();
         let schema = result?;
-        *self
-            .parameter_schema
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(CachedParameterSchema {
+        *self.parameter_schema.borrow_mut() = Some(CachedParameterSchema {
             namespace,
             session_id,
             schema: schema.clone(),
@@ -608,7 +571,7 @@ impl Statement for BigQueryStatement {
 
     fn set_sql_query(&mut self, query: impl AsRef<str>) -> Result<()> {
         let query = normalize_sql(query.as_ref());
-        self.forget_parameter_schema();
+        *self.parameter_schema.get_mut() = None;
         // A previous execute's consumed binding does not apply to new SQL.
         self.parameters.reset_consumed();
         match self.dbt.sql_disposition(query) {

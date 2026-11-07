@@ -1,13 +1,92 @@
-use arrow_array::{Array, ArrayRef, Int64Array, RecordBatchIterator};
-use arrow_schema::{DataType, Field, Metadata};
+use std::sync::Weak;
+
+use arrow_array::{Array, ArrayRef, Int64Array, RecordBatchIterator, StringArray, UInt64Array};
+use arrow_schema::{DataType, Field, Metadata, TimeUnit};
 
 use super::*;
+use crate::BIGQUERY_SCHEMA_METADATA_QUERY_ID;
+use crate::cancellation::operation_reader;
+use crate::query::empty_reader;
+use crate::test_support::driver::test_statement;
+
+fn operation() -> Operation {
+    test_statement().cancellation.begin()
+}
+
+fn int64_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![Field::new(
+        "value",
+        DataType::Int64,
+        false,
+    )]))
+}
+
+fn int64_batch(values: Vec<i64>) -> RecordBatch {
+    RecordBatch::try_new(int64_schema(), vec![Arc::new(Int64Array::from(values))]).unwrap()
+}
+
+fn parameter_rows(
+    batches: impl Iterator<Item = std::result::Result<RecordBatch, ArrowError>> + Send + 'static,
+    schema: SchemaRef,
+) -> ParameterRows {
+    let reader = RecordBatchIterator::new(batches, schema);
+    ParameterRows::new(Box::new(reader), ParameterMode::Positional).unwrap()
+}
+
+/// `batch` as a stream that checks, at the read after it, that nothing still retains `array`.
+fn released_before_next_read(batch: RecordBatch, array: Weak<Int64Array>) -> ParameterRows {
+    let schema = batch.schema();
+    let mut first = Some(batch);
+    let batches = std::iter::from_fn(move || {
+        if let Some(batch) = first.take() {
+            return Some(Ok(batch));
+        }
+        assert_eq!(array.strong_count(), 0, "retained a batch at the next read");
+        None
+    });
+    parameter_rows(batches, schema)
+}
+
+/// The reader `execute` hands out, partway through `rows` and reading `current`.
+fn lazy_reader(
+    rows: ParameterRows,
+    current: Box<dyn RecordBatchReader + Send>,
+    schema: SchemaRef,
+) -> Box<dyn RecordBatchReader + Send> {
+    let statement = test_statement();
+    let operation = statement.cancellation.begin();
+    lazy_reader_under(statement, operation, rows, current, schema)
+}
+
+fn lazy_reader_under(
+    statement: crate::BigQueryStatement,
+    operation: Operation,
+    rows: ParameterRows,
+    current: Box<dyn RecordBatchReader + Send>,
+    schema: SchemaRef,
+) -> Box<dyn RecordBatchReader + Send> {
+    let reader = ParameterizedRecordBatchReader {
+        context: statement.context,
+        query_options: statement.query_options,
+        transaction: statement.transaction,
+        sql: "SELECT 1".into(),
+        parameter_mode: ParameterMode::Positional,
+        rows,
+        current,
+        schema,
+        operation: operation.clone(),
+    };
+    operation_reader(Box::new(reader), operation)
+}
+
+fn value(parameters: &[QueryParameter]) -> &str {
+    let value = parameters[0].parameter_value.as_ref().unwrap();
+    value.value.as_deref().unwrap()
+}
 
 #[test]
 fn bound_parameter_batches_release_their_buffers_after_the_last_row() {
-    let operation = crate::test_support::driver::test_statement()
-        .cancellation
-        .begin();
+    let operation = operation();
     // A short slice can retain a large imported allocation while its remote query runs.
     let array = Arc::new(Int64Array::from(vec![7; 1024 * 1024]).slice(0, 2));
     let retained = Arc::downgrade(&array);
@@ -17,22 +96,7 @@ fn bound_parameter_batches_release_their_buffers_after_the_last_row() {
             .map_or(0, |array| array.get_buffer_memory_size())
     };
     let batch = RecordBatch::try_from_iter([("value", array as ArrayRef)]).unwrap();
-    let schema = batch.schema();
-    let mut first = Some(batch);
-    let observed = retained.clone();
-    let batches = std::iter::from_fn(move || {
-        if let Some(batch) = first.take() {
-            return Some(Ok(batch));
-        }
-        assert_eq!(
-            observed.strong_count(),
-            0,
-            "retained the previous batch at the next read"
-        );
-        None
-    });
-    let reader = RecordBatchIterator::new(batches, schema);
-    let mut rows = ParameterRows::new(Box::new(reader), ParameterMode::Positional).unwrap();
+    let mut rows = released_before_next_read(batch, retained.clone());
 
     assert!(rows.has_next(&operation).unwrap());
     assert_eq!(retained_bytes(), 8 * 1024 * 1024);
@@ -40,50 +104,24 @@ fn bound_parameter_batches_release_their_buffers_after_the_last_row() {
     assert_eq!(retained_bytes(), 8 * 1024 * 1024);
     let parameters = rows.next(&operation).unwrap().unwrap();
     assert_eq!(retained_bytes(), 0);
-    assert_eq!(
-        parameters[0]
-            .parameter_value
-            .as_ref()
-            .unwrap()
-            .value
-            .as_deref(),
-        Some("7")
-    );
+    assert_eq!(value(&parameters), "7");
     assert!(!rows.has_next(&operation).unwrap());
     assert!(rows.next(&operation).unwrap().is_none());
 }
 
 #[test]
 fn empty_bound_parameter_batches_are_dropped_before_reading_again() {
-    let operation = crate::test_support::driver::test_statement()
-        .cancellation
-        .begin();
     let array = Arc::new(Int64Array::from(vec![1; 1024]).slice(0, 0));
     let retained = Arc::downgrade(&array);
     let batch = RecordBatch::try_from_iter([("value", array as ArrayRef)]).unwrap();
-    let schema = batch.schema();
-    let mut first = Some(batch);
-    let batches = std::iter::from_fn(move || {
-        if let Some(batch) = first.take() {
-            return Some(Ok(batch));
-        }
-        assert_eq!(
-            retained.strong_count(),
-            0,
-            "retained an empty input batch at the next read"
-        );
-        None
-    });
-    let reader = RecordBatchIterator::new(batches, schema);
-    let mut rows = ParameterRows::new(Box::new(reader), ParameterMode::Positional).unwrap();
+    let mut rows = released_before_next_read(batch, retained);
 
-    assert!(rows.next(&operation).unwrap().is_none());
+    assert!(rows.next(&operation()).unwrap().is_none());
 }
 
 #[test]
 fn cancellation_stops_a_bound_stream_between_empty_batches() {
-    let statement = crate::test_support::driver::test_statement();
-    let operation = statement.cancellation.begin();
+    let operation = operation();
     let schema = Arc::new(Schema::empty());
     let batch = RecordBatch::new_empty(schema.clone());
     let cancel = operation.clone();
@@ -92,8 +130,7 @@ fn cancellation_stops_a_bound_stream_between_empty_batches() {
         cancel.finish();
         Some(Ok(batch.clone()))
     });
-    let reader = RecordBatchIterator::new(batches, schema);
-    let mut rows = ParameterRows::new(Box::new(reader), ParameterMode::Positional).unwrap();
+    let mut rows = parameter_rows(batches, schema);
 
     let failure = rows.next(&operation).unwrap_err();
     assert_eq!(failure.status, Status::Cancelled);
@@ -105,7 +142,7 @@ fn cancellation_stops_a_bound_stream_between_empty_batches() {
 
 #[test]
 fn cancellation_after_reading_parameters_is_not_reported_as_successful_eof() {
-    let statement = crate::test_support::driver::test_statement();
+    let statement = test_statement();
     let operation = statement.cancellation.begin();
     let cancel = operation.clone();
     let batches = std::iter::from_fn(move || {
@@ -113,20 +150,9 @@ fn cancellation_after_reading_parameters_is_not_reported_as_successful_eof() {
         None
     });
     let schema = Arc::new(Schema::empty());
-    let reader = RecordBatchIterator::new(batches, schema.clone());
-    let rows = ParameterRows::new(Box::new(reader), ParameterMode::Positional).unwrap();
-    let reader = ParameterizedRecordBatchReader {
-        context: statement.context,
-        query_options: statement.query_options,
-        transaction: statement.transaction,
-        sql: "SELECT 1".into(),
-        parameter_mode: ParameterMode::Positional,
-        rows,
-        current: crate::query::empty_reader(schema.clone()),
-        schema,
-        operation: operation.clone(),
-    };
-    let mut reader = crate::cancellation::operation_reader(Box::new(reader), operation);
+    let rows = parameter_rows(batches, schema.clone());
+    let current = empty_reader(schema.clone());
+    let mut reader = lazy_reader_under(statement, operation, rows, current, schema);
 
     let ArrowError::ExternalError(failure) = reader.next().unwrap().unwrap_err() else {
         panic!("expected the cancellation error");
@@ -140,14 +166,8 @@ fn cancellation_after_reading_parameters_is_not_reported_as_successful_eof() {
 
 #[test]
 fn cancellation_does_not_consume_another_bound_parameter_row() {
-    let statement = crate::test_support::driver::test_statement();
-    let operation = statement.cancellation.begin();
-    let batch =
-        RecordBatch::try_from_iter([("value", Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef)])
-            .unwrap();
-    let schema = batch.schema();
-    let reader = RecordBatchIterator::new([Ok(batch)], schema);
-    let mut rows = ParameterRows::new(Box::new(reader), ParameterMode::Positional).unwrap();
+    let operation = operation();
+    let mut rows = parameter_rows(std::iter::once(Ok(int64_batch(vec![1, 2]))), int64_schema());
     rows.next(&operation).unwrap().unwrap();
     operation.finish();
 
@@ -168,17 +188,11 @@ fn result_stream_failures_identify_prior_parameter_executions_and_keep_details()
             "bound BigQuery parameter row 2 failed after 2 earlier rows had already executed: page request failed",
         ),
     ] {
-        let statement = crate::test_support::driver::test_statement();
-        let operation = statement.cancellation.begin();
         let schema = Arc::new(Schema::empty());
-        let mut rows = ParameterRows::new(
-            Box::new(RecordBatchIterator::new(
-                std::iter::from_fn(|| panic!("read parameters after a result stream failure")),
-                schema.clone(),
-            )),
-            ParameterMode::Positional,
-        )
-        .unwrap();
+        let mut rows = parameter_rows(
+            std::iter::from_fn(|| panic!("read parameters after a result stream failure")),
+            schema.clone(),
+        );
         rows.yielded = yielded;
         let mut failure = Error::with_message_and_status("page request failed", Status::Timeout);
         failure.vendor_code = 504;
@@ -188,18 +202,7 @@ fn result_stream_failures_identify_prior_parameter_executions_and_keep_details()
             [Err(ArrowError::ExternalError(Box::new(failure)))],
             schema.clone(),
         );
-        let reader = ParameterizedRecordBatchReader {
-            context: statement.context,
-            query_options: statement.query_options,
-            transaction: statement.transaction,
-            sql: "SELECT 1".into(),
-            parameter_mode: ParameterMode::Positional,
-            rows,
-            current: Box::new(current),
-            schema,
-            operation: operation.clone(),
-        };
-        let mut reader = crate::cancellation::operation_reader(Box::new(reader), operation);
+        let mut reader = lazy_reader(rows, Box::new(current), schema);
 
         let ArrowError::ExternalError(source) = reader.next().unwrap().unwrap_err() else {
             panic!("expected the original ADBC error");
@@ -220,12 +223,10 @@ fn result_stream_failures_identify_prior_parameter_executions_and_keep_details()
 #[test]
 fn replacing_per_job_metadata_preserves_zero_column_rows() {
     let schema = |job: &str| {
-        Arc::new(
-            Schema::empty().with_metadata(std::collections::HashMap::from([(
-                crate::BIGQUERY_SCHEMA_METADATA_QUERY_ID.to_owned(),
-                job.to_owned(),
-            )])),
-        )
+        Arc::new(Schema::empty().with_metadata(Metadata::from_iter([(
+            BIGQUERY_SCHEMA_METADATA_QUERY_ID,
+            job,
+        )])))
     };
     let first = schema("first");
     let later = schema("later");
@@ -235,28 +236,10 @@ fn replacing_per_job_metadata_preserves_zero_column_rows() {
         &RecordBatchOptions::new().with_row_count(Some(3)),
     )
     .unwrap();
-    let statement = crate::test_support::driver::test_statement();
-    let operation = statement.cancellation.begin();
-    let rows = ParameterRows::new(
-        Box::new(RecordBatchIterator::new(
-            std::iter::empty(),
-            Arc::new(Schema::empty()),
-        )),
-        ParameterMode::Positional,
-    )
-    .unwrap();
-    let reader = ParameterizedRecordBatchReader {
-        context: statement.context,
-        query_options: statement.query_options,
-        transaction: statement.transaction,
-        sql: "SELECT 1".into(),
-        parameter_mode: ParameterMode::Positional,
-        rows,
-        current: Box::new(RecordBatchIterator::new(std::iter::once(Ok(batch)), later)),
-        schema: first.clone(),
-        operation: operation.clone(),
-    };
-    let mut reader = crate::cancellation::operation_reader(Box::new(reader), operation);
+    let rows = parameter_rows(std::iter::empty(), Arc::new(Schema::empty()));
+    let current = RecordBatchIterator::new(std::iter::once(Ok(batch)), later);
+    let mut reader = lazy_reader(rows, Box::new(current), first.clone());
+
     let batch = reader.next().unwrap().unwrap();
     assert_eq!(batch.schema(), first);
     assert_eq!(batch.num_rows(), 3);
@@ -264,80 +247,38 @@ fn replacing_per_job_metadata_preserves_zero_column_rows() {
     assert!(reader.next().is_none());
 }
 
+/// Every job's schema metadata differs, but a field's, like its name, type and nullability, is
+/// part of the result.
 #[test]
-fn schema_comparison_ignores_only_top_level_job_metadata() {
-    let fields = vec![Field::new("value", DataType::Int64, true)];
-    let schema = |metadata: &[(&str, &str)]| {
-        Arc::new(Schema::new_with_metadata(
-            fields.clone(),
-            metadata.iter().copied().collect::<Metadata>(),
-        ))
-    };
-    let plain = schema(&[]);
-    for key in crate::BIGQUERY_SCHEMA_METADATA_JOB_KEYS {
-        let first = schema(&[(key, "first")]);
-        let second = schema(&[(key, "second")]);
-        assert!(result_schemas_match(&first, &second));
-        assert!(result_schemas_match(&first, &plain));
-        assert!(result_schemas_match(&plain, &first));
-    }
-
-    let custom = schema(&[("BIGQUERY:custom", "first")]);
-    assert!(result_schemas_match(
-        &custom,
-        &schema(&[("BIGQUERY:custom", "first")])
-    ));
-    for other in [
-        plain,
-        schema(&[("BIGQUERY:custom", "second")]),
-        schema(&[("other", "first")]),
-    ] {
-        assert!(!result_schemas_match(&custom, &other));
-        assert!(!result_schemas_match(&other, &custom));
-    }
-}
-
-#[test]
-fn schema_comparison_preserves_field_names_types_nullability_and_metadata() {
+fn result_schemas_are_compared_by_their_fields_alone() {
     let field = Field::new("value", DataType::Int64, true);
-    let expected = Arc::new(Schema::new(vec![field.clone()]));
+    let schema = |field: &Field| Schema::new(vec![field.clone()]);
+    let job = Metadata::from_iter([(BIGQUERY_SCHEMA_METADATA_QUERY_ID, "first")]);
+    let with_job = schema(&field).with_metadata(job.clone());
+    require_same_result_schema(&schema(&field), &with_job).unwrap();
+    require_same_result_schema(&with_job, &schema(&field)).unwrap();
+
     for different in [
         field.clone().with_name("other"),
         field.clone().with_data_type(DataType::Utf8),
         field.clone().with_nullable(false),
-        field.with_metadata(std::collections::HashMap::from([(
-            crate::BIGQUERY_SCHEMA_METADATA_QUERY_ID.to_owned(),
-            "field metadata is significant".to_owned(),
-        )])),
+        field.clone().with_metadata(job),
     ] {
-        let found = Arc::new(Schema::new(vec![different]));
-        assert!(!result_schemas_match(&expected, &found));
-        assert!(!result_schemas_match(&found, &expected));
+        let (expected, found) = (schema(&field), schema(&different));
+        require_same_result_schema(&expected, &found).unwrap_err();
+        require_same_result_schema(&found, &expected).unwrap_err();
     }
 }
 
 /// A stream that fails mid-way says how far it got, since every row before it already executed.
 #[test]
 fn a_failing_parameter_stream_says_how_many_rows_already_executed() {
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "value",
-        DataType::Int64,
-        false,
-    )]));
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef],
-    )
-    .unwrap();
+    let operation = operation();
     let batches = vec![
-        Ok(batch),
+        Ok(int64_batch(vec![1, 2])),
         Err(ArrowError::ComputeError("source went away".to_owned())),
     ];
-    let reader = RecordBatchIterator::new(batches, schema);
-    let operation = crate::test_support::driver::test_statement()
-        .cancellation
-        .begin();
-    let mut rows = ParameterRows::new(Box::new(reader), ParameterMode::Positional).unwrap();
+    let mut rows = parameter_rows(batches.into_iter(), int64_schema());
     rows.next(&operation).unwrap().unwrap();
     rows.next(&operation).unwrap().unwrap();
     let failure = rows.has_next(&operation).unwrap_err();
@@ -350,13 +291,12 @@ fn a_failing_parameter_stream_says_how_many_rows_already_executed() {
 }
 
 /// Arrow cannot build an array of every type a schema can name, such as a `Time32(Microsecond)`,
-/// and would panic rather than fail. Such a stream is refused when it is bound, before any batch
-/// is read.
+/// and would panic rather than fail. Such a stream is refused before any batch is read.
 #[test]
-fn a_stream_of_a_type_arrow_cannot_build_is_refused_when_bound() {
+fn a_stream_of_a_type_arrow_cannot_build_is_refused_before_it_is_read() {
     let schema = Arc::new(Schema::new(vec![Field::new(
         "value",
-        DataType::Time32(arrow_schema::TimeUnit::Microsecond),
+        DataType::Time32(TimeUnit::Microsecond),
         true,
     )]));
     let reader = RecordBatchIterator::new(std::iter::empty(), schema);
@@ -369,42 +309,13 @@ fn a_stream_of_a_type_arrow_cannot_build_is_refused_when_bound() {
 
 #[test]
 fn bound_stream_rows_become_parameter_sets() {
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "value",
-        DataType::Int64,
-        false,
-    )]));
-    let batches = vec![
-        RecordBatch::new_empty(schema.clone()),
-        RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef],
-        )
-        .unwrap(),
-        RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int64Array::from(vec![3])) as ArrayRef],
-        )
-        .unwrap(),
-    ];
-    let reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
-    let operation = crate::test_support::driver::test_statement()
-        .cancellation
-        .begin();
-    let mut rows = ParameterRows::new(Box::new(reader), ParameterMode::Positional).unwrap();
+    let operation = operation();
+    let batches = [vec![], vec![1, 2], vec![3]].map(|values| Ok(int64_batch(values)));
+    let mut rows = parameter_rows(batches.into_iter(), int64_schema());
 
     let mut values = Vec::new();
     while let Some(parameters) = rows.next(&operation).unwrap() {
-        values.push(
-            parameters[0]
-                .parameter_value
-                .as_ref()
-                .unwrap()
-                .value
-                .as_deref()
-                .unwrap()
-                .to_owned(),
-        );
+        values.push(value(&parameters).to_owned());
     }
     assert_eq!(values, ["1", "2", "3"]);
 }
@@ -419,18 +330,11 @@ fn parameter_row_failures_are_numbered_across_the_whole_stream() {
         false,
     )]));
     let batch = |values: Vec<u64>| {
-        RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(arrow_array::UInt64Array::from(values)) as ArrayRef],
-        )
-        .unwrap()
+        RecordBatch::try_new(schema.clone(), vec![Arc::new(UInt64Array::from(values))]).unwrap()
     };
-    let batches = vec![batch(vec![1, 2]), batch(vec![u64::MAX])];
-    let reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema.clone());
-    let operation = crate::test_support::driver::test_statement()
-        .cancellation
-        .begin();
-    let mut rows = ParameterRows::new(Box::new(reader), ParameterMode::Positional).unwrap();
+    let batches = [batch(vec![1, 2]), batch(vec![u64::MAX])].map(Ok);
+    let operation = operation();
+    let mut rows = parameter_rows(batches.into_iter(), schema.clone());
 
     rows.next(&operation).unwrap().unwrap();
     let failure = rows.failed_row(Error::with_message_and_status("boom", Status::IO));
@@ -463,23 +367,14 @@ fn parameter_row_failures_are_numbered_across_the_whole_stream() {
 /// it is rejected as it arrives.
 #[test]
 fn a_bound_batch_that_diverges_from_the_stream_schema_names_both_schemas() {
-    let declared = Arc::new(Schema::new(vec![Field::new(
-        "value",
-        DataType::Int64,
-        false,
-    )]));
     let divergent = RecordBatch::try_from_iter([(
         "value",
-        Arc::new(arrow_array::StringArray::from(vec!["text"])) as ArrayRef,
+        Arc::new(StringArray::from(vec!["text"])) as ArrayRef,
     )])
     .unwrap();
-    let reader = RecordBatchIterator::new(std::iter::once(Ok(divergent)), declared);
-    let operation = crate::test_support::driver::test_statement()
-        .cancellation
-        .begin();
-    let mut rows = ParameterRows::new(Box::new(reader), ParameterMode::Positional).unwrap();
+    let mut rows = parameter_rows(std::iter::once(Ok(divergent)), int64_schema());
 
-    let failure = rows.next(&operation).unwrap_err();
+    let failure = rows.next(&operation()).unwrap_err();
     assert_eq!(failure.status, Status::InvalidData);
     assert_eq!(
         failure.message,
@@ -493,29 +388,18 @@ fn a_bound_batch_that_diverges_from_the_stream_schema_names_both_schemas() {
 /// rows that already ran.
 #[test]
 fn a_divergent_parameter_result_schema_is_described_in_full() {
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "value",
-        DataType::Int64,
-        false,
-    )]));
-    let batch = RecordBatch::try_new(
-        schema.clone(),
-        vec![Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef],
-    )
-    .unwrap();
-    let reader = RecordBatchIterator::new(std::iter::once(Ok(batch)), schema);
-    let operation = crate::test_support::driver::test_statement()
-        .cancellation
-        .begin();
-    let mut rows = ParameterRows::new(Box::new(reader), ParameterMode::Positional).unwrap();
+    let mut rows = parameter_rows(
+        std::iter::once(Ok(int64_batch(vec![1, 2, 3]))),
+        int64_schema(),
+    );
     let expected = Schema::new(vec![Field::new("answer", DataType::Int64, true)]);
     let found = Schema::new(vec![Field::new("answer", DataType::Utf8, true)]);
     let mut executed = 0;
     let failure = rows
-        .for_each(&operation, |_| {
+        .for_each(&operation(), |_| {
             executed += 1;
             if executed == 3 {
-                return Err(divergent_parameter_schema(&expected, &found));
+                return require_same_result_schema(&expected, &found);
             }
             Ok(())
         })
@@ -531,13 +415,12 @@ fn a_divergent_parameter_result_schema_is_described_in_full() {
 }
 
 #[test]
-fn add_rows_affected_treats_negative_counts_as_unknown() {
-    assert_eq!(add_rows_affected(Some(2), Some(3)).unwrap(), Some(5));
-    assert_eq!(add_rows_affected(Some(2), Some(0)).unwrap(), Some(2));
+fn add_rows_affected_treats_negative_counts_and_overflow_as_unknown() {
+    assert_eq!(add_rows_affected(Some(2), Some(3)), Some(5));
+    assert_eq!(add_rows_affected(Some(2), Some(0)), Some(2));
     for unknown in [None, Some(-1), Some(i64::MIN)] {
-        assert_eq!(add_rows_affected(Some(2), unknown).unwrap(), None);
-        assert_eq!(add_rows_affected(unknown, Some(3)).unwrap(), None);
+        assert_eq!(add_rows_affected(Some(2), unknown), None);
+        assert_eq!(add_rows_affected(unknown, Some(3)), None);
     }
-    let overflow = add_rows_affected(Some(i64::MAX), Some(1)).unwrap_err();
-    assert_eq!(overflow.status, Status::InvalidData);
+    assert_eq!(add_rows_affected(Some(i64::MAX), Some(1)), None);
 }

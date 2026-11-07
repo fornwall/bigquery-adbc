@@ -33,7 +33,7 @@ impl Optionable for BigQueryStatement {
     fn set_option(&mut self, key: Self::Option, value: OptionValue) -> Result<()> {
         // Many options affect the parameter dry run (the parameter mode, the name-resolution
         // defaults), so every option drops the memo rather than keeping a list that could drift.
-        self.forget_parameter_schema();
+        *self.parameter_schema.get_mut() = None;
         // Options that name tables resolve them against the connection's namespace as it is now.
         self.refresh_namespace();
         match &key {
