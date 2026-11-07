@@ -2,9 +2,8 @@
 
 use crate::types::{BigQueryType, googlesql_spelling_of};
 use arrow_schema::{
-    DECIMAL32_MAX_PRECISION, DECIMAL32_MAX_SCALE, DECIMAL64_MAX_PRECISION, DECIMAL64_MAX_SCALE,
-    DECIMAL128_MAX_PRECISION, DECIMAL128_MAX_SCALE, DECIMAL256_MAX_PRECISION, DECIMAL256_MAX_SCALE,
-    DataType,
+    DECIMAL32_MAX_PRECISION, DECIMAL64_MAX_PRECISION, DECIMAL128_MAX_PRECISION,
+    DECIMAL256_MAX_PRECISION, DataType,
 };
 
 pub(crate) const NUMERIC_PRECISION: u8 = 38;
@@ -135,27 +134,27 @@ pub(crate) fn decimal_type_hint(
 /// Explains rejected decimal metadata, naming the GoogleSQL spelling when the value is only a name
 /// BigQuery accepts elsewhere but this driver never emits, such as `DECIMAL` for `NUMERIC`.
 fn decimal_metadata_error(name: &str, data_type: &DataType, array: bool) -> String {
-    let element = if array {
-        name.strip_prefix("ARRAY<")
-            .and_then(|value| value.strip_suffix('>'))
-            .unwrap_or(name)
+    let (element, kind) = if array {
+        let element = name
+            .strip_prefix("ARRAY<")
+            .and_then(|value| value.strip_suffix('>'));
+        (element.unwrap_or(name), "decimal array")
     } else {
-        name
+        (name, "decimal")
     };
     match googlesql_spelling_of(element) {
-        Some(googlesql) if array => format!(
-            "BigQuery type metadata {name:?} is not a GoogleSQL type name; use \"ARRAY<{googlesql}>\""
-        ),
         Some(googlesql) => {
+            let replacement = if array {
+                format!("ARRAY<{googlesql}>")
+            } else {
+                googlesql.to_owned()
+            };
             format!(
-                "BigQuery type metadata {name:?} is not a GoogleSQL type name; use {googlesql:?}"
+                "BigQuery type metadata {name:?} is not a GoogleSQL type name; use {replacement:?}"
             )
         }
-        None if array => format!(
-            "BigQuery type metadata {name:?} is incompatible with Arrow decimal array type {data_type}"
-        ),
         None => format!(
-            "BigQuery type metadata {name:?} is incompatible with Arrow decimal type {data_type}"
+            "BigQuery type metadata {name:?} is incompatible with Arrow {kind} type {data_type}"
         ),
     }
 }
@@ -208,39 +207,15 @@ pub(crate) fn decimal_mapping(
     data_type: &DataType,
     requested_type: Option<BigQueryDecimalType>,
 ) -> Result<DecimalMapping, String> {
-    let (precision, scale, maximum_precision, maximum_scale) = match data_type {
-        DataType::Decimal32(precision, scale) => (
-            *precision,
-            *scale,
-            DECIMAL32_MAX_PRECISION,
-            DECIMAL32_MAX_SCALE,
-        ),
-        DataType::Decimal64(precision, scale) => (
-            *precision,
-            *scale,
-            DECIMAL64_MAX_PRECISION,
-            DECIMAL64_MAX_SCALE,
-        ),
-        DataType::Decimal128(precision, scale) => (
-            *precision,
-            *scale,
-            DECIMAL128_MAX_PRECISION,
-            DECIMAL128_MAX_SCALE,
-        ),
-        DataType::Decimal256(precision, scale) => (
-            *precision,
-            *scale,
-            DECIMAL256_MAX_PRECISION,
-            DECIMAL256_MAX_SCALE,
-        ),
+    let (precision, scale, maximum_precision) = match *data_type {
+        DataType::Decimal32(precision, scale) => (precision, scale, DECIMAL32_MAX_PRECISION),
+        DataType::Decimal64(precision, scale) => (precision, scale, DECIMAL64_MAX_PRECISION),
+        DataType::Decimal128(precision, scale) => (precision, scale, DECIMAL128_MAX_PRECISION),
+        DataType::Decimal256(precision, scale) => (precision, scale, DECIMAL256_MAX_PRECISION),
         _ => return Err(format!("Arrow type {data_type} is not a decimal")),
     };
 
-    if precision == 0
-        || precision > maximum_precision
-        || scale > maximum_scale
-        || (scale > 0 && i16::from(scale) > i16::from(precision))
-    {
+    if precision == 0 || precision > maximum_precision || i16::from(scale) > i16::from(precision) {
         return Err(format!(
             "Arrow decimal type {data_type} has invalid precision or scale for its physical width"
         ));
@@ -307,7 +282,7 @@ pub(crate) fn bigquery_decimal_data_type(
         )
     };
     if precision == 0
-        || (scale > 0 && i16::from(scale) > i16::from(precision))
+        || i16::from(scale) > i16::from(precision)
         || !bigquery_type.contains(precision, scale)
     {
         return Err(format!(
