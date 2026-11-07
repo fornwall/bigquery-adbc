@@ -15,7 +15,7 @@ use crate::clients::ClientState;
 use crate::diag::diag;
 use crate::error::{error, invalid_state, job_name};
 use crate::rest::jobs::JobReference;
-use crate::runtime::{DetachedTask, SharedRuntime};
+use crate::runtime::{DetachedTask, INHERITED_ACROSS_FORK, SharedRuntime};
 
 #[derive(Debug)]
 pub(crate) struct Cancellation {
@@ -633,6 +633,12 @@ impl Iterator for OperationReader {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.inner.as_ref()?;
+        // Every reader handed out passes here. In a `fork` child, nothing can feed or close a
+        // buffered reader's channel, and any other wait on the runtime would panic.
+        if self.operation.inner.owner.runtime.orphaned() {
+            let failure = invalid_state(INHERITED_ACROSS_FORK);
+            return Some(Err(ArrowError::ExternalError(Box::new(failure))));
+        }
         if let Some(cancelled) = self.cancellation_item() {
             return Some(cancelled);
         }

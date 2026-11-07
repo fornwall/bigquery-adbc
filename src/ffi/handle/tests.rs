@@ -8,7 +8,7 @@ use crate::ffi::abi::{
     ADBC_STATUS_INTERNAL, ADBC_STATUS_INVALID_ARGUMENT, ADBC_STATUS_INVALID_STATE,
     ADBC_STATUS_NOT_FOUND,
 };
-use crate::ffi::test_support::{RecordingCancel, hold_the_dispatch_turn, null};
+use crate::ffi::test_support::{RecordingCancel, call, hold_the_dispatch_turn, null};
 use adbc_core::options::OptionDatabase;
 
 /// A handle's `private_data` field holding a fresh object, boxed so that threads can share its
@@ -378,5 +378,35 @@ fn cancel_without_an_installed_handle_is_an_invalid_state() {
     unsafe { install_cancel_handle::<u32>(&raw const *slot, "connection", handle) }.unwrap();
     assert_eq!(cancel_slot(&mut slot), ADBC_STATUS_OK);
     assert!(cancelled.load(Ordering::SeqCst));
+    assert_eq!(release_slot(&mut slot), ADBC_STATUS_OK);
+}
+
+/// `fork` leaves a child no runtime workers. Using the object is the caller's mistake, so it is
+/// refused as one: no panic, nothing poisoned, and `Release` still works.
+#[test]
+fn an_object_inherited_across_fork_is_refused_and_can_still_be_released() {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let mut slot = Box::new(std::ptr::null_mut());
+    let inherited = Exported {
+        process: 0,
+        ..Exported::new(
+            0_u32,
+            Some(Box::new(RecordingCancel(cancelled.clone()))),
+            None,
+        )
+    };
+    // SAFETY: The boxed field is live and empty.
+    unsafe { install(&raw mut *slot, "statement", inherited) }.unwrap();
+
+    for _ in 0..2 {
+        let (status, message) = call(|error| {
+            // SAFETY: The slot holds a `u32` object and the error output is fresh.
+            unsafe { dispatch::<u32, _>(&raw const *slot, "statement", error, |_| Ok(())) }
+        });
+        assert_eq!(status, ADBC_STATUS_INVALID_STATE, "{message:?}");
+        assert_eq!(message.as_deref(), Some(INHERITED_ACROSS_FORK));
+    }
+    assert_eq!(cancel_slot(&mut slot), ADBC_STATUS_INVALID_STATE);
+    assert!(!cancelled.load(Ordering::SeqCst));
     assert_eq!(release_slot(&mut slot), ADBC_STATUS_OK);
 }

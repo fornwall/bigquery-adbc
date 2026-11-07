@@ -15,8 +15,8 @@ use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::cancellation::{CancelFlag, Operation};
-use crate::error::{DRIVER_DEFECT, driver_defect, invalid_argument, invalid_state};
-use crate::runtime::{INHERITED_ACROSS_FORK, SharedRuntime, block_in_place};
+use crate::error::{DRIVER_DEFECT, driver_defect, invalid_argument};
+use crate::runtime::{SharedRuntime, block_in_place};
 
 /// Result delivery options shared by REST and Storage Read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -218,11 +218,6 @@ impl Iterator for BufferedBigQueryRecordBatchReader {
     // normally.
     fn next(&mut self) -> Option<Self::Item> {
         self.producer.as_ref()?;
-        // Nothing in a `fork` child can feed or close the channel, so this wait would never end.
-        if self.runtime.orphaned() {
-            let failure = invalid_state(INHERITED_ACROSS_FORK);
-            return Some(Err(ArrowError::ExternalError(Box::new(failure))));
-        }
         match block_in_place(|| self.receiver.blocking_recv()) {
             Some(buffered) => Some(Ok(buffered.batch)),
             None => {

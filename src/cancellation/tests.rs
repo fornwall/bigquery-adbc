@@ -728,3 +728,25 @@ fn a_cancellation_wakes_an_operation_parked_in_wait() {
         assert_status(waited, Status::Cancelled);
     });
 }
+
+/// No worker survives a `fork` to feed or close a buffered reader's channel, so a reader inherited
+/// with a running producer must refuse rather than wait forever.
+#[test]
+fn a_reader_inherited_across_fork_fails_instead_of_waiting_for_its_producer() {
+    let runtime = crate::runtime::orphaned_runtime();
+    let (_cancellation, operation) =
+        crate::test_support::cancellation::operation(&runtime, ClientState::for_test());
+    let schema = Arc::new(Schema::empty());
+    let reader = crate::pipeline::spawn_result_reader(runtime, schema, None, |sink| async move {
+        let _sink = sink;
+        std::future::pending::<Result<(), arrow_schema::ArrowError>>().await
+    });
+    let mut reader = operation_reader(reader, operation);
+    let arrow_schema::ArrowError::ExternalError(failure) = reader.next().unwrap().unwrap_err()
+    else {
+        panic!("the refusal must carry its ADBC status");
+    };
+    let failure = failure.downcast_ref::<adbc_core::error::Error>().unwrap();
+    assert_eq!(failure.status, Status::InvalidState);
+    assert_eq!(failure.message, crate::runtime::INHERITED_ACROSS_FORK);
+}

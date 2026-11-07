@@ -20,6 +20,7 @@ use super::error::export_error;
 use super::guard::{catch, missing_argument};
 use crate::error::invalid_state;
 use crate::query::ExecutionProgress;
+use crate::runtime::INHERITED_ACROSS_FORK;
 
 /// Buffer `New`/`SetOption` options until `Init` passes them to the driver's constructor.
 pub(crate) enum Staged<K, S> {
@@ -60,6 +61,9 @@ impl<K, S> Staged<K, S> {
 /// Shared handle storage. Access uses `&Self` and interior mutability because ADBC permits
 /// concurrent cancellation and option getters; a reference to the whole struct must not be mutable.
 pub(crate) struct Exported<S> {
+    /// The process that created the object. A `fork` child inherits it without the runtime's
+    /// workers and with any lock another thread held, so [`acquire`] refuses it before locking.
+    process: u32,
     /// Set once, by construction or `Init`; accessible while execution holds the state lock.
     cancel: OnceLock<Box<dyn CancelHandle>>,
     /// Statement progress, readable during execution. Databases and connections publish none.
@@ -83,6 +87,7 @@ impl<S> Exported<S> {
         progress: Option<Arc<ExecutionProgress>>,
     ) -> Self {
         Self {
+            process: std::process::id(),
             cancel: cancel.map_or_else(OnceLock::new, OnceLock::from),
             progress,
             state: Mutex::new(state),
@@ -186,10 +191,14 @@ unsafe fn acquire<S>(slot: *const *mut c_void, kind: &str) -> Result<Arc<Exporte
     }
     // SAFETY: A non-null slot holds the handle's own `Arc::into_raw` reference, which `release`
     // gives up only under the write lock, so the count cannot reach zero before this increment.
-    unsafe {
+    let exported = unsafe {
         Arc::increment_strong_count(pointer);
-        Ok(Arc::from_raw(pointer))
+        Arc::from_raw(pointer)
+    };
+    if exported.process != std::process::id() {
+        return Err(invalid_state(INHERITED_ACROSS_FORK));
     }
+    Ok(exported)
 }
 
 /// Run `f` against the object behind `slot`, containing panics and reporting errors through

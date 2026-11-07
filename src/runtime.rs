@@ -318,8 +318,9 @@ mod tests {
         assert_eq!((direct, spawned, entered), (1, 2, 3));
     }
 
-    /// Blocking would hang forever, so an inherited handle panics, which the C ABI reports as an
-    /// error. Dropping the last owner must not reach for the missing workers either.
+    /// Blocking would hang forever, so a Rust caller's inherited handle panics; the C ABI refuses
+    /// one before it gets here. Dropping the last owner must not reach for the missing workers
+    /// either.
     #[test]
     fn a_forked_child_cannot_block_on_an_inherited_runtime() {
         let runtime = orphaned_runtime();
