@@ -5,6 +5,25 @@ use super::{
     Dataset, DatasetId, ListedTable, MetadataClient, Page, Table, TableId, TableView, listing_query,
 };
 use crate::test_support::errors::assert_message_omits;
+use crate::test_support::http::{capture_requests, capture_requests_responding, error_body, ok};
+
+const DATASET: DatasetId<'_> = DatasetId {
+    project_id: "p",
+    dataset_id: "d",
+};
+
+const TABLE: TableId<'_> = TableId {
+    project_id: "p",
+    dataset_id: "d",
+    table_id: "t",
+};
+
+/// Decodes a dataset listing without reading its entries.
+fn dataset_page(body: &[u8]) -> adbc_core::error::Result<Page<String>> {
+    Page::decode(body, "BigQuery dataset listing", "datasets", |_| {
+        Ok(String::new())
+    })
+}
 
 fn client() -> MetadataClient {
     client_at(crate::test_support::UNREACHABLE_ENDPOINT)
@@ -175,14 +194,9 @@ fn malformed_metadata_scalars_are_not_silently_discarded() {
 fn a_malformed_continuation_token_does_not_end_a_listing() {
     for token in ["false", "42", "[]", "{}"] {
         let body = format!(r#"{{"datasets": [], "nextPageToken": {token}}}"#);
-        let failure = Page::<String>::decode(
-            body.as_bytes(),
-            "BigQuery dataset listing",
-            "datasets",
-            |_| Ok(String::new()),
-        )
-        .err()
-        .expect("a malformed continuation token must not truncate the listing");
+        let failure = dataset_page(body.as_bytes())
+            .err()
+            .expect("a malformed continuation token must not truncate the listing");
         assert_eq!(failure.status, Status::InvalidData);
     }
 }
@@ -221,13 +235,7 @@ fn an_explicit_null_reads_as_an_absent_field() {
     assert!(table.labels.is_empty());
     assert_eq!(table.require_partition_filter, None);
 
-    let page = Page::<String>::decode(
-        br#"{"datasets": null, "nextPageToken": null}"#,
-        "BigQuery dataset listing",
-        "datasets",
-        |_| Ok(String::new()),
-    )
-    .unwrap();
+    let page = dataset_page(br#"{"datasets": null, "nextPageToken": null}"#).unwrap();
     assert!(page.items.is_empty());
     assert!(page.next_page_token.is_empty());
 }
@@ -252,12 +260,7 @@ fn an_escaped_field_name_reads_as_the_field_it_spells() {
 /// silently reporting no tables would look like an empty dataset.
 #[test]
 fn a_listing_whose_entries_are_not_an_array_is_rejected() {
-    let Err(failure) = Page::<String>::decode(
-        br#"{"datasets": {"first": {}}}"#,
-        "BigQuery dataset listing",
-        "datasets",
-        |_| Ok(String::new()),
-    ) else {
+    let Err(failure) = dataset_page(br#"{"datasets": {"first": {}}}"#) else {
         panic!("a listing whose entries are not an array must not decode");
     };
     assert_eq!(failure.status, Status::InvalidData);
@@ -325,10 +328,7 @@ fn a_listing_page_decodes_its_entries_and_its_continuation() {
     assert_eq!(page.next_page_token, "page-2");
 
     // The last page of an empty project carries neither an array nor a token.
-    let page = Page::<String>::decode(b"{}", "BigQuery dataset listing", "datasets", |_| {
-        Ok(String::new())
-    })
-    .unwrap();
+    let page = dataset_page(b"{}").unwrap();
     assert!(page.items.is_empty());
     assert!(page.next_page_token.is_empty());
 
@@ -375,8 +375,7 @@ fn lookups_decode_the_names_bigquery_resolved() {
         ),
         (serde_json::json!({}), ""),
     ] {
-        let (endpoint, captured) =
-            crate::test_support::http::capture_requests(vec![(200, response)]);
+        let (endpoint, captured) = capture_requests(vec![(200, response)]);
         let client = client_at(&endpoint);
         let dataset = DatasetId {
             project_id: "p",
@@ -407,14 +406,9 @@ fn a_dataset_location_lookup_requires_a_location() {
         (serde_json::json!({}), Err(())),
         (serde_json::json!({"location": ""}), Err(())),
     ] {
-        let (endpoint, captured) =
-            crate::test_support::http::capture_requests(vec![(200, response)]);
+        let (endpoint, captured) = capture_requests(vec![(200, response)]);
         let client = client_at(&endpoint);
-        let dataset = DatasetId {
-            project_id: "p",
-            dataset_id: "d",
-        };
-        let location = runtime.block_on(client.get_dataset_location(None, dataset));
+        let location = runtime.block_on(client.get_dataset_location(None, DATASET));
         captured.join().unwrap();
         match (location, expected) {
             (Ok(location), Ok(expected)) => assert_eq!(location, expected),
@@ -562,9 +556,6 @@ fn assert_url(url: &str, expected_path: &str, expected_query: &[(&str, &str)]) {
 /// on the resource at once.
 #[test]
 fn a_metadata_read_retries_transient_failures_but_not_a_verdict() {
-    use crate::test_support::http::{capture_requests, error_body};
-    use serde_json::json;
-
     let rejection = |code: u16, reason: &str| (code, error_body(reason, "refused"));
     let budget = usize::try_from(crate::rest::retry::MAX_ATTEMPTS).unwrap();
     for (responses, expected) in [
@@ -572,7 +563,7 @@ fn a_metadata_read_retries_transient_failures_but_not_a_verdict() {
             vec![
                 rejection(503, "backendError"),
                 rejection(403, "rateLimitExceeded"),
-                (200, json!({})),
+                ok(serde_json::json!({})),
             ],
             None,
         ),
@@ -590,12 +581,8 @@ fn a_metadata_read_retries_transient_failures_but_not_a_verdict() {
         let requests = responses.len();
         let (endpoint, captured) = capture_requests(responses);
         let client = client_at(&endpoint);
-        let dataset = DatasetId {
-            project_id: "p",
-            dataset_id: "d",
-        };
         let status = runtime
-            .block_on(client.get_dataset(None, dataset))
+            .block_on(client.get_dataset(None, DATASET))
             .err()
             .map(|failure| failure.into_error("failed to check p.d").status);
         assert_eq!(status, expected);
@@ -636,7 +623,6 @@ fn cancelling_a_blind_patch_during_its_backoff_returns_cancelled() {
     use adbc_core::CancelHandle as _;
 
     use crate::cancellation::{Cancellation, OperationCancelHandle};
-    use crate::test_support::http::{capture_requests, error_body};
 
     let (endpoint, captured) =
         capture_requests(vec![(503, error_body("backendError", "Backend error."))]);
@@ -651,14 +637,9 @@ fn cancelling_a_blind_patch_during_its_backoff_returns_cancelled() {
     let (finished, result) = mpsc::channel();
     let patch_operation = operation.clone();
     let patch = std::thread::spawn(move || {
-        let table = TableId {
-            project_id: "p",
-            dataset_id: "d",
-            table_id: "t",
-        };
         let outcome = runtime.block_on(client.patch_table_description(
             Some(&patch_operation),
-            table,
+            TABLE,
             "A documented relation.",
         ));
         finished
@@ -671,7 +652,7 @@ fn cancelling_a_blind_patch_during_its_backoff_returns_cancelled() {
     });
 
     // The mock has written the 503; give the driver a moment to read it and start its backoff.
-    assert_eq!(captured.join().unwrap().len(), 1);
+    captured.served(1);
     std::thread::sleep(Duration::from_millis(100));
     OperationCancelHandle(cancellation).try_cancel().unwrap();
 
@@ -688,19 +669,13 @@ fn cancelling_a_blind_patch_during_its_backoff_returns_cancelled() {
 /// request beneath it.
 #[test]
 fn an_unanswered_read_is_named_only_by_the_callers_context() {
-    use crate::test_support::http::capture_requests_responding;
-
     let attempts = usize::try_from(crate::rest::retry::MAX_ATTEMPTS).unwrap();
     // Every request is read whole and its connection closed without an answer.
     let (endpoint, captured) = capture_requests_responding(attempts, |_| None);
     let runtime = crate::runtime::new_runtime().unwrap();
     let client = client_at(&endpoint);
-    let dataset = DatasetId {
-        project_id: "p",
-        dataset_id: "d",
-    };
     let failure = runtime
-        .block_on(client.get_dataset(None, dataset))
+        .block_on(client.get_dataset(None, DATASET))
         .expect_err("an unanswered read must fail")
         .into_error("failed to check p.d");
     assert_eq!(failure.status, Status::IO);
@@ -711,27 +686,20 @@ fn an_unanswered_read_is_named_only_by_the_callers_context() {
         "{}",
         failure.message
     );
-    assert_eq!(captured.join().unwrap().len(), attempts);
+    captured.served(attempts);
 }
 
 /// `tables.insert` is resent only after a rate-limit rejection, which applied nothing: a replay
 /// after a 5xx might follow an unseen success and turn it into a 409.
 #[test]
 fn a_table_insert_is_resent_only_after_a_rate_limit() {
-    use crate::test_support::http::{capture_requests, error_body};
-
-    let table = TableId {
-        project_id: "p",
-        dataset_id: "d",
-        table_id: "t",
-    };
     let schema = crate::rest::model::TableSchema::default();
     for (responses, expected) in [
         (
             vec![
                 (429, error_body("rateLimitExceeded", "slow down")),
                 (403, error_body("rateLimitExceeded", "slow down")),
-                (200, serde_json::json!({"etag": "e"})),
+                ok(serde_json::json!({"etag": "e"})),
             ],
             None,
         ),
@@ -748,7 +716,7 @@ fn a_table_insert_is_resent_only_after_a_rate_limit() {
         let requests = responses.len();
         let (endpoint, captured) = capture_requests(responses);
         let status = runtime
-            .block_on(client_at(&endpoint).insert_table(None, table, &schema))
+            .block_on(client_at(&endpoint).insert_table(None, TABLE, &schema))
             .err()
             .map(|failure| failure.into_error("failed to create p.d.t").status);
         assert_eq!(status, expected);

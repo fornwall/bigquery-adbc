@@ -6,73 +6,71 @@ use std::thread;
 use std::time::Duration;
 
 use adbc_core::CancelHandle as _;
-use adbc_core::error::Status;
-use serde::Serialize;
-use serde_json::json;
+use adbc_core::error::{Result, Status};
+use serde_json::{Value as JsonValue, json};
 
-use super::{JobClient, JobReference, JobRequest, QueryResultsRead};
-use crate::cancellation::{Cancellation, Operation, OperationCancelHandle};
+use super::{JobClient, JobReference, JobRequest, QueryAnswer, QueryResultsRead};
+use crate::cancellation::OperationCancelHandle;
 use crate::clients::{ClientState, DatasetKey};
 use crate::config::ServiceEndpointKind;
 use crate::error::DETAIL_JOB_ID;
+use crate::rest::request::RequestStart;
 use crate::runtime::{SharedRuntime, new_runtime};
-use crate::test_support::errors::assert_message;
+use crate::test_support::cancellation::{job_client, operation, operation_at};
+use crate::test_support::errors::{assert_failure, assert_message};
 use crate::test_support::http::{
-    CapturedServer, capture_requests, capture_requests_gated, capture_requests_responding,
-    capture_requests_until_stopped, error_body, ok,
+    CapturedRequest, StoppableServer, capture_requests, capture_requests_gated,
+    capture_requests_responding, capture_requests_until_stopped, error_body, ok,
 };
 use crate::test_support::identifiers::project;
 
 const MAX_ATTEMPTS: usize = crate::rest::retry::MAX_ATTEMPTS as usize;
 const MAX_RECONCILIATION_ATTEMPTS: usize = super::MAX_RECONCILIATION_ATTEMPTS as usize;
 
-#[derive(Serialize)]
-struct TestConfiguration<'a> {
-    query: TestQuery<'a>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct TestQuery<'a> {
-    query: &'a str,
-    use_legacy_sql: bool,
-}
-
 /// A long backoff for the test that cancels a submission during backoff; cancellation cuts it
 /// short. `cancellation_during_ambiguous_retry_backoff_confirms_the_requested_identity` explains
 /// why the outcome holds even when jitter lands the cancel outside it.
 const CANCELLED_BACKOFF: Duration = Duration::from_secs(5);
 
+fn job_request(reference: JobReference, dry_run: bool) -> Result<JobRequest> {
+    let configuration = json!({"query": {"query": "select 1", "useLegacySql": false}});
+    JobRequest::new(reference, dry_run, &configuration, "the test job")
+}
+
 fn request(id: &str, location: Option<&str>, dry_run: bool) -> JobRequest {
-    JobRequest::new(
-        JobReference::new("billing/project", location, id.to_owned()),
-        dry_run,
-        &TestConfiguration {
-            query: TestQuery {
-                query: "select 1",
-                use_legacy_sql: false,
-            },
-        },
-        "the test job",
-    )
-    .unwrap()
+    let reference = JobReference::new("billing/project", location, id.to_owned());
+    job_request(reference, dry_run).unwrap()
 }
 
-fn client(endpoint: &str) -> (SharedRuntime, JobClient) {
-    (new_runtime().unwrap(), JobClient::for_test(endpoint))
+/// `count` answers to a request for a job that is not visible.
+fn invisible(count: usize) -> Vec<(u16, JsonValue)> {
+    vec![(404, error_body("notFound", "Not found: Job")); count]
 }
 
-fn operation(runtime: &SharedRuntime, state: Arc<ClientState>) -> (Arc<Cancellation>, Operation) {
-    let cancellation = Cancellation::new(runtime.clone(), state, "statement");
-    let operation = cancellation.begin();
-    (cancellation, operation)
+/// A provisional cancel that spends its attempts on an invisible job, then one that is accepted.
+fn cancels_after_confirmation() -> Vec<(u16, JsonValue)> {
+    let mut responses = invisible(MAX_ATTEMPTS);
+    responses.push(ok(json!({})));
+    responses
 }
 
-fn operation_at(runtime: &SharedRuntime, endpoint: &str) -> (Arc<Cancellation>, Operation) {
-    operation(
-        runtime,
-        ClientState::for_test_at(ServiceEndpointKind::BigQuery, endpoint),
-    )
+/// Asserts that `server` is sent nothing, allowing for a cancel sent in the background.
+fn assert_unused(server: StoppableServer) {
+    thread::sleep(Duration::from_millis(200));
+    assert!(server.stop().is_empty());
+}
+
+/// Stages `responses` and submits one `jobs.query` for `project`, returning its answer and the
+/// requests that reached the mock.
+fn jobs_query(
+    project: &str,
+    responses: Vec<(u16, JsonValue)>,
+) -> (Result<QueryAnswer>, Vec<CapturedRequest>) {
+    let (endpoint, captured) = capture_requests(responses);
+    let (runtime, jobs) = job_client(&endpoint);
+    let body = bytes::Bytes::from_static(b"{}");
+    let answer = runtime.block_on(jobs.query(None, project, body, &RequestStart::default()));
+    (answer, captured.join().unwrap())
 }
 
 #[test]
@@ -120,8 +118,8 @@ fn job_references_adopt_the_service_resolved_project_number() {
 }
 
 /// Submits copy job `id` in `EU` to `endpoint`, under a cancellation scope nothing cancels.
-fn insert_copy(endpoint: &str, id: &str) -> adbc_core::error::Result<bytes::Bytes> {
-    let (runtime, client) = client(endpoint);
+fn insert_copy(endpoint: &str, id: &str) -> Result<bytes::Bytes> {
+    let (runtime, client) = job_client(endpoint);
     let (_cancellation, operation) = operation(&runtime, ClientState::for_test());
     let response =
         runtime.block_on(client.insert(Some(&operation), &request(id, Some("EU"), false), "copy"));
@@ -132,13 +130,10 @@ fn insert_copy(endpoint: &str, id: &str) -> adbc_core::error::Result<bytes::Byte
 #[test]
 fn successful_submissions_preserve_the_callers_distinct_ids_and_location() {
     let (endpoint, captured) = capture_requests(vec![
-        (200, json!({"status": {"state": "DONE"}, "marker": "first"})),
-        (
-            200,
-            json!({"status": {"state": "DONE"}, "marker": "second"}),
-        ),
+        ok(json!({"status": {"state": "DONE"}, "marker": "first"})),
+        ok(json!({"status": {"state": "DONE"}, "marker": "second"})),
     ]);
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let (_cancellation, operation) = operation(&runtime, ClientState::for_test());
 
     let first = request("job/one", Some("EU west/1"), false);
@@ -152,15 +147,14 @@ fn successful_submissions_preserve_the_callers_distinct_ids_and_location() {
     operation.finish();
 
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&first_response).unwrap()["marker"],
+        serde_json::from_slice::<JsonValue>(&first_response).unwrap()["marker"],
         "first"
     );
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&second_response).unwrap()["marker"],
+        serde_json::from_slice::<JsonValue>(&second_response).unwrap()["marker"],
         "second"
     );
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 2);
+    let captured = captured.served(2);
     for request in &captured {
         assert_eq!(
             request.path(),
@@ -190,16 +184,15 @@ fn duplicate_submission_tolerates_visibility_and_transient_get_failures() {
         ),
         (404, error_body("notFound", "not visible")),
         (500, error_body("backendError", "later")),
-        (200, json!({"status": {"state": "DONE"}, "recovered": true})),
+        ok(json!({"status": {"state": "DONE"}, "recovered": true})),
     ]);
     let response = insert_copy(&endpoint, "job/ambiguous").unwrap();
 
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&response).unwrap()["recovered"],
+        serde_json::from_slice::<JsonValue>(&response).unwrap()["recovered"],
         true
     );
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 4);
+    let captured = captured.served(4);
     assert!(
         captured[0]
             .line
@@ -213,7 +206,7 @@ fn duplicate_submission_tolerates_visibility_and_transient_get_failures() {
 }
 
 /// The job resource BigQuery answers for job `id` of `billing/project` running in `location`.
-fn job_in(id: &str, location: &str) -> serde_json::Value {
+fn job_in(id: &str, location: &str) -> JsonValue {
     json!({
         "jobReference": {"projectId": "billing/project", "jobId": id, "location": location},
         "status": {"state": "RUNNING"}
@@ -239,7 +232,7 @@ fn insert_query(
     runtime: &SharedRuntime,
     client: &JobClient,
     request: &JobRequest,
-) -> adbc_core::error::Result<serde_json::Value> {
+) -> Result<JsonValue> {
     let (_cancellation, operation) = operation(runtime, ClientState::for_test());
     let response = runtime.block_on(client.insert(Some(&operation), request, "query"));
     operation.finish();
@@ -247,17 +240,13 @@ fn insert_query(
 }
 
 /// Every attempt of a submission whose answers are all lost to a transient failure.
-fn lost_submissions() -> Vec<(u16, serde_json::Value)> {
-    (0..MAX_ATTEMPTS)
-        .map(|_| (503, error_body("backendError", "try later")))
-        .collect()
+fn lost_submissions() -> Vec<(u16, JsonValue)> {
+    vec![(503, error_body("backendError", "try later")); MAX_ATTEMPTS]
 }
 
 /// Every attempt to fetch a job that is not where the request looked.
-fn not_found_here() -> Vec<(u16, serde_json::Value)> {
-    (0..MAX_RECONCILIATION_ATTEMPTS)
-        .map(|_| (404, error_body("notFound", "Not found: Job")))
-        .collect()
+fn not_found_here() -> Vec<(u16, JsonValue)> {
+    invisible(MAX_RECONCILIATION_ATTEMPTS)
 }
 
 /// A job submitted without a location runs where BigQuery infers. The replay after a lost answer
@@ -276,16 +265,15 @@ fn a_conflict_names_where_a_job_without_a_location_runs() {
                     "Already Exists: Job billing/project:asia-northeast1.job-a",
                 ),
             )),
-            _ => Some((200, job_in("job-a", "asia-northeast1"))),
+            _ => Some(ok(job_in("job-a", "asia-northeast1"))),
         }
     });
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
 
     let response = insert_query(&runtime, &client, &request("job-a", None, false)).unwrap();
 
     assert_eq!(response["jobReference"]["location"], "asia-northeast1");
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 3);
+    let captured = captured.served(3);
     assert!(captured[0].body["jobReference"].get("location").is_none());
     assert_eq!(captured[0].raw_body, captured[1].raw_body);
     assert!(
@@ -302,34 +290,20 @@ fn a_conflict_names_where_a_job_without_a_location_runs() {
 #[test]
 fn a_numeric_project_conflict_recovers_and_cancels_the_canonical_job() {
     let reference = JobReference::new("123456789", None, "job-a".to_owned());
-    let request = JobRequest::new(
-        reference.clone(),
-        false,
-        &TestConfiguration {
-            query: TestQuery {
-                query: "select 1",
-                use_legacy_sql: false,
-            },
-        },
-        "the test job",
-    )
-    .unwrap();
+    let request = job_request(reference.clone(), false).unwrap();
     let duplicate_message = "Already Exists: Job domain:canonical:asia-northeast1.job-a";
     let (endpoint, captured) = capture_requests(vec![
         (409, error_body("duplicate", duplicate_message)),
-        (
-            200,
-            json!({
-                "jobReference": {
-                    "projectId": "domain:canonical", "jobId": "job-a",
-                    "location": "asia-northeast1"
-                },
-                "status": {"state": "RUNNING"}
-            }),
-        ),
-        (200, json!({})),
+        ok(json!({
+            "jobReference": {
+                "projectId": "domain:canonical", "jobId": "job-a",
+                "location": "asia-northeast1"
+            },
+            "status": {"state": "RUNNING"}
+        })),
+        ok(json!({})),
     ]);
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let (cancellation, operation) = operation_at(&runtime, &endpoint);
     runtime
         .block_on(client.insert(Some(&operation), &request, "test"))
@@ -337,8 +311,7 @@ fn a_numeric_project_conflict_recovers_and_cancels_the_canonical_job() {
     OperationCancelHandle(cancellation).try_cancel().unwrap();
     operation.finish();
 
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 3);
+    let captured = captured.served(3);
     assert_eq!(captured[0].path(), "/bigquery/v2/projects/123456789/jobs");
     assert_eq!(
         captured[1].path(),
@@ -374,9 +347,9 @@ fn a_conflict_that_does_not_name_this_job_exactly_names_no_location() {
     ] {
         let (endpoint, captured) = capture_requests(vec![
             (409, error_body("duplicate", message)),
-            (200, job_in("job-a", "US")),
+            ok(job_in("job-a", "US")),
         ]);
-        let (runtime, client) = client(&endpoint);
+        let (runtime, client) = job_client(&endpoint);
 
         let response = insert_query(&runtime, &client, &request("job-a", None, false)).unwrap();
 
@@ -394,15 +367,14 @@ fn a_conflict_that_does_not_name_this_job_exactly_names_no_location() {
 #[test]
 fn a_lost_answer_without_a_location_finds_a_multi_region_job() {
     let mut responses = lost_submissions();
-    responses.push((200, job_in("job-b", "EU")));
+    responses.push(ok(job_in("job-b", "EU")));
     let (endpoint, captured) = capture_requests(responses);
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
 
     let response = insert_query(&runtime, &client, &request("job-b", None, false)).unwrap();
 
     assert_eq!(response["jobReference"]["location"], "EU");
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), MAX_ATTEMPTS + 1);
+    let captured = captured.served(MAX_ATTEMPTS + 1);
     assert_eq!(
         captured[MAX_ATTEMPTS].path(),
         "/bigquery/v2/projects/billing%2Fproject/jobs/job-b"
@@ -415,9 +387,9 @@ fn a_lost_answer_without_a_location_finds_a_multi_region_job() {
 fn a_lost_answer_without_a_location_finds_the_job_in_a_named_datasets_location() {
     let mut responses = lost_submissions();
     responses.extend(not_found_here());
-    responses.push((200, json!({"location": "US"})));
-    responses.push((200, json!({"location": "asia-northeast1"})));
-    responses.push((200, job_in("job-c", "asia-northeast1")));
+    responses.push(ok(json!({"location": "US"})));
+    responses.push(ok(json!({"location": "asia-northeast1"})));
+    responses.push(ok(job_in("job-c", "asia-northeast1")));
     let (endpoint, captured) = capture_requests(responses);
     let runtime = new_runtime().unwrap();
     let (client, state) = locating_client(&runtime, &endpoint);
@@ -456,9 +428,9 @@ fn a_lost_answer_without_a_location_finds_the_job_in_a_named_datasets_location()
 fn a_job_without_a_location_that_cannot_be_found_may_still_run() {
     let mut responses = lost_submissions();
     responses.extend(not_found_here());
-    responses.push((200, json!({"location": "asia-northeast1"})));
+    responses.push(ok(json!({"location": "asia-northeast1"})));
     responses.extend(not_found_here());
-    responses.extend(vec![(200, json!({})); MAX_RECONCILIATION_ATTEMPTS]);
+    responses.extend(vec![ok(json!({})); MAX_RECONCILIATION_ATTEMPTS]);
     let (endpoint, captured) = capture_requests(responses);
     let runtime = new_runtime().unwrap();
     let (client, _state) = locating_client(&runtime, &endpoint);
@@ -491,10 +463,7 @@ fn a_job_without_a_location_that_cannot_be_found_may_still_run() {
             .unwrap()
             .contains(&(DETAIL_JOB_ID.to_owned(), b"billing/project:job-d".to_vec()))
     );
-    assert_eq!(
-        captured.join().unwrap().len(),
-        MAX_ATTEMPTS + 3 * MAX_RECONCILIATION_ATTEMPTS + 1
-    );
+    captured.served(MAX_ATTEMPTS + 3 * MAX_RECONCILIATION_ATTEMPTS + 1);
 }
 
 #[test]
@@ -509,13 +478,13 @@ fn a_lost_regional_job_is_recovered_from_a_later_list_page() {
         responses.extend(not_found_here());
         responses.extend([
             (503, error_body("backendError", "list temporarily unavailable")),
-            (200, json!({"jobs": [
+            ok(json!({"jobs": [
                 job_in("job-listed-prefix", "asia-northeast1"),
                 {"jobReference": {"projectId": "987654321", "jobId": "job-listed", "location": "EU"}},
                 {}
             ], "nextPageToken": "next /+?"})),
-            (200, json!({"jobs": [job_in("job-listed", "asia-northeast1")]})),
-            (200, job_in("job-listed", "asia-northeast1")),
+            ok(json!({"jobs": [job_in("job-listed", "asia-northeast1")]})),
+            ok(job_in("job-listed", "asia-northeast1")),
         ]);
         // Numeric project IDs are resolved by authenticated responses to a canonical text ID.
         if project_id == "123456789" {
@@ -531,14 +500,9 @@ fn a_lost_regional_job_is_recovered_from_a_later_list_page() {
             }
         }
         let (endpoint, captured) = capture_requests(responses);
-        let (runtime, client) = client(&endpoint);
-        let request = JobRequest::new(
-            JobReference::new(project_id, None, "job-listed".to_owned()),
-            false,
-            &json!({"query": {"query": "SELECT 1", "useLegacySql": false}}),
-            "query",
-        )
-        .unwrap();
+        let (runtime, client) = job_client(&endpoint);
+        let reference = JobReference::new(project_id, None, "job-listed".to_owned());
+        let request = job_request(reference, false).unwrap();
         let before = SystemTime::now();
         let result = insert_query(&runtime, &client, &request).unwrap();
         let after = SystemTime::now();
@@ -596,7 +560,7 @@ fn a_failed_location_listing_reports_that_the_job_may_still_run() {
         responses.extend(not_found_here());
         responses.push((status, body));
         let (endpoint, captured) = capture_requests(responses);
-        let (runtime, client) = client(&endpoint);
+        let (runtime, client) = job_client(&endpoint);
         let failure =
             insert_query(&runtime, &client, &request("lost-job", None, false)).unwrap_err();
         assert_eq!(failure.status, expected);
@@ -604,10 +568,7 @@ fn a_failed_location_listing_reports_that_the_job_may_still_run() {
             &failure,
             &["BigQuery may still run job billing/project:lost-job"],
         );
-        assert_eq!(
-            captured.join().unwrap().len(),
-            MAX_RECONCILIATION_ATTEMPTS + 2
-        );
+        captured.served(MAX_RECONCILIATION_ATTEMPTS + 2);
     }
 }
 
@@ -631,85 +592,50 @@ fn a_listed_job_fetch_failure_keeps_the_recovered_identity() {
     let mut responses = vec![(409, error_body("duplicate", "no location"))];
     responses.extend(not_found_here());
     responses.extend([
-        (
-            200,
-            json!({"jobs": [job_in("lost-job", "asia-northeast1")]}),
-        ),
+        ok(json!({"jobs": [job_in("lost-job", "asia-northeast1")]})),
         (403, error_body("accessDenied", "fetch refused")),
     ]);
     let (endpoint, captured) = capture_requests(responses);
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let failure = insert_query(&runtime, &client, &request("lost-job", None, false)).unwrap_err();
-    assert_eq!(failure.status, Status::Unauthorized);
-    assert_message(
+    assert_failure(
         &failure,
+        Status::Unauthorized,
         &["recovery did not complete", "j=bq:asia-northeast1:lost-job"],
     );
     assert!(failure.details.unwrap().contains(&(
         DETAIL_JOB_ID.to_owned(),
         b"billing/project:asia-northeast1.lost-job".to_vec(),
     )));
-    assert_eq!(
-        captured.join().unwrap().len(),
-        MAX_RECONCILIATION_ATTEMPTS + 3
-    );
+    captured.served(MAX_RECONCILIATION_ATTEMPTS + 3);
 }
 
 #[test]
 fn a_location_search_bounds_repeated_pagination_tokens() {
     let (endpoint, captured) = capture_requests_responding(
         usize::try_from(super::MAX_JOB_SEARCH_PAGES).unwrap(),
-        |_| Some((200, json!({"nextPageToken": "repeated"}))),
+        |_| Some(ok(json!({"nextPageToken": "repeated"}))),
     );
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let failure = runtime
         .block_on(unlocated_submission(client).locate_by_listing())
         .unwrap_err();
-    assert_eq!(failure.status, Status::IO);
-    assert_message(&failure, &["jobs.list exceeded the page limit"]);
-    assert_eq!(
-        captured.join().unwrap().len(),
-        usize::try_from(super::MAX_JOB_SEARCH_PAGES).unwrap()
-    );
+    assert_failure(&failure, Status::IO, &["jobs.list exceeded the page limit"]);
+    captured.served(usize::try_from(super::MAX_JOB_SEARCH_PAGES).unwrap());
 }
 
 #[test]
 fn a_location_search_deadline_includes_credentials_and_all_pages() {
-    #[derive(Debug)]
-    struct SearchCredentials(tokio::sync::mpsc::UnboundedSender<()>);
-
-    impl google_cloud_auth::credentials::CredentialsProvider for SearchCredentials {
-        async fn headers(
-            &self,
-            _: http::Extensions,
-        ) -> Result<
-            google_cloud_auth::credentials::CacheableResource<http::HeaderMap>,
-            google_cloud_gax::error::CredentialsError,
-        > {
-            self.0.send(()).unwrap();
-            tokio::time::sleep(Duration::from_secs(20)).await;
-            Ok(google_cloud_auth::credentials::CacheableResource::New {
-                entity_tag: google_cloud_auth::credentials::EntityTag::new(),
-                data: http::HeaderMap::new(),
-            })
-        }
-
-        async fn universe_domain(&self) -> Option<String> {
-            Some("googleapis.com".to_owned())
-        }
-    }
-
     crate::runtime::install_crypto_provider();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .start_paused(true)
         .build()
         .unwrap();
-    let (endpoint, captured) = capture_requests(vec![(200, json!({"nextPageToken": "next"}))]);
+    let (endpoint, captured) = capture_requests(vec![ok(json!({"nextPageToken": "next"}))]);
     let mut client = JobClient::for_test(&endpoint);
     let (minting, mut minted) = tokio::sync::mpsc::unbounded_channel();
-    client.credentials =
-        google_cloud_auth::credentials::Credentials::from(SearchCredentials(minting));
+    client.credentials = slow_credentials(minting, Duration::from_secs(20));
     runtime.block_on(async {
         // Prevent automatic clock advancement during socket I/O; each request takes twenty
         // seconds to mint credentials, so the second page must hit the shared deadline.
@@ -727,8 +653,11 @@ fn a_location_search_deadline_includes_credentials_and_all_pages() {
             tokio::time::advance(advance).await;
         }
         let failure = search.await.unwrap_err();
-        assert_eq!(failure.status, Status::Timeout);
-        assert_message(&failure, &["job location search deadline exceeded"]);
+        assert_failure(
+            &failure,
+            Status::Timeout,
+            &["job location search deadline exceeded"],
+        );
         assert_eq!(
             tokio::time::Instant::now() - start,
             super::JOB_SEARCH_TIMEOUT
@@ -736,7 +665,7 @@ fn a_location_search_deadline_includes_credentials_and_all_pages() {
         drop(hold);
         let _ = inhibitor.await;
     });
-    assert_eq!(captured.join().unwrap().len(), 1);
+    captured.served(1);
 }
 
 /// A rejection proves no job was created, so nothing is looked for.
@@ -744,12 +673,12 @@ fn a_location_search_deadline_includes_credentials_and_all_pages() {
 fn a_rejected_submission_without_a_location_is_not_looked_for() {
     let (endpoint, captured) =
         capture_requests(vec![(400, error_body("invalidQuery", "Syntax error"))]);
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
 
     let failure = insert_query(&runtime, &client, &request("job-e", None, false)).unwrap_err();
 
     assert_eq!(failure.status, Status::InvalidArguments);
-    assert_eq!(captured.join().unwrap().len(), 1);
+    captured.served(1);
 }
 
 /// A cancel before the answer is known first addresses the job without a location. The submission
@@ -757,15 +686,11 @@ fn a_rejected_submission_without_a_location_is_not_looked_for() {
 #[test]
 fn a_cancel_before_the_answer_cancels_the_job_where_the_answer_puts_it() {
     let runtime = new_runtime().unwrap();
-    let mut cancel_responses = (0..MAX_ATTEMPTS)
-        .map(|_| (404, error_body("notFound", "Not found: Job")))
-        .collect::<Vec<_>>();
-    cancel_responses.push((200, json!({})));
-    let (cancel_endpoint, cancels) = capture_requests(cancel_responses);
+    let (cancel_endpoint, cancels) = capture_requests(cancels_after_confirmation());
     let (cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
     let handle = OperationCancelHandle(cancellation);
     let (endpoint, inserts) =
-        capture_requests_gated(vec![(200, job_in("job-f", "asia-northeast1"))], move || {
+        capture_requests_gated(vec![ok(job_in("job-f", "asia-northeast1"))], move || {
             handle.try_cancel().unwrap();
             true
         });
@@ -776,7 +701,7 @@ fn a_cancel_before_the_answer_cancels_the_job_where_the_answer_puts_it() {
         .unwrap_err();
 
     assert_eq!(failure.status, Status::Cancelled);
-    assert_eq!(inserts.join().unwrap().len(), 1);
+    inserts.served(1);
     let cancels = cancels.join().unwrap();
     operation.finish();
     for cancel in &cancels[..MAX_ATTEMPTS] {
@@ -796,11 +721,7 @@ fn a_cancel_before_the_answer_cancels_the_job_where_the_answer_puts_it() {
 #[test]
 fn a_cancel_before_a_lost_answer_finds_the_job_without_resubmitting_it() {
     let runtime = new_runtime().unwrap();
-    let mut cancel_responses = (0..MAX_ATTEMPTS)
-        .map(|_| (404, error_body("notFound", "Not found: Job")))
-        .collect::<Vec<_>>();
-    cancel_responses.push((200, json!({})));
-    let (cancel_endpoint, cancels) = capture_requests(cancel_responses);
+    let (cancel_endpoint, cancels) = capture_requests(cancels_after_confirmation());
     let (cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
     let handle = OperationCancelHandle(cancellation);
     let mut lookups = not_found_here().into_iter();
@@ -811,11 +732,11 @@ fn a_cancel_before_a_lost_answer_finds_the_job_without_resubmitting_it() {
                 return None;
             }
             if request.path().contains("/datasets/") {
-                return Some((200, json!({"location": "asia-northeast1"})));
+                return Some(ok(json!({"location": "asia-northeast1"})));
             }
             lookups
                 .next()
-                .or_else(|| Some((200, job_in("job-g", "asia-northeast1"))))
+                .or_else(|| Some(ok(job_in("job-g", "asia-northeast1"))))
         });
     let (client, _state) = locating_client(&runtime, &endpoint);
     let request = request("job-g", None, false).locatable_in([dataset("in_asia")]);
@@ -849,9 +770,7 @@ fn a_cancel_before_a_lost_answer_finds_the_job_without_resubmitting_it() {
 fn a_recovered_location_remains_cancellable_when_the_job_fetch_fails() {
     for duplicate in [false, true] {
         let runtime = new_runtime().unwrap();
-        let mut cancel_responses = vec![(404, error_body("notFound", "not visible")); MAX_ATTEMPTS];
-        cancel_responses.push((200, json!({})));
-        let (cancel_endpoint, cancels) = capture_requests(cancel_responses);
+        let (cancel_endpoint, cancels) = capture_requests(cancels_after_confirmation());
         let (cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
         let handle = OperationCancelHandle(cancellation);
         let mut listings = 0;
@@ -920,17 +839,14 @@ fn cancellation_uses_refreshed_credentials_from_the_submission_client() {
     let (token_endpoint, tokens) = capture_requests(
         ["submission-token", "refreshed-token"]
             .map(|token| {
-                (
-                    200,
-                    json!({
-                        "access_token": token, "expires_in": 3600, "token_type": "Bearer"
-                    }),
-                )
+                ok(json!({
+                    "access_token": token, "expires_in": 3600, "token_type": "Bearer"
+                }))
             })
             .into(),
     );
     let (endpoint, requests) =
-        capture_requests(vec![(200, job_in("refresh-job", "EU")), (200, json!({}))]);
+        capture_requests(vec![ok(job_in("refresh-job", "EU")), ok(json!({}))]);
     crate::runtime::install_crypto_provider();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -977,29 +893,23 @@ fn cancellation_uses_refreshed_credentials_from_the_submission_client() {
         requests[1].path(),
         "/bigquery/v2/projects/billing%2Fproject/jobs/refresh-job/cancel?location=EU"
     );
-    assert_eq!(tokens.join().unwrap().len(), 2);
+    tokens.served(2);
 }
 
 #[test]
 fn jobs_query_retries_the_identical_request_body() {
     let (endpoint, captured) = capture_requests(vec![
         (500, error_body("backendError", "later")),
-        (200, json!({"jobComplete": true, "rows": []})),
+        ok(json!({"jobComplete": true, "rows": []})),
     ]);
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let body = bytes::Bytes::from_static(br#"{"query":"SELECT 1","requestId":"req_same"}"#);
 
     runtime
-        .block_on(client.query(
-            None,
-            "billing/project",
-            body,
-            &crate::rest::request::RequestStart::default(),
-        ))
+        .block_on(client.query(None, "billing/project", body, &RequestStart::default()))
         .unwrap();
 
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 2);
+    let captured = captured.served(2);
     assert_eq!(captured[0].raw_body, captured[1].raw_body);
     assert_eq!(captured[0].body["requestId"], "req_same");
     assert_eq!(
@@ -1008,18 +918,13 @@ fn jobs_query_retries_the_identical_request_body() {
     );
 }
 
-fn duplicate_body(message: &str) -> serde_json::Value {
-    json!({"error": {"code": 409, "message": message,
-        "errors": [{"reason": "duplicate", "message": message}]}})
-}
-
 #[test]
 fn cancelled_queries_stop_rejected_retries_but_recover_ambiguous_submissions() {
     let limited = || (429, error_body("rateLimitExceeded", "later"));
     let duplicate = || {
         (
             409,
-            duplicate_body("Already Exists: Job p:EU.cancelled-job"),
+            error_body("duplicate", "Already Exists: Job p:EU.cancelled-job"),
         )
     };
     for (responses, recover) in [
@@ -1046,23 +951,23 @@ fn cancelled_queries_stop_rejected_retries_but_recover_ambiguous_submissions() {
             wait_for_cancel.recv().unwrap().try_cancel().unwrap();
             true
         });
-        let (runtime, jobs) = client(&endpoint);
+        let (runtime, jobs) = job_client(&endpoint);
         let (cancellation, operation) = operation_at(&runtime, &endpoint);
         cancel.send(OperationCancelHandle(cancellation)).unwrap();
         let answer = runtime.block_on(jobs.query(
             Some(&operation),
             "p",
             bytes::Bytes::from_static(b"{}"),
-            &crate::rest::request::RequestStart::default(),
+            &RequestStart::default(),
         ));
         operation.finish();
         if recover {
-            assert!(matches!(answer.unwrap(), super::QueryAnswer::Replayed(job)
+            assert!(matches!(answer.unwrap(), QueryAnswer::Replayed(job)
                 if job.job_id == "cancelled-job"));
         } else {
             assert_eq!(answer.unwrap_err().status, Status::Cancelled);
         }
-        assert_eq!(captured.join().unwrap().len(), count);
+        captured.served(count);
     }
 }
 
@@ -1072,23 +977,16 @@ fn cancelled_queries_stop_rejected_retries_but_recover_ambiguous_submissions() {
 #[test]
 fn a_replayed_jobs_query_answered_409_names_the_job_its_first_attempt_created() {
     const DUPLICATE: &str = "Already Exists: Job billing:project:US.job_Ab-1_c";
-    let start = crate::rest::request::RequestStart::default();
-    let (endpoint, captured) = capture_requests(vec![
-        (503, error_body("backendError", "later")),
-        (409, duplicate_body(DUPLICATE)),
-    ]);
-    let (runtime, jobs) = client(&endpoint);
-    let answer = runtime
-        .block_on(jobs.query(
-            None,
-            "billing:project",
-            bytes::Bytes::from_static(b"{}"),
-            &start,
-        ))
-        .unwrap();
-    assert_eq!(captured.join().unwrap().len(), 2);
-    let super::QueryAnswer::Replayed(job) = answer else {
-        panic!("expected the replayed job, got {answer:?}");
+    let (answer, requests) = jobs_query(
+        "billing:project",
+        vec![
+            (503, error_body("backendError", "later")),
+            (409, error_body("duplicate", DUPLICATE)),
+        ],
+    );
+    assert_eq!(requests.len(), 2);
+    let QueryAnswer::Replayed(job) = answer.unwrap() else {
+        panic!("expected the replayed job");
     };
     assert_eq!(
         job,
@@ -1097,13 +995,16 @@ fn a_replayed_jobs_query_answered_409_names_the_job_its_first_attempt_created() 
 
     for (responses, what) in [
         (
-            vec![(409, duplicate_body(DUPLICATE))],
+            vec![(409, error_body("duplicate", DUPLICATE))],
             "a first attempt's 409",
         ),
         (
             vec![
                 (503, error_body("backendError", "later")),
-                (409, duplicate_body("Already Exists: Job other:US.job_x")),
+                (
+                    409,
+                    error_body("duplicate", "Already Exists: Job other:US.job_x"),
+                ),
             ],
             "another project's job",
         ),
@@ -1112,49 +1013,39 @@ fn a_replayed_jobs_query_answered_409_names_the_job_its_first_attempt_created() 
                 (503, error_body("backendError", "later")),
                 (
                     409,
-                    duplicate_body("Already Exists: Job billing:project:US.job x"),
+                    error_body("duplicate", "Already Exists: Job billing:project:US.job x"),
                 ),
             ],
             "an unparseable job ID",
         ),
     ] {
-        let (endpoint, captured) = capture_requests(responses);
-        let (runtime, jobs) = client(&endpoint);
-        let failure = runtime
-            .block_on(jobs.query(
-                None,
-                "billing:project",
-                bytes::Bytes::from_static(b"{}"),
-                &start,
-            ))
-            .unwrap_err();
-        captured.join().unwrap();
+        let failure = jobs_query("billing:project", responses).0.unwrap_err();
         assert_eq!(failure.status, Status::AlreadyExists, "{what}");
     }
 }
 
 #[test]
 fn a_replayed_numeric_project_query_adopts_its_canonical_project() {
-    let start = crate::rest::request::RequestStart::default();
-    let (endpoint, captured) = capture_requests(vec![
-        (503, error_body("backendError", "later")),
-        (
-            409,
-            duplicate_body("Already Exists: Job canonical-project:US.job_Ab-1_c"),
-        ),
-    ]);
-    let (runtime, jobs) = client(&endpoint);
-    let answer = runtime
-        .block_on(jobs.query(None, "123456789", bytes::Bytes::from_static(b"{}"), &start))
-        .unwrap();
-    let super::QueryAnswer::Replayed(job) = answer else {
-        panic!("expected the replayed job, got {answer:?}");
+    let (answer, captured) = jobs_query(
+        "123456789",
+        vec![
+            (503, error_body("backendError", "later")),
+            (
+                409,
+                error_body(
+                    "duplicate",
+                    "Already Exists: Job canonical-project:US.job_Ab-1_c",
+                ),
+            ),
+        ],
+    );
+    let QueryAnswer::Replayed(job) = answer.unwrap() else {
+        panic!("expected the replayed job");
     };
     assert_eq!(
         job,
         JobReference::new("canonical-project", Some("US"), "job_Ab-1_c".to_owned())
     );
-    let captured = captured.join().unwrap();
     assert_eq!(captured.len(), 2);
     assert_eq!(captured[0].raw_body, captured[1].raw_body);
     assert!(
@@ -1168,29 +1059,26 @@ fn a_replayed_numeric_project_query_adopts_its_canonical_project() {
 /// to learn that job; a replay refused the same way is reported.
 #[test]
 fn a_jobs_query_whose_row_is_too_large_is_replayed_once_to_name_its_job() {
-    let start = crate::rest::request::RequestStart::default();
     let too_large = || (403, error_body("responseTooLarge", "exceeds max row limit"));
-    let (endpoint, captured) = capture_requests(vec![
-        too_large(),
-        (409, duplicate_body("Already Exists: Job p:US.job_large")),
-    ]);
-    let (runtime, jobs) = client(&endpoint);
-    let answer = runtime
-        .block_on(jobs.query(None, "p", bytes::Bytes::from_static(b"{}"), &start))
-        .unwrap();
-    assert_eq!(captured.join().unwrap().len(), 2);
+    let (answer, requests) = jobs_query(
+        "p",
+        vec![
+            too_large(),
+            (
+                409,
+                error_body("duplicate", "Already Exists: Job p:US.job_large"),
+            ),
+        ],
+    );
+    assert_eq!(requests.len(), 2);
     assert!(
-        matches!(&answer, super::QueryAnswer::Replayed(job) if job.job_id == "job_large"),
+        matches!(&answer, Ok(QueryAnswer::Replayed(job)) if job.job_id == "job_large"),
         "{answer:?}"
     );
 
-    let (endpoint, captured) = capture_requests(vec![too_large(), too_large()]);
-    let (runtime, jobs) = client(&endpoint);
-    let failure = runtime
-        .block_on(jobs.query(None, "p", bytes::Bytes::from_static(b"{}"), &start))
-        .unwrap_err();
-    assert_eq!(captured.join().unwrap().len(), 2);
-    assert_eq!(failure.status, Status::InvalidArguments);
+    let (answer, requests) = jobs_query("p", vec![too_large(), too_large()]);
+    assert_eq!(requests.len(), 2);
+    assert_eq!(answer.unwrap_err().status, Status::InvalidArguments);
 }
 
 /// A statement whose every attempt ended without a verdict may have run, and a caller that sends
@@ -1230,16 +1118,16 @@ fn an_exhausted_jobs_query_that_may_have_run_says_so() {
         let mut answers = answers.into_iter();
         let (endpoint, captured) =
             capture_requests_responding(MAX_ATTEMPTS, move |_| answers.next().unwrap());
-        let (runtime, jobs) = client(&endpoint);
+        let (runtime, jobs) = job_client(&endpoint);
         let failure = runtime
             .block_on(jobs.query(
                 None,
                 "p",
                 bytes::Bytes::from_static(b"{}"),
-                &crate::rest::request::RequestStart::default(),
+                &RequestStart::default(),
             ))
             .unwrap_err();
-        assert_eq!(captured.join().unwrap().len(), MAX_ATTEMPTS);
+        captured.served(MAX_ATTEMPTS);
         assert_eq!(failure.status, Status::IO, "{}", failure.message);
         assert!(failure.message.starts_with(lead), "{}", failure.message);
         assert!(
@@ -1254,21 +1142,18 @@ fn an_exhausted_jobs_query_that_may_have_run_says_so() {
 /// matches on survives either way.
 #[test]
 fn a_rejected_query_says_bigquery_rejected_it_and_a_transport_failure_says_it_failed_to_submit() {
-    let (endpoint, captured) =
-        capture_requests(vec![(400, error_body("invalidQuery", "Syntax error"))]);
-    let (runtime, jobs) = client(&endpoint);
-    let start = crate::rest::request::RequestStart::default();
-    let rejected = runtime
-        .block_on(jobs.query(None, "p", bytes::Bytes::from_static(b"{}"), &start))
-        .unwrap_err();
-    assert_eq!(captured.join().unwrap().len(), 1);
+    let start = RequestStart::default();
+    let (answer, requests) =
+        jobs_query("p", vec![(400, error_body("invalidQuery", "Syntax error"))]);
+    assert_eq!(requests.len(), 1);
+    let rejected = answer.unwrap_err();
     assert_eq!(rejected.status, Status::InvalidArguments);
     assert_eq!(
         rejected.message,
         "BigQuery rejected the query: invalidQuery: Syntax error (HTTP 400)"
     );
 
-    let (runtime, jobs) = client(crate::test_support::UNREACHABLE_ENDPOINT);
+    let (runtime, jobs) = job_client(crate::test_support::UNREACHABLE_ENDPOINT);
     let unsent = runtime
         .block_on(jobs.query(None, "p", bytes::Bytes::from_static(b"{}"), &start))
         .unwrap_err();
@@ -1284,11 +1169,11 @@ fn a_rejected_query_says_bigquery_rejected_it_and_a_transport_failure_says_it_fa
     // A dry run's rejection names the dry run.
     let (endpoint, captured) =
         capture_requests(vec![(400, error_body("invalidQuery", "Syntax error"))]);
-    let (runtime, jobs) = client(&endpoint);
+    let (runtime, jobs) = job_client(&endpoint);
     let dry_run = runtime
         .block_on(jobs.insert(None, &request("dry", None, true), "query"))
         .unwrap_err();
-    assert_eq!(captured.join().unwrap().len(), 1);
+    captured.served(1);
     assert_eq!(
         dry_run.message,
         "BigQuery rejected the dry-run query job: invalidQuery: Syntax error (HTTP 400)"
@@ -1296,12 +1181,12 @@ fn a_rejected_query_says_bigquery_rejected_it_and_a_transport_failure_says_it_fa
 
     // A real submission names the job it created and the table it writes.
     let (endpoint, captured) = capture_requests(vec![(400, error_body("invalid", "Bad table"))]);
-    let (runtime, jobs) = client(&endpoint);
+    let (runtime, jobs) = job_client(&endpoint);
     let copy = request("copy_1", Some("EU"), false).writing("p.d.t");
     let rejected = runtime
         .block_on(jobs.insert(None, &copy, "copy"))
         .unwrap_err();
-    assert_eq!(captured.join().unwrap().len(), 1);
+    captured.served(1);
     assert_eq!(
         rejected.message,
         "BigQuery rejected the copy job billing/project:EU.copy_1 into p.d.t: invalid: Bad table \
@@ -1342,7 +1227,7 @@ fn a_completion_read_rejected_with_a_query_verdict_names_the_failed_job() {
     ] {
         let (endpoint, captured) =
             capture_requests(vec![(status, error_body(reason, "late failure"))]);
-        let (runtime, client) = client(&endpoint);
+        let (runtime, client) = job_client(&endpoint);
         let failure = runtime
             .block_on(client.get_query_results(
                 None,
@@ -1371,7 +1256,7 @@ fn a_results_read_rejected_with_a_job_level_400_reason_is_not_repeated() {
     ] {
         let (endpoint, captured) =
             capture_requests(vec![(400, error_body(reason, "the job failed"))]);
-        let (runtime, client) = client(&endpoint);
+        let (runtime, client) = job_client(&endpoint);
         let failure = runtime
             .block_on(client.get_query_results(
                 None,
@@ -1390,9 +1275,9 @@ fn a_results_read_rejected_with_a_job_level_400_reason_is_not_repeated() {
 fn get_query_results_retries_and_carries_timestamp_wait_location_and_page_token() {
     let (endpoint, captured) = capture_requests(vec![
         (500, error_body("backendError", "later")),
-        (200, json!({"jobComplete": true, "rows": []})),
+        ok(json!({"jobComplete": true, "rows": []})),
     ]);
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let reference = JobReference::new("billing/project", Some("EU west/1"), "job/id".to_owned());
 
     runtime
@@ -1405,8 +1290,7 @@ fn get_query_results_retries_and_carries_timestamp_wait_location_and_page_token(
         ))
         .unwrap();
 
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 2);
+    let captured = captured.served(2);
     for request in captured {
         assert_eq!(
             request.path(),
@@ -1422,17 +1306,16 @@ fn get_query_results_retries_and_carries_timestamp_wait_location_and_page_token(
 fn listing_a_scripts_latest_child_retries_and_asks_for_one_full_job() {
     let (endpoint, captured) = capture_requests(vec![
         (503, error_body("backendError", "later")),
-        (200, json!({"jobs": []})),
+        ok(json!({"jobs": []})),
     ]);
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let reference = JobReference::new("billing/project", Some("EU"), "job/id".to_owned());
 
     runtime
         .block_on(client.latest_child_job(None, &reference))
         .unwrap();
 
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 2);
+    let captured = captured.served(2);
     for request in captured {
         assert_eq!(
             request.path(),
@@ -1443,11 +1326,17 @@ fn listing_a_scripts_latest_child_retries_and_asks_for_one_full_job() {
 
 #[test]
 fn an_answer_lost_after_the_post_retries_the_same_mutation() {
-    let (endpoint, captured) = capture_ambiguous_then_conflict();
+    // The first POST is read and dropped, and the identical replay answered 409.
+    let mut answers = [
+        None,
+        Some((409, error_body("duplicate", "exists"))),
+        Some(ok(json!({"status": {"state": "DONE"}, "recovered": true}))),
+    ]
+    .into_iter();
+    let (endpoint, captured) = capture_requests_responding(3, move |_| answers.next().unwrap());
     insert_copy(&endpoint, "transport-ambiguous").unwrap();
 
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 3);
+    let captured = captured.served(3);
     assert_eq!(captured[0].raw_body, captured[1].raw_body);
     assert_eq!(
         captured[0].body["jobReference"]["jobId"],
@@ -1458,12 +1347,17 @@ fn an_answer_lost_after_the_post_retries_the_same_mutation() {
 
 #[test]
 fn a_final_ambiguous_post_is_reconciled_before_its_failure_is_returned() {
-    let (endpoint, captured) = capture_dropped_posts_then_recovery();
+    // Every POST is read and dropped, so any of them may be the one BigQuery accepted.
+    let mut attempt = 0;
+    let (endpoint, captured) = capture_requests_responding(MAX_ATTEMPTS + 1, move |_| {
+        attempt += 1;
+        (attempt > MAX_ATTEMPTS)
+            .then(|| ok(json!({"status": {"state": "DONE"}, "recovered": true})))
+    });
     let response = insert_copy(&endpoint, "final-ambiguous").unwrap();
 
-    assert!(serde_json::from_slice::<serde_json::Value>(&response).unwrap()["recovered"] == true);
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), MAX_ATTEMPTS + 1);
+    assert!(serde_json::from_slice::<JsonValue>(&response).unwrap()["recovered"] == true);
+    let captured = captured.served(MAX_ATTEMPTS + 1);
     assert!(
         captured[..MAX_ATTEMPTS]
             .windows(2)
@@ -1488,7 +1382,7 @@ fn a_retryable_rejection_replays_the_identical_submission_and_a_denial_does_not(
     ] {
         let (endpoint, captured) = capture_requests(vec![
             (status, error_body(reason, "try later")),
-            (200, json!({"status": {"state": "DONE"}})),
+            ok(json!({"status": {"state": "DONE"}})),
         ]);
         insert_copy(&endpoint, "same-id").unwrap();
 
@@ -1535,12 +1429,8 @@ fn transient_retries_are_bounded() {
     let (endpoint, captured) = capture_requests(responses);
     let failure = insert_copy(&endpoint, "bounded").unwrap_err();
 
-    assert_eq!(failure.status, Status::IO);
-    assert_message(&failure, &["backendError: later"]);
-    assert_eq!(
-        captured.join().unwrap().len(),
-        MAX_ATTEMPTS + MAX_RECONCILIATION_ATTEMPTS
-    );
+    assert_failure(&failure, Status::IO, &["backendError: later"]);
+    captured.served(MAX_ATTEMPTS + MAX_RECONCILIATION_ATTEMPTS);
 }
 
 /// Only a job that never became visible lets the original submission failure stand. A
@@ -1565,43 +1455,28 @@ fn a_reconciliation_that_never_answers_reports_its_own_failure() {
         failure.message
     );
     assert_message(&failure, &["backendError: reconcile"]);
-    assert_eq!(
-        captured.join().unwrap().len(),
-        MAX_ATTEMPTS + MAX_RECONCILIATION_ATTEMPTS
-    );
+    captured.served(MAX_ATTEMPTS + MAX_RECONCILIATION_ATTEMPTS);
 }
 
 /// A job poll retries a quota failure as it does a 5xx, and a 404 as a job not yet visible, so a
 /// load, copy, or python model survives the same rate-limit episode as a concurrent query.
 #[test]
 fn a_job_poll_absorbs_a_quota_and_a_visibility_delay_within_its_budget() {
-    let throttled = || {
-        (
-            429,
-            json!({"error":{"errors":[{"reason":"rateLimitExceeded","message":"slow down"}]}}),
-        )
-    };
+    let throttled = || (429, error_body("rateLimitExceeded", "slow down"));
     let reference = JobReference::new("billing/project", Some("EU"), "polled".to_owned());
     let (endpoint, captured) = capture_requests(vec![
         throttled(),
-        (
-            403,
-            json!({"error":{"errors":[{"reason":"quotaExceeded","message":"over quota"}]}}),
-        ),
-        (
-            404,
-            json!({"error":{"errors":[{"reason":"notFound","message":"not visible"}]}}),
-        ),
-        (200, json!({"status":{"state":"DONE"}})),
+        (403, error_body("quotaExceeded", "over quota")),
+        (404, error_body("notFound", "not visible")),
+        ok(json!({"status":{"state":"DONE"}})),
     ]);
-    let (runtime, polling) = client(&endpoint);
+    let (runtime, polling) = job_client(&endpoint);
 
     runtime
         .block_on(polling.poll(None, &reference, "copy"))
         .unwrap();
 
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 4);
+    let captured = captured.served(4);
     for request in &captured {
         assert!(
             request.line.starts_with(
@@ -1616,15 +1491,14 @@ fn a_job_poll_absorbs_a_quota_and_a_visibility_delay_within_its_budget() {
     let budget = MAX_ATTEMPTS;
     let (throttled_endpoint, captured) =
         capture_requests(std::iter::repeat_with(throttled).take(budget).collect());
-    let (runtime, throttled_polling) = client(&throttled_endpoint);
+    let (runtime, throttled_polling) = job_client(&throttled_endpoint);
 
     let failure = runtime
         .block_on(throttled_polling.poll(None, &reference, "copy"))
         .unwrap_err();
 
-    assert_eq!(failure.status, Status::IO);
-    assert_message(&failure, &["rateLimitExceeded: slow down"]);
-    assert_eq!(captured.join().unwrap().len(), budget);
+    assert_failure(&failure, Status::IO, &["rateLimitExceeded: slow down"]);
+    captured.served(budget);
 }
 
 /// Every cancel attempt, retries included, addresses the exact job by project, ID, and location
@@ -1632,16 +1506,11 @@ fn a_job_poll_absorbs_a_quota_and_a_visibility_delay_within_its_budget() {
 /// (`AdbcStatementCancel` blocks on this loop); a transient failure repeats the identical request.
 #[test]
 fn every_cancel_attempt_addresses_the_exact_job_with_a_framed_empty_body() {
-    let accepted = || (200, json!({"job": {}}));
-    let unavailable = || {
-        (
-            500,
-            json!({"error":{"errors":[{"reason":"backendError","message":"later"}]}}),
-        )
-    };
+    let accepted = || ok(json!({"job": {}}));
+    let unavailable = || (500, error_body("backendError", "later"));
     for (staged, attempts) in [(vec![accepted()], 1), (vec![unavailable(), accepted()], 2)] {
         let (endpoint, captured) = capture_requests(staged);
-        let (runtime, client) = client(&endpoint);
+        let (runtime, client) = job_client(&endpoint);
         let reference = JobReference::new("billing/project", Some("EU"), "job/one".to_owned());
 
         runtime
@@ -1669,16 +1538,14 @@ fn every_cancel_attempt_addresses_the_exact_job_with_a_framed_empty_body() {
 #[test]
 fn a_non_dry_run_is_registered_before_the_post_can_answer() {
     let runtime = new_runtime().unwrap();
-    let (cancel_endpoint, cancels) = capture_requests(vec![(200, json!({}))]);
+    let (cancel_endpoint, cancels) = capture_requests(vec![ok(json!({}))]);
     let (cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
     let handle = OperationCancelHandle(cancellation);
-    let (endpoint, captured) = capture_requests_gated(
-        vec![(200, json!({"status": {"state": "DONE"}}))],
-        move || {
+    let (endpoint, captured) =
+        capture_requests_gated(vec![ok(json!({"status": {"state": "DONE"}}))], move || {
             handle.try_cancel().unwrap();
             true
-        },
-    );
+        });
     let client = JobClient::for_test(&endpoint);
 
     let failure = runtime
@@ -1691,9 +1558,8 @@ fn a_non_dry_run_is_registered_before_the_post_can_answer() {
     operation.finish();
 
     assert_eq!(failure.status, Status::Cancelled);
-    assert_eq!(captured.join().unwrap().len(), 1);
-    let cancels = cancels.join().unwrap();
-    assert_eq!(cancels.len(), 1);
+    captured.served(1);
+    let cancels = cancels.served(1);
     assert_eq!(
         cancels[0].path(),
         "/bigquery/v2/projects/billing%2Fproject/jobs/registered/cancel?location=EU"
@@ -1703,18 +1569,9 @@ fn a_non_dry_run_is_registered_before_the_post_can_answer() {
 #[test]
 fn an_accepted_insert_transitions_its_requested_identity_to_confirmed() {
     let runtime = new_runtime().unwrap();
-    let cancel_responses = (0..crate::rest::retry::MAX_ATTEMPTS)
-        .map(|_| {
-            (
-                404,
-                json!({"error":{"errors":[{"reason":"notFound","message":"not visible"}]}}),
-            )
-        })
-        .collect();
-    let (cancel_endpoint, cancels) = capture_requests(cancel_responses);
+    let (cancel_endpoint, cancels) = capture_requests(invisible(MAX_ATTEMPTS));
     let (cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
-    let (endpoint, inserts) = capture_requests(vec![(
-        200,
+    let (endpoint, inserts) = capture_requests(vec![ok(
         json!({"jobReference":{"projectId":"billing/project","jobId":"accepted","location":"EU"},"status":{"state":"DONE"}}),
     )]);
     let client = JobClient::for_test(&endpoint);
@@ -1732,21 +1589,20 @@ fn an_accepted_insert_transitions_its_requested_identity_to_confirmed() {
     operation.finish();
 
     assert_eq!(failure.status, Status::Unknown);
-    assert_eq!(inserts.join().unwrap().len(), 1);
-    assert_eq!(cancels.join().unwrap().len(), MAX_ATTEMPTS);
+    inserts.served(1);
+    cancels.served(MAX_ATTEMPTS);
 }
 
 #[test]
 fn cancellation_during_ambiguous_retry_backoff_confirms_the_requested_identity() {
     let (insert_endpoint, inserts) =
         capture_requests(vec![(500, error_body("backendError", "ambiguous"))]);
-    let mut cancel_responses = vec![(404, error_body("notFound", "not visible")); MAX_ATTEMPTS];
-    cancel_responses.push(ok(json!({})));
     let (claimed, cancel_claimed) = mpsc::channel();
-    let (cancel_endpoint, cancels) = capture_requests_gated(cancel_responses, move || {
-        let _ = claimed.send(());
-        true
-    });
+    let (cancel_endpoint, cancels) =
+        capture_requests_gated(cancels_after_confirmation(), move || {
+            let _ = claimed.send(());
+            true
+        });
     let runtime = new_runtime().unwrap();
     let (cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
     let client = JobClient::for_test(&insert_endpoint).with_flat_delays(CANCELLED_BACKOFF);
@@ -1783,7 +1639,7 @@ fn cancellation_during_ambiguous_retry_backoff_confirms_the_requested_identity()
     );
     // Counted before `finish`, which re-claims a failed provisional cancel on its own and would
     // otherwise supply the sixth request for an insert that never confirmed its identity.
-    assert_eq!(cancels.join().unwrap().len(), MAX_ATTEMPTS + 1);
+    cancels.served(MAX_ATTEMPTS + 1);
     operation.finish();
 }
 
@@ -1844,8 +1700,8 @@ fn cancellation_retries_not_found_until_the_in_flight_insert_is_visible() {
 
 #[test]
 fn a_dry_run_is_not_registered_for_remote_cancellation() {
-    let (endpoint, captured) = capture_requests(vec![(200, json!({"status": {"state": "DONE"}}))]);
-    let (runtime, client) = client(&endpoint);
+    let (endpoint, captured) = capture_requests(vec![ok(json!({"status": {"state": "DONE"}}))]);
+    let (runtime, client) = job_client(&endpoint);
     let (cancel_endpoint, cancels) = capture_requests(Vec::new());
     let (cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
 
@@ -1855,7 +1711,7 @@ fn a_dry_run_is_not_registered_for_remote_cancellation() {
     OperationCancelHandle(cancellation).try_cancel().unwrap();
     operation.finish();
 
-    assert_eq!(captured.join().unwrap().len(), 1);
+    captured.served(1);
     assert!(cancels.join().unwrap().is_empty());
 }
 
@@ -1863,16 +1719,14 @@ fn a_dry_run_is_not_registered_for_remote_cancellation() {
 #[test]
 fn a_dry_run_cancelled_in_flight_sends_no_remote_cancel() {
     let runtime = new_runtime().unwrap();
-    let (cancel_endpoint, cancels) = capture_requests_until_stopped(vec![(200, json!({}))]);
+    let (cancel_endpoint, cancels) = capture_requests_until_stopped(vec![ok(json!({}))]);
     let (cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
     let handle = OperationCancelHandle(cancellation);
-    let (endpoint, captured) = capture_requests_gated(
-        vec![(200, json!({"status": {"state": "DONE"}}))],
-        move || {
+    let (endpoint, captured) =
+        capture_requests_gated(vec![ok(json!({"status": {"state": "DONE"}}))], move || {
             handle.try_cancel().unwrap();
             true
-        },
-    );
+        });
 
     let failure = runtime
         .block_on(JobClient::for_test(&endpoint).insert(
@@ -1884,17 +1738,15 @@ fn a_dry_run_cancelled_in_flight_sends_no_remote_cancel() {
     operation.finish();
 
     assert_eq!(failure.status, Status::Cancelled);
-    assert_eq!(captured.join().unwrap().len(), 1);
-    // A cancel for a registered job is sent in the background as soon as it is registered.
-    thread::sleep(Duration::from_millis(200));
-    assert!(cancels.stop().is_empty());
+    captured.served(1);
+    assert_unused(cancels);
 }
 
 /// A cancel on the last attempt ends a dry run the same way: nothing is left to look for or cancel.
 #[test]
 fn a_dry_run_cancelled_on_its_last_attempt_sends_nothing_more() {
     let runtime = new_runtime().unwrap();
-    let (cancel_endpoint, cancels) = capture_requests_until_stopped(vec![(200, json!({}))]);
+    let (cancel_endpoint, cancels) = capture_requests_until_stopped(vec![ok(json!({}))]);
     let (cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
     let handle = OperationCancelHandle(cancellation);
     let mut attempt = 0;
@@ -1916,30 +1768,23 @@ fn a_dry_run_cancelled_on_its_last_attempt_sends_nothing_more() {
     operation.finish();
 
     assert_eq!(failure.status, Status::Cancelled);
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), MAX_ATTEMPTS);
+    let captured = captured.served(MAX_ATTEMPTS);
     assert!(
         captured
             .iter()
             .all(|request| request.line.starts_with("POST "))
     );
-    // A cancel for a registered job is sent in the background as soon as it is registered.
-    thread::sleep(Duration::from_millis(200));
-    assert!(cancels.stop().is_empty());
+    assert_unused(cancels);
 }
 
 /// An operation cancelled before its submission sends neither the job nor a cancel for it.
 #[test]
 fn a_submission_under_an_already_cancelled_operation_sends_nothing() {
     let runtime = new_runtime().unwrap();
-    let (cancel_endpoint, cancels) = capture_requests_until_stopped(
-        (0..2 * MAX_ATTEMPTS)
-            .map(|_| (404, error_body("notFound", "Not found: Job")))
-            .collect(),
-    );
+    let (cancel_endpoint, cancels) = capture_requests_until_stopped(invisible(2 * MAX_ATTEMPTS));
     let (cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
     OperationCancelHandle(cancellation).try_cancel().unwrap();
-    let (endpoint, inserts) = capture_requests_until_stopped(vec![(200, json!({}))]);
+    let (endpoint, inserts) = capture_requests_until_stopped(vec![ok(json!({}))]);
 
     for location in [Some("EU"), None] {
         let failure = runtime
@@ -1953,28 +1798,35 @@ fn a_submission_under_an_already_cancelled_operation_sends_nothing() {
     }
     operation.finish();
 
-    thread::sleep(Duration::from_millis(200));
-    assert!(inserts.stop().is_empty());
-    assert!(cancels.stop().is_empty());
+    assert_unused(inserts);
+    assert_unused(cancels);
 }
 
-/// Credentials that say when a request first asks for a token, then take ten seconds to mint it,
-/// as the first request of a connection or an impersonation exchange can.
+/// Credentials that say when a request asks for a token, then take `delay` to mint it, as the first
+/// request of a connection or an impersonation exchange can.
 #[derive(Debug)]
-struct SlowCredentials(std::sync::Mutex<Option<mpsc::Sender<()>>>);
+struct SlowCredentials {
+    minting: tokio::sync::mpsc::UnboundedSender<()>,
+    delay: Duration,
+}
+
+fn slow_credentials(
+    minting: tokio::sync::mpsc::UnboundedSender<()>,
+    delay: Duration,
+) -> google_cloud_auth::credentials::Credentials {
+    google_cloud_auth::credentials::Credentials::from(SlowCredentials { minting, delay })
+}
 
 impl google_cloud_auth::credentials::CredentialsProvider for SlowCredentials {
     async fn headers(
         &self,
         _extensions: http::Extensions,
-    ) -> Result<
+    ) -> std::result::Result<
         google_cloud_auth::credentials::CacheableResource<http::HeaderMap>,
         google_cloud_gax::error::CredentialsError,
     > {
-        if let Some(minting) = self.0.lock().unwrap().take() {
-            minting.send(()).unwrap();
-        }
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        let _ = self.minting.send(());
+        tokio::time::sleep(self.delay).await;
         Ok(google_cloud_auth::credentials::CacheableResource::New {
             entity_tag: google_cloud_auth::credentials::EntityTag::new(),
             data: http::HeaderMap::new(),
@@ -1993,23 +1845,17 @@ impl google_cloud_auth::credentials::CredentialsProvider for SlowCredentials {
 #[test]
 fn a_cancel_while_the_token_is_minted_confirms_no_job() {
     let runtime = new_runtime().unwrap();
-    let (cancel_endpoint, cancels) = capture_requests_until_stopped(
-        (0..3 * MAX_ATTEMPTS)
-            .map(|_| (404, error_body("notFound", "Not found: Job")))
-            .collect(),
-    );
+    let (cancel_endpoint, cancels) = capture_requests_until_stopped(invisible(3 * MAX_ATTEMPTS));
     let (cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
-    let (endpoint, inserts) = capture_requests_until_stopped(vec![(200, json!({}))]);
-    let (minting, minting_started) = mpsc::channel();
+    let (endpoint, inserts) = capture_requests_until_stopped(vec![ok(json!({}))]);
+    let (minting, mut minting_started) = tokio::sync::mpsc::unbounded_channel();
     let client = JobClient::new(
-        google_cloud_auth::credentials::Credentials::from(SlowCredentials(std::sync::Mutex::new(
-            Some(minting),
-        ))),
+        slow_credentials(minting, Duration::from_secs(10)),
         Some(&endpoint),
         crate::rest::client::rest_client("job client test").unwrap(),
     );
     let canceller = thread::spawn(move || {
-        minting_started.recv().unwrap();
+        minting_started.blocking_recv().unwrap();
         OperationCancelHandle(cancellation).try_cancel()
     });
 
@@ -2043,11 +1889,8 @@ fn a_refused_submission_leaves_no_job_to_cancel() {
     ] {
         for location in [Some("EU"), None] {
             let runtime = new_runtime().unwrap();
-            let (cancel_endpoint, cancels) = capture_requests_until_stopped(
-                (0..MAX_ATTEMPTS)
-                    .map(|_| (404, error_body("notFound", "Not found: Job")))
-                    .collect(),
-            );
+            let (cancel_endpoint, cancels) =
+                capture_requests_until_stopped(invisible(MAX_ATTEMPTS));
             let (_cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
             let (endpoint, inserts) = capture_requests(vec![(code, error_body(reason, "refused"))]);
             let mut client = JobClient::for_test(&endpoint);
@@ -2065,9 +1908,7 @@ fn a_refused_submission_leaves_no_job_to_cancel() {
 
             assert_eq!(failure.status, expected, "{location:?}");
             assert_eq!(inserts.join().unwrap().len(), 1, "{location:?}");
-            // The operation's end sends its cancel in the background at once.
-            thread::sleep(Duration::from_millis(200));
-            assert!(cancels.stop().is_empty(), "HTTP {code}, {location:?}");
+            assert_unused(cancels);
         }
     }
 }
@@ -2082,13 +1923,13 @@ fn a_dry_run_failure_is_reported_without_looking_for_a_job() {
     )];
     responses.extend((0..MAX_ATTEMPTS).map(|_| (503, error_body("backendError", "later"))));
     let (endpoint, captured) = capture_requests(responses);
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let insert = |id| runtime.block_on(client.insert(None, &request(id, None, true), "query"));
 
     let conflict = insert("dry-conflict").unwrap_err();
-    assert_eq!(conflict.status, Status::AlreadyExists);
-    assert_message(
+    assert_failure(
         &conflict,
+        Status::AlreadyExists,
         &[
             "BigQuery rejected the dry-run query job",
             "duplicate: Already Exists: Table p:d.existing (HTTP 409)",
@@ -2097,8 +1938,7 @@ fn a_dry_run_failure_is_reported_without_looking_for_a_job() {
     let unavailable = insert("dry-unavailable").unwrap_err();
     assert_eq!(unavailable.status, Status::IO);
 
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 1 + MAX_ATTEMPTS);
+    let captured = captured.served(1 + MAX_ATTEMPTS);
     assert!(
         captured
             .iter()
@@ -2112,49 +1952,9 @@ fn request_construction_requires_the_callers_job_identity() {
         JobReference::new("", None, "job".to_owned()),
         JobReference::new("project", None, String::new()),
     ] {
-        let failure = JobRequest::new(
-            reference,
-            false,
-            &TestConfiguration {
-                query: TestQuery {
-                    query: "select 1",
-                    use_legacy_sql: false,
-                },
-            },
-            "the test job",
-        )
-        .err()
-        .unwrap();
+        let failure = job_request(reference, false).err().unwrap();
         assert_eq!(failure.status, Status::InvalidArguments);
     }
-}
-
-/// Drops the first POST after reading it, answers the identical replay with 409, then exposes the
-/// accepted mutation to the reconciliation GET.
-fn capture_ambiguous_then_conflict() -> (String, CapturedServer) {
-    let mut attempt = 0;
-    capture_requests_responding(3, move |_| {
-        attempt += 1;
-        match attempt {
-            1 => None,
-            2 => Some((
-                409,
-                json!({"error":{"errors":[{"reason":"duplicate","message":"exists"}]}}),
-            )),
-            _ => Some((200, json!({"status":{"state":"DONE"},"recovered":true}))),
-        }
-    })
-}
-
-/// Drops every POST response, including the final one, then makes the accepted job visible to the
-/// reconciliation GET. The client can never know which POST was accepted, only that every body was
-/// the same mutation.
-fn capture_dropped_posts_then_recovery() -> (String, CapturedServer) {
-    let mut attempt = 0;
-    capture_requests_responding(MAX_ATTEMPTS + 1, move |_| {
-        attempt += 1;
-        (attempt > MAX_ATTEMPTS).then(|| (200, json!({"status":{"state":"DONE"},"recovered":true})))
-    })
 }
 
 /// The window opens at the first failure and any answer closes it, so only failures with no answer
@@ -2184,9 +1984,9 @@ fn a_wait_outage_bounds_only_consecutive_retryable_failures() {
 
             tokio::time::advance(LIMIT).await;
             let spent = outage.outlast(unavailable(), &job).unwrap_err();
-            assert_eq!(spent.status, Status::IO);
-            assert_message(
+            assert_failure(
                 &spent,
+                Status::IO,
                 &["project:EU.job", "after 600 s of failed requests"],
             );
 

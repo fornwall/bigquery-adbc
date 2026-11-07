@@ -8,13 +8,14 @@ use super::{
 };
 use crate::rest::request::{Request, send};
 use crate::test_support::errors::assert_message;
+use crate::test_support::http::ok;
 
 #[test]
 fn redirects_cannot_replay_requests_at_another_endpoint() {
     use std::io::Write as _;
 
     use crate::test_support::http::{
-        accept, capture_requests_until_stopped, mock_listener, ok, read_captured_request, retire,
+        accept, capture_requests_until_stopped, mock_listener, read_captured_request, retire,
     };
 
     let runtime = crate::runtime::new_runtime().unwrap();
@@ -505,8 +506,8 @@ fn an_upload_that_stops_moving_is_timed_out() {
 fn every_request_names_the_driver_and_asks_for_compact_json() {
     let runtime = crate::runtime::new_runtime().unwrap();
     let (endpoint, captured) = crate::test_support::http::capture_requests(vec![
-        (200, serde_json::json!({})),
-        (200, serde_json::json!({})),
+        ok(serde_json::json!({})),
+        ok(serde_json::json!({})),
     ]);
     let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
     let client = rest_client("test").unwrap();
