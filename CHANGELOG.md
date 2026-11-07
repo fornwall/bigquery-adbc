@@ -5,6 +5,8 @@ changes.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-07
+
 0.2.0 was tagged but never published, because its wheel tests failed, so this release is the
 first to carry its changes too.
 
@@ -189,7 +191,8 @@ first to carry its changes too.
 First public release, with wheels on PyPI for Linux x86-64 and AArch64, macOS x86-64 and arm64, and
 Windows x86-64.
 
-[Unreleased]: https://github.com/fornwall/bigquery-adbc/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/fornwall/bigquery-adbc/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/fornwall/bigquery-adbc/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/fornwall/bigquery-adbc/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/fornwall/bigquery-adbc/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/fornwall/bigquery-adbc/tree/v0.1.0
