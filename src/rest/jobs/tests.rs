@@ -1419,43 +1419,32 @@ fn a_retryable_rejection_replays_the_identical_submission_and_a_denial_does_not(
     }
 }
 
+/// Submission and reconciliation are both bounded. Only a job that never became visible lets the
+/// original submission failure stand. A reconciliation that never got an answer reports its own
+/// failure, since the job may exist.
 #[test]
-fn transient_retries_are_bounded() {
-    let mut responses = (0..MAX_ATTEMPTS)
-        .map(|_| (500, error_body("backendError", "later")))
-        .collect::<Vec<_>>();
-    responses
-        .extend((0..MAX_RECONCILIATION_ATTEMPTS).map(|_| (404, error_body("notFound", "absent"))));
-    let (endpoint, captured) = capture_requests(responses);
-    let failure = insert_copy(&endpoint, "bounded").unwrap_err();
+fn an_exhausted_submission_reports_what_its_reconciliation_learned() {
+    for (reconciled, lead, reported) in [
+        (
+            (404, error_body("notFound", "absent")),
+            "BigQuery rejected the copy job ",
+            "backendError: submit",
+        ),
+        (
+            (503, error_body("backendError", "reconcile")),
+            "failed to reconcile the submission of BigQuery copy job ",
+            "backendError: reconcile",
+        ),
+    ] {
+        let mut responses = vec![(500, error_body("backendError", "submit")); MAX_ATTEMPTS];
+        responses.extend(vec![reconciled; MAX_RECONCILIATION_ATTEMPTS]);
+        let (endpoint, captured) = capture_requests(responses);
+        let failure = insert_copy(&endpoint, "bounded").unwrap_err();
 
-    assert_failure(&failure, Status::IO, &["backendError: later"]);
-    captured.served(MAX_ATTEMPTS + MAX_RECONCILIATION_ATTEMPTS);
-}
-
-/// Only a job that never became visible lets the original submission failure stand. A
-/// reconciliation that never got an answer reports its own failure, since the job may exist.
-#[test]
-fn a_reconciliation_that_never_answers_reports_its_own_failure() {
-    let mut responses = (0..MAX_ATTEMPTS)
-        .map(|_| (500, error_body("backendError", "submit")))
-        .collect::<Vec<_>>();
-    responses.extend(
-        (0..MAX_RECONCILIATION_ATTEMPTS).map(|_| (503, error_body("backendError", "reconcile"))),
-    );
-    let (endpoint, captured) = capture_requests(responses);
-    let failure = insert_copy(&endpoint, "unreconciled").unwrap_err();
-
-    assert_eq!(failure.status, Status::IO);
-    assert!(
-        failure
-            .message
-            .starts_with("failed to reconcile the submission of BigQuery copy job "),
-        "{}",
-        failure.message
-    );
-    assert_message(&failure, &["backendError: reconcile"]);
-    captured.served(MAX_ATTEMPTS + MAX_RECONCILIATION_ATTEMPTS);
+        assert_failure(&failure, Status::IO, &[reported]);
+        assert!(failure.message.starts_with(lead), "{}", failure.message);
+        captured.served(MAX_ATTEMPTS + MAX_RECONCILIATION_ATTEMPTS);
+    }
 }
 
 /// A job poll retries a quota failure as it does a 5xx, and a 404 as a job not yet visible, so a
@@ -1715,66 +1704,42 @@ fn a_dry_run_is_not_registered_for_remote_cancellation() {
     assert!(cancels.join().unwrap().is_empty());
 }
 
-/// Nor is a dry run cancelled while its POST is in flight: the job it names never existed.
+/// Nor does cancelling a dry run in flight, on its first attempt or its last, send anything more:
+/// the job it names never existed, so nothing is left to look for or cancel.
 #[test]
-fn a_dry_run_cancelled_in_flight_sends_no_remote_cancel() {
-    let runtime = new_runtime().unwrap();
-    let (cancel_endpoint, cancels) = capture_requests_until_stopped(vec![ok(json!({}))]);
-    let (cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
-    let handle = OperationCancelHandle(cancellation);
-    let (endpoint, captured) =
-        capture_requests_gated(vec![ok(json!({"status": {"state": "DONE"}}))], move || {
-            handle.try_cancel().unwrap();
-            true
+fn a_dry_run_cancelled_in_flight_sends_nothing_more() {
+    for attempts in [1, MAX_ATTEMPTS] {
+        let runtime = new_runtime().unwrap();
+        let (cancel_endpoint, cancels) = capture_requests_until_stopped(vec![ok(json!({}))]);
+        let (cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
+        let handle = OperationCancelHandle(cancellation);
+        let mut attempt = 0;
+        let (endpoint, captured) = capture_requests_responding(attempts, move |_| {
+            attempt += 1;
+            if attempt == attempts {
+                handle.try_cancel().unwrap();
+            }
+            Some((503, error_body("backendError", "later")))
         });
 
-    let failure = runtime
-        .block_on(JobClient::for_test(&endpoint).insert(
-            Some(&operation),
-            &request("dry", None, true),
-            "dry run",
-        ))
-        .unwrap_err();
-    operation.finish();
+        let failure = runtime
+            .block_on(JobClient::for_test(&endpoint).insert(
+                Some(&operation),
+                &request("dry", None, true),
+                "dry run",
+            ))
+            .unwrap_err();
+        operation.finish();
 
-    assert_eq!(failure.status, Status::Cancelled);
-    captured.served(1);
-    assert_unused(cancels);
-}
-
-/// A cancel on the last attempt ends a dry run the same way: nothing is left to look for or cancel.
-#[test]
-fn a_dry_run_cancelled_on_its_last_attempt_sends_nothing_more() {
-    let runtime = new_runtime().unwrap();
-    let (cancel_endpoint, cancels) = capture_requests_until_stopped(vec![ok(json!({}))]);
-    let (cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
-    let handle = OperationCancelHandle(cancellation);
-    let mut attempt = 0;
-    let (endpoint, captured) = capture_requests_responding(MAX_ATTEMPTS, move |_| {
-        attempt += 1;
-        if attempt == MAX_ATTEMPTS {
-            handle.try_cancel().unwrap();
-        }
-        Some((503, error_body("backendError", "later")))
-    });
-
-    let failure = runtime
-        .block_on(JobClient::for_test(&endpoint).insert(
-            Some(&operation),
-            &request("dry", None, true),
-            "dry run",
-        ))
-        .unwrap_err();
-    operation.finish();
-
-    assert_eq!(failure.status, Status::Cancelled);
-    let captured = captured.served(MAX_ATTEMPTS);
-    assert!(
-        captured
-            .iter()
-            .all(|request| request.line.starts_with("POST "))
-    );
-    assert_unused(cancels);
+        assert_eq!(failure.status, Status::Cancelled);
+        let captured = captured.served(attempts);
+        assert!(
+            captured
+                .iter()
+                .all(|request| request.line.starts_with("POST "))
+        );
+        assert_unused(cancels);
+    }
 }
 
 /// An operation cancelled before its submission sends neither the job nor a cancel for it.

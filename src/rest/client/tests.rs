@@ -10,6 +10,23 @@ use crate::rest::request::{Request, send};
 use crate::test_support::errors::assert_message;
 use crate::test_support::http::ok;
 
+fn anonymous() -> google_cloud_auth::credentials::Credentials {
+    google_cloud_auth::credentials::anonymous::Builder::new().build()
+}
+
+/// The production client without proxies, which would otherwise see loopback mocks.
+fn http1_client() -> super::RestClient {
+    super::build_client("test", reqwest::Client::builder().no_proxy()).unwrap()
+}
+
+/// [`http1_client`], speaking HTTP/2 without the TLS negotiation production uses.
+fn http2_client() -> super::RestClient {
+    let builder = reqwest::Client::builder()
+        .no_proxy()
+        .http2_prior_knowledge();
+    super::build_client("test", builder).unwrap()
+}
+
 #[test]
 fn redirects_cannot_replay_requests_at_another_endpoint() {
     use std::io::Write as _;
@@ -19,9 +36,8 @@ fn redirects_cannot_replay_requests_at_another_endpoint() {
     };
 
     let runtime = crate::runtime::new_runtime().unwrap();
-    let client =
-        super::build_client("redirect test", reqwest::Client::builder().no_proxy()).unwrap();
-    let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
+    let client = http1_client();
+    let credentials = anonymous();
     for status in [301, 302, 303, 307, 308] {
         let (target, redirected) = capture_requests_until_stopped(vec![ok(serde_json::json!({}))]);
         let (listener, endpoint) = mock_listener();
@@ -119,14 +135,8 @@ fn json_and_media_requests_share_one_http2_connection() {
             assert!(connection.accept().await.is_none());
         });
 
-        let client = super::build_client(
-            "HTTP/2 test",
-            reqwest::Client::builder()
-                .no_proxy()
-                .http2_prior_knowledge(),
-        )
-        .unwrap();
-        let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
+        let client = http2_client();
+        let credentials = anonymous();
         let (status, body) = send(
             None,
             &credentials,
@@ -194,19 +204,9 @@ fn a_retry_leaves_an_http2_connection_that_stopped_answering() {
             assert!(connection.accept().await.is_none());
         });
 
-        let client = super::build_client(
-            "HTTP/2 test",
-            reqwest::Client::builder()
-                .no_proxy()
-                .http2_prior_knowledge(),
-        )
-        .unwrap();
-        let jobs = crate::rest::jobs::JobClient::new(
-            google_cloud_auth::credentials::anonymous::Builder::new().build(),
-            Some(&endpoint),
-            client,
-        )
-        .with_flat_delays(Duration::from_millis(1));
+        let client = http2_client();
+        let jobs = crate::rest::jobs::JobClient::new(anonymous(), Some(&endpoint), client)
+            .with_flat_delays(Duration::from_millis(1));
         let job = crate::rest::jobs::JobReference::new("p", None, "job".to_owned());
         jobs.poll(None, &job, "copy").await.unwrap();
 
@@ -319,10 +319,8 @@ fn an_oversized_response_body_is_refused_by_the_requests_budget() {
         });
 
         // Plain HTTP/1.1 against a hand-written response, so the test owns the exact framing.
-        let client =
-            super::build_client("response limit test", reqwest::Client::builder().no_proxy())
-                .unwrap();
-        let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
+        let client = http1_client();
+        let credentials = anonymous();
         for (path, expected) in [
             (
                 "/announced",
@@ -434,10 +432,8 @@ fn upload_through(
             let _ = (&mut stop).await;
         });
 
-        let client = super::build_client("upload test", reqwest::Client::builder().no_proxy())
-            .unwrap()
-            .with_upload_progress_timeout(progress_timeout);
-        let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
+        let client = http1_client().with_upload_progress_timeout(progress_timeout);
+        let credentials = anonymous();
         let answer = send(
             None,
             &credentials,
@@ -509,7 +505,7 @@ fn every_request_names_the_driver_and_asks_for_compact_json() {
         ok(serde_json::json!({})),
         ok(serde_json::json!({})),
     ]);
-    let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
+    let credentials = anonymous();
     let client = rest_client("test").unwrap();
     for target in ["/agent", "/agent?fields=etag"] {
         let url = format!("{endpoint}{target}");
