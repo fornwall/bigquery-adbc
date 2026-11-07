@@ -1,34 +1,13 @@
-use arrow_schema::{DECIMAL128_MAX_PRECISION, DECIMAL256_MAX_PRECISION, DataType};
+use arrow_schema::DataType;
 
 use super::{
     BIGNUMERIC_PRECISION, BIGNUMERIC_SCALE, BigQueryDecimalType, bigquery_decimal_data_type,
-    decimal_mapping, decimal_type_hint, decimal_value_digit_budget,
+    decimal_mapping, decimal_type_hint,
 };
 
-#[test]
-fn only_parameter_free_bignumeric_uses_the_physical_digit_budget() {
-    assert_eq!(
-        decimal_value_digit_budget(
-            DECIMAL256_MAX_PRECISION,
-            BIGNUMERIC_PRECISION,
-            BIGNUMERIC_SCALE,
-        ),
-        77
-    );
-    for (maximum_precision, precision, scale) in [
-        (DECIMAL256_MAX_PRECISION, 75, BIGNUMERIC_SCALE),
-        (DECIMAL256_MAX_PRECISION, BIGNUMERIC_PRECISION, 37),
-        (DECIMAL128_MAX_PRECISION, 38, 38),
-    ] {
-        assert_eq!(
-            decimal_value_digit_budget(maximum_precision, precision, scale),
-            precision
-        );
-    }
-}
-
-/// The same one shape is the only mapping whose declared parameters would narrow the BigQuery
-/// column below the Arrow values it carries, so it is the only one ingest declares without them.
+/// A parameter-free BIGNUMERIC is the only mapping whose declared parameters would narrow the
+/// BigQuery column below the Arrow values it carries, so it is the only one ingest declares
+/// without them.
 #[test]
 fn only_the_widest_bignumeric_mapping_narrows_its_arrow_domain() {
     let mapping = |data_type| decimal_mapping(&data_type, None).unwrap();

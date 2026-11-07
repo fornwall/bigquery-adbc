@@ -496,7 +496,7 @@ fn to_decimal<T: TargetDecimal>(column: &ArrayRef, precision: u8, scale: i8) -> 
     let multiplier = T::Native::from(10_i32)
         .pow_checked(scale_up)
         .map_err(|_| format!("decimal scale increase {scale_up} overflows {}", T::PREFIX))?;
-    let validate = !spans_full_physical_domain(T::MAX_PRECISION, precision, scale);
+    let validate = !spans_full_physical_domain(precision, scale);
     let invalid_precision = |_| format!("value exceeds decimal precision {precision}");
     // A same-width source at the target scale is only relabelled: validate in place and reuse
     // the buffers. As in the rescaling kernels, only non-null values are validated, since a null

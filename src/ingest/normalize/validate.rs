@@ -217,7 +217,7 @@ where
     T: DecimalType,
 {
     let array = downcast_array::<PrimitiveArray<T>>(column, site.name())?;
-    if spans_full_physical_domain(T::MAX_PRECISION, array.precision(), array.scale()) {
+    if spans_full_physical_domain(array.precision(), array.scale()) {
         // The shared domain policy identifies parameter-free BIGNUMERIC, whose declared Arrow
         // precision understates the complete physical i256 domain this driver reads and writes.
         return Ok(());

@@ -15,7 +15,7 @@ use arrow_array::types::{
 };
 use arrow_array::{Array, ArrayRef, PrimitiveArray};
 use arrow_buffer::i256;
-use arrow_schema::{DECIMAL256_MAX_PRECISION, DataType, Field};
+use arrow_schema::{DataType, Field};
 
 use super::site::ValueSite;
 use super::{downcast_array, normalized_array_type_error};
@@ -63,8 +63,7 @@ impl Target {
             scale: declared_scale,
             written_scale: scale,
             numeric,
-            bounded: declared.is_some()
-                || !spans_full_physical_domain(DECIMAL256_MAX_PRECISION, precision, scale),
+            bounded: declared.is_some() || !spans_full_physical_domain(precision, scale),
         })
     }
 
@@ -75,8 +74,7 @@ impl Target {
             field.data_type(),
             DataType::Decimal128(precision, scale) | DataType::Decimal256(precision, scale)
                 if (self.precision, self.scale) == (*precision, *scale)
-                    && self.bounded
-                        == !spans_full_physical_domain(DECIMAL256_MAX_PRECISION, *precision, *scale)
+                    && self.bounded == !spans_full_physical_domain(*precision, *scale)
         )
     }
 }

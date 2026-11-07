@@ -5,9 +5,11 @@
 //! grammar.
 
 use arrow_buffer::{IntervalMonthDayNano, i256};
-use arrow_schema::{ArrowError, DECIMAL128_MAX_PRECISION, DECIMAL256_MAX_PRECISION};
+use arrow_schema::ArrowError;
 
-use crate::types::decimal::decimal_value_digit_budget;
+use crate::types::decimal::{
+    BIGNUMERIC_PRECISION, BIGNUMERIC_SCALE, NUMERIC_PRECISION, NUMERIC_SCALE,
+};
 use crate::types::temporal::{civil_from_days, days_from_civil};
 
 /// The longest decimal response accepted: a sign, the 77 digits of the widest BIGNUMERIC, a
@@ -309,13 +311,16 @@ const POWERS_OF_TEN: [i128; CHUNK_DIGITS as usize + 1] = {
 };
 
 /// An integer wide enough for a scaled BigQuery decimal, accumulated a chunk of digits at a time.
+///
+/// A result column is always NUMERIC's or BIGNUMERIC's full type, so the width names the BigQuery
+/// type and its shape.
 pub(super) trait DecimalDigits: Copy {
-    /// The BigQuery type this width decodes. The driver maps NUMERIC to `Decimal128` and
-    /// BIGNUMERIC to `Decimal256` and nothing else to either, so the width names the type.
     const BIGQUERY_TYPE: &'static str;
-    /// The widest precision Arrow declares for this width, which is what
-    /// [`decimal_value_digit_budget`] needs to recognize a parameter-free BIGNUMERIC.
-    const MAX_PRECISION: u8;
+    const PRECISION: u8;
+    const SCALE: i8;
+    /// The significant digits a value may hold: BIGNUMERIC's `i256` domain reaches one digit past
+    /// the precision of `Decimal256(76, 38)`; see `spans_full_physical_domain`.
+    const SIGNIFICANT_DIGITS: u8;
     const ZERO: Self;
     /// `self * 10^width + chunk`, or `self * 10^width - chunk` when `negative`, or `None` on
     /// overflow. `width` is at most [`CHUNK_DIGITS`] and `chunk` holds that many decimal digits.
@@ -332,7 +337,9 @@ pub(super) trait DecimalDigits: Copy {
 
 impl DecimalDigits for i128 {
     const BIGQUERY_TYPE: &'static str = "NUMERIC";
-    const MAX_PRECISION: u8 = DECIMAL128_MAX_PRECISION;
+    const PRECISION: u8 = NUMERIC_PRECISION;
+    const SCALE: i8 = NUMERIC_SCALE;
+    const SIGNIFICANT_DIGITS: u8 = NUMERIC_PRECISION;
     const ZERO: Self = 0;
 
     fn push_chunk(self, chunk: u64, width: u32, negative: bool) -> Option<Self> {
@@ -347,7 +354,9 @@ impl DecimalDigits for i128 {
 
 impl DecimalDigits for i256 {
     const BIGQUERY_TYPE: &'static str = "BIGNUMERIC";
-    const MAX_PRECISION: u8 = DECIMAL256_MAX_PRECISION;
+    const PRECISION: u8 = BIGNUMERIC_PRECISION;
+    const SCALE: i8 = BIGNUMERIC_SCALE;
+    const SIGNIFICANT_DIGITS: u8 = BIGNUMERIC_PRECISION + 1;
     const ZERO: Self = Self::ZERO;
 
     fn push_chunk(self, chunk: u64, width: u32, negative: bool) -> Option<Self> {
@@ -361,17 +370,8 @@ impl DecimalDigits for i256 {
     }
 }
 
-/// Parses a BigQuery decimal response directly into an integer scaled by `10^scale`.
-///
-/// A value is measured against [`decimal_value_digit_budget`] of the column's declared
-/// `precision`, which is one digit wider for a parameter-free BIGNUMERIC, whose
-/// `Decimal256(76, 38)` understates its `i256` domain.
-pub(super) fn parse_scaled_decimal<T: DecimalDigits>(
-    value: &[u8],
-    precision: u8,
-    scale: i8,
-) -> Result<T, ArrowError> {
-    let budget = decimal_value_digit_budget(T::MAX_PRECISION, precision, scale);
+/// Parses a BigQuery decimal response directly into an integer scaled by `10^T::SCALE`.
+pub(super) fn parse_scaled_decimal<T: DecimalDigits>(value: &[u8]) -> Result<T, ArrowError> {
     // `trim_ascii` suffices: BigQuery pads decimals only with ASCII spaces, and the grammar below
     // rejects non-ASCII bytes.
     let value = value.trim_ascii();
@@ -413,27 +413,30 @@ pub(super) fn parse_scaled_decimal<T: DecimalDigits>(
         ))
     };
     let fractional_len = i64::try_from(fractional.len()).map_err(|_| unsupported_exponent())?;
-    let shift = i64::from(scale)
+    let shift = i64::from(T::SCALE)
         .checked_add(exponent)
         .and_then(|shift| shift.checked_sub(fractional_len))
         .ok_or_else(unsupported_exponent)?;
     let excessive_precision = || {
         ArrowError::ParseError(format!(
-            "BigQuery {} result value needs more than the {budget} significant digits a result \
-             column of precision {precision} can hold",
-            T::BIGQUERY_TYPE
+            "BigQuery {} result value needs more than the {} significant digits a result \
+             column of precision {} can hold",
+            T::BIGQUERY_TYPE,
+            T::SIGNIFICANT_DIGITS,
+            T::PRECISION
         ))
     };
     let excessive_scale = || {
         ArrowError::ParseError(format!(
             "BigQuery {} result value has more fractional digits than its result column's \
-             declared scale of {scale}",
-            T::BIGQUERY_TYPE
+             declared scale of {}",
+            T::BIGQUERY_TYPE,
+            T::SCALE
         ))
     };
 
     // A negative shift drops that many trailing digits, which must all be zero; a positive shift
-    // appends that many zeros, which must leave the value within `budget` significant digits.
+    // appends that many zeros, which must leave the value within its significant digits.
     let keep = if shift < 0 {
         let remove = usize::try_from(shift.unsigned_abs()).map_err(|_| excessive_scale())?;
         digit_count
@@ -466,7 +469,7 @@ pub(super) fn parse_scaled_decimal<T: DecimalDigits>(
         }
     }
     if shift >= 0 {
-        let maximum_shift = usize::from(budget)
+        let maximum_shift = usize::from(T::SIGNIFICANT_DIGITS)
             .checked_sub(significant)
             .ok_or_else(excessive_precision)?;
         let shift = usize::try_from(shift).map_err(|_| excessive_precision())?;
@@ -484,7 +487,7 @@ pub(super) fn parse_scaled_decimal<T: DecimalDigits>(
                 (chunk, width) = (0, 0);
             }
         }
-    } else if significant > usize::from(budget) {
+    } else if significant > usize::from(T::SIGNIFICANT_DIGITS) {
         return Err(excessive_precision());
     }
     if width > 0 {

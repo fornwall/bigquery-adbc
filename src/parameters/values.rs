@@ -230,7 +230,7 @@ fn decimal_value<T: DecimalType>(
     array: &PrimitiveArray<T>,
     row: usize,
 ) -> Result<String> {
-    if !spans_full_physical_domain(T::MAX_PRECISION, array.precision(), array.scale()) {
+    if !spans_full_physical_domain(array.precision(), array.scale()) {
         // Arrow's precision error includes the value. Report only the declared constraint.
         T::validate_decimal_precision(array.value(row), array.precision(), array.scale()).map_err(
             |_| {

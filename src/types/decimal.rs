@@ -14,38 +14,15 @@ pub(crate) const BIGNUMERIC_PRECISION: u8 = 76;
 pub(crate) const BIGNUMERIC_SCALE: i8 = 38;
 const BIGNUMERIC_INTEGER_DIGITS: u8 = 38;
 
-/// The significant-digit budget for values carried by an Arrow decimal array.
-///
-/// Arrow's maximum `Decimal256` precision is 76, but a parameter-free BigQuery BIGNUMERIC spans
-/// the complete `i256` domain: 39 integer and 38 fractional digits. The canonical Arrow
-/// `Decimal256(76, 38)` representation therefore understates its own physical domain by one digit.
-/// Every other decimal shape remains bounded by its declared precision.
-pub(crate) const fn decimal_value_digit_budget(
-    maximum_precision: u8,
-    precision: u8,
-    scale: i8,
-) -> u8 {
-    if maximum_precision == DECIMAL256_MAX_PRECISION
-        && precision == BIGNUMERIC_PRECISION
-        && scale == BIGNUMERIC_SCALE
-    {
-        BIGNUMERIC_PRECISION + 1
-    } else {
-        precision
-    }
-}
-
 /// Whether an Arrow decimal type's real value domain is wider than the precision it declares.
 ///
-/// Only a parameter-free BIGNUMERIC is; see [`decimal_value_digit_budget`].
-/// `validate_decimal_precision` refuses precisions above `DECIMAL256_MAX_PRECISION`, so validators
-/// skip the check for that shape rather than reject `i256` values BigQuery stores.
-pub(crate) const fn spans_full_physical_domain(
-    maximum_precision: u8,
-    precision: u8,
-    scale: i8,
-) -> bool {
-    decimal_value_digit_budget(maximum_precision, precision, scale) > precision
+/// Only a parameter-free BIGNUMERIC's is. Arrow's maximum `Decimal256` precision is 76, but that
+/// BigQuery type spans the complete `i256` domain: 39 integer and 38 fractional digits, one more
+/// than `Decimal256(76, 38)` declares. `validate_decimal_precision` refuses precisions above
+/// `DECIMAL256_MAX_PRECISION`, so validators skip the check for that shape rather than reject
+/// `i256` values BigQuery stores.
+pub(crate) const fn spans_full_physical_domain(precision: u8, scale: i8) -> bool {
+    precision == BIGNUMERIC_PRECISION && scale == BIGNUMERIC_SCALE
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,10 +192,10 @@ impl DecimalMapping {
     /// column narrower than its Arrow values, so the parameter-free spelling must be emitted.
     ///
     /// Only `BIGNUMERIC(76, 38)` does: the parameterized type stops at 38 integer digits (~1e38),
-    /// while a parameter-free BIGNUMERIC reaches ~5.79e38; see [`decimal_value_digit_budget`].
+    /// while a parameter-free BIGNUMERIC reaches ~5.79e38; see [`spans_full_physical_domain`].
     /// `NUMERIC(38, 9)` is exactly plain NUMERIC's domain.
     pub(crate) const fn narrows_its_arrow_domain(self) -> bool {
-        spans_full_physical_domain(DECIMAL256_MAX_PRECISION, self.precision, self.scale)
+        spans_full_physical_domain(self.precision, self.scale)
     }
 }
 

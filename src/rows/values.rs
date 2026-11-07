@@ -18,6 +18,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 
 use crate::pipeline::ResultPipelineCancellation;
+use crate::types::decimal::{
+    BIGNUMERIC_PRECISION, BIGNUMERIC_SCALE, NUMERIC_PRECISION, NUMERIC_SCALE,
+};
 use crate::types::{ValueAt, range_metadata, timestamp_is_zoned};
 
 use super::scalars::{
@@ -383,21 +386,13 @@ impl ColumnBuilder {
                     })
                 }
             }
-            &DataType::Decimal128(precision, scale) => primitive(
+            DataType::Decimal128(NUMERIC_PRECISION, NUMERIC_SCALE) => primitive(
                 Decimal128Builder::with_capacity(capacity).with_data_type(data_type.clone()),
-                move |value| {
-                    parse_scaled_decimal::<i128>(bytes_value(value, "NUMERIC")?, precision, scale)
-                },
+                |value| parse_scaled_decimal::<i128>(bytes_value(value, "NUMERIC")?),
             ),
-            &DataType::Decimal256(precision, scale) => primitive(
+            DataType::Decimal256(BIGNUMERIC_PRECISION, BIGNUMERIC_SCALE) => primitive(
                 Decimal256Builder::with_capacity(capacity).with_data_type(data_type.clone()),
-                move |value| {
-                    parse_scaled_decimal::<i256>(
-                        bytes_value(value, "BIGNUMERIC")?,
-                        precision,
-                        scale,
-                    )
-                },
+                |value| parse_scaled_decimal::<i256>(bytes_value(value, "BIGNUMERIC")?),
             ),
             DataType::Interval(IntervalUnit::MonthDayNano) => primitive(
                 IntervalMonthDayNanoBuilder::with_capacity(capacity),
