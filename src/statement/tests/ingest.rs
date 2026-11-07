@@ -23,10 +23,7 @@ fn empty_ingest_statement_at(endpoint: &str) -> BigQueryStatement {
 }
 
 fn table_not_found() -> (u16, serde_json::Value) {
-    (
-        404,
-        json!({"error": {"code": 404, "message": "table not found", "status": "NOT_FOUND"}}),
-    )
+    google_rejection(404, "NOT_FOUND", "", "table not found")
 }
 
 fn table_created() -> (u16, serde_json::Value) {
@@ -103,8 +100,7 @@ fn execute_reports_the_ingest_row_count_alongside_the_stream() {
     // `ManagedStatement::execute` never does, so it gets an empty stream rather than a refusal.
     assert_eq!(reader.schema().fields().len(), 0);
     assert!(reader.next().is_none(), "ingest returns an empty stream");
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 1);
+    let requests = requests.served(1);
     assert!(
         requests[0].line.starts_with("POST ")
             && requests[0]
@@ -116,18 +112,17 @@ fn execute_reports_the_ingest_row_count_alongside_the_stream() {
 
 #[test]
 fn create_ingest_maps_insert_conflict_to_already_exists() {
-    let (endpoint, requests) = capture_requests(vec![(
+    let (endpoint, requests) = capture_requests(vec![google_rejection(
         409,
-        json!({
-            "error": {"code": 409, "message": "table already exists", "status": "ALREADY_EXISTS"}
-        }),
+        "ALREADY_EXISTS",
+        "",
+        "table already exists",
     )]);
     let mut statement = empty_ingest_statement_at(&endpoint);
 
     let error = statement.execute_update().unwrap_err();
     assert_eq!(error.status, Status::AlreadyExists);
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 1);
+    let requests = requests.served(1);
     assert!(requests[0].line.starts_with("POST "));
 }
 
@@ -139,8 +134,7 @@ fn create_ingest_dry_run_still_inspects_the_target_without_inserting() {
 
     assert_eq!(statement.execute_update().unwrap(), Some(0));
     assert!(statement.parameters.schema().is_some());
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 1);
+    let requests = requests.served(1);
     assert!(requests[0].line.starts_with("GET "));
     assert!(requests[0].path().contains("/tables/events"));
 }
@@ -166,8 +160,7 @@ fn the_ingest_target_falls_back_to_the_statement_defaults() {
     statement.bind(int64_column("value", vec![1])).unwrap();
 
     assert_eq!(statement.execute_update().unwrap(), Some(0));
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 1);
+    let requests = requests.served(1);
     assert!(
         requests[0]
             .path()
@@ -195,8 +188,7 @@ fn append_ingest_still_inspects_and_validates_the_existing_target() {
     );
 
     assert_eq!(statement.execute_update().unwrap(), Some(0));
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 1);
+    let requests = requests.served(1);
     assert!(requests[0].line.starts_with("GET "));
     assert!(requests[0].path().contains("/tables/events"));
 }
@@ -209,8 +201,7 @@ fn create_append_and_replace_still_probe_before_creating_a_missing_target() {
         set_option(&mut statement, OptionStatement::IngestMode, mode);
 
         assert_eq!(statement.execute_update().unwrap(), Some(0), "mode {mode}");
-        let requests = requests.join().unwrap();
-        assert_eq!(requests.len(), 2, "mode {mode}");
+        let requests = requests.served(2);
         assert!(requests[0].line.starts_with("GET "), "mode {mode}");
         assert!(requests[1].line.starts_with("POST "), "mode {mode}");
     }

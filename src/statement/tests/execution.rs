@@ -17,10 +17,7 @@ fn dml_answer(statement_type: &str, count: Option<&str>) -> (u16, serde_json::Va
 
 /// Serves `count` requests of destination-table query jobs: each `jobs.insert` is answered done,
 /// and each results poll with `results`.
-fn capture_destination_jobs(
-    count: usize,
-    results: serde_json::Value,
-) -> (String, std::thread::JoinHandle<Vec<CapturedRequest>>) {
+fn capture_destination_jobs(count: usize, results: serde_json::Value) -> (String, CapturedServer) {
     let mut job_reference = serde_json::Value::Null;
     capture_requests_responding(count, move |request| {
         if request.body.get("jobReference").is_some() {
@@ -56,8 +53,7 @@ fn reservation_reaches_both_submission_paths_and_clearing_omits_it() {
             set_option(&mut statement, BqOption::Reservation, value);
             statement.execute_update().unwrap();
         }
-        let requests = requests.join().unwrap();
-        assert_eq!(requests.len(), 4);
+        let requests = requests.served(4);
         let expected = [None, Some(reservation), Some("none"), None];
         for (request, expected) in requests.iter().zip(expected) {
             let (path, configuration) = if dry_run {
@@ -92,8 +88,7 @@ fn failed_update_poll_cancels_the_unfinished_remote_job() {
 
     let failure = statement.execute_update().unwrap_err();
     assert_failure(&failure, Status::Unauthorized, &["poll denied"]);
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 3);
+    let requests = requests.served(3);
     assert_eq!(
         requests[2].path(),
         "/bigquery/v2/projects/fixture-project/jobs/running-job/cancel?location=EU"
@@ -169,8 +164,7 @@ fn a_dry_run_leaves_bound_parameters_for_the_next_execute() {
             assert_eq!(row_count(statement.execute().unwrap()), 1);
         }
 
-        let requests = requests.join().unwrap();
-        assert_eq!(requests.len(), 2, "update={update}");
+        let requests = requests.served(2);
         let typed = &requests[0].body["configuration"]["query"]["queryParameters"][0];
         assert_eq!(requests[0].body["configuration"]["dryRun"], true);
         assert_eq!(typed["parameterType"]["type"], "INT64");
@@ -224,7 +218,7 @@ fn parameterless_queries_have_an_empty_parameter_schema() {
         let schema = statement.get_parameter_schema().unwrap();
         assert!(schema.fields().is_empty());
     }
-    assert_eq!(requests.join().unwrap().len(), 1);
+    requests.served(1);
 }
 
 #[test]
@@ -263,8 +257,7 @@ fn an_unknown_dml_count_keeps_the_combined_count_unknown() {
                 assert_eq!(affected, -1, "{counts:?}");
                 assert!(reader.next().is_none());
             }
-            let requests = requests.join().unwrap();
-            assert_eq!(requests.len(), 2);
+            let requests = requests.served(2);
             let max_results = if update { 0 } else { 100_000 };
             assert!(
                 requests
@@ -327,8 +320,7 @@ fn explicit_destination_execute_query_requests_metadata_without_rows() {
     // of rows this query wrote is unknown.
     assert_eq!(affected, -1);
 
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 2);
+    let requests = requests.served(2);
     assert_eq!(
         requests[0].body["configuration"]["query"]["destinationTable"]["tableId"],
         "result"
@@ -408,8 +400,7 @@ fn a_batch_query_without_a_location_reads_its_rows_where_bigquery_ran_it() {
 
     assert_eq!(row_count(statement.execute().unwrap()), 1);
 
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 2);
+    let requests = requests.served(2);
     let submitted = &requests[0].body;
     assert!(
         submitted["jobReference"].get("location").is_none(),
@@ -452,8 +443,7 @@ fn explicit_query_defaults_keep_the_jobs_query_path() {
     }
     statement.execute_update().unwrap();
 
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 1);
+    let requests = requests.served(1);
     assert!(
         requests[0].path().contains("/queries"),
         "{}",
@@ -496,8 +486,7 @@ fn job_labels_and_timeout_reach_the_query_request() {
     );
     statement.execute_update().unwrap();
 
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 1);
+    let requests = requests.served(1);
     // Both options are `jobs.query` request fields, so they must not push the query onto
     // `jobs.insert`.
     assert!(
@@ -525,8 +514,7 @@ fn an_empty_parameter_stream_is_described_by_a_dry_run_typed_from_its_schema() {
     // Nothing executed, so the count is known, as execute_update and execute_partitions say.
     assert_eq!(affected, 0);
 
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 1);
+    let requests = requests.served(1);
     let configuration = &requests[0].body["configuration"];
     assert_eq!(configuration["query"]["query"], sql);
     assert_eq!(configuration["dryRun"], true);
@@ -565,8 +553,7 @@ fn lazy_parameter_rows_keep_their_sql_and_statement_defaults() {
     assert!(reader.next().is_none());
     assert_eq!(retained_sql.strong_count(), 0);
 
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 2);
+    let requests = requests.served(2);
     for request in requests {
         assert_eq!(request.body["query"], sql);
         assert_eq!(
@@ -608,8 +595,7 @@ fn parameters_reach_the_request_as_bigquery_spells_them() {
         statement.bind(int64_column(column, vec![7])).unwrap();
         statement.execute_update().unwrap();
 
-        let requests = requests.join().unwrap();
-        assert_eq!(requests.len(), 1, "{expected_mode}");
+        let requests = requests.served(1);
         assert_eq!(requests[0].body["parameterMode"], expected_mode);
         assert_eq!(
             requests[0].body["queryParameters"], expected_parameters,
@@ -668,7 +654,7 @@ fn multi_row_parameter_queries_report_an_unknown_row_count() {
     assert_eq!(affected, -1);
     // Only the first row has run; dropping the reader runs no other.
     drop(reader);
-    assert_eq!(requests.join().unwrap().len(), 1);
+    requests.served(1);
 }
 
 #[test]
@@ -700,7 +686,7 @@ fn bound_procedure_calls_return_each_result_in_parameter_order() {
         })
         .collect();
     assert_eq!(values, [1, 2]);
-    assert_eq!(requests.join().unwrap().len(), 2);
+    requests.served(2);
 }
 
 /// A DB-API `cursor.execute(sql, parameters)` binds one row, which has run in full when
@@ -728,7 +714,7 @@ fn a_one_row_binding_reports_its_row_count() {
     let (mut reader, affected) = statement.execute_with_rows_affected().unwrap();
     assert_eq!(affected, 0);
     assert!(reader.next().is_none());
-    assert_eq!(requests.join().unwrap().len(), 2);
+    requests.served(2);
 }
 
 /// A statement that returns no rows leaves a caller nothing to read, so DB-API code that executes
@@ -824,8 +810,7 @@ fn partitions_report_the_summed_total_rows_of_their_jobs() {
         .set_sql_query("INSERT dataset.table (answer) VALUES (1), (2)")
         .unwrap();
     assert_eq!(statement.execute_partitions().unwrap().rows_affected, 2);
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 4);
+    let requests = requests.served(4);
     for request in requests {
         assert_eq!(request.body["jobCreationMode"], "JOB_CREATION_REQUIRED");
         assert_eq!(request.body["timeoutMs"], 10_000);
@@ -857,7 +842,7 @@ fn partition_row_counts_preserve_unknown_totals_and_reported_zero() {
         let result = statement.execute_partitions().unwrap();
         assert_eq!(result.rows_affected, expected, "counts: {counts:?}");
         assert_eq!(result.partitions.len(), 2);
-        assert_eq!(requests.join().unwrap().len(), 2);
+        requests.served(2);
     }
 }
 
@@ -904,7 +889,7 @@ fn option_only_execute_schema_cancels_unread_parameter_rows() {
         Status::Cancelled
     );
     assert!(reader.next().is_none());
-    assert_eq!(requests.join().unwrap().len(), 1);
+    requests.served(1);
 }
 
 #[test]
@@ -948,7 +933,7 @@ fn the_parameter_schema_is_derived_once_and_dropped_when_the_query_changes() {
     );
     statement.get_parameter_schema().unwrap();
 
-    assert_eq!(requests.join().unwrap().len(), 3);
+    requests.served(3);
 }
 
 #[test]
@@ -990,8 +975,7 @@ fn parameter_schema_cache_tracks_the_session_and_rejects_a_released_connection()
         Status::InvalidState
     );
 
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 3);
+    let requests = requests.served(3);
     for (request, session) in requests.iter().zip([false, true, false]) {
         let properties = &request.body["configuration"]["query"]["connectionProperties"];
         if session {
@@ -1014,7 +998,7 @@ fn cached_parameter_schema_does_not_bypass_create_session_refusal() {
     statement.transaction.disable_autocommit().unwrap();
     let failure = statement.get_parameter_schema().unwrap_err();
     assert_failure(&failure, Status::InvalidState, &["create_session"]);
-    assert_eq!(requests.join().unwrap().len(), 1);
+    requests.served(1);
 }
 
 /// A bound parameter set is consumed by the execute that runs it, as in the sqlite reference
@@ -1047,8 +1031,7 @@ fn re_executing_consumed_parameters_is_refused_by_every_execute_entrypoint() {
         execute(&mut statement).unwrap();
     }
     // Twelve requests for the twelve executes allowed to run; the three refusals sent nothing.
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 12);
+    let requests = requests.served(12);
     for attempts in requests.chunks(4) {
         let sql = attempts.iter().map(CapturedRequest::sql);
         assert!(sql.eq([
@@ -1119,7 +1102,7 @@ fn cancelling_a_multi_page_drain_reports_the_cancellation() {
         .unwrap_err();
     assert!(failure.to_string().contains("cancelled"), "{failure}");
     drop(reader);
-    assert_eq!(requests.join().unwrap().len(), 2);
+    requests.served(2);
 }
 
 /// adbc.h lets only ExecuteQuery, ExecuteSchema and Prepare invalidate prior result sets
@@ -1165,7 +1148,7 @@ fn getting_the_parameter_schema_preserves_a_draining_result_and_its_progress() {
         1
     );
     assert!(reader.next().is_none());
-    assert_eq!(requests.join().unwrap().len(), 4);
+    requests.served(4);
 }
 
 /// Describing a statement needs no values, so one that was never bound, or whose binding an earlier
@@ -1193,8 +1176,7 @@ fn describing_an_unbound_statement_leaves_its_placeholders_undeclared() {
         "answer"
     );
 
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 3);
+    let requests = requests.served(3);
     for request in [&requests[0], &requests[2]] {
         let query = &request.body["configuration"]["query"];
         assert_eq!(request.body["configuration"]["dryRun"], true);

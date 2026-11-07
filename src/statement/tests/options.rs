@@ -1159,7 +1159,7 @@ fn execution_progress_reports_the_bytes_the_query_processed() {
             assert_failure(&error, Status::NotFound, &["double"]);
         }
     }
-    assert_eq!(requests.join().unwrap().len(), 1);
+    requests.served(1);
 }
 
 /// An update runs a job like any query, so it publishes the bytes that job processed.
@@ -1177,7 +1177,7 @@ fn an_update_publishes_the_bytes_its_job_processed() {
     assert_eq!(statement.execute_update().unwrap(), Some(3));
 
     assert_progress(&statement, 4096.0);
-    assert_eq!(requests.join().unwrap().len(), 1);
+    requests.served(1);
 }
 
 /// A dry run reports an *estimate* of the bytes a query would process. It executed nothing, so it
@@ -1200,7 +1200,7 @@ fn a_dry_run_publishes_no_execution_progress() {
     drop(statement.execute().unwrap());
 
     assert_progress(&statement, 0.0);
-    assert_eq!(requests.join().unwrap().len(), 1);
+    requests.served(1);
 }
 
 /// `ExecuteUpdate` and `ExecutePartitions` run the job of every bound parameter row before they
@@ -1238,7 +1238,7 @@ fn several_parameter_rows_publish_the_bytes_all_their_jobs_processed() {
     statement.bind(int64_column("answer", vec![1, 2])).unwrap();
     assert_eq!(statement.execute_partitions().unwrap().partitions.len(), 2);
     assert_progress(&statement, 12288.0);
-    assert_eq!(requests.join().unwrap().len(), 4);
+    requests.served(4);
 }
 
 /// Unset, write-only, and incorrectly typed options must name the requested key in their errors.

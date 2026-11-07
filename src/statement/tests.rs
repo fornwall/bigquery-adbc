@@ -16,8 +16,8 @@ use crate::arrow_ipc_bigquery::encode_schema_fixture;
 use crate::parameters::ParameterMode;
 use crate::test_support::arrow::bigquery_typed;
 use crate::test_support::http::{
-    CapturedRequest, capture_requests, capture_requests_responding, completed_job, job_reference,
-    ok,
+    CapturedRequest, CapturedServer, capture_requests, capture_requests_responding, completed_job,
+    done_job, google_rejection, job_reference, ok,
 };
 use crate::transaction::QueryTransaction;
 use crate::{

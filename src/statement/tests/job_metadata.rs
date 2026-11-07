@@ -18,18 +18,12 @@ fn answer(job_id: &str, mut fields: serde_json::Value) -> (u16, serde_json::Valu
 
 /// The `jobs.get` resource of query job `job_id`, carrying `query` as its query statistics.
 fn job_resource(job_id: &str, query: &serde_json::Value) -> (u16, serde_json::Value) {
-    ok(json!({
-        "jobReference": job_reference("fixture-project", job_id),
-        "statistics": {"query": query}
-    }))
+    done_job(job_id, json!({"statistics": {"query": query}}))
 }
 
 /// A `jobs.get` failure BigQuery answers with an HTTP 500.
 fn backend_error() -> (u16, serde_json::Value) {
-    (
-        500,
-        json!({"error": {"code": 500, "message": "backend error", "status": "INTERNAL"}}),
-    )
+    google_rejection(500, "INTERNAL", "", "backend error")
 }
 
 /// One entry of the result schema's metadata.
@@ -165,7 +159,7 @@ fn a_jobless_result_reports_its_query_id_and_statistics_without_follow_up_reques
     );
     assert!(reader.next().is_none());
     drop(reader);
-    assert_eq!(requests.join().unwrap().len(), 1);
+    requests.served(1);
 }
 
 /// dbt-core 2.0 reads the job's statistics off the same schema, as decimal strings.
@@ -326,8 +320,7 @@ fn a_polled_result_fetches_the_job_for_the_final_statistics() {
     );
     drop(reader);
 
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 3);
+    let requests = requests.served(3);
     assert_eq!(job_gets(&requests), 1);
 }
 
@@ -372,17 +365,14 @@ fn a_storage_read_result_fetches_the_job_exactly_once() {
 /// later query. No other failure may, or a transient one would push every later query onto REST.
 #[test]
 fn a_failed_job_fetch_leaves_the_result_readable_and_only_a_refusal_disables_storage_read() {
-    let error = |code: u16, message: &str, status: &str| {
-        (
-            code,
-            json!({"error": {"code": code, "message": message, "status": status}}),
-        )
-    };
     for (failure, disabled) in [
         (backend_error(), false),
-        (error(404, "job not found", "NOT_FOUND"), false),
         (
-            error(403, "caller cannot get the job", "PERMISSION_DENIED"),
+            google_rejection(404, "NOT_FOUND", "", "job not found"),
+            false,
+        ),
+        (
+            google_rejection(403, "PERMISSION_DENIED", "", "denied"),
             true,
         ),
     ] {

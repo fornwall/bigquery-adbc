@@ -2,7 +2,6 @@
 //! outside autocommit, and what a failed lazy begin leaves behind.
 
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
-use std::thread::JoinHandle;
 
 use super::*;
 use crate::BigQueryConnection;
@@ -46,12 +45,7 @@ fn statement_in_session(endpoint: &str, session: &str) -> BigQueryStatement {
 /// Serves `responses`, reporting the first request and then holding its answer until released.
 fn capture_requests_held(
     responses: Vec<(u16, serde_json::Value)>,
-) -> (
-    String,
-    JoinHandle<Vec<CapturedRequest>>,
-    Receiver<()>,
-    SyncSender<()>,
-) {
+) -> (String, CapturedServer, Receiver<()>, SyncSender<()>) {
     let (request_seen, wait_for_request) = sync_channel(0);
     let (release_response, response_released) = sync_channel(0);
     let (endpoint, requests) = capture_requests_gated(responses, move || {
@@ -96,16 +90,7 @@ fn enabling_autocommit_commits_pending_manual_work() {
 fn failed_lazy_begin_does_not_execute_the_caller_query_or_enable_autocommit() {
     let (endpoint, requests) = capture_requests(vec![
         session_created(),
-        (
-            400,
-            json!({
-                "error": {
-                    "code": 400,
-                    "message": "injected BEGIN failure",
-                    "status": "INVALID_ARGUMENT"
-                }
-            }),
-        ),
+        google_rejection(400, "INVALID_ARGUMENT", "", "injected BEGIN failure"),
         finished(),
     ]);
     let (connection, mut statement) = manual_insert_at(&endpoint);
@@ -398,7 +383,7 @@ fn releasing_a_manual_connection_prevents_later_parameter_rows() {
         &["released", "parameter row 1"],
     );
     assert!(reader.next().is_none());
-    assert_eq!(requests.join().unwrap().len(), 1);
+    requests.served(1);
 }
 
 #[test]
