@@ -196,26 +196,32 @@ fn cancels_running_query_job() {
         let label = scratch_table("cancel");
         let mut connection = connect(project());
         let mut statement = prepare_query(&mut connection, CANCELLABLE_QUERY);
-        // A cached result is DONE immediately, and a lost race would cache one for the next try.
         set_option(
             &mut statement,
             BigQueryStatementOption::Labels,
             format!(r#"{{"{CANCEL_LABEL_KEY}":"{label}"}}"#),
         );
+        // A cached result is DONE immediately, and a lost race would cache one for the next try.
         set_option(
             &mut statement,
             BigQueryStatementOption::DisableQueryCache,
             "true",
+        );
+        // A failed check leaves the job uncancelled, and `assert_cancels` joins `execute` while
+        // unwinding: without a deadline, that waits on a query that can run for hours.
+        set_option(
+            &mut statement,
+            BigQueryStatementOption::JobTimeout,
+            300_000_i64,
         );
         let cancellation = statement.get_cancel_handle();
 
         let cancelled = assert_cancels(
             "statement",
             cancellation.as_ref(),
+            // A job already DONE lost the race, which `assert_cancels` reports for a retry.
             || {
-                await_labelled_job(&mut connection, &label, "reached the service", |state| {
-                    state != "DONE"
-                });
+                await_labelled_job(&mut connection, &label, "reached the service", |_| true);
             },
             || outcome(statement.execute()),
         );
