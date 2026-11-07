@@ -472,9 +472,9 @@ Go returns `IO` for discrete OAuth transport failures, but JSON and impersonatio
 transport errors keep the call site's default, commonly `INTERNAL` during queries. An unavailable
 ambient ADC metadata server remains `UNAUTHENTICATED` here with credential setup advice.
 
-This driver also maps HTTP 501 to `NOT_IMPLEMENTED`, `responseTooLarge` and `resourcesExceeded` to
-`INVALID_ARGUMENT`, and a disabled API and unusable credentials as [errors](REFERENCE.md#errors)
-describes. Its errors carry structured details and, for `invalidQuery` and `accessDenied`, SQLSTATE
+This driver also maps HTTP 501 to `NOT_IMPLEMENTED`, `responseTooLarge`, `resourcesExceeded` and
+`bytesBilledLimitExceeded` to `INVALID_ARGUMENT`, and a disabled API and unusable credentials as
+[errors](REFERENCE.md#errors) describes. Its errors carry structured details and, for `invalidQuery` and `accessDenied`, SQLSTATE
 `42000`; Go errors carry only a status and message. Both drivers end a failed job's message with
 `(Query: <console URL>)`.
 

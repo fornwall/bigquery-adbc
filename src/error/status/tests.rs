@@ -147,6 +147,7 @@ fn bigquery_reasons_map_to_honest_statuses() {
         // Limits on the request as written: an oversized result and an over-budget query.
         ("responseTooLarge", Status::InvalidArguments),
         ("resourcesExceeded", Status::InvalidArguments),
+        ("bytesBilledLimitExceeded", Status::InvalidArguments),
         ("notFound", Status::NotFound),
         ("duplicate", Status::AlreadyExists),
         ("notImplemented", Status::NotImplemented),

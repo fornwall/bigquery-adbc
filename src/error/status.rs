@@ -217,10 +217,12 @@ pub(super) fn bigquery_reason_status(reason: &str) -> Status {
         // how to enable it.
         "accessNotConfigured" | "SERVICE_DISABLED" => Status::InvalidState,
         // 400s, plus `responseTooLarge` (a 403). Like `resourcesExceeded`, it is fixed by a
-        // request that asks for less.
+        // request that asks for less. `bytesBilledLimitExceeded` is a job over the caller's
+        // `bigquery.query.max_bytes_billed`, which the error table does not list.
         "attributeError"
         | "badRequest"
         | "billingTierLimitExceeded"
+        | "bytesBilledLimitExceeded"
         | "invalid"
         | "invalidQuery"
         | "invalidUser"
