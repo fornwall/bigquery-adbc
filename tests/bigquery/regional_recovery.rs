@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use adbc_core::error::Status;
 use adbc_core::{Database as _, Statement as _};
 use adbc_driver_bigquery::{
-    BigQueryDatabaseOption, BigQueryQueryPriority, BigQueryStatementOption,
+    BigQueryConnection, BigQueryDatabaseOption, BigQueryQueryPriority, BigQueryStatementOption,
 };
 use google_cloud_auth::credentials::{Builder, CacheableResource, Credentials};
 use serde_json::{Value, json};
@@ -53,22 +53,9 @@ fn regional_recovery_survives_lost_submission_responses() {
         &format!("CREATE TABLE `{table}` (marker STRING)"),
     );
 
-    for loss in [Loss::First, Loss::Every] {
+    for (loss, marker) in [(Loss::First, "conflict"), (Loss::Every, "listing")] {
         let proxy = Proxy::new(api.clone(), fixture.jobs.clone(), loss);
-        let mut connection = open_database([
-            (BigQueryDatabaseOption::ProjectId.into(), project().into()),
-            (
-                BigQueryDatabaseOption::Endpoint.into(),
-                proxy.endpoint.clone().into(),
-            ),
-        ])
-        .new_connection()
-        .unwrap();
-        let marker = match loss {
-            Loss::First => "conflict",
-            Loss::Every => "listing",
-            Loss::Cancel => unreachable!(),
-        };
+        let mut connection = proxy.connection();
         let mut statement = prepare_query(
             &mut connection,
             &format!("INSERT INTO `{table}` VALUES ('{marker}')"),
@@ -89,15 +76,7 @@ fn regional_recovery_survives_lost_submission_responses() {
     }
 
     let proxy = Proxy::new(api.clone(), fixture.jobs.clone(), Loss::Cancel);
-    let mut connection = open_database([
-        (BigQueryDatabaseOption::ProjectId.into(), project().into()),
-        (
-            BigQueryDatabaseOption::Endpoint.into(),
-            proxy.endpoint.clone().into(),
-        ),
-    ])
-    .new_connection()
-    .unwrap();
+    let mut connection = proxy.connection();
     // Reading the tiny regional table makes BigQuery infer its region. The generated cross join
     // leaves a window to cancel, without scanning a large billed table.
     let mut statement = prepare_query(
@@ -441,6 +420,18 @@ impl Proxy {
             stop: Some(stop),
             server: Some(server),
         }
+    }
+
+    fn connection(&self) -> BigQueryConnection {
+        open_database([
+            (BigQueryDatabaseOption::ProjectId.into(), project().into()),
+            (
+                BigQueryDatabaseOption::Endpoint.into(),
+                self.endpoint.clone().into(),
+            ),
+        ])
+        .new_connection()
+        .unwrap()
     }
 
     fn finish(mut self) -> Vec<Record> {
