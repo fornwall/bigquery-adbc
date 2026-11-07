@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import importlib.metadata
 import inspect
+import json
+import os
+import threading
 import urllib.parse
 from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import adbc_driver_manager
@@ -524,6 +528,74 @@ def test_dbapi_use_after_close_raises() -> None:
     connection.close()
     with pytest.raises(dbapi.ProgrammingError):
         connection.cursor()
+
+
+class _SecondPageDenied(BaseHTTPRequestHandler):
+    """BigQuery REST: a query that answers its first page and refuses the next."""
+
+    def _reply(self, status: int, body: dict[str, object]) -> None:
+        payload = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_POST(self) -> None:
+        self.rfile.read(int(self.headers["Content-Length"]))
+        self._reply(
+            200,
+            {
+                "jobComplete": True,
+                "jobReference": {"projectId": "offline-wheel-test", "jobId": "job", "location": "EU"},
+                "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
+                "rows": [{"f": [{"v": "1"}]}],
+                "totalRows": "2",
+                "pageToken": "next",
+            },
+        )
+
+    def do_GET(self) -> None:
+        error = {"reason": "accessDenied", "message": "denied by the mock"}
+        self._reply(403, {"error": {"code": 403, "message": error["message"], "errors": [error]}})
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
+@pytest.fixture
+def second_page_denied() -> Iterator[str]:
+    with ThreadingHTTPServer(("127.0.0.1", 0), _SecondPageDenied) as server:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        yield f"http://127.0.0.1:{server.server_port}"
+        server.shutdown()
+
+
+def test_mid_stream_failure_details_reach_the_caller(second_page_denied: str) -> None:
+    # Only the C driver manager covers this: its AdbcErrorFromArrayStream sets the private_driver
+    # that routes AdbcErrorGetDetail* back to this driver. The Rust manager never calls it.
+    with (
+        dbapi.connect(
+            "bigquery:///offline-wheel-test",
+            db_kwargs={
+                driver.DatabaseOptions.AUTHENTICATION_TYPE: driver.AuthenticationType.ANONYMOUS,
+                driver.DatabaseOptions.ENDPOINT: second_page_denied,
+            },
+            conn_kwargs={driver.ConnectionOptions.QUERY_USE_STORAGE_API_DISABLED_CLIENT: "true"},
+            autocommit=True,
+        ) as connection,
+        connection.cursor() as cursor,
+    ):
+        cursor.execute("SELECT 1")
+        with pytest.raises(dbapi.ProgrammingError, match="denied by the mock") as failure:
+            cursor.fetchall()
+
+    # The manager's stubs declare str keys, but it returns bytes.
+    assert {os.fsdecode(key): value for key, value in failure.value.details} == {
+        "bigquery.error.reason": b"accessDenied",
+        "bigquery.error.http_status": b"403",
+        "bigquery.job_id": b"offline-wheel-test:EU.job",
+    }
 
 
 def test_dbapi_exception_hierarchy_is_the_pep249_one() -> None:
