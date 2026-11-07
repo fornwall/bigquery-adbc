@@ -290,7 +290,7 @@ def test_an_unknown_bigquery_option_key_is_rejected(
         ),
         (
             "bigquery:///some-project?OAuthType=9",
-            'BigQuery URI OAuthType must be 0, 1, 2, or 3',
+            "BigQuery URI OAuthType must be 0, 1, 2, or 3",
         ),
     ],
 )
