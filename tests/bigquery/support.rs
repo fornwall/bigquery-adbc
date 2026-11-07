@@ -214,6 +214,14 @@ impl Drop for DropTable {
     }
 }
 
+/// A unique scratch table, the guard that drops it, and a connection to the scratch dataset.
+#[track_caller]
+pub(crate) fn scratch_fixture(prefix: &str) -> (String, DropTable, BigQueryConnection) {
+    let table = scratch_table(prefix);
+    let guard = DropTable::table(&table);
+    (table, guard, connect_with_dataset())
+}
+
 /// Reports a scratch resource that could not be cleaned up.
 ///
 /// Fails the test unless it is already unwinding. During unwinding, prints the leaked resource

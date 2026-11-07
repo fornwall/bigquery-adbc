@@ -21,8 +21,8 @@ use crate::support::{
     DropTable, SCRATCH_DATASET, assert_harvested_job_statistics, assert_matches_dry_run, bool_at,
     connect, connect_with_dataset, connect_with_dataset_at, count_rows, date_at, date_value,
     execute_failure, execute_sql, i64_at, interval_at, list_at, prepare_query, project, read_all,
-    read_single_i64, row_count, scratch_table, set_option, single_batch, str_at, str_value,
-    struct_at, ts_at, ts_value, typed,
+    read_single_i64, row_count, scratch_fixture, scratch_table, set_option, single_batch, str_at,
+    str_value, struct_at, ts_at, ts_value, typed,
 };
 
 #[test]
@@ -121,9 +121,7 @@ fn a_batch_query_without_a_location_returns_its_rows() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn a_destination_query_without_a_location_writes_its_table() {
-    let table = scratch_table("unlocated_destination");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("unlocated_destination");
     let mut statement = prepare_query(&mut connection, "SELECT 7 AS value");
     set_option(
         &mut statement,
@@ -347,9 +345,7 @@ fn result_schemas_report_the_job_statistics() {
             .unwrap_or_else(|_| panic!("{key} is {value:?}, not a decimal integer"))
     }
 
-    let table = scratch_table("job_stats");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("job_stats");
     execute_sql(
         &mut connection,
         &format!("CREATE TABLE `{table}` AS SELECT * FROM UNNEST([1, 2, 3]) AS value"),

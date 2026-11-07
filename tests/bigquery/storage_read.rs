@@ -14,9 +14,9 @@ use arrow_array::{Array, Int64Array, RecordBatch, RecordBatchReader};
 use arrow_schema::{ArrowError, DataType, Schema};
 
 use crate::support::{
-    DropTable, assert_harvested_job_statistics, concatenated, connect, connect_with_dataset,
-    connect_with_dataset_at, execute_sql, open_database, prepare_query, project, read_all,
-    row_count, schema_without_job_metadata, scratch_table, set_option, typed,
+    DropTable, assert_harvested_job_statistics, concatenated, connect, connect_with_dataset_at,
+    execute_sql, open_database, prepare_query, project, read_all, row_count,
+    schema_without_job_metadata, scratch_fixture, scratch_table, set_option, typed,
 };
 
 /// Fixture row count. With [`PADDING`], the first `jobs.query` response (about 10 MB of JSON)
@@ -514,9 +514,7 @@ fn reads_a_partition_written_to_a_table_requiring_a_partition_filter() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn storage_read_matches_rest_for_parameterized_decimals() {
-    let table = scratch_table("storage_read");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("storage_read");
 
     execute_sql(
         &mut connection,
@@ -555,9 +553,7 @@ fn storage_read_matches_rest_for_parameterized_decimals() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn storage_read_results_report_the_statement_type() {
-    let table = scratch_table("storage_read_stats");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("storage_read_stats");
     execute_sql(
         &mut connection,
         &format!(

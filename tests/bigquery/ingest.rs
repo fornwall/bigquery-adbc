@@ -30,15 +30,13 @@ use crate::support::{
     bignumeric_extremes_batch, bignumeric_extremes_select, connect, connect_with_dataset,
     count_rows, date_at, decimal_domain_batch, execute_sql, i64_at, ingest_batch, interval_at,
     option_string, prepare_query, project, read_all, read_single_i64, read_single_string,
-    scratch_table, set_option, single_batch, str_at, struct_at, ts_at, typed,
+    scratch_fixture, scratch_table, set_option, single_batch, str_at, struct_at, ts_at, typed,
 };
 
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn bulk_ingests_arrow_with_standard_lifecycle_modes() {
-    let table = scratch_table("ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("ingest");
     set_option(
         &mut connection,
         BigQueryConnectionOption::BulkIngestMethod,
@@ -221,9 +219,7 @@ fn bulk_ingests_arrow_with_standard_lifecycle_modes() {
 #[test]
 #[ignore = "known Storage Write service race (UP-26); requires ADC and write access to sq_scratch"]
 fn bulk_ingests_after_rapid_table_recreation() {
-    let table = scratch_table("recreate_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("recreate_ingest");
 
     for generation in 0_i64..16 {
         let unit = match generation % 4 {
@@ -363,9 +359,7 @@ fn bulk_ingests_after_rapid_table_recreation() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn bulk_ingests_null_structs_with_hidden_invalid_children() {
-    let table = scratch_table("null_struct_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("null_struct_ingest");
 
     let instant = TimestampSecondArray::from(vec![i64::MAX, 86_400]).with_timezone("UTC");
     let fields = vec![
@@ -415,9 +409,7 @@ fn bulk_ingests_null_structs_with_hidden_invalid_children() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn dry_runs_a_bulk_ingest_without_touching_the_target() {
-    let table = scratch_table("dry_run_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("dry_run_ingest");
 
     let batch = |ids: Vec<i64>| {
         RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(ids)) as ArrayRef)]).unwrap()
@@ -496,9 +488,7 @@ fn dry_runs_a_bulk_ingest_without_touching_the_target() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn bulk_ingests_a_batch_larger_than_the_append_rows_request_limit() {
-    let table = scratch_table("large_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("large_ingest");
 
     // Three 8 MB values produce one Arrow IPC batch larger than BigQuery's strict
     // 10,000,000-byte AppendRows request limit, while every individual row remains shippable.
@@ -530,9 +520,7 @@ fn bulk_ingests_a_batch_larger_than_the_append_rows_request_limit() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn bulk_ingests_chunks_that_fill_the_append_rows_size_budget() {
-    let table = scratch_table("target_sized_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("target_sized_ingest");
 
     // About 10.5 MB in 32 KiB rows, so the encoder must split at the size target, not per row.
     const ROW_BYTES: usize = 32 * 1024;
@@ -560,9 +548,7 @@ fn bulk_ingests_chunks_that_fill_the_append_rows_size_budget() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn bulk_ingests_decimals_by_value_domain() {
-    let table = scratch_table("decimal_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("decimal_ingest");
 
     assert_eq!(
         ingest_batch(&mut connection, &table, decimal_domain_batch()),
@@ -615,9 +601,7 @@ fn bulk_ingests_decimals_by_value_domain() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn bulk_ingests_bignumeric_across_the_whole_domain() {
-    let table = scratch_table("bignumeric_domain_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("bignumeric_domain_ingest");
 
     let batch = bignumeric_extremes_batch();
     assert_eq!(ingest_batch(&mut connection, &table, batch), Some(1));
@@ -646,9 +630,7 @@ fn bulk_ingests_bignumeric_across_the_whole_domain() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn bignumeric_ingest_distinguishes_parameterized_targets() {
-    let table = scratch_table("bignumeric_bounded_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("bignumeric_bounded_ingest");
     execute_sql(
         &mut connection,
         &format!(
@@ -705,9 +687,7 @@ fn bignumeric_ingest_distinguishes_parameterized_targets() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn bulk_ingests_decimal_arrays_at_their_declared_scale() {
-    let table = scratch_table("decimal_array_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("decimal_array_ingest");
 
     let one_row_list = |values: ArrayRef| -> ArrayRef {
         let item = Arc::new(Field::new("item", values.data_type().clone(), true));
@@ -792,9 +772,7 @@ fn bulk_ingests_decimal_arrays_at_their_declared_scale() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn bulk_ingests_range_values() {
-    let table = scratch_table("range_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("range_ingest");
 
     let range = |name: &str, element_type: &str, data_type: DataType| {
         Field::new(
@@ -981,9 +959,7 @@ fn refuses_array_timestamp_ingest_and_its_staging_workaround_works() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn bulk_ingests_interval_values() {
-    let table = scratch_table("interval_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("interval_ingest");
 
     let batch = RecordBatch::try_from_iter([
         (
@@ -1032,9 +1008,7 @@ fn bulk_ingests_interval_values() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn bulk_ingests_duration_values() {
-    let table = scratch_table("duration_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("duration_ingest");
 
     let batch = RecordBatch::try_from_iter([
         (
@@ -1101,9 +1075,7 @@ fn bulk_ingests_duration_values() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn bulk_ingests_an_empty_stream() {
-    let table = scratch_table("empty_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("empty_ingest");
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("label", DataType::Utf8, true),
@@ -1140,9 +1112,7 @@ fn bulk_ingests_an_empty_stream() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn bulk_ingests_extension_columns_whose_storage_type_changes() {
-    let table = scratch_table("extension_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("extension_ingest");
     let extension = |field: Field, name: &str| {
         field.with_metadata(HashMap::from([(
             "ARROW:extension:name".to_owned(),
@@ -1256,9 +1226,7 @@ fn bulk_ingests_many_small_batches() {
     const BATCHES: i64 = 200;
     const ROWS_PER_BATCH: i64 = 1_024;
 
-    let table = scratch_table("small_batches_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("small_batches_ingest");
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("label", DataType::Utf8, false),
@@ -1303,9 +1271,7 @@ fn bulk_ingests_many_small_batches() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn appends_to_a_table_with_a_flexible_column_name_are_refused() {
-    let table = scratch_table("flexible_name_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("flexible_name_ingest");
     execute_sql(
         &mut connection,
         &format!("CREATE TABLE `{table}` (id INT64, customer STRUCT<`first name` STRING>)"),
@@ -1349,9 +1315,7 @@ fn appends_to_a_table_with_a_flexible_column_name_are_refused() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn appends_resolve_columns_by_name_and_refuse_what_storage_write_would_alter() {
-    let table = scratch_table("by_name_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("by_name_ingest");
     execute_sql(
         &mut connection,
         &format!(
@@ -1427,9 +1391,7 @@ fn appends_resolve_columns_by_name_and_refuse_what_storage_write_would_alter() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn appends_take_null_column_types_and_string_lengths_from_the_table() {
-    let table = scratch_table("aligned_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("aligned_ingest");
     execute_sql(
         &mut connection,
         &format!(
@@ -1555,9 +1517,7 @@ fn a_table_read_under_its_schema_ingests_into_the_same_declared_decimals() {
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn appends_plain_strings_to_json_and_geography_columns() {
-    let table = scratch_table("json_geography_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("json_geography_ingest");
     execute_sql(
         &mut connection,
         &format!(
@@ -1723,9 +1683,7 @@ fn failed_ingest(
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn a_failed_replace_keeps_the_rows_it_would_have_replaced() {
-    let table = scratch_table("failed_replace");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("failed_replace");
     execute_sql(
         &mut connection,
         &format!("CREATE TABLE `{table}` AS SELECT id FROM UNNEST([1, 2]) AS id"),

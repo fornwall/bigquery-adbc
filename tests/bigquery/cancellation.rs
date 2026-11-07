@@ -13,8 +13,8 @@ use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 
 use crate::storage_read::storage_read_row_sequence;
 use crate::support::{
-    DropTable, connect, connect_with_dataset, count_rows, outcome, prepare_query, project,
-    read_all, read_single_i64, scratch_table, set_option, str_at,
+    connect, count_rows, outcome, prepare_query, project, read_all, read_single_i64,
+    scratch_fixture, scratch_table, set_option, str_at,
 };
 
 /// Runs `execute` on a scoped thread, cancels it in flight, and checks for `Status::Cancelled`.
@@ -291,9 +291,7 @@ fn cancels_a_running_bulk_ingest() {
         }
     }
 
-    let table = scratch_table("cancel_ingest");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset();
+    let (table, _drop_table, mut connection) = scratch_fixture("cancel_ingest");
     let mut ingest = connection.new_statement().unwrap();
     set_option(&mut ingest, OptionStatement::TargetTable, table.clone());
     let read = Arc::new(AtomicI64::new(0));
