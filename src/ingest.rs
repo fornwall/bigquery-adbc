@@ -99,9 +99,12 @@ pub(crate) fn validate_ingest(
     context.operation.check()?;
     let table = resolve_target(context.current_catalog, context.current_schema, options)?;
     let metadata_client = context.state.metadata_client(context.runtime)?;
-    ingest_schema(&context, &metadata_client, table, options.mode, schema)?
-        .plan_target(&context, &metadata_client, table, options.mode, true)
-        .map(|_| ())
+    let settled = ingest_schema(&context, &metadata_client, table, options.mode, schema)?;
+    if settled.plan.is_none() {
+        let expected = &settled.table_schema;
+        plan_table(&context, &metadata_client, table, options.mode, expected)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn execute_ingest(
@@ -138,8 +141,19 @@ pub(crate) fn execute_ingest(
             None => break None,
         }
     };
-    let plan = settled.plan_target(&context, &metadata_client, table, options.mode, false)?;
     let table_schema = settled.table_schema;
+    let plan = match settled.plan {
+        Some(plan) => plan,
+        // Its insert learns of an existing table atomically, so a `create` reads nothing first.
+        None if options.mode == IngestMode::Create => TablePlan::Create,
+        None => plan_table(
+            &context,
+            &metadata_client,
+            table,
+            options.mode,
+            &table_schema,
+        )?,
+    };
     let plan = prepare_table(
         &context,
         &metadata_client,
@@ -258,26 +272,6 @@ struct IngestSchema {
     /// Appends inspect and validate the target before reading rows. Other modes defer planning
     /// until the first batch is valid, or until a dry run has checked the schema.
     plan: Option<TablePlan>,
-}
-
-impl IngestSchema {
-    /// Decides what the ingest does with its target, reading it unless settling the schema
-    /// already did. A `create` reads it only to `inspect` it (a dry run), since its insert
-    /// learns of an existing table atomically.
-    fn plan_target(
-        &self,
-        context: &IngestContext<'_>,
-        metadata_client: &MetadataClient,
-        table: TableId<'_>,
-        mode: IngestMode,
-        inspect: bool,
-    ) -> Result<TablePlan> {
-        match self.plan {
-            Some(plan) => Ok(plan),
-            None if mode == IngestMode::Create && !inspect => Ok(TablePlan::Create),
-            None => plan_table(context, metadata_client, table, mode, &self.table_schema),
-        }
-    }
 }
 
 /// Converts the bound schema for an ingest in `mode`.
