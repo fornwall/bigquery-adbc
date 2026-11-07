@@ -22,6 +22,23 @@ pub(crate) fn error_body(reason: &str, message: &str) -> JsonValue {
     json!({"error": {"errors": [{"reason": reason, "message": message}]}})
 }
 
+/// A staged 200 answer. Unlike the bare tuple, rustfmt keeps a multi-line `json!` body on its line.
+pub(crate) fn ok(body: JsonValue) -> (u16, JsonValue) {
+    (200, body)
+}
+
+/// A staged 200 answer for finished job `job_id` of `fixture-project`: `fields`, usually `json!({})`
+/// or a `statementType`, `schema` and `rows`, plus its `jobReference` and `jobComplete`.
+#[allow(
+    dead_code,
+    reason = "adopted by the test modules that stage query answers"
+)]
+pub(crate) fn completed_job(job_id: &str, mut fields: JsonValue) -> (u16, JsonValue) {
+    fields["jobReference"] = job_reference("fixture-project", job_id);
+    fields["jobComplete"] = json!(true);
+    ok(fields)
+}
+
 /// One captured HTTP request: its request line, headers, raw body, and that body parsed as JSON
 /// (`Null` when the body is empty or not JSON, as for a multipart upload).
 pub(crate) struct CapturedRequest {
@@ -237,6 +254,14 @@ pub(crate) fn capture_requests_until_stopped(
     (endpoint, StoppableServer { stop, handle })
 }
 
+/// A [`loopback_listener`] in the non-blocking mode [`accept`] polls, with its endpoint.
+pub(crate) fn mock_listener() -> (TcpListener, String) {
+    let listener = loopback_listener();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    (listener, endpoint)
+}
+
 /// A listener on a fresh loopback port.
 ///
 /// Retries address-exhaustion errors for one second: concurrent suites can fill the ephemeral
@@ -277,9 +302,7 @@ fn serve(
     + Send
     + 'static,
 ) -> (String, thread::JoinHandle<Vec<CapturedRequest>>) {
-    let listener = loopback_listener();
-    listener.set_nonblocking(true).unwrap();
-    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let (listener, endpoint) = mock_listener();
     let handle = thread::spawn(move || {
         // Retire the port even after a panic, so stray requests cannot reach another test.
         let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

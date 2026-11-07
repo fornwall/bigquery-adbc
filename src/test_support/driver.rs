@@ -1,7 +1,7 @@
 //! Driver fixtures with anonymous credentials and an unreachable or mock endpoint.
 //! Shared by the statement, connection, FFI, and dbt-core tests without Google Cloud credentials.
 
-use adbc_core::{Connection as _, Database as _, Driver as _};
+use adbc_core::{Connection as _, Database as _, Driver as _, Statement as _};
 
 use crate::{
     BigQueryAuthenticationType, BigQueryConnection, BigQueryDatabaseOption, BigQueryDriver,
@@ -67,6 +67,14 @@ pub(crate) fn test_statement() -> BigQueryStatement {
 /// A test statement whose connection points at `endpoint`.
 pub(crate) fn test_statement_at(endpoint: &str) -> BigQueryStatement {
     test_connection_at(endpoint).new_statement().unwrap()
+}
+
+/// A [`test_statement_at`] with `sql` set.
+#[allow(dead_code, reason = "adopted by the test modules that run one query")]
+pub(crate) fn test_query_at(endpoint: &str, sql: &str) -> BigQueryStatement {
+    let mut statement = test_statement_at(endpoint);
+    statement.set_sql_query(sql).unwrap();
+    statement
 }
 
 /// Publishes execution progress without running a query, for FFI getter tests.

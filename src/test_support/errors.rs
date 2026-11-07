@@ -3,7 +3,15 @@
 //! A failed `message.contains(..)` prints only `false`. These report the whole message and the
 //! fragment that was missing or leaked.
 
-use adbc_core::error::Error;
+use adbc_core::error::{Error, Status};
+
+/// Asserts `error`'s status, and that its message contains every fragment.
+#[allow(dead_code, reason = "adopted by the test modules that check both")]
+#[track_caller]
+pub(crate) fn assert_failure(error: &Error, status: Status, fragments: &[&str]) {
+    assert_eq!(error.status, status, "{}", error.message);
+    assert_message(error, fragments);
+}
 
 /// Asserts that `error`'s message contains every fragment, naming the missing one.
 #[track_caller]

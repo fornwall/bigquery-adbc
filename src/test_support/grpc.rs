@@ -23,7 +23,6 @@ use bytes::Bytes;
 use h2::RecvStream;
 use h2::server::SendResponse;
 use http::{HeaderMap, Request, Response};
-use tokio::net::TcpListener;
 
 use crate::arrow_ipc_bigquery::reader::{decode_record_batch_message, decode_schema};
 use crate::arrow_ipc_bigquery::writer::{Writer, encode_schema};
@@ -96,10 +95,11 @@ pub(crate) struct MockPlan {
     /// is one the driver must replay. Everything queued behind it is then past the stream's
     /// cursor, which is what the service answers `OUT_OF_RANGE` for.
     ///
-    /// The refusal is held until the next append on the call has arrived and been recorded (or
-    /// [`HELD_REFUSAL_TIMEOUT`] passes): otherwise the driver can act on the refusal and return
+    /// A later refusal is held until the next append on the call has arrived and been recorded
+    /// (or [`HELD_REFUSAL_TIMEOUT`] passes): otherwise the driver can act on the refusal and return
     /// before this server has even read the successors it pipelined, and whether a competing
-    /// rejection existed would depend on scheduling.
+    /// rejection existed would depend on scheduling. Offset zero has none: the first append is sent
+    /// alone and awaited.
     pub(crate) reject_at: Option<(i64, u32)>,
     /// Reject every append at this offset, including replays, with this gRPC status.
     pub(crate) repeat_append_refusal: Option<(i64, u32)>,
@@ -173,8 +173,7 @@ impl StorageMock {
     /// Binds a loopback port and starts serving `plan` on `runtime`.
     pub(crate) fn start(runtime: &SharedRuntime, plan: MockPlan) -> Self {
         let state = Arc::new(Mutex::new(MockState::default()));
-        let listener = runtime.block_on(TcpListener::bind("127.0.0.1:0")).unwrap();
-        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let (listener, endpoint) = super::http::mock_listener();
         runtime.spawn(serve(listener, Arc::new(plan), state.clone()));
         Self { endpoint, state }
     }
@@ -245,7 +244,8 @@ fn lock(state: &Arc<Mutex<MockState>>) -> MutexGuard<'_, MockState> {
     state.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-async fn serve(listener: TcpListener, plan: Arc<MockPlan>, state: Arc<Mutex<MockState>>) {
+async fn serve(listener: std::net::TcpListener, plan: Arc<MockPlan>, state: Arc<Mutex<MockState>>) {
+    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
     while let Ok((socket, _)) = listener.accept().await {
         let (plan, state) = (plan.clone(), state.clone());
         tokio::spawn(async move {
@@ -636,7 +636,7 @@ async fn append_rows(
             }
         };
         drop(state);
-        if refusal.is_some() {
+        if refusal.is_some() && offset != 0 {
             held_refusal = Some(response);
             continue;
         }
