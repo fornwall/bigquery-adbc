@@ -141,14 +141,6 @@ impl BigQueryStatement {
         context
     }
 
-    fn execution_session(&self, operation: &Operation) -> Result<Option<Arc<str>>> {
-        TransactionContext::new(&self.context, self.query_defaults()).execution_session(
-            &self.transaction,
-            operation,
-            self.query_options.dry_run,
-        )
-    }
-
     /// Refuses `bigquery.query.create_session` in manual-commit mode, where every query runs in
     /// the transaction's session. BigQuery rejects a job that names a session and asks for a new
     /// one, but only after the driver has begun the transaction. Query entry points check this
@@ -308,7 +300,8 @@ impl BigQueryStatement {
             Option<(&str, Vec<QueryParameter>)>,
         ) -> Result<T>,
     ) -> Result<T> {
-        let session_id = self.execution_session(operation)?;
+        let session_id = TransactionContext::new(&self.context, self.query_defaults())
+            .execution_session(&self.transaction, operation, self.query_options.dry_run)?;
         let mode = parameters.is_some().then_some(self.parameter_mode);
         query(
             self.query_context(session_id.as_deref(), operation),

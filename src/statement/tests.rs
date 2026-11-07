@@ -79,7 +79,9 @@ fn select_answer(values: &[&str]) -> (u16, serde_json::Value) {
 
 /// A staged finished dry run carrying `query` as its query statistics.
 fn dry_run_answer(query: serde_json::Value) -> (u16, serde_json::Value) {
-    ok(json!({"statistics": {"query": query}, "status": {"state": "DONE"}}))
+    let mut answer = json!({"status": {"state": "DONE"}});
+    answer["statistics"]["query"] = query;
+    ok(answer)
 }
 
 /// The rows left in `reader`.
