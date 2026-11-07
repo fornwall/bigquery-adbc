@@ -14,7 +14,7 @@ use crate::rest::jobs::JobReference;
 use crate::runtime::new_runtime;
 use crate::test_support::http::{
     CapturedServer, capture_requests, capture_requests_gated, capture_requests_until_stopped,
-    error_body, retire,
+    error_body, mock_listener, retire,
 };
 
 use super::{Cancellation, OperationCancelHandle, buffered_operation_reader, operation_reader};
@@ -706,8 +706,7 @@ fn cancel_failure_reports_unknown_after_stopping_local_work() {
 fn cancellation_deadline_bounds_a_stalled_remote_request() {
     // TCP may connect, but this listener never reads or responds. Cancellation can therefore
     // interrupt any transport stage, including a write that has not sent complete HTTP headers.
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let (listener, endpoint) = mock_listener();
     let mut cancellation = cancellation_at(&endpoint);
     Arc::get_mut(&mut cancellation).unwrap().cancel_timeout = Duration::from_millis(100);
     let operation = cancellation.begin();

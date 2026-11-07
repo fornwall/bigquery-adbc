@@ -371,12 +371,12 @@ fn a_reader_pausing_past_the_request_timeout_does_not_repeat_a_page_request() {
     use crate::query::response::QueryPage;
     use crate::rest::jobs::{JobClient, JobReference};
     use crate::rows::{RestRow, RestValue};
-    use crate::test_support::http::{accept, read_captured_request, retire, write_response};
+    use crate::test_support::http::{
+        accept, mock_listener, read_captured_request, retire, write_response,
+    };
 
     const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let (listener, endpoint) = mock_listener();
     let (stop, stopped) = mpsc::channel::<()>();
     let (received_sender, received) = mpsc::channel();
     let (answer, answered) = mpsc::channel::<()>();

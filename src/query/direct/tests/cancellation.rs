@@ -2,7 +2,7 @@
 //! cancellation after the POST still has to clean up.
 
 use super::*;
-use crate::test_support::http::job_reference;
+use crate::test_support::http::{job_reference, mock_listener, retire};
 use crate::test_support::identifiers::project;
 
 fn cancellation_at(runtime: &SharedRuntime, endpoint: &str) -> Arc<Cancellation> {
@@ -13,22 +13,14 @@ fn cancellation_at(runtime: &SharedRuntime, endpoint: &str) -> Arc<Cancellation>
     )
 }
 
-fn unserved_endpoint() -> (String, TcpListener) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    (
-        format!("http://{}", listener.local_addr().unwrap()),
-        listener,
-    )
-}
-
-fn assert_no_request(listener: &TcpListener) {
+fn assert_no_request(listener: TcpListener) {
     thread::sleep(Duration::from_millis(100));
     match listener.accept() {
         Err(source) if source.kind() == std::io::ErrorKind::WouldBlock => {}
         Ok(_) => panic!("a jobs.query request started after local cancellation"),
         Err(source) => panic!("checking for an unexpected jobs.query request failed: {source}"),
     }
+    retire(listener);
 }
 
 #[derive(Debug)]
@@ -60,7 +52,7 @@ impl CredentialsProvider for CancelDuringCredentials {
 /// The race against cancellation is biased, so a cancelled operation never polls the request.
 #[test]
 fn cancellation_before_the_query_future_is_polled_sends_no_request() {
-    let (endpoint, listener) = unserved_endpoint();
+    let (listener, endpoint) = mock_listener();
     let (runtime, client) = client(&endpoint);
     let cancellation = cancellation_at(&runtime, &endpoint);
     let operation = cancellation.begin();
@@ -80,12 +72,12 @@ fn cancellation_before_the_query_future_is_polled_sends_no_request() {
     operation.finish();
 
     assert_eq!(failure.status, Status::Cancelled);
-    assert_no_request(&listener);
+    assert_no_request(listener);
 }
 
 #[test]
 fn cancellation_during_credentials_sends_no_request() {
-    let (endpoint, listener) = unserved_endpoint();
+    let (listener, endpoint) = mock_listener();
     let runtime = new_runtime().unwrap();
     let cancellation = cancellation_at(&runtime, &endpoint);
     let operation = cancellation.begin();
@@ -109,7 +101,7 @@ fn cancellation_during_credentials_sends_no_request() {
     operation.finish();
 
     assert_eq!(failure.status, Status::Cancelled);
-    assert_no_request(&listener);
+    assert_no_request(listener);
 }
 
 #[test]

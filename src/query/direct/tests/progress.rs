@@ -2,7 +2,7 @@
 //! an extra request on it.
 
 use super::*;
-use crate::test_support::http::{job_reference, write_response};
+use crate::test_support::http::{capture_requests_responding, job_reference};
 
 #[test]
 fn row_returning_jobs_query_decode_waits_for_the_driver_wide_permit() {
@@ -64,44 +64,35 @@ fn row_returning_jobs_query_decode_waits_for_the_driver_wide_permit() {
 
 #[test]
 fn row_returning_completion_poll_decode_waits_for_the_driver_wide_permit() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let (poll_seen, wait_for_poll) = mpsc::sync_channel(0);
     let (release_poll, poll_released) = mpsc::sync_channel(0);
-    let server = thread::spawn(move || {
-        let (mut initial, _) = listener.accept().unwrap();
-        read_captured_request(&mut initial).expect("the initial request reached the mock");
-        write_response(
-            &mut initial,
-            200,
-            &json!({
-                "jobComplete":false,
-                "jobReference":{"projectId":"project","jobId":"job-1","location":"EU"},
-                "statementType":"SELECT"
-            }),
-        );
-
-        let (mut poll, _) = listener.accept().unwrap();
-        let poll_path = read_captured_request(&mut poll)
-            .expect("the poll reached the mock")
-            .path()
-            .to_owned();
+    let mut answered = 0;
+    let (endpoint, server) = capture_requests_responding(2, move |_| {
+        answered += 1;
+        if answered == 1 {
+            return Some((
+                200,
+                json!({
+                    "jobComplete":false,
+                    "jobReference": job_reference("project", "job-1"),
+                    "statementType":"SELECT"
+                }),
+            ));
+        }
         poll_seen.send(()).unwrap();
         poll_released.recv().unwrap();
         let rows = (0..1_024)
             .map(|value| json!({"f":[{"v":value.to_string()}]}))
             .collect::<Vec<_>>();
-        write_response(
-            &mut poll,
+        Some((
             200,
-            &json!({
+            json!({
                 "jobComplete":true,
-                "jobReference":{"projectId":"project","jobId":"job-1","location":"EU"},
+                "jobReference": job_reference("project", "job-1"),
                 "schema":{"fields":[{"name":"value","type":"INTEGER"}]},
                 "rows":rows
             }),
-        );
-        poll_path
+        ))
     });
     let (runtime, client) = client_with_one_result_worker(&endpoint);
     let execute_runtime = runtime.clone();
@@ -123,8 +114,8 @@ fn row_returning_completion_poll_decode_waits_for_the_driver_wide_permit() {
         .try_acquire_owned()
         .expect("the initial response must release its decode permit before polling");
     release_poll.send(()).unwrap();
-    let poll_path = server.join().unwrap();
-    assert!(poll_path.contains("maxResults=100000"));
+    let requests = server.join().unwrap();
+    assert!(requests[1].path().contains("maxResults=100000"));
     thread::sleep(Duration::from_millis(100));
     assert!(
         !execute.is_finished(),
@@ -138,64 +129,44 @@ fn row_returning_completion_poll_decode_waits_for_the_driver_wide_permit() {
 
 #[test]
 fn natural_query_responses_publish_progress_without_an_extra_request() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let (first_poll_seen, wait_for_first_poll) = mpsc::sync_channel(0);
     let (release_first_poll, first_poll_released) = mpsc::sync_channel(0);
     let (final_poll_seen, wait_for_final_poll) = mpsc::sync_channel(0);
     let (release_final_poll, final_poll_released) = mpsc::sync_channel(0);
-    let server = thread::spawn(move || {
-        let (mut initial, _) = listener.accept().unwrap();
-        let initial_path = read_captured_request(&mut initial)
-            .expect("the initial request reached the mock")
-            .path()
-            .to_owned();
-        write_response(
-            &mut initial,
+    let mut answered = 0;
+    let (endpoint, server) = capture_requests_responding(3, move |_| {
+        answered += 1;
+        let job = job_reference("project", "progress-job");
+        Some((
             200,
-            &json!({
-                "jobComplete": false,
-                "jobReference": job_reference("project", "progress-job"),
-                "statementType": "SELECT",
-                "totalBytesProcessed": "17"
-            }),
-        );
-
-        let (mut first_poll, _) = listener.accept().unwrap();
-        let first_poll_path = read_captured_request(&mut first_poll)
-            .expect("the first poll reached the mock")
-            .path()
-            .to_owned();
-        first_poll_seen.send(()).unwrap();
-        first_poll_released.recv().unwrap();
-        write_response(
-            &mut first_poll,
-            200,
-            &json!({
-                "jobComplete": false,
-                "jobReference": job_reference("project", "progress-job"),
-                "totalBytesProcessed": "23"
-            }),
-        );
-
-        let (mut final_poll, _) = listener.accept().unwrap();
-        let final_poll_path = read_captured_request(&mut final_poll)
-            .expect("the final poll reached the mock")
-            .path()
-            .to_owned();
-        final_poll_seen.send(()).unwrap();
-        final_poll_released.recv().unwrap();
-        write_response(
-            &mut final_poll,
-            200,
-            &json!({
-                "jobComplete": true,
-                "jobReference": job_reference("project", "progress-job"),
-                "schema": {"fields": []},
-                "totalBytesProcessed": "29"
-            }),
-        );
-        vec![initial_path, first_poll_path, final_poll_path]
+            match answered {
+                1 => json!({
+                    "jobComplete": false,
+                    "jobReference": job,
+                    "statementType": "SELECT",
+                    "totalBytesProcessed": "17"
+                }),
+                2 => {
+                    first_poll_seen.send(()).unwrap();
+                    first_poll_released.recv().unwrap();
+                    json!({
+                        "jobComplete": false,
+                        "jobReference": job,
+                        "totalBytesProcessed": "23"
+                    })
+                }
+                _ => {
+                    final_poll_seen.send(()).unwrap();
+                    final_poll_released.recv().unwrap();
+                    json!({
+                        "jobComplete": true,
+                        "jobReference": job,
+                        "schema": {"fields": []},
+                        "totalBytesProcessed": "29"
+                    })
+                }
+            },
+        ))
     });
 
     let (runtime, client) = client(&endpoint);
@@ -232,11 +203,11 @@ fn natural_query_responses_publish_progress_without_an_extra_request() {
     assert_eq!(progress.current(), 29.0);
     assert_eq!(progress.maximum(), 29.0);
 
-    let paths = server.join().unwrap();
-    assert_eq!(paths.len(), 3);
-    assert_eq!(paths[0], "/bigquery/v2/projects/project/queries");
-    for path in &paths[1..] {
-        assert!(path.starts_with(
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0].path(), "/bigquery/v2/projects/project/queries");
+    for request in &requests[1..] {
+        assert!(request.path().starts_with(
             "/bigquery/v2/projects/project/queries/progress-job?maxResults=100000&timeoutMs=45000"
         ));
     }
