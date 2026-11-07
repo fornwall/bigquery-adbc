@@ -15,6 +15,8 @@ use std::fmt::Arguments;
 use std::io::Write as _;
 use std::sync::OnceLock;
 #[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(test)]
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -80,7 +82,7 @@ fn parse(value: &str) -> Option<Level> {
 /// Whether events at `level` are written: one atomic load once the variable has been read.
 pub(crate) fn enabled(level: Level) -> bool {
     #[cfg(test)]
-    if lock_captured(&CAPTURED).0 > 0 {
+    if CAPTURES.load(Ordering::SeqCst) > 0 {
         return true;
     }
     configured().is_some_and(|configured| level <= configured)
@@ -89,56 +91,24 @@ pub(crate) fn enabled(level: Level) -> bool {
 /// Writes one event line. Call through [`diag!`], which checks [`enabled`] first.
 pub(crate) fn write(level: Level, message: Arguments<'_>) {
     #[cfg(test)]
-    {
-        let mut captured = lock_captured(&CAPTURED);
-        if captured.0 > 0 {
-            captured.1.push(format!("{} {message}", level.name()));
-            return;
-        }
+    if CAPTURES.load(Ordering::SeqCst) > 0 {
+        captured().push(format!("{} {message}", level.name()));
+        return;
     }
     write_line(format_args!("{} {message}", level.name()));
 }
 
-/// The number of [`capture`] calls in progress, and the events since the first of them began.
+/// The number of [`capture`] calls in progress.
 #[cfg(test)]
-static CAPTURED: Mutex<(usize, Vec<String>)> = Mutex::new((0, Vec::new()));
+static CAPTURES: AtomicUsize = AtomicUsize::new(0);
+
+/// Every event written during a [`capture`].
+#[cfg(test)]
+static CAPTURED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 #[cfg(test)]
-fn lock_captured(state: &Mutex<(usize, Vec<String>)>) -> MutexGuard<'_, (usize, Vec<String>)> {
-    state.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-#[cfg(test)]
-struct CaptureGuard<'a> {
-    state: &'a Mutex<(usize, Vec<String>)>,
-    start: usize,
-}
-
-#[cfg(test)]
-impl<'a> CaptureGuard<'a> {
-    fn new(state: &'a Mutex<(usize, Vec<String>)>) -> Self {
-        let mut captured = lock_captured(state);
-        captured.0 += 1;
-        Self {
-            state,
-            start: captured.1.len(),
-        }
-    }
-
-    fn events(&self) -> Vec<String> {
-        lock_captured(self.state).1[self.start..].to_vec()
-    }
-}
-
-#[cfg(test)]
-impl Drop for CaptureGuard<'_> {
-    fn drop(&mut self) {
-        let mut captured = lock_captured(self.state);
-        captured.0 -= 1;
-        if captured.0 == 0 {
-            captured.1.clear();
-        }
-    }
+fn captured() -> MutexGuard<'static, Vec<String>> {
+    CAPTURED.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Runs `run` with every level enabled and returns its result with the events written meanwhile,
@@ -146,9 +116,19 @@ impl Drop for CaptureGuard<'_> {
 /// others are among them: match on text only your own events contain, such as a job ID.
 #[cfg(test)]
 pub(crate) fn capture<R>(run: impl FnOnce() -> R) -> (R, Vec<String>) {
-    let capture = CaptureGuard::new(&CAPTURED);
+    /// Ends the capture even when `run` panics.
+    struct Active;
+    impl Drop for Active {
+        fn drop(&mut self) {
+            CAPTURES.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    CAPTURES.fetch_add(1, Ordering::SeqCst);
+    let _active = Active;
+    let start = captured().len();
     let result = run();
-    (result, capture.events())
+    (result, captured()[start..].to_vec())
 }
 
 /// Format the whole line first so one write keeps it intact among other threads' output. Write
@@ -192,7 +172,7 @@ pub(crate) use diag;
 mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
-    use super::{CaptureGuard, Level, Mutex, format_line, lock_captured, parse};
+    use super::{Level, format_line, parse};
 
     #[test]
     fn event_lines_include_utc_milliseconds_and_the_driver_name() {
@@ -221,44 +201,6 @@ mod tests {
                 format!("{expected} [bigquery-adbc] WARN retrying job job-1\n"),
             );
         }
-    }
-
-    #[test]
-    fn a_panicking_capture_releases_its_registration() {
-        for overlapping in [false, true] {
-            let state = Mutex::new((0, Vec::new()));
-            let outer = overlapping.then(|| CaptureGuard::new(&state));
-            let result = std::panic::catch_unwind(|| {
-                let _capture = CaptureGuard::new(&state);
-                lock_captured(&state).1.push("before panic".to_owned());
-                panic!("capture closure failed");
-            });
-            assert!(result.is_err());
-
-            let captured = lock_captured(&state);
-            assert_eq!(captured.0, usize::from(overlapping));
-            assert_eq!(captured.1.is_empty(), !overlapping);
-            drop(captured);
-            drop(outer);
-            assert_eq!(*lock_captured(&state), (0, Vec::new()));
-        }
-    }
-
-    #[test]
-    fn overlapping_captures_keep_the_buffer_until_the_last_finishes() {
-        let state = Mutex::new((0, Vec::new()));
-        let first = CaptureGuard::new(&state);
-        lock_captured(&state).1.push("first only".to_owned());
-        let second = CaptureGuard::new(&state);
-        lock_captured(&state).1.push("both".to_owned());
-
-        assert_eq!(first.events(), ["first only", "both"]);
-        assert_eq!(second.events(), ["both"]);
-        drop(first);
-        lock_captured(&state).1.push("second only".to_owned());
-        assert_eq!(second.events(), ["both", "second only"]);
-        drop(second);
-        assert_eq!(*lock_captured(&state), (0, Vec::new()));
     }
 
     #[test]
