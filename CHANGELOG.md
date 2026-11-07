@@ -35,6 +35,9 @@ changes.
   few seconds and cancels its healthy job. Waiting for a job now outlasts ten minutes of consecutive
   retryable failures, and for as long as `jobs.get` reports the job unfinished. If the wait does give
   up, the error says the job's outcome is unknown.
+- A stalled Storage Read stream no longer blocks its reader forever. After two minutes of silence
+  while the reader has room, it resumes at the next unread row, and it fails with `TIMEOUT` once
+  its attempts are spent.
 
 ## [0.2.0] - 2026-11-06
 

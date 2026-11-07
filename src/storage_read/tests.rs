@@ -129,6 +129,205 @@ fn a_stopped_decoder_releases_a_pending_wire_response() {
     });
 }
 
+/// What one `ReadRows` call does in the tests where time passes.
+#[derive(Clone, Copy, Debug)]
+enum ReadCall {
+    /// The open never answers.
+    Hang,
+    /// This many one-row responses, then silence.
+    Stall(usize),
+    /// This many one-row responses, then the end of the stream.
+    Finish(usize),
+}
+
+/// Serves `ReadRows` calls from a script, recording the offset each one asked for.
+#[derive(Debug)]
+struct ScriptedRead {
+    calls: std::sync::Mutex<std::collections::VecDeque<ReadCall>>,
+    offsets: Arc<std::sync::Mutex<Vec<i64>>>,
+}
+
+impl google_cloud_bigquery::stub::Read for ScriptedRead {
+    async fn read_rows(
+        &self,
+        request: google_cloud_bigquery::model::ReadRowsRequest,
+        _options: google_cloud_gax::options::RequestOptions,
+    ) -> std::result::Result<ResponseStream<ReadRowsResponse>, GoogleError> {
+        self.offsets.lock().unwrap().push(request.offset);
+        let call = self.calls.lock().unwrap().pop_front();
+        let (rows, stall) = match call.expect("the script covers every call") {
+            ReadCall::Hang => std::future::pending().await,
+            ReadCall::Stall(rows) => (rows, true),
+            ReadCall::Finish(rows) => (rows, false),
+        };
+        Ok(ResponseStream::from_stream(ScriptedRows { rows, stall }))
+    }
+}
+
+struct ScriptedRows {
+    rows: usize,
+    stall: bool,
+}
+
+impl futures_core::Stream for ScriptedRows {
+    type Item = std::result::Result<ReadRowsResponse, GoogleError>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        use std::task::Poll;
+        if self.rows == 0 {
+            return if self.stall {
+                Poll::Pending
+            } else {
+                Poll::Ready(None)
+            };
+        }
+        self.rows -= 1;
+        Poll::Ready(Some(Ok(ReadRowsResponse::new()
+            .set_row_count(1)
+            .set_arrow_record_batch(
+                google_cloud_bigquery::model::ArrowRecordBatch::new()
+                    .set_serialized_record_batch(vec![0_u8; 1]),
+            ))))
+    }
+}
+
+/// One scripted client and the offsets its calls asked for.
+fn scripted_client(script: &[ReadCall]) -> (Read, Arc<std::sync::Mutex<Vec<i64>>>) {
+    let offsets = Arc::<std::sync::Mutex<Vec<i64>>>::default();
+    let client = Read::from_stub(ScriptedRead {
+        calls: std::sync::Mutex::new(script.iter().copied().collect()),
+        offsets: offsets.clone(),
+    });
+    (client, offsets)
+}
+
+/// A runtime whose clock jumps to the next timer whenever every task is idle.
+fn paused_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .unwrap()
+}
+
+/// Neither the SDK nor its channel bounds a silent call, so a connection that died without a reset
+/// would block the reader forever. A silent open or stream is a failed attempt like any other: it
+/// resumes at the next unread row, and spends the same allowance.
+#[test]
+fn a_silent_read_stream_resumes_and_then_exhausts_its_allowance() {
+    use ReadCall::{Finish, Hang, Stall};
+
+    let attempts = usize::try_from(READ_ROWS_RESUME_ATTEMPTS).unwrap();
+    let stalled = vec![Stall(0); attempts + 3];
+    let exhausted = vec![0; attempts + 1];
+    let cases: [(&[ReadCall], &[i64], i64, bool); 4] = [
+        (&[Stall(2), Finish(1)], &[0, 2], 3, true),
+        (&[Hang, Finish(1)], &[0, 0], 1, true),
+        (
+            &[Stall(1), Stall(0), Hang, Finish(1)],
+            &[0, 1, 1, 1],
+            2,
+            true,
+        ),
+        (&stalled, &exhausted, 0, false),
+    ];
+    for (script, expected_offsets, expected_rows, completes) in cases {
+        let (client, offsets) = scripted_client(script);
+        let (result, rows) = paused_runtime().block_on(async {
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+            let sink = ResultSink::for_test();
+            let request = client.read_rows().set_read_stream("stream");
+            let draining = async {
+                let mut rows = 0;
+                while let Some((_, count)) = receiver.recv().await {
+                    rows += count;
+                }
+                rows
+            };
+            tokio::join!(receive_rows(&request, "stream", sender, &sink), draining)
+        });
+        assert_eq!(*offsets.lock().unwrap(), expected_offsets, "{script:?}");
+        assert_eq!(rows, expected_rows, "{script:?}");
+        if completes {
+            result.unwrap();
+        } else {
+            let failure = result.unwrap_err();
+            let ArrowError::ExternalError(source) = &failure else {
+                panic!("expected an ADBC error: {failure}");
+            };
+            let source = source.downcast_ref::<adbc_core::error::Error>().unwrap();
+            assert_eq!(source.status, Status::Timeout, "{source}");
+        }
+    }
+}
+
+/// A reader that stopped reading is not a stalled service. Streams of one read share a connection's
+/// flow-control window, so a stream can go silent because its siblings' rows sit unread, and a
+/// queue the decoder has not emptied stops this stream being polled at all. Only once the reader
+/// makes room does silence count.
+#[test]
+fn a_read_stream_is_not_stalled_while_the_reader_holds_it_back() {
+    let schema = Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+        "value",
+        arrow_schema::DataType::Int64,
+        false,
+    )]));
+    let tiny = arrow_array::RecordBatch::new_empty(schema.clone());
+    let huge = arrow_array::RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(arrow_array::Int64Array::from(vec![
+            0_i64;
+            8 * 1024 * 1024
+        ]))],
+    )
+    .unwrap();
+    let silence = READ_ROWS_STALL_TIMEOUT * (READ_ROWS_RESUME_ATTEMPTS + 2);
+    let full_pipelines = [
+        vec![tiny; crate::pipeline::QUERY_RESULT_BUFFER_SIZE],
+        vec![huge],
+    ];
+    for batches in full_pipelines {
+        let (client, offsets) = scripted_client(&[ReadCall::Stall(0), ReadCall::Finish(1)]);
+        paused_runtime().block_on(async {
+            let (sink, mut delivered) = ResultSink::for_test_reading(schema.clone());
+            for batch in batches {
+                assert!(sink.deliver(batch).await);
+            }
+            // Room for the payload and for the reservation that then finds the stream's end.
+            let (sender, _receiver) = tokio::sync::mpsc::channel(2);
+            let request = client.read_rows().set_read_stream("stream");
+            let mut receiving = std::pin::pin!(receive_rows(&request, "stream", sender, &sink));
+            tokio::select! {
+                result = &mut receiving => panic!("the read ended early: {result:?}"),
+                () = tokio::time::sleep(silence) => {}
+            }
+            assert_eq!(*offsets.lock().unwrap(), [0]);
+
+            delivered.next().await.unwrap();
+            receiving.await.unwrap();
+            assert_eq!(*offsets.lock().unwrap(), [0, 0]);
+        });
+    }
+
+    // One response fills the wire queue, so the next one is not even being waited for.
+    let (client, offsets) = scripted_client(&[ReadCall::Finish(2)]);
+    paused_runtime().block_on(async {
+        let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+        let sink = ResultSink::for_test();
+        let request = client.read_rows().set_read_stream("stream");
+        tokio::select! {
+            result = receive_rows(&request, "stream", sender, &sink) => {
+                panic!("the read ended early: {result:?}")
+            }
+            () = tokio::time::sleep(silence) => {}
+        }
+    });
+    assert_eq!(*offsets.lock().unwrap(), [0]);
+}
+
 /// The unordered stream request stays a sane "units of work" bound on any machine.
 #[test]
 fn unordered_stream_request_is_positive_and_clamped() {

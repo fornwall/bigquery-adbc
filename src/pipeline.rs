@@ -136,6 +136,12 @@ impl ResultSink {
         self.cancellation.permit(&self.delivery_slots).await
     }
 
+    /// Whether delivery is waiting on the reader. A queued waiter takes the byte budget's permits
+    /// as they free up, so one that is short leaves none available.
+    pub(crate) fn is_full(&self) -> bool {
+        self.sender.capacity() == 0 || self.buffer_budget.available_permits() == 0
+    }
+
     /// Buffer a batch and deliver it. An oversized batch consumes the whole byte budget and
     /// waits until the pipeline empties, so even that charge can always be satisfied.
     /// `false` means cancellation or reader release stopped delivery.

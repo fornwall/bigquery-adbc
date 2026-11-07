@@ -54,6 +54,13 @@ const READ_ROWS_RESUME_BACKOFF: Schedule =
 /// the consecutive-failure limit still stops streams that make no progress.
 const READ_ROWS_RESUME_DELAY_BUDGET: Duration = Duration::from_secs(30);
 
+/// How long a `ReadRows` open or stream may stay silent while the read has room for its rows.
+///
+/// The SDK sets no deadline on a server stream and its channel has no HTTP/2 keepalive, so a peer
+/// that vanished without a reset would otherwise block the reader forever. Expiry is an ordinary
+/// failed attempt, so a false alarm costs one exact-offset resume.
+const READ_ROWS_STALL_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Transient failures, including quota/fairness closures and a stream reset at the transport,
 /// permit an exact-offset resume. Cancellation must stop the read.
 fn read_rows_is_resumable(source: &GoogleError) -> bool {
@@ -380,7 +387,7 @@ async fn receive_rows(
             biased;
             () = sink.cancellation.cancelled() => None,
             () = sender.closed() => None,
-            response = responses.next() => response,
+            response = next_response(&mut responses, sink) => response,
         };
         // Cancellation and the end of the stream stop this stage the same way: by returning,
         // which ends the channel and lets the decode stage finish what it already has.
@@ -432,6 +439,31 @@ async fn receive_rows(
         };
         slot.send((Buffer::from(serialized), response.row_count));
     }
+}
+
+/// The stream's next item, or a failure once it has been silent too long.
+///
+/// A full pipeline suspends the limit: streams of one read share a connection's flow-control
+/// window, so rows a paused reader left unread can starve a stream that is already waiting here.
+async fn next_response(
+    responses: &mut ResponseStream<ReadRowsResponse>,
+    sink: &ResultSink,
+) -> Option<std::result::Result<ReadRowsResponse, GoogleError>> {
+    loop {
+        match tokio::time::timeout(READ_ROWS_STALL_TIMEOUT, responses.next()).await {
+            Ok(response) => return response,
+            Err(_) if sink.is_full() => {}
+            Err(_) => return Some(Err(read_rows_stalled())),
+        }
+    }
+}
+
+/// A transient failure, so a stall resumes at the next unread row under the shared budget.
+fn read_rows_stalled() -> GoogleError {
+    GoogleError::timeout(format!(
+        "no response from BigQuery Storage Read in {} seconds",
+        READ_ROWS_STALL_TIMEOUT.as_secs()
+    ))
 }
 
 /// Consecutive-failure allowance and aggregate backoff budget for one stream.
@@ -516,10 +548,11 @@ async fn open_read_rows(
 ) -> std::result::Result<Option<ResponseStream<ReadRowsResponse>>, GoogleError> {
     // Every reopen retains the stream and request options, including the user agent.
     let request = request.clone().set_offset(offset).send();
+    let request = tokio::time::timeout(READ_ROWS_STALL_TIMEOUT, request);
     tokio::select! {
         biased;
         () = sink.cancellation.cancelled() => Ok(None),
-        opened = request => opened.map(Some),
+        opened = request => opened.unwrap_or_else(|_| Err(read_rows_stalled())).map(Some),
     }
 }
 
