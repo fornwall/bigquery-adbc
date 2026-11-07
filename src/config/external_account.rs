@@ -311,15 +311,13 @@ impl IdentityProviderError {
         }
     }
 
-    fn transport(source: &reqwest::Error) -> Self {
-        Self {
-            message: "failed to communicate with the external-account identity provider",
-            status: None,
-            // `is_request` covers a URL or builder failure that will never succeed, so a retry
-            // policy that honored it would make three pointless attempts at a permanent error.
-            transient: source.is_timeout() || source.is_connect() || source.is_body(),
-        }
-    }
+    /// Always transient: the URL and client are checked up front, so only the network fails here.
+    /// A permanent verdict would end upstream's token refresh loop for good.
+    const TRANSPORT: Self = Self {
+        message: "failed to communicate with the external-account identity provider",
+        status: None,
+        transient: true,
+    };
 }
 
 #[derive(serde::Deserialize)]
@@ -344,7 +342,7 @@ impl SubjectTokenProvider for IdentityProvider {
             .body(self.request_data.clone())
             .send()
             .await
-            .map_err(|source| IdentityProviderError::transport(&source))?;
+            .map_err(|_| IdentityProviderError::TRANSPORT)?;
         let status = response.status();
         if !status.is_success() {
             return Err(IdentityProviderError {
@@ -360,7 +358,7 @@ impl SubjectTokenProvider for IdentityProvider {
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|source| IdentityProviderError::transport(&source))?
+            .map_err(|_| IdentityProviderError::TRANSPORT)?
         {
             if chunk.len() > MAX_RESPONSE_BYTES - body.len() {
                 return Err(IdentityProviderError::response(

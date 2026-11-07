@@ -24,6 +24,9 @@ changes.
   that it may keep running.
 - A line comment now ends at a carriage return as well as a newline, as in GoogleSQL. A statement
   after a `\r`-terminated comment was refused as comment-only text.
+- A connection the external-account identity provider dropped before answering is treated as
+  transient. It previously ended credential refresh for good, failing every later query once the
+  cached token expired.
 
 ## [0.2.0] - 2026-11-06
 

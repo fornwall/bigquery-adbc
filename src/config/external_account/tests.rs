@@ -380,6 +380,28 @@ fn external_account_identity_provider_errors_classify_retryability() {
     }
 }
 
+/// A connection closed before the response is reqwest's `is_request` kind, not `is_connect`. A
+/// permanent verdict would end upstream's token cache refresh loop, so one dropped connection
+/// would fail every later query in the process.
+#[test]
+fn a_connection_dropped_before_the_identity_provider_answers_is_transient() {
+    let listener = crate::test_support::http::loopback_listener();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        crate::test_support::http::read_captured_request(&mut stream).unwrap();
+    });
+    crate::runtime::new_runtime().unwrap().block_on(async {
+        let provider = IdentityProvider {
+            client: reqwest::Client::new(),
+            request_url: reqwest::Url::parse(&endpoint).unwrap(),
+            request_data: Bytes::from_static(REQUEST_DATA.as_bytes()),
+        };
+        assert!(provider.subject_token().await.unwrap_err().is_transient());
+    });
+    server.join().unwrap();
+}
+
 #[test]
 fn external_account_retries_transient_identity_provider_failure() {
     let (endpoint, server) = capture_requests(vec![
