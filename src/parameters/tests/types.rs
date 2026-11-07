@@ -41,8 +41,11 @@ fn array_parameters_require_a_struct_between_nested_arrays() {
                 let schema = Schema::new(vec![Field::new("matrix", outer, true)]);
                 for mode in [ParameterMode::Named, ParameterMode::Positional] {
                     let failure = parameters_for_schema(&schema, mode).unwrap_err();
-                    assert_eq!(failure.status, Status::NotImplemented);
-                    assert_message(&failure, &["parameter 0", "matrix", "STRUCT"]);
+                    assert_failure(
+                        &failure,
+                        Status::NotImplemented,
+                        &["parameter 0", "matrix", "STRUCT"],
+                    );
                 }
             }
 
@@ -50,10 +53,10 @@ fn array_parameters_require_a_struct_between_nested_arrays() {
             for outer in lists(record) {
                 let schema = Schema::new(vec![Field::new("matrix", outer, true)]);
                 let parameters = parameters_for_schema(&schema, ParameterMode::Named).unwrap();
-                let element = ptype(&parameters[0]).array_type.as_ref().unwrap();
-                assert_eq!(element.r#type, "STRUCT");
+                let record = element(ptype(&parameters[0]));
+                assert_eq!(record.r#type, "STRUCT");
                 assert_eq!(
-                    element.struct_types[0].r#type.as_ref().unwrap().r#type,
+                    record.struct_types[0].r#type.as_ref().unwrap().r#type,
                     "ARRAY"
                 );
             }
@@ -263,13 +266,11 @@ fn parameter_metadata_must_use_the_googlesql_names_the_driver_emits() {
         (DataType::Boolean, "BOOLEAN", "BOOL"),
     ] {
         let failure = parameter_type(&annotated(data_type, rest)).unwrap_err();
-        assert_eq!(failure.status, Status::InvalidArguments);
-        assert_message(&failure, &[googlesql]);
+        assert_failure(&failure, Status::InvalidArguments, &[googlesql]);
     }
 
     let mislabelled = parameter_type(&annotated(DataType::Int64, "STRING")).unwrap_err();
-    assert_eq!(mislabelled.status, Status::InvalidArguments);
-    assert_message(&mislabelled, &["incompatible"]);
+    assert_failure(&mislabelled, Status::InvalidArguments, &["incompatible"]);
 
     assert_eq!(
         parameter_type(&annotated(DataType::Int64, "NOT_A_TYPE"))
@@ -303,25 +304,11 @@ fn parameter_metadata_must_use_the_googlesql_names_the_driver_emits() {
 /// too, or `ARRAY<RANGE<DATE>>` would bind as `ARRAY<STRUCT<start DATE, end DATE>>`.
 #[test]
 fn an_array_annotation_types_an_item_that_carries_no_metadata_of_its_own() {
-    let bounds = range_bounds(DataType::Date32);
-    let ranges = ListArray::new(
-        Arc::new(Field::new("item", DataType::Struct(bounds.clone()), true)),
-        OffsetBuffer::from_lengths([1]),
-        Arc::new(StructArray::new(
-            bounds,
-            vec![
-                Arc::new(Date32Array::from(vec![0])),
-                Arc::new(Date32Array::from(vec![2])),
-            ],
-            None,
-        )),
-        None,
-    );
-    let documents = ListArray::new(
-        Arc::new(Field::new("item", DataType::Utf8, true)),
-        OffsetBuffer::from_lengths([1]),
-        Arc::new(StringArray::from(vec!["{}"])),
-        None,
+    let (item, range) = date_range_item();
+    let ranges = list_of(item, range);
+    let documents = list_of(
+        Field::new("item", DataType::Utf8, true),
+        col(StringArray::from(vec!["{}"])),
     );
     let batch = RecordBatch::try_new(
         Arc::new(Schema::new(vec![
@@ -333,48 +320,28 @@ fn an_array_annotation_types_an_item_that_carries_no_metadata_of_its_own() {
     .unwrap();
 
     let parameters = parameters_for_row(&batch, 0, ParameterMode::Named).unwrap();
-    let range_element = ptype(&parameters[0]).array_type.as_ref().unwrap();
-    assert_eq!(range_element.r#type, "RANGE");
     assert_eq!(
-        range_element.range_element_type.as_ref().unwrap().r#type,
-        "DATE"
-    );
-    let range = value(&parameters[0]).array_values[0]
-        .range_value
-        .as_ref()
-        .unwrap();
-    assert_eq!(
-        range.start.as_ref().unwrap().value.as_deref(),
-        Some("1970-01-01")
+        json!(ptype(&parameters[0])),
+        json!({
+            "type": "ARRAY",
+            "arrayType": {"type": "RANGE", "rangeElementType": {"type": "DATE"}}
+        })
     );
     assert_eq!(
-        range.end.as_ref().unwrap().value.as_deref(),
-        Some("1970-01-03")
+        json!(value(&parameters[0])),
+        json!({"arrayValues": [{"rangeValue": {
+            "start": {"value": "1970-01-01"}, "end": {"value": "1970-01-03"}
+        }}]})
     );
-
-    assert_eq!(
-        ptype(&parameters[1]).array_type.as_ref().unwrap().r#type,
-        "JSON"
-    );
+    assert_eq!(element(ptype(&parameters[1])).r#type, "JSON");
 
     // An item that spells its own type keeps it: that is what a query result round-trips through.
-    let item = bigquery_typed(Field::new("item", DataType::Utf8, true), "STRING");
-    let strings = ListArray::new(
-        Arc::new(item),
-        OffsetBuffer::from_lengths([1]),
-        Arc::new(StringArray::from(vec!["text"])),
-        None,
+    let strings = list_of(
+        bigquery_typed(Field::new("item", DataType::Utf8, true), "STRING"),
+        col(StringArray::from(vec!["text"])),
     );
     let field = annotated_column("labels", &strings, "ARRAY<JSON>");
-    assert_eq!(
-        parameter_type(&field)
-            .unwrap()
-            .array_type
-            .as_ref()
-            .unwrap()
-            .r#type,
-        "STRING"
-    );
+    assert_eq!(element(&parameter_type(&field).unwrap()).r#type, "STRING");
 }
 
 /// One hand-written `ARRAY<X>` schema drives both annotation surfaces: the table an ingest would
@@ -387,14 +354,6 @@ fn an_array_annotation_types_an_item_that_carries_no_metadata_of_its_own() {
 /// an `arrow.json` item under `ARRAY<STRING>` is a STRING element.
 #[test]
 fn ingest_and_parameter_binding_read_one_array_annotation_the_same_way() {
-    let list_of = |item: Field, values: ArrayRef| {
-        ListArray::new(
-            Arc::new(item),
-            OffsetBuffer::from_lengths([1]),
-            values,
-            None,
-        )
-    };
     let strings = || {
         list_of(
             Field::new("item", DataType::Utf8, true),
@@ -408,18 +367,8 @@ fn ingest_and_parameter_binding_read_one_array_annotation_the_same_way() {
         )])),
         Arc::new(StringArray::from(vec!["{}"])),
     );
-    let bounds = range_bounds(DataType::Date32);
-    let periods = list_of(
-        Field::new("item", DataType::Struct(bounds.clone()), true),
-        Arc::new(StructArray::new(
-            bounds,
-            vec![
-                Arc::new(Date32Array::from(vec![0])),
-                Arc::new(Date32Array::from(vec![2])),
-            ],
-            None,
-        )),
-    );
+    let (item, range) = date_range_item();
+    let periods = list_of(item, range);
     let members: arrow_schema::Fields =
         vec![Arc::new(Field::new("a", DataType::Int64, true))].into();
     let records = list_of(
@@ -465,7 +414,7 @@ fn ingest_and_parameter_binding_read_one_array_annotation_the_same_way() {
         let name = &column.name;
         assert_eq!(column.mode, "REPEATED", "{name}");
         assert_eq!(ptype(parameter).r#type, "ARRAY", "{name}");
-        let element = ptype(parameter).array_type.as_ref().unwrap();
+        let element = element(ptype(parameter));
         assert_eq!(
             BigQueryType::from_sql(&element.r#type),
             BigQueryType::from_rest(&column.r#type),
@@ -489,14 +438,7 @@ fn ingest_and_parameter_binding_read_one_array_annotation_the_same_way() {
     // walk has to restate them.
     let element_types: Vec<&str> = parameters
         .iter()
-        .map(|parameter| {
-            ptype(parameter)
-                .array_type
-                .as_ref()
-                .unwrap()
-                .r#type
-                .as_str()
-        })
+        .map(|parameter| element(ptype(parameter)).r#type.as_str())
         .collect();
     assert_eq!(
         element_types,
@@ -532,18 +474,16 @@ fn ingest_and_parameter_binding_read_one_array_annotation_the_same_way() {
 /// `validates_named_parameter_field_names` checks for top-level names), in positional mode too.
 #[test]
 fn rejects_duplicate_struct_fields() {
-    let duplicate_struct = Schema::new(vec![Field::new(
-        "record",
-        DataType::Struct(
-            vec![
-                Arc::new(Field::new("same", DataType::Int64, false)),
-                Arc::new(Field::new("same", DataType::Utf8, false)),
-            ]
-            .into(),
-        ),
-        false,
-    )]);
-    let failure = parameters_for_schema(&duplicate_struct, ParameterMode::Positional).unwrap_err();
+    let record = |first: &str, second: &str| {
+        let members = vec![
+            Field::new(first, DataType::Int64, false),
+            Field::new(second, DataType::Utf8, false),
+        ];
+        let field = Field::new("record", DataType::Struct(members.into()), false);
+        Schema::new(vec![field])
+    };
+    let failure =
+        parameters_for_schema(&record("same", "same"), ParameterMode::Positional).unwrap_err();
     assert_eq!(failure.status, Status::InvalidArguments);
     assert_eq!(
         failure.message,
@@ -551,20 +491,13 @@ fn rejects_duplicate_struct_fields() {
          child named \"same\"; BigQuery struct field names are case-insensitive and must be \
          unique"
     );
-    let case_duplicate = Schema::new(vec![Field::new(
-        "record",
-        DataType::Struct(
-            vec![
-                Arc::new(Field::new("Same", DataType::Int64, false)),
-                Arc::new(Field::new("sAME", DataType::Utf8, false)),
-            ]
-            .into(),
-        ),
-        false,
-    )]);
-    let failure = parameters_for_schema(&case_duplicate, ParameterMode::Positional).unwrap_err();
-    assert_eq!(failure.status, Status::InvalidArguments);
-    assert_message(&failure, &["children named \"Same\" and \"sAME\""]);
+    let failure =
+        parameters_for_schema(&record("Same", "sAME"), ParameterMode::Positional).unwrap_err();
+    assert_failure(
+        &failure,
+        Status::InvalidArguments,
+        &["children named \"Same\" and \"sAME\""],
+    );
 }
 
 /// A type no BigQuery parameter covers is refused by the field that carries it, which inside a

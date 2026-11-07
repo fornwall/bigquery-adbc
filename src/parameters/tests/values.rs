@@ -331,99 +331,57 @@ fn converts_scalar_parameter_rows() {
 #[test]
 fn bignumeric_parameters_accept_the_whole_i256_domain() {
     let bignumeric = |value: i256| {
-        Arc::new(
-            Decimal256Array::from(vec![value])
-                .with_precision_and_scale(76, 38)
-                .unwrap(),
-        ) as ArrayRef
+        col(Decimal256Array::from(vec![value])
+            .with_precision_and_scale(76, 38)
+            .unwrap())
     };
 
-    for (label, value, expected) in [
+    for (value, expected) in [
         (
-            "i256::MAX",
             i256::MAX,
             "578960446186580977117854925043439539266.34992332820282019728792003956564819967",
         ),
         (
-            "i256::MIN",
             i256::MIN,
             "-578960446186580977117854925043439539266.34992332820282019728792003956564819968",
         ),
     ] {
-        let parameter = one_parameter(bignumeric(value));
-        assert_eq!(ptype(&parameter).r#type, "BIGNUMERIC", "{label}");
-        assert_eq!(value_of(&parameter), Some(expected), "{label}");
+        assert_renders(bignumeric(value), "BIGNUMERIC", expected);
     }
 
     // `1e38` is the smallest BIGNUMERIC value whose unscaled integer needs the 77th digit.
     let one_e38 = i256::from_string(&format!("1{}", "0".repeat(76))).unwrap();
     let expected_one_e38 = format!("1{}.{}", "0".repeat(38), "0".repeat(38));
-    let parameter = one_parameter(bignumeric(one_e38));
-    assert_eq!(value_of(&parameter), Some(expected_one_e38.as_str()));
-
-    // Values inside the declared precision are spelled exactly as the validated path spells
-    // them, so widening the budget changes nothing but the 77-digit outliers.
-    for value in [
-        i256::from_i128(0),
-        i256::from_i128(-1),
-        i256::from_i128(10_i128.pow(38)),
-    ] {
-        let array = Decimal256Array::from(vec![value])
-            .with_precision_and_scale(76, 38)
-            .unwrap();
-        assert_eq!(
-            value_of(&one_parameter(Arc::new(array.clone()))).map(str::to_owned),
-            Some(array.value_as_string(0))
-        );
-    }
+    assert_renders(bignumeric(one_e38), "BIGNUMERIC", &expected_one_e38);
 
     // The exemption is exactly BIGNUMERIC's own shape: any other Decimal256 still has its
     // declared precision enforced.
-    let message = one_parameter_error(decimal256(12_345_678, 5, 2));
-    assert!(message.contains("precision 5"), "{message}");
+    assert_refused(decimal256(12_345_678, 5, 2), "precision 5");
 
     let outside_precision = i256::from_string(&format!("1{}", "0".repeat(75))).unwrap();
-    let ordinary = Arc::new(
-        Decimal256Array::from(vec![outside_precision])
-            .with_precision_and_scale(75, 38)
-            .unwrap(),
-    ) as ArrayRef;
-    let message = one_parameter_error(ordinary);
-    assert!(message.contains("precision 75"), "{message}");
+    let ordinary = Decimal256Array::from(vec![outside_precision])
+        .with_precision_and_scale(75, 38)
+        .unwrap();
+    assert_refused(col(ordinary), "precision 75");
 }
 
 /// Base64 pads to a multiple of four characters, so a byte string's length modulo three picks the
 /// encoding's padding.
 #[test]
 fn bytes_parameters_encode_every_base64_padding_length() {
-    for (label, bytes, expected) in [
-        ("empty", &[][..], ""),
-        ("one byte", &[1][..], "AQ=="),
-        ("two bytes", &[1, 2][..], "AQI="),
-        ("three bytes", &[1, 2, 3][..], "AQID"),
+    for (bytes, expected) in [
+        (&[][..], ""),
+        (&[1][..], "AQ=="),
+        (&[1, 2][..], "AQI="),
+        (&[1, 2, 3][..], "AQID"),
     ] {
-        let columns: [(&str, ArrayRef); 4] = [
-            ("binary", Arc::new(BinaryArray::from(vec![bytes]))),
-            (
-                "large binary",
-                Arc::new(LargeBinaryArray::from(vec![bytes])),
-            ),
-            ("binary view", Arc::new(BinaryViewArray::from(vec![bytes]))),
-            (
-                "fixed size binary",
-                Arc::new(
-                    FixedSizeBinaryArray::try_from_iter(std::iter::once(bytes.to_vec())).unwrap(),
-                ),
-            ),
-        ];
-        for (kind, array) in columns {
-            // A zero-width FixedSizeBinary is not a legal Arrow layout.
-            if kind == "fixed size binary" && bytes.is_empty() {
-                continue;
-            }
-            let parameter = one_parameter(array);
-            assert_eq!(ptype(&parameter).r#type, "BYTES", "{label}/{kind}");
-            assert_eq!(value_of(&parameter), Some(expected), "{label}/{kind}");
+        assert_renders(col(BinaryArray::from(vec![bytes])), "BYTES", expected);
+        assert_renders(col(LargeBinaryArray::from(vec![bytes])), "BYTES", expected);
+        assert_renders(col(BinaryViewArray::from(vec![bytes])), "BYTES", expected);
+        // A zero-width FixedSizeBinary is not a legal Arrow layout.
+        if !bytes.is_empty() {
+            let fixed = FixedSizeBinaryArray::try_from_iter(std::iter::once(bytes)).unwrap();
+            assert_renders(col(fixed), "BYTES", expected);
         }
     }
 }
@@ -779,8 +737,11 @@ fn array_parameters_reject_logical_null_elements() {
             );
         }
         let failure = parameters_for_row(&batch, 1, ParameterMode::Named).unwrap_err();
-        assert_eq!(failure.status, Status::InvalidData);
-        assert_message(&failure, &["\"items\"", "at row 1", "element 0 is NULL"]);
+        assert_failure(
+            &failure,
+            Status::InvalidData,
+            &["\"items\"", "at row 1", "element 0 is NULL"],
+        );
     }
 }
 

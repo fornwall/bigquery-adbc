@@ -34,40 +34,21 @@ fn validates_named_parameter_field_names() {
     .unwrap();
 
     let too_long = "x".repeat(128);
-    let error = validate_parameter_fields(&fields(&[&too_long]), ParameterMode::Named).unwrap_err();
-    assert_eq!(error.status, Status::InvalidArguments);
-    assert_message(
-        &error,
-        &[
-            &too_long,
-            "128 characters long; it cannot exceed 127 characters",
-        ],
-    );
-
-    let error = validate_parameter_fields(&fields(&["a", ""]), ParameterMode::Named).unwrap_err();
-    assert_eq!(error.status, Status::InvalidArguments);
-    assert_message(&error, &["parameter 1 has an empty field name"]);
-    let error =
-        validate_parameter_fields(&fields(&["a", "b", "a"]), ParameterMode::Named).unwrap_err();
-    assert_eq!(error.status, Status::InvalidArguments);
-    assert_message(
-        &error,
-        &["\"a\" at parameter 2 duplicates \"a\" at parameter 0"],
-    );
-    // BigQuery matches names case-insensitively, by full Unicode uppercase mapping.
-    let error =
-        validate_parameter_fields(&fields(&["a", "b", "A"]), ParameterMode::Named).unwrap_err();
-    assert_eq!(error.status, Status::InvalidArguments);
-    assert_message(
-        &error,
-        &[
-            "\"A\" at parameter 2 duplicates \"a\" at parameter 0",
-            "case-insensitive",
-        ],
-    );
-    for names in [["\u{e9}", "\u{c9}"], ["\u{df}", "SS"]] {
-        let error = validate_parameter_fields(&fields(&names), ParameterMode::Named).unwrap_err();
-        assert_message(&error, &["case-insensitive"]);
+    let duplicate = "\"a\" at parameter 2 duplicates \"a\" at parameter 0";
+    let case_duplicate = "\"A\" at parameter 2 duplicates \"a\" at parameter 0";
+    let length = "128 characters long; it cannot exceed 127 characters";
+    let refusals: [(&[&str], &[&str]); 6] = [
+        (&[&too_long], &[&too_long, length]),
+        (&["a", ""], &["parameter 1 has an empty field name"]),
+        (&["a", "b", "a"], &[duplicate]),
+        // BigQuery matches names case-insensitively, by full Unicode uppercase mapping.
+        (&["a", "b", "A"], &[case_duplicate, "case-insensitive"]),
+        (&["\u{e9}", "\u{c9}"], &["case-insensitive"]),
+        (&["\u{df}", "SS"], &["case-insensitive"]),
+    ];
+    for (names, fragments) in refusals {
+        let error = validate_parameter_fields(&fields(names), ParameterMode::Named).unwrap_err();
+        assert_failure(&error, Status::InvalidArguments, fragments);
     }
     validate_parameter_fields(&fields(&["k", "\u{212a}"]), ParameterMode::Named).unwrap();
 
@@ -89,8 +70,11 @@ fn rejects_deeply_nested_parameter_schemas() {
     let error = ParameterPlan::try_new(&schema, ParameterMode::Positional)
         .err()
         .expect("deeply nested parameter schemas must be rejected");
-    assert_eq!(error.status, Status::InvalidArguments);
-    assert_message(&error, &["nested", &MAX_SCHEMA_NESTING_DEPTH.to_string()]);
+    assert_failure(
+        &error,
+        Status::InvalidArguments,
+        &["nested", &MAX_SCHEMA_NESTING_DEPTH.to_string()],
+    );
 
     // A schema at the bound still produces a plan.
     let mut data_type = DataType::Utf8;

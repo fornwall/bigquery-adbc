@@ -29,7 +29,7 @@ use super::{
 };
 use crate::ingest::schema::arrow_schema_to_bigquery;
 use crate::test_support::arrow::{bigquery_typed, range_bounds};
-use crate::test_support::errors::assert_message;
+use crate::test_support::errors::{assert_failure, assert_message};
 use crate::types::{BigQueryType, MAX_SCHEMA_NESTING_DEPTH};
 
 /// The parameters of one row of a batch bound on its own.
@@ -104,6 +104,37 @@ fn one_parameter_error(array: ArrayRef) -> String {
 
 fn col(array: impl Array + 'static) -> ArrayRef {
     Arc::new(array)
+}
+
+/// A one-row list of `values`, whose items are `item`.
+fn list_of(item: Field, values: ArrayRef) -> ListArray {
+    let lengths = [values.len()];
+    ListArray::new(
+        Arc::new(item),
+        OffsetBuffer::from_lengths(lengths),
+        values,
+        None,
+    )
+}
+
+/// One `RANGE<DATE>` item, as a list of ranges holds it: its field and its struct array.
+fn date_range_item() -> (Field, ArrayRef) {
+    let bounds = range_bounds(DataType::Date32);
+    let item = Field::new("item", DataType::Struct(bounds.clone()), true);
+    let range = StructArray::new(
+        bounds,
+        vec![
+            col(Date32Array::from(vec![0])),
+            col(Date32Array::from(vec![2])),
+        ],
+        None,
+    );
+    (item, Arc::new(range))
+}
+
+/// The element type of an ARRAY parameter type.
+fn element(parameter_type: &QueryParameterType) -> &QueryParameterType {
+    parameter_type.array_type.as_ref().unwrap()
 }
 
 mod inferred;
