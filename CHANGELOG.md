@@ -13,6 +13,8 @@ changes.
   that already finished.
 - A job stopped by `bigquery.query.max_bytes_billed` now returns `INVALID_ARGUMENT` instead of
   `UNKNOWN`, as the same reason already did on a rejected REST answer.
+- `CreateReadSession` fails with `TIMEOUT` after two minutes instead of blocking forever on an
+  endpoint that stalls during the TLS handshake.
 - A REST rejection with reason `timeout` now returns `TIMEOUT` and one with `resourceInUse` returns
   `INVALID_STATE`, as both do on a failed job, instead of `INVALID_ARGUMENT`. A job's timeout read
   through a rejected `jobs.query` or `jobs.getQueryResults` answer now reads as a timeout.

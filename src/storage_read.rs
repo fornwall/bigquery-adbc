@@ -54,12 +54,14 @@ const READ_ROWS_RESUME_BACKOFF: Schedule =
 /// the consecutive-failure limit still stops streams that make no progress.
 const READ_ROWS_RESUME_DELAY_BUDGET: Duration = Duration::from_secs(30);
 
-/// How long a `ReadRows` open or stream may stay silent while the read has room for its rows.
+/// How long `CreateReadSession` may go unanswered, and a `ReadRows` open or stream stay silent while
+/// the read has room for its rows.
 ///
-/// The SDK sets no deadline on a server stream and its channel has no HTTP/2 keepalive, so a peer
-/// that vanished without a reset would otherwise block the reader forever. Expiry is an ordinary
-/// failed attempt, so a false alarm costs one exact-offset resume.
-const READ_ROWS_STALL_TIMEOUT: Duration = Duration::from_secs(120);
+/// The SDK sets no deadline on a server stream, and its channel has no keepalive or connect
+/// timeout. Its unary deadline starts only once a connection is ready, so a stalled TLS handshake
+/// escapes that too. This sits above the 60 s bounding `CreateReadSession`'s retries, and a
+/// `ReadRows` expiry is an ordinary failed attempt, so a false alarm costs one exact-offset resume.
+const STALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Transient failures, including quota/fairness closures and a stream reset at the transport,
 /// permit an exact-offset resume. Cancellation must stop the read.
@@ -152,7 +154,7 @@ async fn open_reader(
     } else {
         ORDERED_MAX_STREAM_COUNT
     };
-    let read_client = clients.read_client(&runtime).await?;
+    let read_client = gate(operation.as_ref(), Box::pin(clients.read_client(&runtime))).await??;
     let session = match create_read_session(
         &read_client,
         &clients,
@@ -316,8 +318,9 @@ async fn create_read_session(
         .with_idempotency(true)
         .with_user_agent(clients.user_agent())
         .send();
+    let request = tokio::time::timeout(STALL_TIMEOUT, request);
     let response = gate(operation.as_ref(), request).await?;
-    match response {
+    match response.unwrap_or_else(|_| Err(stalled())) {
         Ok(session) => Ok(Ok(session)),
         Err(source) => match session_refusal(&source) {
             Some(refusal) => {
@@ -450,19 +453,19 @@ async fn next_response(
     sink: &ResultSink,
 ) -> Option<std::result::Result<ReadRowsResponse, GoogleError>> {
     loop {
-        match tokio::time::timeout(READ_ROWS_STALL_TIMEOUT, responses.next()).await {
+        match tokio::time::timeout(STALL_TIMEOUT, responses.next()).await {
             Ok(response) => return response,
             Err(_) if sink.is_full() => {}
-            Err(_) => return Some(Err(read_rows_stalled())),
+            Err(_) => return Some(Err(stalled())),
         }
     }
 }
 
-/// A transient failure, so a stall resumes at the next unread row under the shared budget.
-fn read_rows_stalled() -> GoogleError {
+/// A transient failure, so a stalled stream resumes at the next unread row under the shared budget.
+fn stalled() -> GoogleError {
     GoogleError::timeout(format!(
-        "no response from BigQuery Storage Read in {} seconds",
-        READ_ROWS_STALL_TIMEOUT.as_secs()
+        "(no response from BigQuery Storage Read in {} seconds)",
+        STALL_TIMEOUT.as_secs()
     ))
 }
 
@@ -548,11 +551,11 @@ async fn open_read_rows(
 ) -> std::result::Result<Option<ResponseStream<ReadRowsResponse>>, GoogleError> {
     // Every reopen retains the stream and request options, including the user agent.
     let request = request.clone().set_offset(offset).send();
-    let request = tokio::time::timeout(READ_ROWS_STALL_TIMEOUT, request);
+    let request = tokio::time::timeout(STALL_TIMEOUT, request);
     tokio::select! {
         biased;
         () = sink.cancellation.cancelled() => Ok(None),
-        opened = request => opened.unwrap_or_else(|_| Err(read_rows_stalled())).map(Some),
+        opened = request => opened.unwrap_or_else(|_| Err(stalled())).map(Some),
     }
 }
 

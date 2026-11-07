@@ -514,7 +514,8 @@ be decoded or reconciled with the expected schema, or when
 - `INVALID_ARGUMENT`: a table Storage Read refuses but REST reads, such as a destination table with
   `require_partition_filter`.
 
-`UNAVAILABLE` and connection failures are retried for up to a minute; any other status is an error.
+`UNAVAILABLE` and connection failures are retried for up to a minute; any other status is an error,
+and a call unanswered after two minutes, even by a stalled TLS handshake, fails with `TIMEOUT`.
 Fallback happens before the first batch reaches the caller, so no row is repeated, and is reported
 only as a `warn` [diagnostic](#diagnostics). A result with a row
 over 20 MiB needs Storage Read. If BigQuery refuses its first page, disabling Storage Read fails

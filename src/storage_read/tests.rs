@@ -287,7 +287,7 @@ fn a_read_stream_is_not_stalled_while_the_reader_holds_it_back() {
         ]))],
     )
     .unwrap();
-    let silence = READ_ROWS_STALL_TIMEOUT * (READ_ROWS_RESUME_ATTEMPTS + 2);
+    let silence = STALL_TIMEOUT * (READ_ROWS_RESUME_ATTEMPTS + 2);
     let full_pipelines = [
         vec![tiny; crate::pipeline::QUERY_RESULT_BUFFER_SIZE],
         vec![huge],
@@ -358,7 +358,7 @@ fn one_stream_failing_unresumably_fails_the_parallel_read_and_stops_the_rest() {
         assert!(failure.contains("Storage Read rows"), "{failure}");
         assert!(failure.contains("INVALID_ARGUMENT"), "{failure}");
 
-        tokio::time::sleep(READ_ROWS_STALL_TIMEOUT * 2).await;
+        tokio::time::sleep(STALL_TIMEOUT * 2).await;
     });
     assert_eq!(offsets.lock().unwrap().len(), script.len());
 }
@@ -513,7 +513,8 @@ mod mock_reads {
     use arrow_array::RecordBatchReader;
 
     use super::{
-        Opened, READ_ROWS_RESUME_ATTEMPTS, ReshapePlan, decode_batches, reader, reshape_plans,
+        Opened, READ_ROWS_RESUME_ATTEMPTS, ReshapePlan, create_read_session, decode_batches,
+        reader, reshape_plans,
     };
     use crate::cancellation::{Cancellation, Operation, OperationCancelHandle, operation_reader};
     use crate::clients::ClientState;
@@ -584,6 +585,15 @@ mod mock_reads {
         ClientState::for_test_at(ServiceEndpointKind::Storage, mock.endpoint())
     }
 
+    /// The table a scripted session reads.
+    fn destination() -> TableReference {
+        TableReference {
+            project_id: "project".to_owned(),
+            dataset_id: "dataset".to_owned(),
+            table_id: "results".to_owned(),
+        }
+    }
+
     /// Opens the reader one scripted session hands out, under `operation` when the test is about
     /// what cancelling it does.
     fn storage_reader(
@@ -593,18 +603,13 @@ mod mock_reads {
         options: QueryResultOptions,
         schema: SchemaRef,
     ) -> Box<dyn RecordBatchReader + Send + 'static> {
-        let destination = TableReference {
-            project_id: "project".to_owned(),
-            dataset_id: "dataset".to_owned(),
-            table_id: "results".to_owned(),
-        };
         match reader(
             runtime,
             clients,
             operation,
             options,
             &JobReference::new("project", None, "job".to_owned()),
-            destination,
+            destination(),
             schema,
         )
         .unwrap()
@@ -702,11 +707,7 @@ mod mock_reads {
                 None,
                 QueryResultOptions::default(),
                 &JobReference::new("project", None, "job".to_owned()),
-                TableReference {
-                    project_id: "project".to_owned(),
-                    dataset_id: "dataset".to_owned(),
-                    table_id: "results".to_owned(),
-                },
+                destination(),
                 fixture.schema.clone(),
             );
             if fallback {
@@ -810,9 +811,8 @@ mod mock_reads {
             QueryResultOptions::default(),
             &JobReference::new("project", None, "job".to_owned()),
             TableReference {
-                project_id: "project".to_owned(),
-                dataset_id: "dataset".to_owned(),
                 table_id: "results$20240101".to_owned(),
+                ..destination()
             },
             fixture.schema.clone(),
         );
@@ -834,16 +834,39 @@ mod mock_reads {
             None,
             QueryResultOptions::default(),
             &JobReference::new("project", None, "job".to_owned()),
-            TableReference {
-                project_id: "project".to_owned(),
-                dataset_id: "dataset".to_owned(),
-                table_id: "results".to_owned(),
-            },
+            destination(),
             fixture.schema.clone(),
         );
         assert_eq!(fallback_status(result), Status::InvalidArguments);
         assert!(!clients.storage_read_disabled("project"));
         assert!(mock.read_offsets().is_empty());
+    }
+
+    /// An endpoint that takes the connection and never answers the TLS handshake, as a wedged
+    /// proxy can. The SDK's deadline lives inside each connection, so it never starts. A listener
+    /// that never accepts is enough: the kernel completes the TCP half.
+    #[test]
+    fn a_session_create_stalled_in_the_tls_handshake_times_out() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("https://{}", listener.local_addr().unwrap());
+        let clients = ClientState::for_test_at(ServiceEndpointKind::Storage, &endpoint);
+        let runtime = crate::runtime::new_runtime().unwrap();
+        let paused = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .unwrap();
+        let job = JobReference::new("project", None, "job".to_owned());
+        let table = destination();
+        let failure = paused.block_on(async {
+            let client = clients.read_client(&runtime).await.unwrap();
+            let creating = create_read_session(&client, &clients, &None, &job, &table, 1);
+            tokio::time::timeout(Duration::from_secs(3600), creating)
+                .await
+                .expect("the stalled call was never bounded")
+                .unwrap_err()
+        });
+        assert_eq!(failure.status, Status::Timeout, "{failure}");
     }
 
     /// The query has already finished, so one lost `CreateReadSession` must not fail it. The SDK

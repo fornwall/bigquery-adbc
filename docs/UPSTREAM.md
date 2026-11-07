@@ -381,9 +381,10 @@ wait for a running job keeps looking through its outage window.
 ## UP-102: gRPC server streams have no deadline or keepalive
 
 `execute_server_streaming` applies no retry-loop deadline, and the tonic endpoint sets no HTTP/2 or
-TCP keepalive, with no client-builder option for either. A reader with nothing outstanding therefore
-never learns its peer is gone. The driver limits `ReadRows` silence itself (`src/storage_read.rs`),
-but a resume reuses the same channel, so on a dead connection the attempts run out and the read fails
-rather than recovers. An `AppendRows` call has the same gap, so the driver also bounds every
-Storage Write wait (`src/ingest/write/retry.rs`). A keepalive would detect both without the
-driver's timers.
+TCP keepalive and no connect timeout, with no client-builder option for any of them. A reader with
+nothing outstanding therefore never learns its peer is gone, and because tonic applies request
+deadlines inside each connection, a stalled TLS handshake outlasts even a unary deadline. The driver
+limits `CreateReadSession` and `ReadRows` silence itself (`src/storage_read.rs`), but a resume reuses
+the same channel, so on a dead connection the attempts run out and the read fails rather than
+recovers. An `AppendRows` call has the same gap, so the driver also bounds every Storage Write wait
+(`src/ingest/write/retry.rs`). A keepalive and a connect timeout would make these limits backstops.
