@@ -21,8 +21,9 @@ unsafe impl FfiHandle for AdbcDatabase {
     const KIND: &'static str = KIND;
 }
 
-/// One driver, and so one Tokio runtime, shared by every database in the process. Runtime build
-/// failure is reported as `ADBC_STATUS_INTERNAL`.
+/// One driver, and so one Tokio runtime, shared by every database in the process, except that
+/// each database a `fork` child opens starts a runtime of its own, the inherited one having no
+/// workers. Runtime build failure is reported as `ADBC_STATUS_INTERNAL`.
 ///
 /// The runtime lives for the process, so the shared object must not be unloaded; see
 /// [`super::AdbcDriverBigqueryInit`]. `AdbcDriver.release` cannot tear it down, since nothing
@@ -49,7 +50,7 @@ pub(super) unsafe extern "C" fn database_init(
         with_state(database, error, |state| {
             let options = state.pending(KIND)?;
             // `new_database_with_opts` owns the ordering rules (URI first, explicit options
-            // override it). It takes `&mut self`, so it runs on a clone sharing the runtime.
+            // override it). It takes `&mut self`, so it runs on a clone of the shared driver.
             let database = shared_driver()?
                 .clone()
                 .new_database_with_opts(options.clone())?;
