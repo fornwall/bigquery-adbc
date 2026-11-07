@@ -272,6 +272,40 @@ pub(crate) fn capture_requests_until_stopped(
     (endpoint, StoppableServer { stop, handle })
 }
 
+/// A staged 200 `jobs.get` answer for done job `job_id` of `fixture-project`: `fields`, usually
+/// `json!({})` or `statistics`, plus its `jobReference` and `status.state`.
+#[allow(
+    dead_code,
+    reason = "adopted by the test modules that stage job resources"
+)]
+pub(crate) fn done_job(job_id: &str, mut fields: JsonValue) -> (u16, JsonValue) {
+    fields["jobReference"] = job_reference("fixture-project", job_id);
+    fields["status"]["state"] = json!("DONE");
+    ok(fields)
+}
+
+/// A staged Google API rejection with HTTP status `code`, for a test whose document needs more
+/// than [`error_body`]. An empty `status` or `reason` leaves that part out, as some APIs do.
+#[allow(
+    dead_code,
+    reason = "adopted by the test modules that stage rejections"
+)]
+pub(crate) fn google_rejection(
+    code: u16,
+    status: &str,
+    reason: &str,
+    message: &str,
+) -> (u16, JsonValue) {
+    let mut error = json!({"code": code, "message": message});
+    if !status.is_empty() {
+        error["status"] = json!(status);
+    }
+    if !reason.is_empty() {
+        error["errors"] = json!([{"message": message, "domain": "global", "reason": reason}]);
+    }
+    (code, json!({ "error": error }))
+}
+
 /// A [`loopback_listener`] in the non-blocking mode [`accept`] polls, with its endpoint.
 pub(crate) fn mock_listener() -> (TcpListener, String) {
     let listener = loopback_listener();

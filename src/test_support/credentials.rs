@@ -1,5 +1,19 @@
 //! Synthetic credential material shared by token-signing tests.
 
+use serde_json::{Value as JsonValue, json};
+
+/// A service-account key document for `client_email` that can really sign a token.
+#[allow(dead_code, reason = "adopted by the test modules that mint a token")]
+pub(crate) fn service_account_json(client_email: &str) -> JsonValue {
+    json!({
+        "type": "service_account",
+        "project_id": "data-project",
+        "private_key_id": "0123456789abcdef",
+        "private_key": TEST_PRIVATE_KEY,
+        "client_email": client_email,
+    })
+}
+
 /// A throwaway 2048-bit RSA key, belonging to no account.
 ///
 /// It has to be a real key: service-account credentials mint their bearer token by signing a

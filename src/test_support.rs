@@ -1,6 +1,11 @@
 //! Fixtures shared by tests across the crate.
 
 pub(crate) mod arrow;
+#[allow(
+    dead_code,
+    reason = "adopted by the test modules below the statement layer"
+)]
+pub(crate) mod cancellation;
 pub(crate) mod credentials;
 pub(crate) mod driver;
 pub(crate) mod errors;
