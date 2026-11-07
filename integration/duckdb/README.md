@@ -75,7 +75,7 @@ dialects in every statement: DuckDB outside, GoogleSQL inside the string literal
 
 ## Extension behavior
 
-The tests cover these behaviors of the pinned extension version:
+The tests cover these behaviors of the current extension build for the pinned DuckDB release:
 
 - `ATTACH` needs the backtick delimiter. Resolving an attached table runs
   `SELECT * FROM <schema>.<table>` with the identifiers wrapped in the `ATTACH` delimiter pair,
@@ -136,9 +136,9 @@ uv run --project integration/duckdb --locked \
 `.python-version` selects a Python 3.15 build with the GIL, because DuckDB does not support
 free-threaded Python.
 
-`duckdb` is pinned exactly in `pyproject.toml`. The community extension is published per DuckDB
-version, so that pin also fixes the extension build under test; the suite loads the extension only
-with `INSTALL adbc FROM community`.
+`duckdb` is pinned exactly in `pyproject.toml`. The suite loads the extension only with
+`INSTALL adbc FROM community`, which takes the current build for that DuckDB release, so a new build
+can change results with no change here. Each run logs the build it used.
 
 Recheck the behaviors above when upgrading DuckDB. `test_default_delimiter_resolves_no_table` and
 `test_missing_table_reports_a_catalog_error` depend on the current delimiter and missing-table

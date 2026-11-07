@@ -2,8 +2,8 @@
 name = "bigquery-adbc-duckdb-integration"
 version = "0.0.0"
 requires-python = ">=3.15,<3.16"
-# The `adbc` community extension is published per DuckDB version, so the pinned
-# DuckDB release also pins the extension build that the suite exercises.
+# `INSTALL adbc FROM community` takes the current extension build for this DuckDB
+# release, so the suite follows new builds; each run logs the one it used.
 dependencies = [
     "duckdb==2.0.0",
     "pytest==9.2.0",
