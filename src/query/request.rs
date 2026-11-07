@@ -17,7 +17,7 @@ use super::QualifiedTableName;
 use super::QueryResultMode;
 #[cfg(test)]
 use super::plan::QueryIdentity;
-use super::plan::{QueryDefaultDataset, QueryPlan, QueryRoute};
+use super::plan::{QueryDefaultDataset, QueryPlan};
 
 impl QueryPlan {
     /// The `jobs.insert` request for a plan on the job route, in a [`JobRequest`] envelope.
@@ -52,7 +52,7 @@ impl QueryPlan {
 
     /// Whether this plan submits a job without a location, letting BigQuery infer it.
     pub(super) fn infers_job_location(&self) -> bool {
-        self.route() == QueryRoute::Insert && self.location.is_none() && !self.dry_run
+        self.inserts_job() && self.location.is_none() && !self.dry_run
     }
 
     #[cfg(test)]

@@ -19,16 +19,6 @@ use crate::{BigQueryCreateDisposition, BigQueryQueryPriority, BigQueryWriteDispo
 
 use super::{QualifiedTableName, QueryDefaults, StatementQueryOptions};
 
-/// How the plan is submitted to BigQuery, which its [`QueryIdentity`] already decides: a
-/// `jobs.query` request ID or a `jobs.insert` job ID.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum QueryRoute {
-    /// `jobs.query`, which can return a complete jobless result in one round trip.
-    Query,
-    /// `jobs.insert`, required for dry runs and job-only query configuration.
-    Insert,
-}
-
 /// Whether `jobs.query` may avoid creating a durable job.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) enum QueryJobCreation {
@@ -48,16 +38,28 @@ impl QueryJobCreation {
     }
 }
 
-/// The submission identity for one logical query execution.
+/// The submission identity for one logical query execution, which also decides how it is
+/// submitted. Prefixed so a job ID and a request ID are never mistaken for one another in a log or
+/// a console.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum QueryIdentity {
-    /// A `jobs.query` request ID.
+    /// A `jobs.query` request ID. That route can return a complete jobless result in one round
+    /// trip.
     Request(Arc<str>),
-    /// A caller-generated `jobs.insert` job ID.
+    /// A caller-generated `jobs.insert` job ID, required for dry runs and job-only query
+    /// configuration.
     Job(Arc<str>),
 }
 
 impl QueryIdentity {
+    fn new_request() -> Self {
+        Self::Request(next_identity("req_").into())
+    }
+
+    fn new_job() -> Self {
+        Self::Job(next_identity("job_").into())
+    }
+
     #[cfg(test)]
     pub(super) fn as_str(&self) -> &str {
         match self {
@@ -150,7 +152,11 @@ impl QueryPlan {
             mode: Arc::from(mode),
             values: Arc::from(values),
         });
-        let identity = new_identity(route(options));
+        let identity = if needs_job_insert(options) {
+            QueryIdentity::new_job()
+        } else {
+            QueryIdentity::new_request()
+        };
         Ok(Self {
             project_id,
             sql,
@@ -174,11 +180,9 @@ impl QueryPlan {
         })
     }
 
-    pub(super) const fn route(&self) -> QueryRoute {
-        match self.identity {
-            QueryIdentity::Request(_) => QueryRoute::Query,
-            QueryIdentity::Job(_) => QueryRoute::Insert,
-        }
+    /// Whether this plan is submitted through `jobs.insert` rather than `jobs.query`.
+    pub(super) const fn inserts_job(&self) -> bool {
+        matches!(self.identity, QueryIdentity::Job(_))
     }
 
     pub(super) fn identity(&self) -> &QueryIdentity {
@@ -204,31 +208,21 @@ impl QueryPlan {
     /// Reuses the execution with a fresh idempotency identity, for a terminal job failure whose
     /// BigQuery reason permits running the SQL again. Transport retries reuse the original plan.
     pub(super) fn reissue(mut self) -> Self {
-        self.identity = new_identity(self.route());
+        self.identity = if self.inserts_job() {
+            QueryIdentity::new_job()
+        } else {
+            QueryIdentity::new_request()
+        };
         self
     }
 }
 
 /// A default create/write disposition or priority does not select `jobs.insert`, because BigQuery
 /// treats it as absent.
-fn route(options: &StatementQueryOptions) -> QueryRoute {
-    if options.dry_run
+fn needs_job_insert(options: &StatementQueryOptions) -> bool {
+    options.dry_run
         || options.destination_table.is_some()
         || options.create_disposition != BigQueryCreateDisposition::default()
         || options.write_disposition != BigQueryWriteDisposition::default()
         || options.priority != BigQueryQueryPriority::default()
-    {
-        QueryRoute::Insert
-    } else {
-        QueryRoute::Query
-    }
-}
-
-/// A fresh idempotency identity for `route`, prefixed so a job ID and a request ID are never
-/// mistaken for one another in a log or a console.
-fn new_identity(route: QueryRoute) -> QueryIdentity {
-    match route {
-        QueryRoute::Query => QueryIdentity::Request(next_identity("req_").into()),
-        QueryRoute::Insert => QueryIdentity::Job(next_identity("job_").into()),
-    }
 }

@@ -174,7 +174,7 @@ fn reissue_keeps_route_and_query_but_refreshes_identity() {
         options.reservation = Some(Arc::from("none"));
         let original = plan(options);
         let reissued = original.clone().reissue();
-        assert_eq!(reissued.route(), original.route());
+        assert_eq!(reissued.inserts_job(), original.inserts_job());
         assert_eq!(reissued.sql, original.sql);
         assert_eq!(reissued.reservation, original.reservation);
         assert_ne!(reissued.identity(), original.identity());

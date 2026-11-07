@@ -6,7 +6,7 @@ use serde_json::json;
 use crate::rest::model::{QueryParameter, QueryParameterType, QueryParameterValue};
 use crate::{BigQueryCreateDisposition, BigQueryQueryPriority, BigQueryWriteDisposition};
 
-use super::super::plan::{QueryIdentity, QueryJobCreation, QueryPlan, QueryRoute};
+use super::super::plan::{QueryIdentity, QueryJobCreation, QueryPlan};
 use crate::query::{QualifiedTableName, QueryDefaults, StatementQueryOptions};
 use crate::test_support::errors::assert_message_omits;
 use crate::test_support::http::job_reference;
@@ -62,7 +62,7 @@ fn parameter(name: Option<&str>, value: &str) -> QueryParameter {
 #[test]
 fn default_query_is_the_exact_compact_jobs_query_body() {
     let plan = simple_plan(&StatementQueryOptions::default());
-    assert_eq!(plan.route(), QueryRoute::Query);
+    assert!(!plan.inserts_job());
     let request = plan.jobs_query_request().unwrap();
     assert_eq!(request.request_id(), plan.request_id().unwrap());
     assert_eq!(
@@ -145,7 +145,7 @@ fn jobs_query_preserves_every_shared_option_and_required_job_mode() {
         QueryJobCreation::Required,
     )
     .unwrap();
-    assert_eq!(plan.route(), QueryRoute::Query);
+    assert!(!plan.inserts_job());
     let request = plan.jobs_query_request().unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&request.encode().unwrap()).unwrap(),
@@ -213,15 +213,11 @@ fn every_job_only_option_selects_jobs_insert_but_required_job_mode_does_not() {
         },
     ];
     for options in &forcing_options {
-        assert_eq!(
-            simple_plan(options).route(),
-            QueryRoute::Insert,
-            "{options:?}"
-        );
+        assert!(simple_plan(options).inserts_job(), "{options:?}");
     }
 
-    assert_eq!(
-        plan(
+    assert!(
+        !plan(
             &StatementQueryOptions::default(),
             QueryDefaults::default(),
             None,
@@ -229,8 +225,7 @@ fn every_job_only_option_selects_jobs_insert_but_required_job_mode_does_not() {
             None,
             QueryJobCreation::Required,
         )
-        .route(),
-        QueryRoute::Query
+        .inserts_job()
     );
 }
 
@@ -302,7 +297,7 @@ fn jobs_insert_is_the_exact_compact_job_envelope() {
         Some(("POSITIONAL", vec![parameter(None, "42")])),
         QueryJobCreation::Required,
     );
-    assert_eq!(plan.route(), QueryRoute::Insert);
+    assert!(plan.inserts_job());
     let body = plan.jobs_insert_body().unwrap();
     let expected = json!({
         "jobReference": job_reference("billing-project", plan.job_id().unwrap()),
@@ -367,10 +362,10 @@ fn empty_parameter_sets_keep_the_mode_but_omit_the_empty_array() {
             Some(request) => serde_json::to_value(request).unwrap(),
             None => plan.jobs_insert_body().unwrap(),
         };
-        let query = if plan.route() == QueryRoute::Query {
-            &value
-        } else {
+        let query = if plan.inserts_job() {
             &value["configuration"]["query"]
+        } else {
+            &value
         };
         assert_eq!(query["parameterMode"], mode);
         assert!(query.get("queryParameters").is_none(), "{query}");

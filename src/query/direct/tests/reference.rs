@@ -104,15 +104,8 @@ fn both_routes_keep_the_services_canonical_location_casing() {
         );
         // Assert each priority's route rather than reading it off the plan, so a routing
         // regression cannot send both cases down the same arm.
-        let expected = match priority {
-            BigQueryQueryPriority::Interactive => QueryRoute::Query,
-            BigQueryQueryPriority::Batch => QueryRoute::Insert,
-        };
-        assert_eq!(
-            plan.route(),
-            expected,
-            "{priority:?} must take the {expected:?} route"
-        );
+        let inserts = priority == BigQueryQueryPriority::Batch;
+        assert_eq!(plan.inserts_job(), inserts, "{priority:?}");
         // Only the insert route names its job before submitting, which is also the only route
         // that has a second request to check the canonical casing on.
         let job_id = plan.job_id().map(ToOwned::to_owned);
@@ -126,15 +119,16 @@ fn both_routes_keep_the_services_canonical_location_casing() {
             "jobReference": reference,
             "schema": {"fields":[]}
         });
-        let responses = match expected {
-            QueryRoute::Query => vec![(200, results)],
-            QueryRoute::Insert => vec![
+        let responses = if inserts {
+            vec![
                 (
                     200,
                     json!({"jobReference": reference, "status": {"state":"DONE"}}),
                 ),
                 (200, results),
-            ],
+            ]
+        } else {
+            vec![(200, results)]
         };
         let (endpoint, captured) = capture_requests(responses);
         let (runtime, client) = client(&endpoint);
@@ -149,18 +143,15 @@ fn both_routes_keep_the_services_canonical_location_casing() {
             Some("US")
         );
         let captured = captured.join().unwrap();
-        match expected {
-            QueryRoute::Query => {
-                assert_eq!(captured.len(), 1);
-                assert_eq!(captured[0].body["location"], "us");
-            }
-            QueryRoute::Insert => {
-                let job_id = job_id.expect("the insert route names its job before submitting");
-                assert_eq!(captured.len(), 2);
-                assert_eq!(captured[0].body["jobReference"]["location"], "us");
-                assert_eq!(captured[0].body["jobReference"]["jobId"], job_id);
-                assert!(captured[1].path().contains("&location=US"));
-            }
+        if inserts {
+            let job_id = job_id.expect("the insert route names its job before submitting");
+            assert_eq!(captured.len(), 2);
+            assert_eq!(captured[0].body["jobReference"]["location"], "us");
+            assert_eq!(captured[0].body["jobReference"]["jobId"], job_id);
+            assert!(captured[1].path().contains("&location=US"));
+        } else {
+            assert_eq!(captured.len(), 1);
+            assert_eq!(captured[0].body["location"], "us");
         }
     }
 }

@@ -25,7 +25,6 @@ use crate::cancellation::{Cancellation, OperationCancelHandle};
 use crate::clients::ClientState;
 use crate::config::ServiceEndpointKind;
 use crate::identifiers::ProjectIdentifier;
-use crate::query::plan::QueryRoute;
 use crate::query::response::QueryResponse;
 use crate::query::{QueryDefaults, StatementQueryOptions};
 use crate::rest::client::rest_client;
