@@ -7,6 +7,8 @@ changes.
 
 ### Fixed
 
+- A query result page repeating an earlier page token now returns `INVALID_DATA` rather than `IO`:
+  reading it again gets the same answer, so it is a malformed response, not a transient failure.
 - A transient `CreateReadSession` failure is retried for up to a minute instead of failing a query
   that already finished.
 - A job stopped by `bigquery.query.max_bytes_billed` now returns `INVALID_ARGUMENT` instead of

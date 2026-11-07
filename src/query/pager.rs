@@ -135,7 +135,7 @@ impl QueryPager {
             {
                 return Err(external(error(
                     "BigQuery repeated a query result page token",
-                    Status::IO,
+                    Status::InvalidData,
                 )));
             }
             if &canonical != reference {

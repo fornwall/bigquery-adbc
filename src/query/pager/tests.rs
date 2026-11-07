@@ -173,7 +173,7 @@ fn repeated_token_is_rejected_even_when_the_page_has_rows() {
         panic!("expected the original ADBC error");
     };
     let failure = source.downcast_ref::<adbc_core::error::Error>().unwrap();
-    assert_eq!(failure.status, Status::IO);
+    assert_eq!(failure.status, Status::InvalidData);
     assert!(failure.message.ends_with(" (Query: https://console.cloud.google.com/bigquery?project=project&j=bq:EU:job&page=queryresults)"));
     assert_eq!(captured.join().unwrap().len(), 1);
 }
