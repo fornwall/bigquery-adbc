@@ -120,19 +120,14 @@ impl<'a> JobConfiguration<'a> {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct LoadOrCopyJob {
-    #[serde(default)]
     job_reference: Option<JobReference>,
-    #[serde(default)]
     status: Option<JobStatus>,
-    #[serde(default)]
     statistics: Option<JobStatistics>,
 }
 
 #[derive(Debug, Deserialize)]
 struct JobStatistics {
-    #[serde(default)]
     load: Option<LoadStatistics>,
-    #[serde(default)]
     copy: Option<CopyStatistics>,
 }
 

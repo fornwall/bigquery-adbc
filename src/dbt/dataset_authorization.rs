@@ -3,8 +3,6 @@
 //! A view that reads another dataset must be listed in that dataset's access control list. dbt's
 //! `grant_access_to` model config sets this option. See `DBT-CORE.md`.
 
-use std::sync::Arc;
-
 use adbc_core::error::Result;
 
 use super::{parse_json_option, required_string};
@@ -31,7 +29,7 @@ pub(crate) type ViewAuthorizations = Vec<(QualifiedTableName, Vec<SourceDataset>
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct SourceDataset {
     project_id: ProjectIdentifier,
-    dataset_id: Arc<str>,
+    dataset_id: String,
 }
 
 /// Authorized views configured on an ADBC statement by dbt-core 2.0.
@@ -40,7 +38,7 @@ pub(crate) struct SourceDataset {
 /// malformed one fails immediately. An empty string or an empty JSON object clears it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DatasetAuthorizationOptions {
-    views: Option<Arc<ViewAuthorizations>>,
+    views: Option<ViewAuthorizations>,
 }
 
 impl DatasetAuthorizationOptions {
@@ -49,7 +47,7 @@ impl DatasetAuthorizationOptions {
     }
 
     pub(crate) fn set(&mut self, views: Option<ViewAuthorizations>) {
-        self.views = views.map(Arc::new);
+        self.views = views;
     }
 
     /// Serializes configured authorizations with fully qualified names in sorted order.
@@ -66,7 +64,7 @@ impl DatasetAuthorizationOptions {
             for dataset in datasets {
                 authorized.push(serde_json::json!({
                     "project": dataset.project_id.as_str(),
-                    "dataset": dataset.dataset_id.as_ref(),
+                    "dataset": dataset.dataset_id,
                 }));
             }
             object.insert(view.as_option_value(), serde_json::Value::Array(authorized));
@@ -86,7 +84,7 @@ impl DatasetAuthorizationOptions {
                 for dataset in datasets {
                     let dataset = DatasetId {
                         project_id: dataset.project_id.as_str(),
-                        dataset_id: dataset.dataset_id.as_ref(),
+                        dataset_id: &dataset.dataset_id,
                     };
                     Box::pin(authorize(&client, operation, view, dataset)).await?;
                 }
@@ -244,17 +242,13 @@ pub(crate) fn parse_view_authorizations(
             .get_mut(index)
             .expect("the view was found or inserted");
         for dataset in datasets {
-            insert_sorted(sources, parse_source_dataset(&dataset)?);
+            let dataset = parse_source_dataset(&dataset)?;
+            if let Err(index) = sources.binary_search(&dataset) {
+                sources.insert(index, dataset);
+            }
         }
     }
     Ok((!views.is_empty()).then_some(views))
-}
-
-/// Inserts `item` into the sorted, repeat-free `items` unless it is already there.
-fn insert_sorted<T: Ord>(items: &mut Vec<T>, item: T) {
-    if let Err(index) = items.binary_search(&item) {
-        items.insert(index, item);
-    }
 }
 
 fn parse_source_dataset(value: &serde_json::Value) -> Result<SourceDataset> {
@@ -286,7 +280,7 @@ fn parse_source_dataset(value: &serde_json::Value) -> Result<SourceDataset> {
             ),
             project_id,
         )?,
-        dataset_id: Arc::from(dataset_id),
+        dataset_id: dataset_id.to_owned(),
     })
 }
 
