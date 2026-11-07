@@ -151,10 +151,10 @@ pub(crate) fn http_status(status: reqwest::StatusCode) -> Status {
 /// The status for a directly issued request the service rejected, refined by the `reason` of the
 /// first structured error in the response body.
 ///
-/// BigQuery uses 403 for denials, rate limits, quotas and oversized responses, and 400 for four
-/// retryable job failures ([`BAD_REQUEST_REASONS`]); only the `reason` separates them. Only a
-/// reason the [error table] documents for that code may refine it, so `notFound` under a 403
-/// cannot reclassify it.
+/// BigQuery uses 403 for denials, rate limits, quotas and oversized responses, and 400 for job
+/// failures that do not judge the request ([`BAD_REQUEST_REASONS`]); only the `reason` separates
+/// them. Only a reason the [error table] documents for that code may refine it, so `notFound`
+/// under a 403 cannot reclassify it.
 ///
 /// [error table]: https://cloud.google.com/bigquery/docs/error-messages
 pub(crate) fn service_status(status: reqwest::StatusCode, reason: Option<&str>) -> Status {
@@ -191,13 +191,17 @@ const FORBIDDEN_REASONS: [&str; 9] = [
 /// request, and the only ones that may refine one.
 ///
 /// Other 400 reasons (`badRequest`, `invalid`, `invalidQuery`, ...) judge what was sent and keep
-/// [`Status::InvalidArguments`]. The table marks these four retryable; reporting them as invalid
-/// arguments would make a host such as dbt abandon work on a transient condition.
-const BAD_REQUEST_REASONS: [&str; 4] = [
+/// [`Status::InvalidArguments`]. The table marks the `job*` reasons and `tableUnavailable`
+/// retryable; reporting them as invalid arguments would make a host such as dbt abandon work on a
+/// transient condition. `timeout` and `resourceInUse` must read as they do on a failed job, since
+/// a rejected completion read carries the job's own reason.
+const BAD_REQUEST_REASONS: [&str; 6] = [
     "jobBackendError",
     "jobInternalError",
     "jobRateLimitExceeded",
+    "resourceInUse",
     "tableUnavailable",
+    "timeout",
 ];
 
 /// Maps a job's BigQuery reason, or refines the permitted HTTP 400/403 reasons in

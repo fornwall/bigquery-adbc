@@ -176,7 +176,8 @@ fn bigquery_reasons_map_to_honest_statuses() {
 /// HTTP 403 covers access denials, quotas and oversized results. HTTP 400 also covers retryable
 /// job failures: `jobBackendError`, `jobInternalError`, `jobRateLimitExceeded` and
 /// `tableUnavailable`. Those four map to [`Status::IO`] both here and in
-/// [`bigquery_reason_status`], so callers can retry with a new job.
+/// [`bigquery_reason_status`], so callers can retry with a new job. `timeout` and `resourceInUse`
+/// also keep their job statuses, because a rejected completion read reports the job's own reason.
 #[test]
 fn a_rejection_reports_what_its_reason_and_code_together_earn() {
     for (reason, code, expected) in [
@@ -196,8 +197,8 @@ fn a_rejection_reports_what_its_reason_and_code_together_earn() {
         ("invalidQuery", 400, Status::InvalidArguments),
         ("invalidUser", 400, Status::InvalidArguments),
         ("resourcesExceeded", 400, Status::InvalidArguments),
-        ("timeout", 400, Status::InvalidArguments),
-        ("resourceInUse", 400, Status::InvalidArguments),
+        ("timeout", 400, Status::Timeout),
+        ("resourceInUse", 400, Status::InvalidState),
         ("tableUnavailable", 400, Status::IO),
         ("jobBackendError", 400, Status::IO),
         ("jobInternalError", 400, Status::IO),

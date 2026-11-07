@@ -9,6 +9,9 @@ changes.
 
 - A transient `CreateReadSession` failure is retried for up to a minute instead of failing a query
   that already finished.
+- A REST rejection with reason `timeout` now returns `TIMEOUT` and one with `resourceInUse` returns
+  `INVALID_STATE`, as both do on a failed job, instead of `INVALID_ARGUMENT`. A job's timeout read
+  through a rejected `jobs.query` or `jobs.getQueryResults` answer now reads as a timeout.
 
 ## [0.2.0] - 2026-11-06
 

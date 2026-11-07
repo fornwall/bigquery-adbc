@@ -43,8 +43,8 @@ pub(crate) fn retry_class(
     reason: Option<&str>,
     status: Status,
 ) -> RetryClass {
-    // Retrying a job stopped by `jobTimeoutMs` would hit the same deadline.
-    if !retryable_failure(status) || reason == Some("stopped") {
+    // Retrying a job that ran out of time would hit the same deadline.
+    if !retryable_failure(status) || matches!(reason, Some("stopped" | "timeout")) {
         return RetryClass::Final;
     }
     let Some(http) = http else {
