@@ -1974,12 +1974,16 @@ fn request_construction_requires_the_callers_job_identity() {
 /// between them use it up. A failure that retrying cannot help ends the wait unchanged.
 #[test]
 fn a_wait_outage_bounds_only_consecutive_retryable_failures() {
+    use tokio::time::{Instant, advance};
+
     const LIMIT: Duration = Duration::from_secs(600);
+    const SECOND: Duration = Duration::from_secs(1);
     let unavailable = || crate::error::error("unavailable", Status::IO);
     let job = JobReference::new("project", Some("EU"), "job".to_owned());
-    let mut outage = super::WaitOutage {
+    let outage = |cancels| super::WaitOutage {
         limit: LIMIT,
         since: None,
+        cancels,
     };
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
@@ -1987,23 +1991,48 @@ fn a_wait_outage_bounds_only_consecutive_retryable_failures() {
         .build()
         .unwrap()
         .block_on(async {
-            outage.outlast(unavailable(), &job).unwrap();
-            tokio::time::advance(LIMIT - Duration::from_secs(1)).await;
-            outage.outlast(unavailable(), &job).unwrap();
+            let mut waiting = outage(true);
+            waiting
+                .outlast(unavailable(), &job, Instant::now())
+                .unwrap();
+            advance(LIMIT - SECOND).await;
+            waiting
+                .outlast(unavailable(), &job, Instant::now())
+                .unwrap();
 
-            outage.end();
-            tokio::time::advance(LIMIT - Duration::from_secs(1)).await;
-            outage.outlast(unavailable(), &job).unwrap();
+            waiting.end();
+            advance(LIMIT - SECOND).await;
+            waiting
+                .outlast(unavailable(), &job, Instant::now())
+                .unwrap();
 
-            tokio::time::advance(LIMIT).await;
-            let spent = outage.outlast(unavailable(), &job).unwrap_err();
+            advance(LIMIT).await;
+            let spent = waiting
+                .outlast(unavailable(), &job, Instant::now())
+                .unwrap_err();
             assert_failure(
                 &spent,
                 Status::IO,
-                &["project:EU.job", "after 600 s of failed requests"],
+                &[
+                    "project:EU.job",
+                    "after 600 s of failed requests and is cancelling it if unfinished",
+                ],
             );
 
             let denied = crate::error::error("denied", Status::Unauthorized);
-            assert_eq!(outage.outlast(denied, &job).unwrap_err().message, "denied");
+            let denied = waiting.outlast(denied, &job, Instant::now()).unwrap_err();
+            assert_eq!(denied.message, "denied");
+
+            // Requests that hang spend the window inside one round, which it opened with, and
+            // the error says how long that took. Without an operation, no job is cancelled.
+            let mut hanging = outage(false);
+            let started = Instant::now();
+            advance(LIMIT + 6 * SECOND).await;
+            let spent = hanging.outlast(unavailable(), &job, started).unwrap_err();
+            assert_failure(
+                &spent,
+                Status::IO,
+                &["after 606 s of failed requests; check the job before running this again"],
+            );
         });
 }

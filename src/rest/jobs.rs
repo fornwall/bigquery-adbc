@@ -300,6 +300,8 @@ struct JobEnvelope<'a, C> {
 pub(crate) struct WaitOutage {
     limit: Duration,
     since: Option<tokio::time::Instant>,
+    /// Whether ending the wait cancels the job: only an operation tracks one.
+    cancels: bool,
 }
 
 impl WaitOutage {
@@ -311,25 +313,35 @@ impl WaitOutage {
     /// Lets the wait for `job` continue past `failure`, or returns the failure that ends it. Only
     /// a retryable failure can be outlasted, and once it cannot, the error says the job's outcome
     /// is unknown: ending the wait cancels an unfinished job, but that request can fail too.
+    ///
+    /// An outage opens at `round_started`, when the failed requests began, since requests that
+    /// hang spend minutes before they fail. It is only checked here, between rounds, so a wait can
+    /// run over by one round.
     pub(crate) fn outlast(
         &mut self,
         mut failure: adbc_core::error::Error,
         job: &JobReference,
+        round_started: tokio::time::Instant,
     ) -> Result<()> {
         if !retryable_failure(failure.status) {
             return Err(failure);
         }
-        let since = *self.since.get_or_insert_with(tokio::time::Instant::now);
-        if since.elapsed() < self.limit {
+        let waited = self.since.get_or_insert(round_started).elapsed();
+        if waited < self.limit {
             return Ok(());
         }
+        let cancelling = if self.cancels {
+            " and is cancelling it if unfinished"
+        } else {
+            ""
+        };
         append_remedy(
             &mut failure,
             &format!(
-                "the driver stopped waiting for BigQuery job {} after {} s of failed requests and \
-                 is cancelling it if unfinished; check the job before running this again",
+                "the driver stopped waiting for BigQuery job {} after {} s of failed \
+                 requests{cancelling}; check the job before running this again",
                 job_name(job),
-                self.limit.as_secs()
+                waited.as_secs()
             ),
         );
         Err(failure)
@@ -408,10 +420,11 @@ impl JobClient {
     }
 
     /// The outage state of a new wait for a job to finish.
-    pub(crate) fn wait_outage(&self) -> WaitOutage {
+    pub(crate) fn wait_outage(&self, operation: Option<&Operation>) -> WaitOutage {
         WaitOutage {
             limit: self.wait_outage,
             since: None,
+            cancels: operation.is_some(),
         }
     }
 

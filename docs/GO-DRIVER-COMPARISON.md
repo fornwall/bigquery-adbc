@@ -344,7 +344,8 @@ statements of unknown type, whose earlier statements may have committed; Go neve
 job. Requests give up after five consecutive transient failures. Waiting for a job goes on past
 that for ten minutes of consecutive failures, or for as long as `jobs.get` reports the job
 unfinished, where Go polls until the caller's context ends; the bound stops a dead network blocking
-a caller that has no way to cancel.
+a caller that has no way to cancel. A job `jobs.get` reports finished without an error completes
+without its results when a read could add nothing, where Go keeps reading them.
 
 ### G48. Jobs submitted without `bigquery.location`
 

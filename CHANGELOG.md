@@ -7,6 +7,9 @@ changes.
 
 ### Fixed
 
+- A statement that returns no rows, such as DML or `COMMIT`, now succeeds once `jobs.get` reports
+  its job finished without an error, even if reading its results keeps failing. It used to fail with
+  `IO` after the outage window, inviting a rerun of work that had committed.
 - A query result page repeating an earlier page token now returns `INVALID_DATA` rather than `IO`:
   reading it again gets the same answer, so it is a malformed response, not a transient failure.
 - A transient `CreateReadSession` failure is retried for up to a minute instead of failing a query

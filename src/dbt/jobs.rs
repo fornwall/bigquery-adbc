@@ -221,19 +221,20 @@ async fn wait_for_job(
     what: &str,
 ) -> Result<LoadOrCopyJob> {
     let mut backoff = PollBackoff::new(Duration::from_millis(100), Duration::from_secs(1), None);
-    let mut outage = client.wait_outage();
+    let mut outage = client.wait_outage(Some(operation));
     loop {
         if job.status.as_ref().is_some_and(JobStatus::is_done) {
             operation.register_completed_job(reference)?;
             return Ok(job);
         }
         backoff.pause(operation, Duration::ZERO).await?;
+        let started = tokio::time::Instant::now();
         match client.poll(Some(operation), reference, what).await {
             Ok(body) => {
                 outage.end();
                 job = decode_polled_job(&body, reference, what)?;
             }
-            Err(failure) => outage.outlast(failure, reference)?,
+            Err(failure) => outage.outlast(failure, reference, started)?,
         }
     }
 }

@@ -22,17 +22,22 @@ fn reference() -> JobReference {
     JobReference::new("project", Some("EU"), "polled-job".to_owned())
 }
 
-/// Polls the fixture job to completion, ungated, and returns the outcome and what was requested.
-fn poll(
-    responses: Vec<(u16, serde_json::Value)>,
-) -> (
+type Polled = (
     Result<QueryPage, AttemptFailure>,
     Vec<CapturedRequest>,
     QueryMetadata,
-) {
+);
+
+/// Polls the fixture job for its rows. See [`poll_in`].
+fn poll(responses: Vec<(u16, serde_json::Value)>) -> Polled {
+    poll_in(QueryResultMode::Rows, responses)
+}
+
+/// Polls the fixture job to completion, ungated, and returns the outcome and what was requested.
+fn poll_in(mode: QueryResultMode, responses: Vec<(u16, serde_json::Value)>) -> Polled {
     let (endpoint, requests) = capture_requests(responses);
     let (runtime, client) = job_client(&endpoint);
-    let decoder = QueryResponseDecoder::new(&runtime, QueryResultMode::Rows);
+    let decoder = QueryResponseDecoder::new(&runtime, mode);
     let mut metadata = QueryMetadata::default();
     let outcome = runtime.block_on(poll_until_complete(
         &client,
@@ -125,7 +130,7 @@ fn verified_terminal_jobs_are_not_cancelled_again() {
                 assert!(failed);
                 assert_eq!(terminal.job.unwrap().location.as_deref(), Some("EU"));
             }
-            JobVerdict::Succeeded => assert_eq!((state, failed), ("DONE", false)),
+            JobVerdict::Succeeded(_) => assert_eq!((state, failed), ("DONE", false)),
             JobVerdict::Running => assert_eq!(state, "RUNNING"),
             JobVerdict::Unverified | JobVerdict::Cancelled(_) => {
                 panic!("the job was fetched, and the operation has not been cancelled")
@@ -235,6 +240,138 @@ fn unavailable() -> (u16, serde_json::Value) {
 /// Every request of one poll round failing: the reads, then the `jobs.get` that follows them.
 fn failed_round() -> Vec<(u16, serde_json::Value)> {
     vec![unavailable(); 2 * READS]
+}
+
+/// The fixture job, finished without an error and reporting `statistics`.
+fn finished_with(statistics: &serde_json::Value) -> (u16, serde_json::Value) {
+    ok(json!({
+        "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
+        "status": {"state": "DONE"},
+        "statistics": statistics
+    }))
+}
+
+/// Once `jobs.get` proves a job succeeded, a read that could add nothing must not decide the
+/// statement. Reporting committed DML as failed invites a rerun that applies it twice, and a
+/// `COMMIT` whose read keeps failing would otherwise lose the verdict the job has already given.
+#[test]
+fn a_finished_job_with_nothing_left_to_read_completes_without_a_read() {
+    let select_schema = json!({"fields": [{"name": "value", "type": "INTEGER"}]});
+    for (what, mode, statistics) in [
+        (
+            "DML run for its count",
+            QueryResultMode::MetadataOnly,
+            json!({"query": {"statementType": "UPDATE", "numDmlAffectedRows": "3"}}),
+        ),
+        (
+            "DML run through ExecuteQuery, which asks for rows it cannot have",
+            QueryResultMode::Rows,
+            json!({"query": {"statementType": "UPDATE", "numDmlAffectedRows": "3"}}),
+        ),
+        (
+            "a commit",
+            QueryResultMode::MetadataOnly,
+            json!({"query": {"statementType": "COMMIT_TRANSACTION"}}),
+        ),
+        (
+            "a SELECT whose job names its schema",
+            QueryResultMode::MetadataOnly,
+            json!({"query": {"statementType": "SELECT", "schema": select_schema}}),
+        ),
+        (
+            "a statement the job does not name, with no rows asked for",
+            QueryResultMode::MetadataOnly,
+            json!({}),
+        ),
+    ] {
+        let expected_type = statistics["query"]["statementType"].as_str().unwrap_or("");
+        let expected_rows = statistics["query"]["numDmlAffectedRows"]
+            .as_str()
+            .map(|rows| rows.parse().unwrap());
+
+        let (outcome, requests, metadata) =
+            poll_in(mode, after_rejected_reads(finished_with(&statistics)));
+
+        let Ok(page) = outcome else {
+            panic!("{what}: a job proven successful was reported failed");
+        };
+        assert!(page.rows.is_empty() && page.page_token.is_none(), "{what}");
+        assert_eq!(requests.len(), READS + 1, "{what}");
+        assert_eq!(metadata.statement_type, expected_type, "{what}");
+        assert_eq!(metadata.num_dml_affected_rows, expected_rows, "{what}");
+    }
+}
+
+/// A read still decides what only it can supply: the rows of a statement that may return some, and
+/// a schema `result_schema` requires. Finishing without one would lose them, so with no outage
+/// budget the rejection stands, rather than an empty result or a false "without a result schema".
+#[test]
+fn a_finished_job_still_waits_for_a_read_that_supplies_what_the_caller_needs() {
+    let statement =
+        |statement_type| finished_with(&json!({"query": {"statementType": statement_type}}));
+    for (what, mode, job) in [
+        (
+            "rows of a SELECT",
+            QueryResultMode::Rows,
+            statement("SELECT"),
+        ),
+        (
+            "rows of a script",
+            QueryResultMode::Rows,
+            statement("SCRIPT"),
+        ),
+        (
+            "rows of a procedure",
+            QueryResultMode::Rows,
+            statement("CALL"),
+        ),
+        (
+            "the schema of a SELECT run for its metadata",
+            QueryResultMode::MetadataOnly,
+            statement("SELECT"),
+        ),
+    ] {
+        let (outcome, requests, _) = poll_in(mode, after_rejected_reads(job));
+
+        assert!(
+            matches!(outcome, Err(AttemptFailure::Request(_))),
+            "{what} was given up on"
+        );
+        assert_eq!(requests.len(), READS + 1, "{what}");
+    }
+
+    // Asking for no rows after a page proved too large leaves the rows to Storage Read, which still
+    // needs the result's schema.
+    let mut responses = vec![(403, error_body("responseTooLarge", "exceeds max row limit"))];
+    responses.extend(after_rejected_reads(statement("SCRIPT")));
+    let (outcome, requests, metadata) = poll(responses);
+    assert!(matches!(outcome, Err(AttemptFailure::Request(_))));
+    assert_eq!(requests.len(), READS + 2);
+    assert!(metadata.rows_exceed_rest);
+}
+
+/// A job finished this way never reaches the read that normally publishes its cost.
+#[test]
+fn a_finished_job_completed_without_a_read_publishes_its_cost() {
+    let (endpoint, requests) = capture_requests(after_rejected_reads(finished_with(&json!({
+        "query": {"statementType": "DELETE", "totalBytesProcessed": "42"}
+    }))));
+    let (runtime, client) = job_client(&endpoint);
+    let decoder = QueryResponseDecoder::new(&runtime, QueryResultMode::MetadataOnly);
+    let progress = ExecutionProgress::default();
+    let outcome = runtime.block_on(poll_until_complete(
+        &client,
+        &decoder,
+        &reference(),
+        None,
+        Some(&progress),
+        &mut QueryMetadata::default(),
+        "BigQuery query execution failed",
+    ));
+
+    assert!(outcome.is_ok());
+    assert_eq!((progress.current(), progress.maximum()), (42.0, 42.0));
+    requests.served(READS + 1);
 }
 
 /// A cancellable operation on the fixture job, whose cancellation reaches `endpoint`.
@@ -353,11 +490,13 @@ fn a_wait_that_gives_up_says_the_job_may_still_be_running() {
     };
     assert_eq!(failure.status, Status::IO);
     assert!(
-        failure.message.contains(
-            "the driver stopped waiting for BigQuery job project:EU.polled-job after 0 s of \
-             failed requests and is cancelling it if unfinished; check the job before running \
-             this again"
-        ),
+        failure
+            .message
+            .contains("the driver stopped waiting for BigQuery job project:EU.polled-job after ")
+            && failure.message.contains(
+                " s of failed requests and is cancelling it if unfinished; check the job before \
+                 running this again"
+            ),
         "{failure:?}"
     );
     operation.finish();
@@ -366,6 +505,22 @@ fn a_wait_that_gives_up_says_the_job_may_still_be_running() {
         requests[2 * READS]
             .path()
             .ends_with("/jobs/polled-job/cancel?location=EU")
+    );
+}
+
+/// With no operation no job is registered, so nothing cancels it and the error cannot say so.
+#[test]
+fn a_wait_with_no_operation_does_not_claim_to_cancel_the_job() {
+    let (outcome, _, _) = poll(failed_round());
+
+    let Err(AttemptFailure::Request(failure)) = outcome else {
+        panic!("a spent outage budget must end the wait");
+    };
+    assert!(
+        failure
+            .message
+            .contains("s of failed requests; check the job"),
+        "{failure:?}"
     );
 }
 

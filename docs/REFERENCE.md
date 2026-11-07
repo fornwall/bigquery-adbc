@@ -335,9 +335,14 @@ not configurable.
 Waiting for a query, table copy or CSV load to finish outlasts ten minutes of consecutive retryable
 failures: transport errors, timeouts, and retryable statuses such as 5xx. The window restarts
 whenever BigQuery reports the job unfinished or returns its results, so failed reads alone never
-end the wait for a running job. A wait that gives up fails with the last error, says the job's
-outcome is unknown, and requests cancellation of the job if it is unfinished, so check the job
-before running it again.
+end the wait for a running job. A job `jobs.get` reports finished without an error completes without
+its results when a read could add nothing, as for DML and other statements that return no rows; its
+counts and statement type come from the job. The window is checked between rounds of requests, so a
+wait can run over by one round: about ten minutes for a query and five for a table copy or CSV load
+when every request runs to its 60-second timeout. A wait that gives up fails with the last error
+and says the job's outcome is unknown, so check the job before running it again. It requests
+cancellation of an unfinished job, except for a statement the driver runs outside any operation,
+such as a `COMMIT`.
 
 Cancellation stops local work and [requests cancellation](https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/jobs/cancel)
 of any unfinished remote job. Verified job metadata updates its regional identity and completed
