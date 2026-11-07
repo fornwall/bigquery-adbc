@@ -1,6 +1,7 @@
 use super::*;
 use adbc_core::error::Status;
 use google_cloud_auth::credentials::{CacheableResource, EntityTag};
+use google_cloud_gax::error::CredentialsError;
 use google_cloud_gax::retry_policy::NeverRetry;
 use http::Extensions;
 use serde_json::json;
@@ -9,10 +10,10 @@ use crate::BigQueryAuthenticationType;
 use crate::config::redaction::redacted_credentials;
 use crate::error::CredentialLayer;
 
-use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
+use crate::test_support::errors::{assert_failure, assert_message_omits};
 use crate::test_support::http::{
-    accept, capture_requests, capture_requests_responding, capture_requests_until_stopped,
-    loopback_listener, ok, read_captured_request, retire,
+    CapturedRequest, accept, capture_requests, capture_requests_responding,
+    capture_requests_until_stopped, loopback_listener, ok, read_captured_request, retire,
 };
 
 const AUDIENCE: &str = "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/provider";
@@ -43,6 +44,40 @@ fn credentials(settings: &DatabaseConfig, endpoint: &str) -> Credentials {
             .unwrap(),
         CredentialLayer::Authentication(BigQueryAuthenticationType::ExternalAccount),
     )
+}
+
+/// The failed first token of a credential whose identity provider and STS are both `endpoint`.
+async fn mint_failure(endpoint: &str) -> CredentialsError {
+    credentials(&settings(endpoint), endpoint)
+        .headers(Extensions::new())
+        .await
+        .unwrap_err()
+}
+
+/// What a query reports for a failed token mint.
+fn reported(source: CredentialsError) -> adbc_core::error::Error {
+    crate::error::google_error(
+        "failed to authenticate the request",
+        google_cloud_gax::error::Error::authentication(source),
+    )
+}
+
+fn identity_provider(endpoint: &str) -> IdentityProvider {
+    IdentityProvider {
+        client: reqwest::Client::new(),
+        request_url: reqwest::Url::parse(endpoint).unwrap(),
+        request_data: Bytes::from_static(REQUEST_DATA.as_bytes()),
+    }
+}
+
+/// A form-encoded request body's fields.
+fn form_fields(request: &CapturedRequest) -> std::collections::BTreeMap<String, String> {
+    let body = std::str::from_utf8(&request.raw_body).unwrap();
+    reqwest::Url::parse(&format!("http://localhost/?{body}"))
+        .unwrap()
+        .query_pairs()
+        .into_owned()
+        .collect()
 }
 
 fn sts_response() -> serde_json::Value {
@@ -102,12 +137,7 @@ fn external_account_posts_opaque_form_exchanges_jwt_and_shares_cached_headers() 
     assert_eq!(idp.raw_body, REQUEST_DATA.as_bytes());
     assert_eq!(idp.header("authorization"), None);
     assert_eq!(sts.line, "POST /sts HTTP/1.1");
-    let form = reqwest::Url::parse(&format!(
-        "http://localhost/?{}",
-        std::str::from_utf8(&sts.raw_body).unwrap()
-    ))
-    .unwrap();
-    let fields: std::collections::BTreeMap<_, _> = form.query_pairs().collect();
+    let fields = form_fields(sts);
     assert_eq!(fields["audience"], AUDIENCE);
     assert_eq!(fields["subject_token"], "idp.jwt-token");
     assert_eq!(
@@ -247,8 +277,11 @@ fn external_account_rejects_bad_idp_responses_without_exposing_body_or_url() {
     }
 }
 
+/// STS can echo the subject token, so its failure is redacted. A redacted failure still says
+/// which credential could not mint, so the remedy names this authentication type's options rather
+/// than Application Default Credentials.
 #[test]
-fn external_account_redacts_sts_errors_that_echo_subject_tokens() {
+fn a_refused_sts_exchange_is_redacted_and_keeps_the_external_account_remedy() {
     let (endpoint, server) = capture_requests(vec![
         ok(json!({"access_token":"secret-subject-token"})),
         (
@@ -257,40 +290,14 @@ fn external_account_redacts_sts_errors_that_echo_subject_tokens() {
         ),
     ]);
     crate::runtime::new_runtime().unwrap().block_on(async {
-        let error = credentials(&settings(&endpoint), &endpoint)
-            .headers(Extensions::new())
-            .await
-            .unwrap_err();
-        for cause in crate::error::chain(&error) {
+        let source = mint_failure(&endpoint).await;
+        for cause in crate::error::chain(&source) {
             assert!(!format!("{cause:?} {cause}").contains("secret-subject-token"));
         }
-    });
-    server.served(2);
-}
-
-/// A redacted failure still says which credential could not mint, so the remedy names this
-/// authentication type's options rather than Application Default Credentials.
-#[test]
-fn a_redacted_external_account_failure_is_answered_with_the_external_account_remedy() {
-    let (endpoint, server) = capture_requests(vec![
-        ok(json!({"access_token":"secret-subject-token"})),
-        (
-            400,
-            json!({"error":"invalid_grant", "error_description":"secret-subject-token"}),
-        ),
-    ]);
-    crate::runtime::new_runtime().unwrap().block_on(async {
-        let source = credentials(&settings(&endpoint), &endpoint)
-            .headers(Extensions::new())
-            .await
-            .unwrap_err();
-        let failure = crate::error::google_error(
-            "failed to authenticate the request",
-            google_cloud_gax::error::Error::authentication(source),
-        );
-        assert_eq!(failure.status, Status::Unauthenticated);
-        assert_message(
+        let failure = reported(source);
+        assert_failure(
             &failure,
+            Status::Unauthenticated,
             &["the external-account token exchange could not mint an access token"],
         );
         assert_message_omits(&failure, &["gcloud auth application-default login"]);
@@ -304,17 +311,9 @@ fn a_redacted_external_account_failure_is_answered_with_the_external_account_rem
 fn an_unavailable_identity_provider_is_an_io_failure() {
     let (endpoint, server) = capture_requests(vec![(503, json!({}))]);
     crate::runtime::new_runtime().unwrap().block_on(async {
-        let source = credentials(&settings(&endpoint), &endpoint)
-            .headers(Extensions::new())
-            .await
-            .unwrap_err();
-        let failure = crate::error::google_error(
-            "failed to authenticate the request",
-            google_cloud_gax::error::Error::authentication(source),
-        );
-        assert_eq!(failure.status, Status::IO, "{}", failure.message);
-        assert_message(
-            &failure,
+        assert_failure(
+            &reported(mint_failure(&endpoint).await),
+            Status::IO,
             &[
                 "answered HTTP 503",
                 "external-account identity provider rejected the token request (HTTP 503)",
@@ -327,19 +326,12 @@ fn an_unavailable_identity_provider_is_an_io_failure() {
 #[test]
 fn an_unreachable_identity_provider_is_an_io_failure_without_exposing_the_url() {
     crate::runtime::new_runtime().unwrap().block_on(async {
-        let endpoint = "http://127.0.0.1:1";
-        let source = credentials(&settings(endpoint), endpoint)
-            .headers(Extensions::new())
-            .await
-            .unwrap_err();
+        let source = mint_failure("http://127.0.0.1:1").await;
         assert!(source.is_transient());
-        let failure = crate::error::google_error(
-            "failed to authenticate the request",
-            google_cloud_gax::error::Error::authentication(source),
-        );
-        assert_eq!(failure.status, Status::IO, "{}", failure.message);
-        assert_message(
+        let failure = reported(source);
+        assert_failure(
             &failure,
+            Status::IO,
             &[
                 "could not complete a token exchange",
                 "failed to communicate with the external-account identity provider",
@@ -365,16 +357,12 @@ fn external_account_identity_provider_errors_classify_retryability() {
     ] {
         let (endpoint, server) = capture_requests(vec![(status, json!({}))]);
         runtime.block_on(async {
-            let provider = IdentityProvider {
-                client: reqwest::Client::new(),
-                request_url: reqwest::Url::parse(&endpoint).unwrap(),
-                request_data: Bytes::from_static(REQUEST_DATA.as_bytes()),
-            };
+            let provider = identity_provider(&endpoint);
             let error = provider.subject_token().await.unwrap_err();
             assert_eq!(error.is_transient(), transient, "status {status}");
             assert!(error.to_string().contains(&status.to_string()));
         });
-        server.join().unwrap();
+        server.served(1);
     }
 }
 
@@ -385,11 +373,7 @@ fn external_account_identity_provider_errors_classify_retryability() {
 fn a_connection_dropped_before_the_identity_provider_answers_is_transient() {
     let (endpoint, server) = capture_requests_responding(1, |_| None);
     crate::runtime::new_runtime().unwrap().block_on(async {
-        let provider = IdentityProvider {
-            client: reqwest::Client::new(),
-            request_url: reqwest::Url::parse(&endpoint).unwrap(),
-            request_data: Bytes::from_static(REQUEST_DATA.as_bytes()),
-        };
+        let provider = identity_provider(&endpoint);
         assert!(provider.subject_token().await.unwrap_err().is_transient());
     });
     server.served(1);
@@ -437,10 +421,7 @@ fn external_account_rejects_oversized_identity_provider_response() {
     let (endpoint, server) =
         capture_requests(vec![ok(json!({"access_token":"x".repeat(1024 * 1024)}))]);
     crate::runtime::new_runtime().unwrap().block_on(async {
-        let error = credentials(&settings(&endpoint), &endpoint)
-            .headers(Extensions::new())
-            .await
-            .unwrap_err();
+        let error = mint_failure(&endpoint).await;
         assert!(
             crate::error::chain(&error).any(|cause| cause.to_string().contains("exceeds 1 MiB"))
         );
@@ -475,10 +456,7 @@ fn external_account_does_not_follow_identity_provider_redirects() {
         request
     });
     crate::runtime::new_runtime().unwrap().block_on(async {
-        let error = credentials(&settings(&endpoint), &endpoint)
-            .headers(Extensions::new())
-            .await
-            .unwrap_err();
+        let error = mint_failure(&endpoint).await;
         assert!(crate::error::chain(&error).any(|cause| cause.to_string().contains("HTTP 307")));
     });
     assert_eq!(server.join().unwrap().raw_body, REQUEST_DATA.as_bytes());
@@ -538,14 +516,9 @@ fn external_account_refreshes_subject_and_google_tokens_without_rebuilding_crede
     });
     let requests = server.join().unwrap();
     assert_eq!(requests[0].raw_body, requests[2].raw_body);
-    let sts = reqwest::Url::parse(&format!(
-        "http://localhost/?{}",
-        std::str::from_utf8(&requests[3].raw_body).unwrap()
-    ))
-    .unwrap();
-    assert!(
-        sts.query_pairs()
-            .any(|(key, value)| key == "subject_token" && value == "refreshed-subject")
+    assert_eq!(
+        form_fields(&requests[3])["subject_token"],
+        "refreshed-subject"
     );
 }
 
@@ -575,12 +548,7 @@ fn an_opaque_subject_token_type_and_a_scope_list_reach_the_token_exchange() {
     let [_, sts] = requests.as_slice() else {
         panic!("expected IdP and STS requests")
     };
-    let form = reqwest::Url::parse(&format!(
-        "http://localhost/?{}",
-        std::str::from_utf8(&sts.raw_body).unwrap()
-    ))
-    .unwrap();
-    let fields: std::collections::BTreeMap<_, _> = form.query_pairs().collect();
+    let fields = form_fields(sts);
     assert_eq!(fields["subject_token"], "idp.opaque-token");
     assert_eq!(
         fields["subject_token_type"],
