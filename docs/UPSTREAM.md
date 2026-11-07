@@ -60,6 +60,7 @@ cannot show whether the service is fixed. Unmerged fixes are under
 | UP-96 | Arrow appends refuse flexible column names | BigQuery Storage Write | Service status unknown; driver refuses up front | None |
 | [UP-100](#up-100-sdk-token-exchanges-follow-redirects) | Token exchanges follow redirects | `google-cloud-auth` | Local finding; no SDK policy option | None |
 | [UP-101](#up-101-sdk-token-exchanges-have-no-timeout) | Token exchanges have no timeout | `google-cloud-auth` | Local finding; driver bounds the caller's wait | None |
+| [UP-102](#up-102-grpc-server-streams-have-no-deadline-or-keepalive) | gRPC server streams have no deadline or keepalive | `google-cloud-gax-internal` | Local finding; driver bounds `ReadRows` silence | None |
 
 ## Git snapshot candidates
 
@@ -372,3 +373,11 @@ default `reqwest::Client`, with no credential-builder option to set a deadline. 
 accepts a connection and never answers would hang every waiting request. The driver bounds each
 caller's wait at two minutes (`src/config/redaction.rs`), but the library's background refresh stays
 blocked until the connection dies, so requests keep failing until then even if the service recovers.
+
+## UP-102: gRPC server streams have no deadline or keepalive
+
+`execute_server_streaming` applies no retry-loop deadline, and the tonic endpoint sets no HTTP/2 or
+TCP keepalive, with no client-builder option for either. A reader with nothing outstanding therefore
+never learns its peer is gone. The driver limits `ReadRows` silence itself (`src/storage_read.rs`),
+but a resume reuses the same channel, so on a dead connection the attempts run out and the read fails
+rather than recovers. A keepalive would detect that without the driver's timer.
