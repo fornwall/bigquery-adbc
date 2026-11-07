@@ -15,7 +15,7 @@ use crate::error::{error, record_json_status_details, record_rpc_code, rpc_code_
 use crate::rest::client::RestClient;
 use crate::rest::jobs::JOB_WAIT_OUTAGE;
 use crate::rest::json::decode_json;
-use crate::rest::request::{Request, send};
+use crate::rest::request::{Request, RequestStart, send};
 use crate::rest::retry::{MAX_ATTEMPTS, RetryClass, RetryDelays, classify};
 use crate::rest::url::escape_resource_path;
 
@@ -189,7 +189,6 @@ impl<'a> LroPoller<'a> {
         delivery: Delivery,
         request: &dyn Fn() -> Request<'r>,
     ) -> Result<JsonValue> {
-        let gate = (delivery == Delivery::Idempotent).then_some(self.operation);
         let mut failures = 0;
         let mut unsettled = false;
         let answer: Result<JsonValue> = async {
@@ -198,7 +197,7 @@ impl<'a> LroPoller<'a> {
                 if self.backoff.expired() {
                     return Err(self.timeout());
                 }
-                let (class, failure) = match Box::pin(self.attempt(gate, request())).await {
+                let (class, failure) = match Box::pin(self.attempt(delivery, request())).await {
                     Ok(answer) => return Ok(answer),
                     Err(rejected) => rejected,
                 };
@@ -243,11 +242,16 @@ impl<'a> LroPoller<'a> {
     /// may be cut short, so it is transient; a JSON document of the wrong shape is final.
     async fn attempt(
         &self,
-        gate: Option<&Operation>,
+        delivery: Delivery,
         request: Request<'_>,
     ) -> std::result::Result<JsonValue, (RetryClass, Error)> {
         let context = request.context;
-        let answer = send(gate, self.credentials, &self.http, request).await;
+        let answer = match delivery {
+            Delivery::Idempotent => {
+                send(Some(self.operation), self.credentials, &self.http, request).await
+            }
+            Delivery::Deduplicated | Delivery::Once => self.submit(request).await,
+        };
         let body = classify(answer, &format!("failed to {context}"))?;
         let value: JsonValue = decode_json(&body, &format!("the response to {context}"))
             .map_err(|failure| (RetryClass::Transient, failure))?;
@@ -261,6 +265,25 @@ impl<'a> LroPoller<'a> {
                     Status::InvalidData,
                 ),
             ))
+        }
+    }
+
+    /// Sends a submission, which a cancel stops only until it may have left: nothing exists before
+    /// that, and only its answer names the work afterwards.
+    async fn submit(&self, request: Request<'_>) -> Result<(reqwest::StatusCode, bytes::Bytes)> {
+        let start = RequestStart::default();
+        let request = request.with_start_signal(&start);
+        let mut sending = Box::pin(send(None, self.credentials, &self.http, request));
+        tokio::select! {
+            biased;
+            () = self.operation.cancelled() => {
+                if start.started() {
+                    sending.await
+                } else {
+                    Err(self.operation.cancelled_error())
+                }
+            }
+            answer = &mut sending => answer,
         }
     }
 
@@ -295,7 +318,7 @@ impl<'a> LroPoller<'a> {
             if !self.backoff.pause(self.operation, quota).await? {
                 return Err(self.timeout());
             }
-            let poll = self.attempt(Some(self.operation), Request::get(url, context));
+            let poll = self.attempt(Delivery::Idempotent, Request::get(url, context));
             let (class, failure) = match Box::pin(poll).await {
                 Ok(polled) => return Ok(polled),
                 Err(rejected) => rejected,

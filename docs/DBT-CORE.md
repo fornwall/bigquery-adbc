@@ -291,9 +291,9 @@ transient failures, as a BigQuery job wait does.
   terminal state fails with the service's message.
 - `AdbcStatementCancel` or an expired `pooling_timeout` stops the wait and asks the service to stop
   the job, resending after a transient failure, and the error says whether that failed. A cancel
-  during a submission waits for its answer, up to the 60 s request timeout, because only that names
-  the job. Vertex AI cannot stop a notebook job once its create operation is done, and a failed poll
-  also leaves the job running; such errors say so.
+  before a submission is sent stops it; once sent, it waits for the answer, up to the 60 s request
+  timeout, because only that names the job. Vertex AI cannot stop a notebook job once its create
+  operation is done, and a failed poll also leaves the job running; such errors say so.
 - Dataproc submissions carry a request ID, so one that failed transiently, or whose answer cannot
   be read, is resent without starting a second job. The Vertex AI create has no such ID, so only a
   rate-limit rejection resends it. A submission that ends without a verdict says the job may have

@@ -1,9 +1,15 @@
 //! Tests for the shared wait: the backoff's growth and deadline, and the failure budget.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use adbc_core::error::Status;
-use google_cloud_auth::credentials::Credentials;
+use google_cloud_auth::credentials::{
+    CacheableResource, Credentials, CredentialsProvider, EntityTag,
+};
+use google_cloud_gax::error::CredentialsError;
+use http::{Extensions, HeaderMap};
+use tokio::sync::Notify;
 use tokio::time::Instant;
 
 use super::{Delivery, PollBackoff};
@@ -322,11 +328,65 @@ fn a_rate_limited_poll_waits_the_quota_window_without_outliving_the_deadline() {
     );
 }
 
+/// Credentials that hold every request in its token mint until the test releases them.
+#[derive(Debug)]
+struct HeldToken(Arc<Notify>);
+
+impl CredentialsProvider for HeldToken {
+    async fn headers(
+        &self,
+        _extensions: Extensions,
+    ) -> Result<CacheableResource<HeaderMap>, CredentialsError> {
+        self.0.notified().await;
+        Ok(CacheableResource::New {
+            entity_tag: EntityTag::default(),
+            data: HeaderMap::new(),
+        })
+    }
+
+    async fn universe_domain(&self) -> Option<String> {
+        None
+    }
+}
+
+/// Nothing exists while a request mints its token, so a cancel stops even a submission there
+/// instead of starting work after the caller cancelled. The token arrives late enough that a
+/// request outliving the cancel would go on to send.
+#[test]
+fn a_cancel_during_the_token_mint_sends_nothing() {
+    for delivery in [Delivery::Idempotent, Delivery::Deduplicated, Delivery::Once] {
+        let runtime = crate::runtime::new_runtime().unwrap();
+        let (_cancellation, operation) = poller_operation(&runtime);
+        let token = Arc::new(Notify::new());
+        let credentials = Credentials::from(HeldToken(token.clone()));
+        let (endpoint, server) =
+            crate::test_support::http::capture_requests_until_stopped(vec![ok(
+                serde_json::json!({"name": "operations/1"}),
+            )]);
+        let poller = test_poller(&operation, &credentials, endpoint.clone());
+        let url = format!("{endpoint}/v1/submit");
+        let factory = || Request::post_json(&url, &b"{}"[..], "submit the work");
+
+        let answer = runtime.block_on(async {
+            let cancel = async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                operation.finish();
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                token.notify_one();
+            };
+            tokio::join!(poller.request(delivery, &factory), cancel).0
+        });
+
+        assert_eq!(answer.unwrap_err().status, Status::Cancelled);
+        assert!(server.stop().is_empty());
+    }
+}
+
 /// An operation for a poller under test, cancelled when the returned handle is dropped.
 fn poller_operation(
     runtime: &crate::runtime::SharedRuntime,
 ) -> (
-    std::sync::Arc<crate::cancellation::Cancellation>,
+    Arc<crate::cancellation::Cancellation>,
     crate::cancellation::Operation,
 ) {
     let cancellation = crate::cancellation::Cancellation::new(
