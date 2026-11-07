@@ -41,10 +41,8 @@ fn time_of_day_micros(
 /// Splits the leading `-` that an INTERVAL's year-month, day, and time parts each carry for all of
 /// their own components.
 fn split_interval_sign(part: &[u8]) -> (bool, &[u8]) {
-    match part.split_first() {
-        Some((b'-', unsigned)) => (true, unsigned),
-        _ => (false, part),
-    }
+    part.strip_prefix(b"-")
+        .map_or((false, part), |unsigned| (true, unsigned))
 }
 
 /// Splits `bytes` around the first byte `is_separator` accepts, which the two halves exclude.
@@ -68,21 +66,13 @@ fn split_sign(bytes: &[u8]) -> (bool, &[u8]) {
     }
 }
 
-/// Parses a nonempty run of ASCII digits as a nonnegative `i64`. Unlike `str::parse` it rejects
-/// a sign, which in BigQuery's temporal spellings belongs to the whole part it precedes.
+/// Parses a nonempty run of ASCII digits as a nonnegative `i64`. Unlike [`parse_signed`] it
+/// rejects a sign, which in BigQuery's temporal spellings belongs to the whole part it precedes.
 fn parse_digits(digits: &[u8]) -> Option<i64> {
-    if digits.is_empty() {
-        return None;
-    }
-    let mut value = 0_i64;
-    for byte in digits {
-        let digit = byte.wrapping_sub(b'0');
-        if digit > 9 {
-            return None;
-        }
-        value = value.checked_mul(10)?.checked_add(i64::from(digit))?;
-    }
-    Some(value)
+    digits
+        .first()?
+        .is_ascii_digit()
+        .then(|| parse_signed(digits))?
 }
 
 /// Parses an optionally signed run of ASCII digits as an `i64`, the spelling of a REST INT64 and
@@ -152,21 +142,16 @@ fn split_clock(value: &[u8]) -> Option<(i64, i64, i64, i64)> {
     ))
 }
 
-/// Splits BigQuery's fixed-width `YYYY-MM-DD` date spelling into its three components.
-fn split_civil_date(value: &[u8]) -> Option<(i64, i64, i64)> {
+/// The days since the Unix epoch of BigQuery's fixed-width `YYYY-MM-DD` spelling, or `None` for a
+/// date it cannot hold. A nonexistent date is caught by converting back: `2021-02-30` returns as
+/// `2021-03-02`.
+fn civil_date_days(value: &[u8]) -> Option<i32> {
     if value.len() != 10 || value.get(4) != Some(&b'-') || value.get(7) != Some(&b'-') {
         return None;
     }
-    Some((
-        parse_digits(value.get(..4)?)?,
-        parse_digits(value.get(5..7)?)?,
-        parse_digits(value.get(8..)?)?,
-    ))
-}
-
-/// The days since the Unix epoch of a civil date BigQuery can hold, or `None` for one it cannot.
-/// A nonexistent date is caught by converting back: `2021-02-30` returns as `2021-03-02`.
-fn civil_date_to_days(year: i64, month: i64, day: i64) -> Option<i32> {
+    let year = parse_digits(value.get(..4)?)?;
+    let month = parse_digits(value.get(5..7)?)?;
+    let day = parse_digits(value.get(8..)?)?;
     // BigQuery DATE and DATETIME span 0001-01-01 to 9999-12-31.
     if !(1..=9_999).contains(&year) {
         return None;
@@ -205,9 +190,7 @@ pub(super) fn parse_timestamp(value: &[u8]) -> Result<i64, ArrowError> {
 
 /// Parses BigQuery's `YYYY-MM-DD` DATE spelling into days since the Unix epoch.
 pub(super) fn parse_date(value: &[u8]) -> Result<i32, ArrowError> {
-    split_civil_date(value)
-        .and_then(|(year, month, day)| civil_date_to_days(year, month, day))
-        .ok_or_else(|| invalid_scalar("DATE"))
+    civil_date_days(value).ok_or_else(|| invalid_scalar("DATE"))
 }
 
 /// Parses BigQuery's `H:M:S[.F]` TIME spelling into microseconds since midnight.
@@ -220,9 +203,7 @@ pub(super) fn parse_time_of_day(value: &[u8]) -> Result<i64, ArrowError> {
 /// Parses BigQuery's `YYYY-MM-DDTH:M:S[.F]` DATETIME spelling into microseconds since the epoch.
 pub(super) fn parse_datetime(value: &[u8]) -> Result<i64, ArrowError> {
     let (date, clock) = split_byte(value, b'T').ok_or_else(|| invalid_scalar("DATETIME"))?;
-    let days = split_civil_date(date)
-        .and_then(|(year, month, day)| civil_date_to_days(year, month, day))
-        .ok_or_else(|| invalid_scalar("DATETIME"))?;
+    let days = civil_date_days(date).ok_or_else(|| invalid_scalar("DATETIME"))?;
     let (hours, minutes, seconds, nanos) =
         split_clock(clock).ok_or_else(|| invalid_scalar("DATETIME"))?;
     let time = time_of_day_micros("DATETIME", hours, minutes, seconds, nanos)?;
