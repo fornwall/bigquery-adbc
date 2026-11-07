@@ -9,10 +9,7 @@ use crate::test_support::options::{option_string, set_option, set_option_error};
 ///
 /// The five queued responses answer the preamble's three requests (the session-creating query,
 /// `BEGIN TRANSACTION`, the INSERT) and the two a release can issue.
-fn connection_with_open_transaction() -> (
-    crate::BigQueryConnection,
-    thread::JoinHandle<Vec<CapturedRequest>>,
-) {
+fn connection_with_open_transaction() -> (crate::BigQueryConnection, CapturedServer) {
     connection_with_open_transaction_then(vec![(200, complete()), (200, complete())])
 }
 
@@ -32,10 +29,7 @@ fn session_created(session_id: &str) -> serde_json::Value {
 /// [`connection_with_open_transaction`], with `then` answering the requests after the preamble.
 fn connection_with_open_transaction_then(
     then: Vec<(u16, serde_json::Value)>,
-) -> (
-    crate::BigQueryConnection,
-    thread::JoinHandle<Vec<CapturedRequest>>,
-) {
+) -> (crate::BigQueryConnection, CapturedServer) {
     let mut responses = vec![
         (200, session_created("mock-session")),
         (200, complete()),
@@ -56,7 +50,7 @@ fn connection_with_open_transaction_then(
 
 /// Asserts that the exchange was exactly the preamble, `finish` (the statement that ended the
 /// transaction), and the session abort.
-fn assert_transaction_cleanup(requests: thread::JoinHandle<Vec<CapturedRequest>>, finish: &str) {
+fn assert_transaction_cleanup(requests: CapturedServer, finish: &str) {
     assert_sql(
         requests,
         &[
@@ -70,7 +64,7 @@ fn assert_transaction_cleanup(requests: thread::JoinHandle<Vec<CapturedRequest>>
 }
 
 /// Asserts the SQL of every request the mock captured, in order.
-fn assert_sql(requests: thread::JoinHandle<Vec<CapturedRequest>>, expected: &[&str]) {
+fn assert_sql(requests: CapturedServer, expected: &[&str]) {
     let requests = requests.join().unwrap();
     assert_eq!(
         requests
@@ -165,7 +159,7 @@ fn transaction_lost_then_a_fresh_session(
 /// connection, and asserts the INSERT ran in a fresh session with a transaction of its own.
 fn assert_the_next_statement_runs_in_a_fresh_session(
     mut connection: crate::BigQueryConnection,
-    requests: thread::JoinHandle<Vec<CapturedRequest>>,
+    requests: CapturedServer,
     finish: &str,
 ) {
     let mut statement = connection.new_statement().unwrap();

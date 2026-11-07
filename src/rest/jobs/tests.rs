@@ -18,7 +18,7 @@ use crate::error::DETAIL_JOB_ID;
 use crate::runtime::{SharedRuntime, new_runtime};
 use crate::test_support::errors::assert_message;
 use crate::test_support::http::{
-    CapturedRequest, capture_requests, capture_requests_gated, capture_requests_responding,
+    CapturedServer, capture_requests, capture_requests_gated, capture_requests_responding,
     capture_requests_until_stopped, error_body, ok,
 };
 use crate::test_support::identifiers::project;
@@ -2073,7 +2073,7 @@ fn request_construction_requires_the_callers_job_identity() {
 
 /// Drops the first POST after reading it, answers the identical replay with 409, then exposes the
 /// accepted mutation to the reconciliation GET.
-fn capture_ambiguous_then_conflict() -> (String, thread::JoinHandle<Vec<CapturedRequest>>) {
+fn capture_ambiguous_then_conflict() -> (String, CapturedServer) {
     let mut attempt = 0;
     capture_requests_responding(3, move |_| {
         attempt += 1;
@@ -2091,7 +2091,7 @@ fn capture_ambiguous_then_conflict() -> (String, thread::JoinHandle<Vec<Captured
 /// Drops every POST response, including the final one, then makes the accepted job visible to the
 /// reconciliation GET. The client can never know which POST was accepted, only that every body was
 /// the same mutation.
-fn capture_dropped_posts_then_recovery() -> (String, thread::JoinHandle<Vec<CapturedRequest>>) {
+fn capture_dropped_posts_then_recovery() -> (String, CapturedServer) {
     let mut attempt = 0;
     capture_requests_responding(MAX_ATTEMPTS + 1, move |_| {
         attempt += 1;

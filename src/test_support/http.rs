@@ -2,6 +2,7 @@
 //!
 //! Use [`capture_requests`] for fixed responses, [`capture_requests_responding`] for responses
 //! derived from requests, and [`capture_requests_until_stopped`] for variable request counts.
+//! [`CapturedServer::served`] then yields what the first two captured.
 
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
@@ -187,13 +188,29 @@ pub(crate) fn write_response(stream: &mut TcpStream, status: u16, response: &Jso
     .and_then(|()| stream.flush());
 }
 
+/// A mock that ends once it has served every request it was staged for.
+pub(crate) struct CapturedServer(thread::JoinHandle<Vec<CapturedRequest>>);
+
+impl CapturedServer {
+    /// Waits for the server to end, yielding what it captured or the panic that ended it.
+    pub(crate) fn join(self) -> thread::Result<Vec<CapturedRequest>> {
+        self.0.join()
+    }
+
+    /// Waits for the server to end and asserts that it captured exactly `count` requests.
+    #[track_caller]
+    pub(crate) fn served(self, count: usize) -> Vec<CapturedRequest> {
+        let requests = self.join().unwrap();
+        assert_eq!(requests.len(), count);
+        requests
+    }
+}
+
 /// Serves the given `(status, JSON body)` responses in order, capturing each request.
 ///
 /// Returns the endpoint to point a client at and the handle that yields the captured
 /// requests once every response has been served.
-pub(crate) fn capture_requests(
-    responses: Vec<(u16, JsonValue)>,
-) -> (String, thread::JoinHandle<Vec<CapturedRequest>>) {
+pub(crate) fn capture_requests(responses: Vec<(u16, JsonValue)>) -> (String, CapturedServer) {
     capture_requests_gated(responses, || true)
 }
 
@@ -202,7 +219,7 @@ pub(crate) fn capture_requests(
 pub(crate) fn capture_requests_gated(
     responses: Vec<(u16, JsonValue)>,
     respond: impl FnOnce() -> bool + Send + 'static,
-) -> (String, thread::JoinHandle<Vec<CapturedRequest>>) {
+) -> (String, CapturedServer) {
     let mut respond = Some(respond);
     let (endpoint, handle) = serve(responses.len(), None, move |index, _| {
         if let Some(respond) = respond.take()
@@ -212,7 +229,7 @@ pub(crate) fn capture_requests_gated(
         }
         ControlFlow::Continue(Some(responses[index].clone()))
     });
-    (endpoint, handle)
+    (endpoint, CapturedServer(handle))
 }
 
 /// Derives each of `count` responses from its request, for example to echo a generated job ID.
@@ -220,10 +237,11 @@ pub(crate) fn capture_requests_gated(
 pub(crate) fn capture_requests_responding(
     count: usize,
     mut respond: impl FnMut(&CapturedRequest) -> Option<(u16, JsonValue)> + Send + 'static,
-) -> (String, thread::JoinHandle<Vec<CapturedRequest>>) {
-    serve(count, None, move |_, request| {
+) -> (String, CapturedServer) {
+    let (endpoint, handle) = serve(count, None, move |_, request| {
         ControlFlow::Continue(respond(request))
-    })
+    });
+    (endpoint, CapturedServer(handle))
 }
 
 /// A mock stopped by the test, for loops whose request count depends on jittered backoff.

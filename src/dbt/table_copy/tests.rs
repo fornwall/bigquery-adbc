@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::thread;
 
 use adbc_core::error::Status;
 use adbc_core::{Connection as _, Statement as _};
@@ -17,7 +16,7 @@ use crate::runtime::{SharedRuntime, new_runtime};
 use crate::test_support::driver::{test_connection_at, test_statement, test_statement_at};
 use crate::test_support::errors::assert_failure;
 use crate::test_support::http::{
-    CapturedRequest, capture_requests, capture_requests_responding, ok,
+    CapturedServer, capture_requests, capture_requests_responding, ok,
 };
 use crate::test_support::options::{assert_string_option, option_string, set_option};
 use crate::{
@@ -416,7 +415,7 @@ fn dbt_partition_copy_submits_one_job_and_reports_its_rows() {
 
 /// Echoes the caller-generated identity the way `jobs.insert` does, so the end-to-end copy checks
 /// the same response-identity validation production uses instead of hard-coding an unknown job ID.
-fn capture_copy_with_echoed_reference() -> (String, thread::JoinHandle<Vec<CapturedRequest>>) {
+fn capture_copy_with_echoed_reference() -> (String, CapturedServer) {
     capture_requests_responding(1, |request| {
         Some(ok(json!({
             "jobReference": request.body["jobReference"],

@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::thread;
 use std::time::Duration;
 
 use adbc_core::error::{Result, Status};
@@ -17,8 +16,8 @@ use crate::rest::retry::MAX_ATTEMPTS;
 use crate::runtime::new_runtime;
 use crate::test_support::driver::{test_connection_at, unlocated_connection_at};
 use crate::test_support::http::{
-    CapturedRequest, capture_requests, capture_requests_responding, capture_requests_until_stopped,
-    error_body, ok,
+    CapturedRequest, CapturedServer, capture_requests, capture_requests_responding,
+    capture_requests_until_stopped, error_body, ok,
 };
 use crate::test_support::options::set_option;
 use crate::{BigQueryConnection, BigQueryStatementOption};
@@ -286,7 +285,7 @@ fn bigquery(
     count: usize,
     datasets: Vec<(u16, JsonValue)>,
     outcomes: Vec<JsonValue>,
-) -> (String, thread::JoinHandle<Vec<CapturedRequest>>) {
+) -> (String, CapturedServer) {
     let mut datasets = datasets.into_iter();
     let mut outcomes = outcomes.into_iter();
     let mut submitted = JsonValue::Null;

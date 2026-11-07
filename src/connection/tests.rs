@@ -22,7 +22,7 @@ use crate::rest::metadata::{MetadataError, Table};
 use crate::test_support::arrow::{child_structs, list, string_at, strings, typed};
 use crate::test_support::driver::test_connection_at;
 use crate::test_support::errors::assert_message;
-use crate::test_support::http::{CapturedRequest, capture_requests};
+use crate::test_support::http::{CapturedRequest, CapturedServer, capture_requests};
 use crate::test_support::identifiers::project;
 use crate::{BigQueryAuthenticationType, BigQueryDatabaseOption, BigQueryDriver};
 

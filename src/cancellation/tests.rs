@@ -13,7 +13,7 @@ use crate::config::ServiceEndpointKind;
 use crate::rest::jobs::JobReference;
 use crate::runtime::new_runtime;
 use crate::test_support::http::{
-    CapturedRequest, capture_requests, capture_requests_gated, capture_requests_until_stopped,
+    CapturedServer, capture_requests, capture_requests_gated, capture_requests_until_stopped,
     error_body, retire,
 };
 
@@ -52,9 +52,8 @@ fn invisible_then_cancelled() -> Vec<(u16, serde_json::Value)> {
 
 /// Asserts the mock received exactly one request: the cancel of `job_id`.
 #[track_caller]
-fn assert_one_cancel(requests: std::thread::JoinHandle<Vec<CapturedRequest>>, job_id: &str) {
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 1);
+fn assert_one_cancel(requests: CapturedServer, job_id: &str) {
+    let requests = requests.served(1);
     assert!(
         requests[0]
             .path()

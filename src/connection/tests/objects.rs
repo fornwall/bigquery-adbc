@@ -218,7 +218,7 @@ fn resolved_listing() -> serde_json::Value {
 }
 
 /// Serves `count` metadata requests as a case-insensitive dataset answers them.
-fn case_insensitive_dataset(count: usize) -> (String, thread::JoinHandle<Vec<CapturedRequest>>) {
+fn case_insensitive_dataset(count: usize) -> (String, CapturedServer) {
     crate::test_support::http::capture_requests_responding(count, |request| {
         let path = request.path();
         let answer = if path.contains("/tables/") {
