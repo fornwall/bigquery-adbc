@@ -235,23 +235,9 @@ fn rejects_null_elements_inside_ingested_arrays() {
         Some(vec![Some(1), Some(2)]),
         Some(vec![Some(3), None]),
     ])) as ArrayRef;
-    let (batch, schema) = single_column_batch("values", canonical);
-    let error = normalize_batch(batch, schema).unwrap_err();
-    assert_failure(&error, Status::InvalidData, &["values", "row 1"]);
-
-    // The same holds for a layout that has to be rebuilt rather than passed through.
     let large = Arc::new(LargeListArray::from_iter_primitive::<Int64Type, _, _>(
         vec![Some(vec![Some(1), None])],
     )) as ArrayRef;
-    let (batch, _) = single_column_batch("values", large);
-    let schema = one_field(
-        "values",
-        ArrowDataType::new_list(ArrowDataType::Int64, true),
-        false,
-    );
-    let error = normalize_batch(batch, schema).unwrap_err();
-    assert_failure(&error, Status::InvalidData, &["row 0"]);
-
     let view = Arc::new(LargeListViewArray::new(
         Arc::new(ArrowField::new("item", ArrowDataType::Int64, true)),
         vec![1_i64].into(),
@@ -259,14 +245,14 @@ fn rejects_null_elements_inside_ingested_arrays() {
         Arc::new(Int64Array::from(vec![Some(1), Some(2), None])),
         None,
     )) as ArrayRef;
-    let (batch, _) = single_column_batch("values", view);
-    let schema = one_field(
-        "values",
-        ArrowDataType::new_list(ArrowDataType::Int64, true),
-        false,
-    );
-    let error = normalize_batch(batch, schema).unwrap_err();
-    assert_failure(&error, Status::InvalidData, &["row 0"]);
+    let list = ArrowDataType::new_list(ArrowDataType::Int64, true);
+    let schema = one_field("values", list, false);
+    // The layouts that have to be rebuilt are held to the same rule as one passed through.
+    for (column, row) in [(canonical, "row 1"), (large, "row 0"), (view, "row 0")] {
+        let (batch, _) = single_column_batch("values", column);
+        let error = normalize_batch(batch, schema.clone()).unwrap_err();
+        assert_failure(&error, Status::InvalidData, &["values", row]);
+    }
 }
 
 #[test]

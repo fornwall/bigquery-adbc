@@ -8,7 +8,7 @@ use arrow_array::{
     StructArray, TimestampMicrosecondArray, TimestampSecondArray,
 };
 use arrow_buffer::{Buffer, NullBuffer};
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 
 use super::normalize_batch;
 use crate::arrow_ipc_bigquery::{reader::decode_record_batch_message, writer::Writer};
@@ -24,6 +24,17 @@ fn nullable_record(column: ArrayRef) -> StructArray {
         vec![column],
         Some(NullBuffer::from(vec![false, true, false, true])),
     )
+}
+
+/// A batch of `record` as one nullable column, and its schema.
+fn record_batch(record: StructArray) -> (RecordBatch, SchemaRef) {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "record",
+        record.data_type().clone(),
+        true,
+    )]));
+    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(record)]).unwrap();
+    (batch, schema)
 }
 
 fn normalize_record(record: StructArray, child_type: DataType) -> RecordBatch {
@@ -120,12 +131,7 @@ fn null_structs_mask_nested_structs_and_list_elements() {
 fn visible_struct_child_errors_keep_the_batch_row() {
     let column = Arc::new(Date32Array::from(vec![i32::MAX, 0, i32::MIN, i32::MAX]));
     let record = nullable_record(column).slice(1, 3);
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "record",
-        record.data_type().clone(),
-        true,
-    )]));
-    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(record)]).unwrap();
+    let (batch, schema) = record_batch(record);
     let error = normalize_batch(batch, schema).unwrap_err();
     assert_eq!(error.status, Status::InvalidData);
     assert_eq!(
@@ -144,12 +150,7 @@ fn struct_mask_preserves_child_nulls_and_reuses_an_existing_combined_mask() {
             vec![child.clone()],
             Some(NullBuffer::from(vec![false, true, true])),
         );
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "record",
-            record.data_type().clone(),
-            true,
-        )]));
-        let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(record)]).unwrap();
+        let (batch, schema) = record_batch(record);
         let normalized = normalize_batch(batch, schema).unwrap();
         let record = normalized.column(0).as_struct();
         assert_eq!(
