@@ -2,7 +2,6 @@
 //! allowed to say about a rejected value.
 
 use super::*;
-use crate::BigQueryStatementOption as BqOption;
 use crate::dbt::statement::DbtOperation;
 
 #[test]
@@ -356,7 +355,7 @@ fn result_buffer_size_is_not_exposed() {
 }
 
 /// Exhaustive so a new option must supply a round-trip sample.
-fn option_sample(option: BigQueryStatementOption) -> OptionValue {
+fn option_sample(option: BqOption) -> OptionValue {
     match option {
         BqOption::AuthorizeViewToDatasets => {
             r#"{"fixture-project.analytics.model":[{"project":"fixture-project","dataset":"raw"}]}"#
@@ -557,7 +556,7 @@ fn statement_options_report_their_defaults_and_clear_back_to_them() {
 #[test]
 fn statement_options_reject_invalid_values() {
     let mut statement = test_statement();
-    let rows: [(BigQueryStatementOption, OptionValue); 17] = [
+    let rows: [(BqOption, OptionValue); 17] = [
         (BqOption::MaximumBytesBilled, OptionValue::Int(-1)),
         (BqOption::JobTimeout, OptionValue::Int(-1)),
         (BqOption::Priority, "batch_mode".into()),

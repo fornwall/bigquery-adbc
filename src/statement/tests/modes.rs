@@ -46,7 +46,7 @@ fn setting_a_sql_query_clears_the_whole_ingest_target() {
 /// dbt-labs fork dispatches on the options first and so silently drops any query.
 #[test]
 fn the_select_one_placeholder_finalizes_a_python_model_while_real_sql_replaces_it() {
-    let bucket = BigQueryStatementOption::WriteGcsBucket;
+    let bucket = BqOption::WriteGcsBucket;
     let mut statement = test_statement();
     set_option(&mut statement, bucket, "dbt-python");
 
@@ -94,7 +94,7 @@ fn the_select_one_placeholder_finalizes_a_python_model_while_real_sql_replaces_i
 
 #[test]
 fn authorization_placeholders_allow_a_terminator_before_comments() {
-    let option = BigQueryStatementOption::AuthorizeViewToDatasets;
+    let option = BqOption::AuthorizeViewToDatasets;
     let value = r#"{"analytics.v": [{"project": "data-project", "dataset": "analytics"}]}"#;
     let mut statement = test_statement();
     set_option(&mut statement, option, value);
@@ -125,7 +125,7 @@ fn authorization_placeholders_allow_a_terminator_before_comments() {
 
 #[test]
 fn dbt_placeholders_keep_a_dataset_location_lookup_and_real_sql_replaces_it() {
-    let option = BigQueryStatementOption::GetDatasetLocation;
+    let option = BqOption::GetDatasetLocation;
     let value = r#"{"project":"data-project","dataset":"analytics"}"#;
     let mut statement = test_statement();
 
@@ -157,9 +157,9 @@ fn dbt_placeholders_keep_a_dataset_location_lookup_and_real_sql_replaces_it() {
 fn a_python_model_operation_replaces_every_other_mode_and_is_replaced_by_it() {
     const AUTHORIZATION: &str =
         r#"{"analytics.v": [{"project": "data-project", "dataset": "analytics"}]}"#;
-    let parent = BigQueryStatementOption::CreateBatchParent;
-    let copy_source = BigQueryStatementOption::CopyTableSource;
-    let authorize = BigQueryStatementOption::AuthorizeViewToDatasets;
+    let parent = BqOption::CreateBatchParent;
+    let copy_source = BqOption::CopyTableSource;
+    let authorize = BqOption::AuthorizeViewToDatasets;
     let mut statement = test_statement();
 
     // A python-model operation leaves a table copy behind.
@@ -178,7 +178,7 @@ fn a_python_model_operation_replaces_every_other_mode_and_is_replaced_by_it() {
     for (option, value) in [
         (copy_source, "data-project.analytics.source"),
         (authorize, AUTHORIZATION),
-        (BigQueryStatementOption::CsvFilepath, "/tmp/seed.csv"),
+        (BqOption::CsvFilepath, "/tmp/seed.csv"),
     ] {
         set_option(&mut statement, parent, "projects/data-project/locations/eu");
         set_option(&mut statement, option, value.to_owned());
@@ -193,26 +193,14 @@ fn a_python_model_operation_replaces_every_other_mode_and_is_replaced_by_it() {
 #[test]
 fn the_shared_batch_id_and_pooling_timeout_select_no_operation() {
     let mut statement = test_statement();
+    set_option(&mut statement, BqOption::CreateBatchBatchId, "batch-0001");
+    set_option(&mut statement, BqOption::DataprocPoolingTimeout, "86400");
     set_option(
         &mut statement,
-        BigQueryStatementOption::CreateBatchBatchId,
-        "batch-0001",
-    );
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::DataprocPoolingTimeout,
-        "86400",
-    );
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::DataprocComputeRegion,
+        BqOption::DataprocComputeRegion,
         "europe-west1",
     );
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::DataprocProject,
-        "compute-project",
-    );
+    set_option(&mut statement, BqOption::DataprocProject, "compute-project");
 
     let error = statement.execute_update().unwrap_err();
     assert_eq!(error.status, Status::InvalidState);
@@ -223,11 +211,7 @@ fn the_shared_batch_id_and_pooling_timeout_select_no_operation() {
     );
     // Nor do they discard a real query, since they select nothing.
     statement.set_sql_query("select 1").unwrap();
-    assert_string_option(
-        &statement,
-        BigQueryStatementOption::CreateBatchBatchId,
-        None,
-    );
+    assert_string_option(&statement, BqOption::CreateBatchBatchId, None);
 }
 
 /// Selecting a python-model operation is what discards the placeholder, so the keys that do
@@ -235,17 +219,14 @@ fn the_shared_batch_id_and_pooling_timeout_select_no_operation() {
 #[test]
 fn each_python_model_selector_finalizes_the_placeholder_and_rejects_a_result_schema() {
     for (option, value) in [
-        (BigQueryStatementOption::WriteGcsBucket, "dbt-python"),
+        (BqOption::WriteGcsBucket, "dbt-python"),
         (
-            BigQueryStatementOption::CreateBatchParent,
+            BqOption::CreateBatchParent,
             "projects/compute-project/locations/europe-west1",
         ),
+        (BqOption::DataprocSubmitJobClusterName, "dbt-cluster"),
         (
-            BigQueryStatementOption::DataprocSubmitJobClusterName,
-            "dbt-cluster",
-        ),
-        (
-            BigQueryStatementOption::NotebookExecuteJobParent,
+            BqOption::NotebookExecuteJobParent,
             "projects/compute-project/locations/europe-west1",
         ),
     ] {
@@ -264,7 +245,7 @@ fn each_python_model_selector_finalizes_the_placeholder_and_rejects_a_result_sch
 
 #[test]
 fn python_model_execution_follows_precedence_as_selectors_are_cleared() {
-    use BigQueryStatementOption as Key;
+    use BqOption as Key;
 
     let mut statement = test_statement();
     let selectors = [
@@ -302,35 +283,35 @@ fn python_model_execution_follows_precedence_as_selectors_are_cleared() {
 /// pair is refused at execution, whichever was set first.
 #[test]
 fn a_table_metadata_update_cannot_be_combined_with_another_operation() {
-    let update = BigQueryStatementOption::UpdateDescription;
+    let update = BqOption::UpdateDescription;
     for (option, value, family) in [
         (
-            BigQueryStatementOption::WriteGcsBucket.into(),
+            BqOption::WriteGcsBucket.into(),
             "dbt-python",
             "adbc.bigquery.write_gcs.*",
         ),
         (
-            BigQueryStatementOption::CreateBatchParent.into(),
+            BqOption::CreateBatchParent.into(),
             "projects/compute-project/locations/europe-west1",
             "adbc.bigquery.create_batch.*",
         ),
         (
-            BigQueryStatementOption::DataprocSubmitJobClusterName.into(),
+            BqOption::DataprocSubmitJobClusterName.into(),
             "dbt-cluster",
             "adbc.bigquery.dataproc.submit_job.*",
         ),
         (
-            BigQueryStatementOption::NotebookExecuteJobParent.into(),
+            BqOption::NotebookExecuteJobParent.into(),
             "projects/compute-project/locations/europe-west1",
             "adbc.bigquery.notebook_execute_job.*",
         ),
         (
-            BigQueryStatementOption::CopyTableSource.into(),
+            BqOption::CopyTableSource.into(),
             "analytics.copied",
             "adbc.bigquery.copy_table.*",
         ),
         (
-            BigQueryStatementOption::CopyTableDestination.into(),
+            BqOption::CopyTableDestination.into(),
             "analytics.copied",
             "adbc.bigquery.copy_table.*",
         ),
@@ -338,7 +319,7 @@ fn a_table_metadata_update_cannot_be_combined_with_another_operation() {
         // have to refuse the pair rather than dispatch into it.
         (OptionStatement::TargetTable, "events", "adbc.ingest.*"),
         (
-            BigQueryStatementOption::CsvFilepath.into(),
+            BqOption::CsvFilepath.into(),
             "/tmp/seed.csv",
             "adbc.bigquery.ingest.csv_*",
         ),
@@ -372,7 +353,7 @@ fn a_table_metadata_update_cannot_be_combined_with_another_operation() {
 /// and still runs the update.
 #[test]
 fn a_table_metadata_update_cannot_be_combined_with_a_sql_query() {
-    let update = BigQueryStatementOption::UpdateDescription;
+    let update = BqOption::UpdateDescription;
     for query_first in [true, false] {
         let mut statement = test_statement();
         if query_first {
@@ -404,9 +385,7 @@ fn a_table_metadata_update_cannot_be_combined_with_a_sql_query() {
     let error = statement.execute_update().unwrap_err();
     assert_eq!(error.status, Status::InvalidState);
     assert!(
-        error
-            .message
-            .contains(BigQueryStatementOption::DestinationTable.as_str()),
+        error.message.contains(BqOption::DestinationTable.as_str()),
         "the placeholder reaches the metadata update itself: {}",
         error.message
     );
@@ -419,12 +398,12 @@ fn a_csv_seed_and_a_table_copy_each_replace_the_other() {
     let mut statement = test_statement();
     set_option(
         &mut statement,
-        BigQueryStatementOption::CopyTableSource,
+        BqOption::CopyTableSource,
         "analytics.source",
     );
     set_option(
         &mut statement,
-        BigQueryStatementOption::CopyTableDestination,
+        BqOption::CopyTableDestination,
         "analytics.destination",
     );
     assert_eq!(
@@ -432,32 +411,24 @@ fn a_csv_seed_and_a_table_copy_each_replace_the_other() {
         Some(DbtOperation::TableCopy)
     );
 
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::CsvFilepath,
-        "seeds/example.csv",
-    );
+    set_option(&mut statement, BqOption::CsvFilepath, "seeds/example.csv");
     assert_eq!(
         statement.dbt.active_operation(),
         Some(DbtOperation::CsvSeed)
     );
-    assert_string_option(&statement, BigQueryStatementOption::CopyTableSource, None);
-    assert_string_option(
-        &statement,
-        BigQueryStatementOption::CopyTableDestination,
-        None,
-    );
+    assert_string_option(&statement, BqOption::CopyTableSource, None);
+    assert_string_option(&statement, BqOption::CopyTableDestination, None);
 
     set_option(
         &mut statement,
-        BigQueryStatementOption::CopyTableSource,
+        BqOption::CopyTableSource,
         "analytics.source",
     );
     assert_eq!(
         statement.dbt.active_operation(),
         Some(DbtOperation::TableCopy)
     );
-    assert_string_option(&statement, BigQueryStatementOption::CsvFilepath, None);
+    assert_string_option(&statement, BqOption::CsvFilepath, None);
 }
 
 #[test]

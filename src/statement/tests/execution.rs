@@ -48,12 +48,12 @@ fn reservation_reaches_both_submission_paths_and_clearing_omits_it() {
         };
         let (endpoint, requests) = capture_requests(vec![response; 4]);
         let mut statement = test_query_at(&endpoint, "DELETE FROM dataset.table WHERE false");
-        set_option(&mut statement, BigQueryStatementOption::DryRun, dry_run);
+        set_option(&mut statement, BqOption::DryRun, dry_run);
         // Exercise the default as well as clearing on the same reusable statement.
         statement.execute_update().unwrap();
         let reservation = "projects/billing-project/locations/EU/reservations/analytics";
         for value in [reservation, "none", ""] {
-            set_option(&mut statement, BigQueryStatementOption::Reservation, value);
+            set_option(&mut statement, BqOption::Reservation, value);
             statement.execute_update().unwrap();
         }
         let requests = requests.join().unwrap();
@@ -133,7 +133,7 @@ fn dry_run_partitions_are_rejected_before_any_request_and_keep_the_binding() {
         if let Some(values) = values {
             statement.bind(int64_column("value", values)).unwrap();
         }
-        set_option(&mut statement, BigQueryStatementOption::DryRun, "true");
+        set_option(&mut statement, BqOption::DryRun, "true");
 
         let failure = statement.execute_partitions().unwrap_err();
         assert_failure(&failure, Status::InvalidState, &["bigquery.query.dry_run"]);
@@ -153,7 +153,7 @@ fn a_dry_run_leaves_bound_parameters_for_the_next_execute() {
         let mut statement = test_query_at(&endpoint, "SELECT ? AS answer");
         statement.bind(int64_column("value", vec![7])).unwrap();
 
-        set_option(&mut statement, BigQueryStatementOption::DryRun, "true");
+        set_option(&mut statement, BqOption::DryRun, "true");
         if update {
             assert_eq!(statement.execute_update().unwrap(), None);
         } else {
@@ -162,7 +162,7 @@ fn a_dry_run_leaves_bound_parameters_for_the_next_execute() {
             assert_eq!(reader.schema().field(0).name(), "answer");
         }
 
-        set_option(&mut statement, BigQueryStatementOption::DryRun, "false");
+        set_option(&mut statement, BqOption::DryRun, "false");
         if update {
             statement.execute_update().unwrap();
         } else {
@@ -192,7 +192,7 @@ fn dry_runs_accept_statements_without_result_columns() {
         let mut statement = test_query_at(&endpoint, "DROP TABLE IF EXISTS dataset.table");
         assert!(statement.execute_schema().unwrap().fields().is_empty());
 
-        set_option(&mut statement, BigQueryStatementOption::DryRun, "true");
+        set_option(&mut statement, BqOption::DryRun, "true");
         let (mut reader, affected) = statement.execute_with_rows_affected().unwrap();
         assert!(reader.schema().fields().is_empty());
         assert!(reader.next().is_none());
@@ -316,7 +316,7 @@ fn explicit_destination_execute_query_requests_metadata_without_rows() {
     let mut statement = test_statement_at(&endpoint);
     set_option(
         &mut statement,
-        BigQueryStatementOption::DestinationTable,
+        BqOption::DestinationTable,
         "fixture-project.data.result",
     );
     statement.set_sql_query("SELECT 7 AS value").unwrap();
@@ -345,12 +345,12 @@ fn an_explicit_destination_runs_every_bound_row_before_execute_returns() {
     let mut statement = test_statement_at(&endpoint);
     set_option(
         &mut statement,
-        BigQueryStatementOption::DestinationTable,
+        BqOption::DestinationTable,
         "fixture-project.data.result",
     );
     set_option(
         &mut statement,
-        BigQueryStatementOption::WriteDisposition,
+        BqOption::WriteDisposition,
         BigQueryWriteDisposition::WriteAppend,
     );
     statement.set_sql_query("SELECT ? AS value").unwrap();
@@ -431,22 +431,22 @@ fn explicit_query_defaults_keep_the_jobs_query_path() {
     let mut statement = test_query_at(&endpoint, "SELECT 1");
     for (option, value) in [
         (
-            BigQueryStatementOption::CreateDisposition,
+            BqOption::CreateDisposition,
             OptionValue::from(BigQueryCreateDisposition::CreateIfNeeded),
         ),
         (
-            BigQueryStatementOption::WriteDisposition,
+            BqOption::WriteDisposition,
             BigQueryWriteDisposition::WriteEmpty.into(),
         ),
         (
-            BigQueryStatementOption::Priority,
+            BqOption::Priority,
             BigQueryQueryPriority::Interactive.into(),
         ),
-        (BigQueryStatementOption::MaximumBytesBilled, 0_i64.into()),
-        (BigQueryStatementOption::JobTimeout, 0_i64.into()),
-        (BigQueryStatementOption::CreateSession, false.into()),
-        (BigQueryStatementOption::DisableQueryCache, false.into()),
-        (BigQueryStatementOption::DryRun, false.into()),
+        (BqOption::MaximumBytesBilled, 0_i64.into()),
+        (BqOption::JobTimeout, 0_i64.into()),
+        (BqOption::CreateSession, false.into()),
+        (BqOption::DisableQueryCache, false.into()),
+        (BqOption::DryRun, false.into()),
     ] {
         set_option(&mut statement, option, value);
     }
@@ -545,12 +545,12 @@ fn lazy_parameter_rows_keep_their_sql_and_statement_defaults() {
     let mut statement = test_statement_at(&endpoint);
     set_option(
         &mut statement,
-        BigQueryStatementOption::DefaultProjectId,
+        BqOption::DefaultProjectId,
         "statement-project",
     );
     set_option(
         &mut statement,
-        BigQueryStatementOption::DefaultDatasetId,
+        BqOption::DefaultDatasetId,
         "statement_dataset",
     );
     let sql = "SELECT ? AS answer";
@@ -603,11 +603,7 @@ fn parameters_reach_the_request_as_bigquery_spells_them() {
         let (endpoint, requests) = capture_requests(vec![completed_job("job", json!({}))]);
         let mut statement = test_query_at(&endpoint, sql);
         if let Some(mode) = mode {
-            set_option(
-                &mut statement,
-                BigQueryStatementOption::ParameterMode,
-                mode.as_str(),
-            );
+            set_option(&mut statement, BqOption::ParameterMode, mode.as_str());
         }
         statement.bind(int64_column(column, vec![7])).unwrap();
         statement.execute_update().unwrap();
@@ -892,7 +888,7 @@ fn option_only_execute_schema_cancels_unread_parameter_rows() {
 
     set_option(
         &mut statement,
-        BigQueryStatementOption::GetDatasetLocation,
+        BqOption::GetDatasetLocation,
         r#"{"project":"data-project","dataset":"analytics"}"#,
     );
     assert_eq!(
@@ -947,7 +943,7 @@ fn the_parameter_schema_is_derived_once_and_dropped_when_the_query_changes() {
     statement.get_parameter_schema().unwrap();
     set_option(
         &mut statement,
-        BigQueryStatementOption::ParameterMode,
+        BqOption::ParameterMode,
         ParameterMode::Named.as_str(),
     );
     statement.get_parameter_schema().unwrap();
@@ -1013,7 +1009,7 @@ fn parameter_schema_cache_tracks_the_session_and_rejects_a_released_connection()
 fn cached_parameter_schema_does_not_bypass_create_session_refusal() {
     let (endpoint, requests) = capture_requests(vec![dry_run_answer(json!({}))]);
     let mut statement = test_query_at(&endpoint, "SELECT 1");
-    set_option(&mut statement, BigQueryStatementOption::CreateSession, true);
+    set_option(&mut statement, BqOption::CreateSession, true);
     statement.get_parameter_schema().unwrap();
     statement.transaction.disable_autocommit().unwrap();
     let failure = statement.get_parameter_schema().unwrap_err();
@@ -1103,7 +1099,7 @@ fn cancelling_a_multi_page_drain_reports_the_cancellation() {
     let mut statement = test_query_at(&endpoint, "SELECT value FROM dataset.table");
     set_option(
         &mut statement,
-        BigQueryStatementOption::UseStorageApiDisabledClient,
+        BqOption::UseStorageApiDisabledClient,
         "true",
     );
     let mut reader = statement.execute().unwrap();

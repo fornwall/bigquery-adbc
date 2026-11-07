@@ -10,7 +10,7 @@ fn dry_run_ingest_statement() -> BigQueryStatement {
     let mut statement = test_statement();
     set_option(&mut statement, OptionStatement::TargetDbSchema, "scratch");
     set_option(&mut statement, OptionStatement::TargetTable, "events");
-    set_option(&mut statement, BigQueryStatementOption::DryRun, "true");
+    set_option(&mut statement, BqOption::DryRun, "true");
     statement
 }
 
@@ -135,7 +135,7 @@ fn create_ingest_maps_insert_conflict_to_already_exists() {
 fn create_ingest_dry_run_still_inspects_the_target_without_inserting() {
     let (endpoint, requests) = capture_requests(vec![table_not_found()]);
     let mut statement = empty_ingest_statement_at(&endpoint);
-    set_option(&mut statement, BigQueryStatementOption::DryRun, "true");
+    set_option(&mut statement, BqOption::DryRun, "true");
 
     assert_eq!(statement.execute_update().unwrap(), Some(0));
     assert!(statement.parameters.schema().is_some());
@@ -153,16 +153,16 @@ fn the_ingest_target_falls_back_to_the_statement_defaults() {
     let mut statement = test_statement_at(&endpoint);
     set_option(
         &mut statement,
-        BigQueryStatementOption::DefaultProjectId,
+        BqOption::DefaultProjectId,
         "statement-project",
     );
     set_option(
         &mut statement,
-        BigQueryStatementOption::DefaultDatasetId,
+        BqOption::DefaultDatasetId,
         "statement_dataset",
     );
     set_option(&mut statement, OptionStatement::TargetTable, "events");
-    set_option(&mut statement, BigQueryStatementOption::DryRun, "true");
+    set_option(&mut statement, BqOption::DryRun, "true");
     statement.bind(int64_column("value", vec![1])).unwrap();
 
     assert_eq!(statement.execute_update().unwrap(), Some(0));
@@ -235,18 +235,12 @@ fn a_dry_run_csv_seed_validates_the_schema_without_reading_the_seed() {
     let mut statement = test_statement();
     for (option, value) in [
         (
-            BigQueryStatementOption::CsvFilepath,
+            BqOption::CsvFilepath,
             OptionValue::String(filepath.to_str().unwrap().to_owned()),
         ),
-        (
-            BigQueryStatementOption::CsvSchema,
-            OptionValue::Bytes(encoded_schema),
-        ),
-        (
-            BigQueryStatementOption::DestinationTable,
-            "data_set.seed".into(),
-        ),
-        (BigQueryStatementOption::DryRun, "true".into()),
+        (BqOption::CsvSchema, OptionValue::Bytes(encoded_schema)),
+        (BqOption::DestinationTable, "data_set.seed".into()),
+        (BqOption::DryRun, "true".into()),
     ] {
         set_option(&mut statement, option, value);
     }

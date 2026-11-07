@@ -7,28 +7,80 @@ use crate::{
     BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE, BIGQUERY_SCHEMA_METADATA_TOTAL_BYTES_BILLED,
 };
 
+const SELECT: &str = "SELECT 21 + 21 AS answer";
+const MERGE: &str = "MERGE t USING s ON FALSE WHEN NOT MATCHED THEN INSERT ROW";
+
+/// A staged `jobs.query` answer of job `job_id` with an `answer` column, plus `fields`.
+fn answer(job_id: &str, mut fields: serde_json::Value) -> (u16, serde_json::Value) {
+    fields["schema"] = integer_schema("answer");
+    completed_job(job_id, fields)
+}
+
+/// The `jobs.get` resource of query job `job_id`, carrying `query` as its query statistics.
+fn job_resource(job_id: &str, query: &serde_json::Value) -> (u16, serde_json::Value) {
+    ok(json!({
+        "jobReference": job_reference("fixture-project", job_id),
+        "statistics": {"query": query}
+    }))
+}
+
+/// A `jobs.get` failure BigQuery answers with an HTTP 500.
+fn backend_error() -> (u16, serde_json::Value) {
+    (
+        500,
+        json!({"error": {"code": 500, "message": "backend error", "status": "INTERNAL"}}),
+    )
+}
+
+/// One entry of the result schema's metadata.
+fn schema_metadata<'a>(schema: &'a Schema, key: &str) -> Option<&'a str> {
+    schema.metadata().get(key).map(String::as_str)
+}
+
+/// How many times the driver described a query job.
+fn job_gets(requests: &[CapturedRequest]) -> usize {
+    requests
+        .iter()
+        .filter(|request| request.line.starts_with("GET ") && request.line.contains("/jobs/"))
+        .count()
+}
+
+/// The job metadata a result schema carries, sorted so a test can compare it whole.
+fn job_metadata(schema: &Schema) -> Vec<(&str, &str)> {
+    let mut entries: Vec<_> = schema
+        .metadata()
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    entries.sort_unstable();
+    entries
+}
+
+/// [`job_metadata`] without the PascalCase aliases, which every value is repeated under.
+fn canonical_job_metadata(schema: &Schema) -> Vec<(&str, &str)> {
+    let mut entries = job_metadata(schema);
+    entries.retain(|(key, _)| !key.starts_with("BIGQUERY:Statistics:"));
+    entries
+}
+
 /// dbt-core 2.0 reads `BIGQUERY:query_id` from the result schema for telemetry, and parses the
 /// legacy `Type` field metadata; a dropped, undrained reader must also clean up quietly.
 #[test]
 fn result_schema_reports_the_query_job_id_and_field_metadata() {
-    let (endpoint, requests) = capture_requests(vec![completed_job(
+    let (endpoint, requests) = capture_requests(vec![answer(
         "job_dbt_123",
         json!({
-            "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
             "totalBytesBilled": "0",
             "totalBytesProcessed": "0",
             "totalSlotMs": "1",
             "totalRows": "0"
         }),
     )]);
-    let mut statement = test_query_at(&endpoint, "SELECT 21 + 21 AS answer");
+    let mut statement = test_query_at(&endpoint, SELECT);
     let reader = statement.execute().unwrap();
     let schema = reader.schema();
     assert_eq!(
-        schema
-            .metadata()
-            .get("BIGQUERY:query_id")
-            .map(String::as_str),
+        schema_metadata(&schema, BIGQUERY_SCHEMA_METADATA_QUERY_ID),
         Some("job_dbt_123")
     );
     let field = schema.field(0);
@@ -52,17 +104,10 @@ fn result_schema_reports_the_query_job_id_and_field_metadata() {
 #[test]
 fn result_schema_reports_the_durable_job_id_instead_of_the_query_id() {
     let (endpoint, requests) = capture_requests(vec![
-        completed_job(
-            "job_abc",
-            json!({
-                "queryId": "query_abc",
-                "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
-                "totalRows": "0"
-            }),
-        ),
-        ok(job_resource("job_abc", &json!({"statementType": "SELECT"}))),
+        answer("job_abc", json!({"queryId": "query_abc", "totalRows": "0"})),
+        job_resource("job_abc", &json!({"statementType": "SELECT"})),
     ]);
-    let mut statement = test_query_at(&endpoint, "SELECT 21 + 21 AS answer");
+    let mut statement = test_query_at(&endpoint, SELECT);
     let mut reader = statement.execute().unwrap();
     assert_eq!(
         schema_metadata(&reader.schema(), BIGQUERY_SCHEMA_METADATA_QUERY_ID),
@@ -87,7 +132,7 @@ fn a_jobless_result_reports_its_query_id_and_statistics_without_follow_up_reques
     let (endpoint, requests) = capture_requests(vec![ok(json!({
         "jobComplete": true,
         "queryId": "query_inline",
-        "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
+        "schema": integer_schema("answer"),
         "rows": [{"f": [{"v": "42"}]}],
         "totalRows": "1",
         "statementType": "SELECT",
@@ -129,10 +174,9 @@ fn a_jobless_result_reports_its_query_id_and_statistics_without_follow_up_reques
 /// Pin the mapping, and avoid a redundant job fetch if the service starts filling it in.
 #[test]
 fn result_schema_reports_the_job_statistics() {
-    let (endpoint, requests) = capture_requests(vec![completed_job(
+    let (endpoint, requests) = capture_requests(vec![answer(
         "job_stats_1",
         json!({
-            "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
             "statementType": "SELECT",
             "totalBytesBilled": "10485760",
             "totalBytesProcessed": "1536",
@@ -140,7 +184,7 @@ fn result_schema_reports_the_job_statistics() {
             "totalRows": "0"
         }),
     )]);
-    let mut statement = test_query_at(&endpoint, "SELECT 21 + 21 AS answer");
+    let mut statement = test_query_at(&endpoint, SELECT);
     let reader = statement.execute().unwrap();
     assert_eq!(
         job_metadata(reader.schema().as_ref()),
@@ -171,42 +215,24 @@ fn result_schema_reports_the_job_statistics() {
 /// `statementType`, which only the job resource carries.
 #[test]
 fn dml_result_schema_reports_the_affected_row_count() {
+    let statistics = json!({
+        "numDmlAffectedRows": "3",
+        "totalBytesBilled": "10485760",
+        "totalBytesProcessed": "2048",
+        "totalSlotMs": "4282"
+    });
+    let mut job_statistics = statistics.clone();
+    job_statistics["statementType"] = json!("MERGE");
     let (endpoint, requests) = capture_requests(vec![
-        completed_job(
-            "job_stats_2",
-            json!({
-                "schema": {"fields": [{"name": "value", "type": "INTEGER"}]},
-                "numDmlAffectedRows": "3",
-                "totalBytesBilled": "10485760",
-                "totalBytesProcessed": "2048",
-                "totalSlotMs": "4282"
-            }),
-        ),
-        ok(job_resource(
-            "job_stats_2",
-            &json!({
-                "statementType": "MERGE",
-                "numDmlAffectedRows": "3",
-                "totalBytesBilled": "10485760",
-                "totalBytesProcessed": "2048",
-                "totalSlotMs": "4282"
-            }),
-        )),
+        answer("job_stats_2", statistics),
+        job_resource("job_stats_2", &job_statistics),
     ]);
-    let mut statement = test_query_at(
-        &endpoint,
-        "MERGE t USING s ON FALSE WHEN NOT MATCHED THEN INSERT ROW",
-    );
+    let mut statement = test_query_at(&endpoint, MERGE);
     let reader = statement.execute().unwrap();
+    let schema = reader.schema();
     assert_eq!(
-        job_metadata(reader.schema().as_ref()),
+        canonical_job_metadata(&schema),
         vec![
-            ("BIGQUERY:Statistics:Query:NumDMLAffectedRows", "3"),
-            ("BIGQUERY:Statistics:Query:SlotMillis", "4282"),
-            ("BIGQUERY:Statistics:Query:StatementType", "MERGE"),
-            ("BIGQUERY:Statistics:Query:TotalBytesBilled", "10485760"),
-            ("BIGQUERY:Statistics:Query:TotalBytesProcessed", "2048"),
-            ("BIGQUERY:Statistics:TotalBytesProcessed", "2048"),
             ("BIGQUERY:query_id", "job_stats_2"),
             ("BIGQUERY:statistics:query:num_dml_affected_rows", "3"),
             ("BIGQUERY:statistics:query:slot_millis", "4282"),
@@ -217,87 +243,9 @@ fn dml_result_schema_reports_the_affected_row_count() {
         ],
         "the response's statistics, plus the statement type only the job reports"
     );
-    drop(reader);
-    assert_eq!(job_gets(&requests.join().unwrap()), 1);
-}
-
-/// A query that completed inline still fetches its job when the response omitted the type.
-#[test]
-fn a_complete_row_returning_result_fetches_the_job_for_its_statement_type() {
-    let (endpoint, requests) = capture_requests(vec![
-        completed_job(
-            "job_stats_3",
-            json!({
-                "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
-                "totalBytesBilled": "0",
-                "totalBytesProcessed": "0",
-                "totalSlotMs": "11",
-                "totalRows": "0"
-            }),
-        ),
-        ok(job_resource(
-            "job_stats_3",
-            &json!({
-                "statementType": "SELECT",
-                "totalBytesBilled": "0",
-                "totalBytesProcessed": "0",
-                "totalSlotMs": "11"
-            }),
-        )),
-    ]);
-    let mut statement = test_query_at(&endpoint, "SELECT 21 + 21 AS answer");
-    let reader = statement.execute().unwrap();
     assert_eq!(
-        schema_metadata(&reader.schema(), BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE),
-        Some("SELECT")
-    );
-    drop(reader);
-    let requests = requests.join().unwrap();
-    assert_eq!(job_gets(&requests), 1);
-    assert_eq!(requests.len(), 2, "the query and its one metadata fetch");
-}
-
-/// A polled query is completed by `jobs.getQueryResults`, whose response reports neither the
-/// bytes billed nor the slot milliseconds. The job fills them in, and the statement type too.
-#[test]
-fn a_polled_result_fetches_the_job_for_the_missing_cost_statistics() {
-    let (endpoint, requests) = capture_requests(vec![
-        completed_job(
-            "job_stats_4",
-            json!({
-                "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
-                "totalBytesProcessed": "0",
-                "totalRows": "0"
-            }),
-        ),
-        ok(job_resource(
-            "job_stats_4",
-            &json!({
-                "statementType": "SELECT",
-                "totalBytesBilled": "10485760",
-                "totalBytesProcessed": "1536",
-                "totalSlotMs": "7167"
-            }),
-        )),
-    ]);
-    let mut statement = test_query_at(&endpoint, "SELECT 21 + 21 AS answer");
-    let reader = statement.execute().unwrap();
-    assert_eq!(
-        job_metadata(reader.schema().as_ref()),
-        vec![
-            ("BIGQUERY:Statistics:Query:SlotMillis", "7167"),
-            ("BIGQUERY:Statistics:Query:StatementType", "SELECT"),
-            ("BIGQUERY:Statistics:Query:TotalBytesBilled", "10485760"),
-            // The completed job is authoritative over an earlier response snapshot.
-            ("BIGQUERY:Statistics:Query:TotalBytesProcessed", "1536"),
-            ("BIGQUERY:Statistics:TotalBytesProcessed", "1536"),
-            ("BIGQUERY:query_id", "job_stats_4"),
-            ("BIGQUERY:statistics:query:slot_millis", "7167"),
-            ("BIGQUERY:statistics:query:statement_type", "SELECT"),
-            ("BIGQUERY:statistics:query:total_bytes_billed", "10485760"),
-            ("BIGQUERY:statistics:query:total_bytes_processed", "1536"),
-            ("BIGQUERY:statistics:total_bytes_processed", "1536"),
-        ]
+        schema_metadata(&schema, "BIGQUERY:Statistics:Query:NumDMLAffectedRows"),
+        Some("3")
     );
     drop(reader);
     assert_eq!(job_gets(&requests.join().unwrap()), 1);
@@ -308,26 +256,21 @@ fn a_polled_result_fetches_the_job_for_the_missing_cost_statistics() {
 /// slot time is reported rather than an invented zero.
 #[test]
 fn an_omitted_cost_statistic_is_left_unreported_rather_than_described_again() {
-    let (endpoint, requests) = capture_requests(vec![completed_job(
+    let (endpoint, requests) = capture_requests(vec![answer(
         "job_sparse_costs",
         json!({
-            "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
             "statementType": "SELECT",
             "totalBytesBilled": "10",
             "totalBytesProcessed": "1",
             "totalRows": "0"
         }),
     )]);
-    let mut statement = test_query_at(&endpoint, "SELECT 21 + 21 AS answer");
+    let mut statement = test_query_at(&endpoint, SELECT);
 
     let reader = statement.execute().unwrap();
     assert_eq!(
-        job_metadata(reader.schema().as_ref()),
+        canonical_job_metadata(reader.schema().as_ref()),
         vec![
-            ("BIGQUERY:Statistics:Query:StatementType", "SELECT"),
-            ("BIGQUERY:Statistics:Query:TotalBytesBilled", "10"),
-            ("BIGQUERY:Statistics:Query:TotalBytesProcessed", "1"),
-            ("BIGQUERY:Statistics:TotalBytesProcessed", "1"),
             ("BIGQUERY:query_id", "job_sparse_costs"),
             ("BIGQUERY:statistics:query:statement_type", "SELECT"),
             ("BIGQUERY:statistics:query:total_bytes_billed", "10"),
@@ -341,24 +284,23 @@ fn an_omitted_cost_statistic_is_left_unreported_rather_than_described_again() {
     assert_eq!(requests.len(), 1);
 }
 
-/// An incomplete jobs.query response is only a snapshot. The completed result is described once
-/// to obtain statistics that neither the initial response nor getQueryResults supplied.
+/// An incomplete jobs.query response is only a snapshot, and a polled query is completed by
+/// `jobs.getQueryResults`, which reports neither the bytes billed nor the slot milliseconds. The
+/// result is described once for them, though the statement type is already known, and the
+/// completed job is authoritative over the earlier snapshot.
 #[test]
-fn an_incomplete_jobs_query_fetches_final_job_metadata() {
+fn a_polled_result_fetches_the_job_for_the_final_statistics() {
     let (endpoint, requests) = capture_requests(vec![
         ok(json!({
             "jobComplete": false,
-            "jobReference": job_reference("fixture-project", "job_query_running")
+            "jobReference": job_reference("fixture-project", "job_query_running"),
+            "statementType": "SELECT"
         })),
-        completed_job(
+        answer(
             "job_query_running",
-            json!({
-                "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
-                "totalBytesProcessed": "1536",
-                "totalRows": "0"
-            }),
+            json!({"totalBytesProcessed": "0", "totalRows": "0"}),
         ),
-        ok(job_resource(
+        job_resource(
             "job_query_running",
             &json!({
                 "statementType": "SELECT",
@@ -366,22 +308,21 @@ fn an_incomplete_jobs_query_fetches_final_job_metadata() {
                 "totalBytesProcessed": "1536",
                 "totalSlotMs": "7167"
             }),
-        )),
+        ),
     ]);
-    let mut statement = test_query_at(&endpoint, "SELECT 21 + 21 AS answer");
+    let mut statement = test_query_at(&endpoint, SELECT);
 
     let reader = statement.execute().unwrap();
     assert_eq!(
-        schema_metadata(
-            &reader.schema(),
-            BIGQUERY_SCHEMA_METADATA_TOTAL_BYTES_BILLED
-        ),
-        Some("10485760"),
-        "the final job must replace the partial insert response"
-    );
-    assert_eq!(
-        schema_metadata(&reader.schema(), BIGQUERY_SCHEMA_METADATA_SLOT_MILLIS),
-        Some("7167")
+        canonical_job_metadata(reader.schema().as_ref()),
+        vec![
+            ("BIGQUERY:query_id", "job_query_running"),
+            ("BIGQUERY:statistics:query:slot_millis", "7167"),
+            ("BIGQUERY:statistics:query:statement_type", "SELECT"),
+            ("BIGQUERY:statistics:query:total_bytes_billed", "10485760"),
+            ("BIGQUERY:statistics:query:total_bytes_processed", "1536"),
+            ("BIGQUERY:statistics:total_bytes_processed", "1536"),
+        ]
     );
     drop(reader);
 
@@ -401,17 +342,14 @@ fn a_storage_read_result_fetches_the_job_exactly_once() {
         completed_job(
             "job_stats_5",
             json!({
-                "schema": {"fields": [{"name": "n", "type": "INTEGER"}]},
+                "schema": integer_schema("n"),
                 "totalBytesBilled": "10485760",
                 "totalBytesProcessed": "1536",
                 "totalSlotMs": "7167",
                 "totalRows": "60000"
             }),
         ),
-        ok(job_resource(
-            "job_stats_5",
-            &json!({"statementType": "SELECT"}),
-        )),
+        job_resource("job_stats_5", &json!({"statementType": "SELECT"})),
     ]);
     let mut statement = test_query_at(&endpoint, "SELECT n FROM t");
     let reader = statement.execute().unwrap();
@@ -427,41 +365,42 @@ fn a_storage_read_result_fetches_the_job_exactly_once() {
     );
 }
 
-/// A polled result whose `jobs.get` fails still reads: the fetch is metadata-only.
+/// A result whose `jobs.get` fails still reads: the fetch is metadata-only, and the statistics
+/// the response never carried are simply absent.
 ///
-/// The statement has already completed by the time the job is described, so a failure there
-/// may not fail it. The statistics the response never carried are simply absent.
+/// PERMISSION_DENIED also disables Storage Read, since the same GET gates that path for every
+/// later query. No other failure may, or a transient one would push every later query onto REST.
 #[test]
-fn a_failed_job_fetch_leaves_the_result_readable_without_the_job_statistics() {
-    for (status, body) in [
-        (500, backend_error()),
+fn a_failed_job_fetch_leaves_the_result_readable_and_only_a_refusal_disables_storage_read() {
+    let error = |code: u16, message: &str, status: &str| {
         (
-            404,
-            json!({"error": {"code": 404, "message": "job not found", "status": "NOT_FOUND"}}),
+            code,
+            json!({"error": {"code": code, "message": message, "status": status}}),
+        )
+    };
+    for (failure, disabled) in [
+        (backend_error(), false),
+        (error(404, "job not found", "NOT_FOUND"), false),
+        (
+            error(403, "caller cannot get the job", "PERMISSION_DENIED"),
+            true,
         ),
     ] {
+        let status = failure.0;
         let (endpoint, requests) = capture_requests(vec![
-            // A polled result: no bytes billed and no slot milliseconds to be had from the
-            // response, so the job is worth fetching.
-            completed_job(
+            answer(
                 "job_fetch_fails",
-                json!({
-                    "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
-                    "totalBytesProcessed": "1536",
-                    "totalRows": "0"
-                }),
+                json!({"totalBytesProcessed": "1536", "totalRows": "0"}),
             ),
-            (status, body),
+            failure,
         ]);
-        let mut statement = test_query_at(&endpoint, "SELECT 21 + 21 AS answer");
+        let mut statement = test_query_at(&endpoint, SELECT);
         let mut reader = statement
             .execute()
             .unwrap_or_else(|error| panic!("a {status} on jobs.get failed the query: {error}"));
         assert_eq!(
-            job_metadata(reader.schema().as_ref()),
+            canonical_job_metadata(reader.schema().as_ref()),
             vec![
-                ("BIGQUERY:Statistics:Query:TotalBytesProcessed", "1536"),
-                ("BIGQUERY:Statistics:TotalBytesProcessed", "1536"),
                 ("BIGQUERY:query_id", "job_fetch_fails"),
                 ("BIGQUERY:statistics:query:total_bytes_processed", "1536"),
                 ("BIGQUERY:statistics:total_bytes_processed", "1536"),
@@ -470,6 +409,14 @@ fn a_failed_job_fetch_leaves_the_result_readable_without_the_job_statistics() {
         );
         assert!(reader.next().is_none(), "the result still reads");
         drop(reader);
+        assert_eq!(
+            statement
+                .context
+                .state
+                .storage_read_disabled("fixture-project"),
+            disabled,
+            "a {status} on jobs.get recorded the wrong Storage Read state"
+        );
         assert_eq!(job_gets(&requests.join().unwrap()), 1);
     }
 }
@@ -479,33 +426,24 @@ fn a_failed_job_fetch_leaves_the_result_readable_without_the_job_statistics() {
 #[test]
 fn a_dml_result_survives_a_failed_job_fetch() {
     let (endpoint, requests) = capture_requests(vec![
-        completed_job(
+        answer(
             "job_dml_fetch_fails",
             json!({
-                "schema": {"fields": [{"name": "value", "type": "INTEGER"}]},
                 "numDmlAffectedRows": "3",
                 "totalBytesBilled": "10485760",
                 "totalBytesProcessed": "2048",
                 "totalSlotMs": "4282"
             }),
         ),
-        (500, backend_error()),
+        backend_error(),
     ]);
-    let mut statement = test_query_at(
-        &endpoint,
-        "MERGE t USING s ON FALSE WHEN NOT MATCHED THEN INSERT ROW",
-    );
+    let mut statement = test_query_at(&endpoint, MERGE);
     let reader = statement
         .execute()
         .unwrap_or_else(|error| panic!("a failed jobs.get failed a committed MERGE: {error}"));
     assert_eq!(
-        job_metadata(reader.schema().as_ref()),
+        canonical_job_metadata(reader.schema().as_ref()),
         vec![
-            ("BIGQUERY:Statistics:Query:NumDMLAffectedRows", "3"),
-            ("BIGQUERY:Statistics:Query:SlotMillis", "4282"),
-            ("BIGQUERY:Statistics:Query:TotalBytesBilled", "10485760"),
-            ("BIGQUERY:Statistics:Query:TotalBytesProcessed", "2048"),
-            ("BIGQUERY:Statistics:TotalBytesProcessed", "2048"),
             ("BIGQUERY:query_id", "job_dml_fetch_fails"),
             ("BIGQUERY:statistics:query:num_dml_affected_rows", "3"),
             ("BIGQUERY:statistics:query:slot_millis", "4282"),
@@ -517,85 +455,4 @@ fn a_dml_result_survives_a_failed_job_fetch() {
     );
     drop(reader);
     assert_eq!(job_gets(&requests.join().unwrap()), 1);
-}
-
-/// PERMISSION_DENIED disables Storage Read, since the same GET gates that path for every later
-/// query. No other failure may, or a transient one would push every later query onto REST.
-#[test]
-fn only_a_refused_job_fetch_disables_storage_read() {
-    for (status, body, disabled) in [
-        (
-            403,
-            json!({
-                "error": {
-                    "code": 403,
-                    "message": "caller cannot get the job",
-                    "status": "PERMISSION_DENIED"
-                }
-            }),
-            true,
-        ),
-        (500, backend_error(), false),
-    ] {
-        let (endpoint, requests) = capture_requests(vec![
-            completed_job(
-                "job_fetch_refused",
-                json!({
-                    "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
-                    "totalBytesProcessed": "1536",
-                    "totalRows": "0"
-                }),
-            ),
-            (status, body),
-        ]);
-        let mut statement = test_query_at(&endpoint, "SELECT 21 + 21 AS answer");
-        let reader = statement.execute().unwrap();
-        drop(reader);
-        assert_eq!(
-            statement
-                .context
-                .state
-                .storage_read_disabled("fixture-project"),
-            disabled,
-            "a {status} on jobs.get recorded the wrong Storage Read state"
-        );
-        requests.join().unwrap();
-    }
-}
-
-/// The `jobs.get` resource of query job `job_id`, carrying `query` as its query statistics.
-fn job_resource(job_id: &str, query: &serde_json::Value) -> serde_json::Value {
-    json!({
-        "jobReference": job_reference("fixture-project", job_id),
-        "statistics": {"query": query}
-    })
-}
-
-/// A `jobs.get` failure BigQuery answers with an HTTP 500.
-fn backend_error() -> serde_json::Value {
-    json!({"error": {"code": 500, "message": "backend error", "status": "INTERNAL"}})
-}
-
-/// One entry of the result schema's metadata.
-fn schema_metadata<'a>(schema: &'a Schema, key: &str) -> Option<&'a str> {
-    schema.metadata().get(key).map(String::as_str)
-}
-
-/// How many times the driver described a query job.
-fn job_gets(requests: &[CapturedRequest]) -> usize {
-    requests
-        .iter()
-        .filter(|request| request.line.starts_with("GET ") && request.line.contains("/jobs/"))
-        .count()
-}
-
-/// The job metadata a result schema carries, sorted so a test can compare it whole.
-fn job_metadata(schema: &Schema) -> Vec<(&str, &str)> {
-    let mut entries: Vec<_> = schema
-        .metadata()
-        .iter()
-        .map(|(key, value)| (key.as_str(), value.as_str()))
-        .collect();
-    entries.sort_unstable();
-    entries
 }

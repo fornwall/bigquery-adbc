@@ -22,7 +22,7 @@ use crate::test_support::http::{
 use crate::transaction::QueryTransaction;
 use crate::{
     BigQueryBulkIngestMethod, BigQueryConnectionOption, BigQueryCreateDisposition,
-    BigQueryQueryPriority, BigQueryStatementOption, BigQueryWriteDisposition,
+    BigQueryQueryPriority, BigQueryStatementOption as BqOption, BigQueryWriteDisposition,
 };
 
 use super::BigQueryStatement;

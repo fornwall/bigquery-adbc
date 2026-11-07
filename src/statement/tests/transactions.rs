@@ -249,7 +249,7 @@ fn a_dataset_location_lookup_runs_with_autocommit_disabled() {
     let mut statement = test_statement_at(&endpoint);
     set_option(
         &mut statement,
-        BigQueryStatementOption::GetDatasetLocation,
+        BqOption::GetDatasetLocation,
         r#"{"project":"data-project","dataset":"analytics"}"#,
     );
     statement.transaction.disable_autocommit().unwrap();
@@ -308,7 +308,7 @@ fn session_creation_is_refused_inside_a_transaction_before_anything_runs() {
     statement.set_sql_query("SELECT ?").unwrap();
     set_option(
         &mut statement,
-        BigQueryStatementOption::CreateSession,
+        BqOption::CreateSession,
         ADBC_OPTION_VALUE_ENABLED,
     );
     statement.bind(int64_column("value", vec![1])).unwrap();
