@@ -215,8 +215,9 @@ fn resolved_reference(
     )
 }
 
-/// [`JobClient::poll`] handles transient failures, including a newly submitted job's 404.
-/// This loop sets the polling cadence.
+/// [`JobClient::poll`] handles transient failures, including a newly submitted job's 404, for one
+/// poll. This loop sets the polling cadence and outlasts polls that run out of retries, since
+/// ending the wait cancels the job.
 async fn wait_for_job(
     client: &JobClient,
     operation: &Operation,
@@ -225,14 +226,20 @@ async fn wait_for_job(
     what: &str,
 ) -> Result<LoadOrCopyJob> {
     let mut backoff = PollBackoff::new(Duration::from_millis(100), Duration::from_secs(1), None);
+    let mut outage = client.wait_outage();
     loop {
         if job.status.as_ref().is_some_and(JobStatus::is_done) {
             operation.register_completed_job(reference)?;
             return Ok(job);
         }
         backoff.pause(operation, Duration::ZERO).await?;
-        let body = client.poll(Some(operation), reference, what).await?;
-        job = decode_polled_job(&body, reference, what)?;
+        match client.poll(Some(operation), reference, what).await {
+            Ok(body) => {
+                outage.end();
+                job = decode_polled_job(&body, reference, what)?;
+            }
+            Err(failure) => outage.outlast(failure, reference)?,
+        }
     }
 }
 

@@ -339,8 +339,10 @@ recovery of the original execution. A job confirmed failed with `backendError`, 
 `jobInternalError`, `rateLimitExceeded`, `jobRateLimitExceeded`, `internalError` or
 `tableUnavailable` is rerun with a fresh ID at most three times, except scripts, `CALL` and
 statements of unknown type, whose earlier statements may have committed; Go never reruns a failed
-job. Requests give up after five consecutive transient failures, where Go polls until the caller's
-context ends.
+job. Requests give up after five consecutive transient failures. Waiting for a job goes on past
+that for ten minutes of consecutive failures, or for as long as `jobs.get` reports the job
+unfinished, where Go polls until the caller's context ends; the bound stops a dead network blocking
+a caller that has no way to cancel.
 
 ### G48. Jobs submitted without `bigquery.location`
 

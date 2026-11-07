@@ -2145,3 +2145,41 @@ fn capture_dropped_posts_then_recovery() -> (String, thread::JoinHandle<Vec<Capt
         (attempt > MAX_ATTEMPTS).then(|| (200, json!({"status":{"state":"DONE"},"recovered":true})))
     })
 }
+
+/// The window opens at the first failure and any answer closes it, so only failures with no answer
+/// between them use it up. A failure that retrying cannot help ends the wait unchanged.
+#[test]
+fn a_wait_outage_bounds_only_consecutive_retryable_failures() {
+    const LIMIT: Duration = Duration::from_secs(600);
+    let unavailable = || crate::error::error("unavailable", Status::IO);
+    let job = JobReference::new("project", Some("EU"), "job".to_owned());
+    let mut outage = super::WaitOutage {
+        limit: LIMIT,
+        since: None,
+    };
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .unwrap()
+        .block_on(async {
+            outage.outlast(unavailable(), &job).unwrap();
+            tokio::time::advance(LIMIT - Duration::from_secs(1)).await;
+            outage.outlast(unavailable(), &job).unwrap();
+
+            outage.end();
+            tokio::time::advance(LIMIT - Duration::from_secs(1)).await;
+            outage.outlast(unavailable(), &job).unwrap();
+
+            tokio::time::advance(LIMIT).await;
+            let spent = outage.outlast(unavailable(), &job).unwrap_err();
+            assert_eq!(spent.status, Status::IO);
+            assert_message(
+                &spent,
+                &["project:EU.job", "after 600 s of failed requests"],
+            );
+
+            let denied = crate::error::error("denied", Status::Unauthorized);
+            assert_eq!(outage.outlast(denied, &job).unwrap_err().message, "denied");
+        });
+}

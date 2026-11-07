@@ -31,6 +31,10 @@ changes.
   minutes instead of hanging it. This covers the OAuth, STS and metadata-server exchanges.
 - A second `AdbcErrorFromArrayStream` call on a stream no longer frees the message and detail
   pointers the first one returned.
+- A network outage or a run of 5xx responses no longer fails a query, table copy or CSV load after a
+  few seconds and cancels its healthy job. Waiting for a job now outlasts ten minutes of consecutive
+  retryable failures, and for as long as `jobs.get` reports the job unfinished. If the wait does give
+  up, the error says the job's outcome is unknown.
 
 ## [0.2.0] - 2026-11-06
 

@@ -1,17 +1,24 @@
 use std::path::{Path, PathBuf};
 use std::thread;
+use std::time::Duration;
 
 use adbc_core::error::{Result, Status};
 use adbc_core::options::OptionValue;
-use adbc_core::{Connection as _, Statement as _};
+use adbc_core::{CancelHandle as _, Connection as _, Statement as _};
 use arrow_schema::{DataType, Field, Schema};
 use serde_json::{Value as JsonValue, json};
 
-use super::{decode_polled_job, resolved_reference, validate_completed};
-use crate::rest::jobs::JobReference;
+use super::{decode_polled_job, resolved_reference, validate_completed, wait_for_job};
+use crate::cancellation::{Cancellation, OperationCancelHandle};
+use crate::clients::ClientState;
+use crate::config::ServiceEndpointKind;
+use crate::rest::jobs::{JobClient, JobReference};
+use crate::rest::retry::MAX_ATTEMPTS;
+use crate::runtime::new_runtime;
 use crate::test_support::driver::{test_connection_at, unlocated_connection_at};
 use crate::test_support::http::{
-    CapturedRequest, capture_requests, capture_requests_responding, error_body,
+    CapturedRequest, capture_requests, capture_requests_responding, capture_requests_until_stopped,
+    error_body,
 };
 use crate::test_support::options::set_option;
 use crate::{BigQueryConnection, BigQueryStatementOption};
@@ -135,6 +142,56 @@ fn a_polled_job_reports_a_state_it_cannot_act_on() {
             format!("BigQuery {what} job billing-project:EU.job-1 poll contained no state")
         );
     }
+}
+
+/// One poll's retries say nothing about the job, so failed polls neither end the wait nor cancel it:
+/// the wait goes on past the retries of several, and the job that finishes is returned.
+#[test]
+fn a_wait_outlasts_failed_polls_and_leaves_the_job_alone() {
+    let polled = |state| {
+        json!({
+            "jobReference": {"projectId": "billing-project", "jobId": "job-1", "location": "EU"},
+            "status": {"state": state}
+        })
+    };
+    let unavailable = (
+        503,
+        json!({"error": {"code": 503, "message": "unavailable", "status": "UNAVAILABLE"}}),
+    );
+    let mut responses = vec![unavailable; 2 * MAX_ATTEMPTS as usize + 1];
+    responses.push((200, polled("DONE")));
+    let staged = responses.len();
+    let (endpoint, server) = capture_requests_until_stopped(responses);
+    let runtime = new_runtime().unwrap();
+    let client = JobClient::for_test(&endpoint).with_wait_outage(Duration::from_secs(600));
+    let cancellation = Cancellation::new(
+        runtime.clone(),
+        ClientState::for_test_at(ServiceEndpointKind::BigQuery, &endpoint),
+        "statement",
+    );
+    let operation = cancellation.begin();
+    operation.register_job(&requested()).unwrap();
+    let running = job(&polled("RUNNING").to_string(), "table copy");
+
+    let finished = runtime
+        .block_on(wait_for_job(
+            &client,
+            &operation,
+            &requested(),
+            running,
+            "table copy",
+        ))
+        .unwrap();
+
+    assert!(finished.status.as_ref().unwrap().is_done());
+    // Delivers synchronously any cancellation still claimable, so none can be missed below.
+    OperationCancelHandle(cancellation).try_cancel().unwrap();
+    operation.finish();
+    assert_eq!(
+        server.stop().len(),
+        staged,
+        "the finished job was cancelled"
+    );
 }
 
 /// The authoritative failure is rendered first and never twice, even when its repeat in `errors`

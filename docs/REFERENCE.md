@@ -332,6 +332,13 @@ These waits do not set an execution deadline; `bigquery.query.job_timeout` does.
 options available only on a job use `jobs.insert`. Job creation mode and completion waits are
 not configurable.
 
+Waiting for a query, table copy or CSV load to finish outlasts ten minutes of consecutive retryable
+failures: transport errors, timeouts, and retryable statuses such as 5xx. The window restarts
+whenever BigQuery reports the job unfinished or returns its results, so failed reads alone never
+end the wait for a running job. A wait that gives up fails with the last error, says the job's
+outcome is unknown, and requests cancellation of the job if it is unfinished, so check the job
+before running it again.
+
 Cancellation stops local work and [requests cancellation](https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/jobs/cancel)
 of any unfinished remote job. Verified job metadata updates its regional identity and completed
 status; later metadata cannot make a completed job eligible for cancellation again.

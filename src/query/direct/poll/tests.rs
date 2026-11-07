@@ -1,14 +1,22 @@
 //! How a completion poll classifies BigQuery's answers: a rejected results read, and a complete
 //! response carrying `errors`. Both decide whether a query may run again.
 
+use std::sync::Arc;
+
+use adbc_core::CancelHandle as _;
 use serde_json::json;
 
 use super::*;
+use crate::cancellation::{Cancellation, OperationCancelHandle};
+use crate::clients::ClientState;
+use crate::config::ServiceEndpointKind;
 use crate::query::QueryResultMode;
 use crate::query::response::retryable_job_errors;
 use crate::rest::retry::MAX_ATTEMPTS;
 use crate::runtime::{SharedRuntime, new_runtime};
-use crate::test_support::http::{CapturedRequest, capture_requests, error_body};
+use crate::test_support::http::{
+    CapturedRequest, capture_requests, capture_requests_until_stopped, error_body,
+};
 
 /// The job every fixture below polls.
 fn reference() -> JobReference {
@@ -106,12 +114,6 @@ fn a_rejected_read_of_a_failed_job_becomes_the_terminal_failure_the_job_reports(
 
 #[test]
 fn verified_terminal_jobs_are_not_cancelled_again() {
-    use crate::cancellation::{Cancellation, OperationCancelHandle};
-    use crate::clients::ClientState;
-    use crate::config::ServiceEndpointKind;
-    use crate::test_support::http::capture_requests_until_stopped;
-    use adbc_core::CancelHandle as _;
-
     for (state, failed) in [("DONE", false), ("DONE", true), ("RUNNING", false)] {
         let (endpoint, server) = capture_requests_until_stopped(vec![
             (
@@ -142,8 +144,10 @@ fn verified_terminal_jobs_are_not_cancelled_again() {
                 assert_eq!(terminal.job.unwrap().location.as_deref(), Some("EU"));
             }
             JobVerdict::Succeeded => assert_eq!((state, failed), ("DONE", false)),
-            JobVerdict::Unverified => assert_eq!(state, "RUNNING"),
-            JobVerdict::Cancelled(_) => panic!("the operation has not been cancelled"),
+            JobVerdict::Running => assert_eq!(state, "RUNNING"),
+            JobVerdict::Unverified | JobVerdict::Cancelled(_) => {
+                panic!("the job was fetched, and the operation has not been cancelled")
+            }
         }
         OperationCancelHandle(cancellation).try_cancel().unwrap();
         operation.finish();
@@ -160,18 +164,11 @@ fn verified_terminal_jobs_are_not_cancelled_again() {
 }
 
 /// The rejection's own reason never decides: a `rateLimitExceeded` on the read says nothing about
-/// the job, and rerunning DML on it could duplicate writes. Any `jobs.get` answer short of "DONE
-/// and failed" reports the original rejection.
+/// the job, and rerunning DML on it could duplicate writes. With no outage budget left, a `jobs.get`
+/// answer short of "DONE and failed" reports the original rejection.
 #[test]
 fn only_a_done_job_with_an_error_result_may_turn_a_rejection_into_a_rerun() {
     for (what, job) in [
-        (
-            "a job still running",
-            json!({
-                "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
-                "status": {"state": "RUNNING"}
-            }),
-        ),
         (
             "a job that finished without an errorResult",
             json!({
@@ -243,6 +240,173 @@ fn a_rejection_whose_job_cannot_be_fetched_reports_the_rejection() {
         );
         assert_eq!(requests.len(), requests_expected, "{what}");
     }
+}
+
+/// An answer to the job's `jobs.get`, in `state`.
+fn job_in(state: &str) -> (u16, serde_json::Value) {
+    (
+        200,
+        json!({
+            "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
+            "status": {"state": state}
+        }),
+    )
+}
+
+fn unavailable() -> (u16, serde_json::Value) {
+    (
+        503,
+        json!({"error": {"code": 503, "message": "unavailable", "status": "UNAVAILABLE"}}),
+    )
+}
+
+/// Every request of one poll round failing: the reads, then the `jobs.get` that follows them.
+fn failed_round() -> Vec<(u16, serde_json::Value)> {
+    vec![unavailable(); 2 * READS]
+}
+
+/// A cancellable operation on `job`, on a mock that also answers its cancellation.
+fn tracked_job(runtime: &SharedRuntime, endpoint: &str) -> (Arc<Cancellation>, Operation) {
+    let cancellation = Cancellation::new(
+        runtime.clone(),
+        ClientState::for_test_at(ServiceEndpointKind::BigQuery, endpoint),
+        "statement",
+    );
+    let operation = cancellation.begin();
+    operation.register_job(&reference()).unwrap();
+    (cancellation, operation)
+}
+
+/// The retry budget is per request, not per job: running out of it says nothing about the job, and
+/// ending the wait would cancel it. So however the requests fail, the wait goes on, and a job that
+/// finishes is read without having been cancelled.
+#[test]
+fn a_wait_outlasts_failed_requests_and_leaves_the_job_alone() {
+    let complete = (
+        200,
+        json!({
+            "jobComplete": true,
+            "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
+            "schema": {"fields": [{"name": "value", "type": "INTEGER"}]},
+            "rows": [{"f": [{"v": "7"}]}]
+        }),
+    );
+    for (what, mut responses) in [
+        (
+            "every request failing",
+            [failed_round(), failed_round()].concat(),
+        ),
+        (
+            "reads failing for a job still running",
+            [
+                after_rejected_reads(job_in("RUNNING")),
+                after_rejected_reads(job_in("RUNNING")),
+            ]
+            .concat(),
+        ),
+        (
+            "reads failing for a job that finished",
+            after_rejected_reads(job_in("DONE")),
+        ),
+    ] {
+        responses.push(complete.clone());
+        let staged = responses.len();
+        let (endpoint, server) = capture_requests_until_stopped(responses);
+        let (runtime, client) = client(&endpoint);
+        let client = client.with_wait_outage(Duration::from_secs(600));
+        let (cancellation, operation) = tracked_job(&runtime, &endpoint);
+        let decoder = QueryResponseDecoder::new(&runtime, QueryResultMode::Rows);
+        let outcome = runtime.block_on(poll_until_complete(
+            &client,
+            &decoder,
+            &reference(),
+            Some(&operation),
+            None,
+            &mut QueryMetadata::default(),
+            "BigQuery query execution failed",
+        ));
+
+        let Ok(page) = outcome else {
+            panic!("{what} ended the wait");
+        };
+        assert_eq!(page.rows.len(), 1, "{what}");
+        // Delivers synchronously any cancellation still claimable, so none can be missed below.
+        OperationCancelHandle(cancellation).try_cancel().unwrap();
+        operation.finish();
+        let requests = server.stop();
+        assert_eq!(requests.len(), staged, "{what}");
+        assert!(
+            requests
+                .iter()
+                .all(|request| !request.path().contains("/cancel")),
+            "{what} cancelled the job"
+        );
+    }
+}
+
+/// A job `jobs.get` reports unfinished needs no outage budget: nothing is known to be wrong, and
+/// the job's end bounds the wait.
+#[test]
+fn a_rejected_read_of_an_unfinished_job_keeps_waiting_without_an_outage_budget() {
+    for state in ["PENDING", "RUNNING"] {
+        let mut responses = after_rejected_reads(job_in(state));
+        responses.push((
+            200,
+            json!({
+                "jobComplete": true,
+                "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
+                "schema": {"fields": []},
+                "rows": []
+            }),
+        ));
+
+        let (outcome, requests, _) = poll(responses);
+
+        assert!(outcome.is_ok(), "{state}");
+        assert_eq!(requests.len(), READS + 2, "{state}");
+    }
+}
+
+/// Giving up on an outage cannot tell the caller what the job did, so the error says that, and the
+/// operation's end still tries to stop the job.
+#[test]
+fn a_wait_that_gives_up_says_the_job_may_still_be_running() {
+    let mut responses = failed_round();
+    responses.push((200, json!({})));
+    let (endpoint, requests) = capture_requests(responses);
+    let (runtime, client) = client(&endpoint);
+    let (_cancellation, operation) = tracked_job(&runtime, &endpoint);
+    let decoder = QueryResponseDecoder::new(&runtime, QueryResultMode::Rows);
+    let outcome = runtime.block_on(poll_until_complete(
+        &client,
+        &decoder,
+        &reference(),
+        Some(&operation),
+        None,
+        &mut QueryMetadata::default(),
+        "BigQuery query execution failed",
+    ));
+
+    let Err(AttemptFailure::Request(failure)) = outcome else {
+        panic!("a spent outage budget must end the wait");
+    };
+    assert_eq!(failure.status, Status::IO);
+    assert!(
+        failure.message.contains(
+            "the driver stopped waiting for BigQuery job project:EU.polled-job after 0 s of \
+             failed requests and is cancelling it if unfinished; check the job before running \
+             this again"
+        ),
+        "{failure:?}"
+    );
+    operation.finish();
+    let requests = requests.join().unwrap();
+    assert_eq!(requests.len(), 2 * READS + 1);
+    assert!(
+        requests[2 * READS]
+            .path()
+            .ends_with("/jobs/polled-job/cancel?location=EU")
+    );
 }
 
 /// A rejection a fresh job could not fix (a denial, a malformed request, a missing job) costs no

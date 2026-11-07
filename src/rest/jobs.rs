@@ -28,7 +28,7 @@ use crate::rest::json::{decode_json, encode_json};
 use crate::rest::projects_prefix;
 use crate::rest::rejection::{reason_message, service_error};
 use crate::rest::request::{Request, RequestStart, send};
-use crate::rest::retry::{MAX_ATTEMPTS, RetryClass, RetryDelays, classify};
+use crate::rest::retry::{MAX_ATTEMPTS, RetryClass, RetryDelays, classify, retryable_failure};
 use crate::rest::url::escape_url_component;
 use crate::runtime::DetachedTask;
 
@@ -90,6 +90,16 @@ const MAX_RECONCILIATION_ATTEMPTS: u32 = 3;
 const JOB_SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_JOB_SEARCH_PAGES: u32 = 100;
 const JOB_SEARCH_CLOCK_SKEW: Duration = Duration::from_secs(300);
+
+/// How long a wait for a job outlasts consecutive retryable failures. A request's own retries span
+/// seconds, far less than a network blip, and ending the wait cancels the job. Go waits until its
+/// context ends; this bound keeps a network that never returns from blocking, forever, a caller
+/// that has no way to cancel. Tests give up at once unless they set their own limit.
+const JOB_WAIT_OUTAGE: Duration = if cfg!(test) {
+    Duration::ZERO
+} else {
+    Duration::from_secs(600)
+};
 
 /// A BigQuery job identity chosen before submission.
 ///
@@ -328,6 +338,46 @@ struct JobEnvelope<'a, C> {
     configuration: &'a C,
 }
 
+/// The failed requests of one wait for a job to finish. See [`JOB_WAIT_OUTAGE`].
+pub(crate) struct WaitOutage {
+    limit: Duration,
+    since: Option<tokio::time::Instant>,
+}
+
+impl WaitOutage {
+    /// Records an answer about the job, which ends any outage.
+    pub(crate) fn end(&mut self) {
+        self.since = None;
+    }
+
+    /// Lets the wait for `job` continue past `failure`, or returns the failure that ends it. Only
+    /// a retryable failure can be outlasted, and once it cannot, the error says the job's outcome
+    /// is unknown: ending the wait cancels an unfinished job, but that request can fail too.
+    pub(crate) fn outlast(
+        &mut self,
+        mut failure: adbc_core::error::Error,
+        job: &JobReference,
+    ) -> Result<()> {
+        if !retryable_failure(failure.status) {
+            return Err(failure);
+        }
+        let since = *self.since.get_or_insert_with(tokio::time::Instant::now);
+        if since.elapsed() < self.limit {
+            return Ok(());
+        }
+        append_remedy(
+            &mut failure,
+            &format!(
+                "the driver stopped waiting for BigQuery job {} after {} s of failed requests and \
+                 is cancelling it if unfinished; check the job before running this again",
+                job_name(job),
+                self.limit.as_secs()
+            ),
+        );
+        Err(failure)
+    }
+}
+
 /// A database-scoped transport for BigQuery's job collection.
 #[derive(Clone)]
 pub(crate) struct JobClient {
@@ -339,6 +389,8 @@ pub(crate) struct JobClient {
     service_delays: RetryDelays,
     prompt_delays: RetryDelays,
     poll_delays: RetryDelays,
+    /// See [`JOB_WAIT_OUTAGE`].
+    wait_outage: Duration,
     /// Where to look for a job submitted without a location. See [`Self::insert`].
     dataset_locations: Option<DatasetLocations>,
 }
@@ -357,6 +409,7 @@ impl JobClient {
             service_delays: RetryDelays::SERVICE,
             prompt_delays: RetryDelays::PROMPT,
             poll_delays: RetryDelays::POLL,
+            wait_outage: JOB_WAIT_OUTAGE,
             dataset_locations: None,
         }
     }
@@ -387,6 +440,21 @@ impl JobClient {
         self.prompt_delays = RetryDelays::flat(delay);
         self.poll_delays = RetryDelays::flat(delay);
         self
+    }
+
+    /// Sets how long a wait outlasts failed requests. See [`JOB_WAIT_OUTAGE`].
+    #[cfg(test)]
+    pub(crate) fn with_wait_outage(mut self, limit: Duration) -> Self {
+        self.wait_outage = limit;
+        self
+    }
+
+    /// The outage state of a new wait for a job to finish.
+    pub(crate) fn wait_outage(&self) -> WaitOutage {
+        WaitOutage {
+            limit: self.wait_outage,
+            since: None,
+        }
     }
 
     /// Submits one JSON job and returns the response document for the caller's own projection.

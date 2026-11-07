@@ -2,7 +2,8 @@
 //!
 //! Neither HTTP errors nor a successful response's `errors` field prove that the job failed.
 //! Confirm terminal errors with `jobs.get` before reissuing a query; retrying a running or
-//! successful job could duplicate DML.
+//! successful job could duplicate DML. Nor does running out of a request's retries end the wait:
+//! that would cancel a job nothing is known to be wrong with.
 
 use std::time::{Duration, Instant};
 
@@ -11,7 +12,7 @@ use adbc_core::error::Status;
 use crate::cancellation::{self, Operation};
 use crate::error::{failure_reason, job_error};
 use crate::query::ExecutionProgress;
-use crate::rest::jobs::{JobClient, JobReference, QueryResultsRead};
+use crate::rest::jobs::{JobClient, JobReference, QueryResultsRead, WaitOutage};
 use crate::rest::retry::retryable_failure;
 
 use crate::query::response::{JobResponse, QueryMetadata, QueryPage, QueryResponse};
@@ -41,6 +42,7 @@ pub(super) async fn poll_until_complete(
 ) -> Result<QueryPage, AttemptFailure> {
     let mut reference = reference.clone();
     let mut max_results = decoder.result_mode.max_results();
+    let mut outage = client.wait_outage();
     async {
         loop {
             let started = Instant::now();
@@ -65,16 +67,20 @@ pub(super) async fn poll_until_complete(
                     continue;
                 }
                 Err(failure) => {
-                    return Err(rejected_poll_failure(
+                    outlast_rejected_poll(
                         client,
                         operation,
                         &reference,
                         &metadata.statement_type,
                         failure,
+                        &mut outage,
                     )
-                    .await);
+                    .await?;
+                    pace(operation, started).await?;
+                    continue;
                 }
             };
+            outage.end();
             let mut response = decoder
                 .decode(
                     body,
@@ -115,46 +121,57 @@ pub(super) async fn poll_until_complete(
                 metadata.completed_by_poll = true;
                 return Ok(response.page());
             }
-            // Pace only an answer that came back early.
-            if let Some(remaining) = MINIMUM_POLL_INTERVAL.checked_sub(started.elapsed()) {
-                cancellation::sleep(operation, remaining).await?;
-            }
+            pace(operation, started).await?;
         }
     }
     .await
     .map_err(|failure: AttemptFailure| failure.with_job_link(Some(&reference)))
 }
 
-/// Classifies a rejected `jobs.getQueryResults` against the job's own status.
+/// Paces only an answer that came back early.
+async fn pace(operation: Option<&Operation>, started: Instant) -> adbc_core::error::Result<()> {
+    match MINIMUM_POLL_INTERVAL.checked_sub(started.elapsed()) {
+        Some(remaining) => cancellation::sleep(operation, remaining).await,
+        None => Ok(()),
+    }
+}
+
+/// Classifies a rejected `jobs.getQueryResults` against the job's own status, returning to let the
+/// wait go on.
 ///
 /// BigQuery maps a failed job's `status.errorResult.reason` onto the HTTP status of reads of its
 /// results, so most terminal failures arrive here rather than as the HTTP-200 `errors` that
 /// [`confirmed_terminal_query_errors`] handles (`stopped` is the only reason documented at 200).
 ///
 /// The rejection's own reason is not trusted, since a `rateLimitExceeded` may concern the read
-/// itself. Only [`verify_job`] decides, and anything short of a verified failure returns the
-/// original rejection.
+/// itself. Only [`verify_job`] decides. A job it finds unfinished is simply waited for, which the
+/// job's end bounds; anything else short of a verified failure leaves the rejection to `outage`.
 ///
 /// [`retryable_failure`] decides whether verification is worth a request: a fresh job cannot fix a
 /// denial, a malformed request or a missing job. Every reason
 /// `crate::query::response::retryable_job_errors` reruns a job for arrives as [`Status::IO`]: HTTP
 /// 400 reasons after one read, 403 and 5xx reasons after the transport retries are spent.
-async fn rejected_poll_failure(
+async fn outlast_rejected_poll(
     client: &JobClient,
     operation: Option<&Operation>,
     reference: &JobReference,
     statement_type: &str,
     failure: adbc_core::error::Error,
-) -> AttemptFailure {
+    outage: &mut WaitOutage,
+) -> Result<(), AttemptFailure> {
     // Cancellation is not retryable, so a cancelled statement skips verification too.
     if !retryable_failure(failure.status) {
-        return AttemptFailure::Request(failure);
+        return Err(AttemptFailure::Request(failure));
     }
     match verify_job(client, operation, reference, statement_type).await {
-        JobVerdict::Failed(terminal) => AttemptFailure::Terminal(terminal),
-        JobVerdict::Cancelled(cancelled) => AttemptFailure::Request(cancelled),
-        // Nothing the job said establishes that it failed, so the caller keeps its rejection.
-        JobVerdict::Succeeded | JobVerdict::Unverified => AttemptFailure::Request(failure),
+        JobVerdict::Failed(terminal) => Err(AttemptFailure::Terminal(terminal)),
+        JobVerdict::Cancelled(cancelled) => Err(AttemptFailure::Request(cancelled)),
+        JobVerdict::Running => {
+            outage.end();
+            Ok(())
+        }
+        // Nothing the job said establishes that it failed, so its results are still worth reading.
+        JobVerdict::Succeeded | JobVerdict::Unverified => Ok(outage.outlast(failure, reference)?),
     }
 }
 
@@ -186,7 +203,7 @@ pub(super) async fn confirmed_terminal_query_errors(
         // A DONE job without `errorResult` succeeded; its `errors` are warnings.
         JobVerdict::Succeeded => Ok(None),
         JobVerdict::Cancelled(cancelled) => Err(AttemptFailure::Request(cancelled)),
-        JobVerdict::Unverified => Err(AttemptFailure::Request(job_error(
+        JobVerdict::Running | JobVerdict::Unverified => Err(AttemptFailure::Request(job_error(
             context,
             Some(reference),
             &unverified,
@@ -201,8 +218,9 @@ enum JobVerdict {
     Failed(TerminalFailure),
     /// The same job, `DONE`, with no `errorResult`.
     Succeeded,
-    /// The fetch failed or was undecodable, the resource named another job, or the job is not
-    /// `DONE`; the caller reports what it already had.
+    /// The same job, not yet `DONE`.
+    Running,
+    /// The fetch failed or was undecodable, or the resource named another job.
     Unverified,
     /// The caller cancelled during verification; this replaces the original failure.
     Cancelled(adbc_core::error::Error),
@@ -242,8 +260,9 @@ async fn verify_job(
 ) -> JobVerdict {
     let mut job = match fetch_job(client, operation, reference, "failed query").await {
         Ok(job) if job.is_done() => job,
+        Ok(_) => return JobVerdict::Running,
         Err(source) if source.status == Status::Cancelled => return JobVerdict::Cancelled(source),
-        Ok(_) | Err(_) => return JobVerdict::Unverified,
+        Err(_) => return JobVerdict::Unverified,
     };
     match job.take_terminal_errors() {
         Some(errors) => JobVerdict::Failed(TerminalFailure::new(
