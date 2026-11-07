@@ -81,16 +81,12 @@ fn terminal_transient_failures_reissue_three_times_with_fresh_request_ids() {
         responses.extend(failed_attempt(&job_id, reason, "SELECT"));
     }
     let (endpoint, captured) = capture_requests(responses);
-    let (runtime, client) = client(&endpoint);
-    let failure = complete(
-        &runtime,
-        client,
+    let failure = run(
+        &endpoint,
         plan(StatementQueryOptions {
             reservation: Some(Arc::from("none")),
             ..StatementQueryOptions::default()
         }),
-        QueryResultMode::Rows,
-        "test",
     )
     .unwrap_err();
     assert_eq!(failure.status, Status::IO);
@@ -132,16 +128,7 @@ fn a_failed_script_is_reported_rather_than_run_again() {
         // Only one attempt's worth of responses: a second submission has nothing to answer it.
         let (endpoint, captured) =
             capture_requests(failed_attempt("job-0", "backendError", statement_type));
-        let (runtime, client) = client(&endpoint);
-
-        let failure = complete(
-            &runtime,
-            client,
-            plan(StatementQueryOptions::default()),
-            QueryResultMode::Rows,
-            "test",
-        )
-        .unwrap_err();
+        let failure = run(&endpoint, plan(StatementQueryOptions::default())).unwrap_err();
 
         assert_eq!(failure.status, Status::IO, "{what}");
         assert!(

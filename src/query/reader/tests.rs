@@ -26,6 +26,12 @@ fn execution_at(runtime: &SharedRuntime, endpoint: &str) -> ExecutionContext {
     }
 }
 
+/// An execution for results that need no further request.
+fn offline_execution() -> ExecutionContext {
+    let runtime = crate::runtime::new_runtime().unwrap();
+    execution_at(&runtime, crate::test_support::UNREACHABLE_ENDPOINT)
+}
+
 /// A query that completed with `body` as its only response.
 fn completed(body: &[u8], returns_rows: bool) -> direct::CompletedQuery {
     let mut response = response::QueryResponse::decode(body, "query response").unwrap();
@@ -65,10 +71,7 @@ fn assert_cancelled(failure: ArrowError) {
 
 #[test]
 fn a_resident_result_reports_invalid_cells_on_iteration_once() {
-    let execution = execution_at(
-        &crate::runtime::new_runtime().unwrap(),
-        crate::test_support::UNREACHABLE_ENDPOINT,
-    );
+    let execution = offline_execution();
     let complete = integer_result(&["private-invalid-integer"]);
 
     let mut reader = reader_from_rest_query(&execution, complete, None, None)
@@ -82,10 +85,7 @@ fn a_resident_result_reports_invalid_cells_on_iteration_once() {
 
 #[test]
 fn results_either_side_of_the_resident_limit_keep_every_row() {
-    let execution = execution_at(
-        &crate::runtime::new_runtime().unwrap(),
-        crate::test_support::UNREACHABLE_ENDPOINT,
-    );
+    let execution = offline_execution();
     for row_count in [1, 32, 33] {
         let values = (0..row_count)
             .map(|value| value.to_string())
@@ -111,10 +111,7 @@ fn results_either_side_of_the_resident_limit_keep_every_row() {
 
 #[test]
 fn a_wide_resident_row_without_a_page_token_remains_readable() {
-    let execution = execution_at(
-        &crate::runtime::new_runtime().unwrap(),
-        crate::test_support::UNREACHABLE_ENDPOINT,
-    );
+    let execution = offline_execution();
     let value = "x".repeat(8 * 1024);
     let body = json!({
         "jobComplete": true,
@@ -158,10 +155,7 @@ fn a_resident_result_reports_a_closed_conversion_pipeline_once() {
 
 #[test]
 fn a_resident_result_reports_cancellation_before_or_after_its_batch_once() {
-    let execution = execution_at(
-        &crate::runtime::new_runtime().unwrap(),
-        crate::test_support::UNREACHABLE_ENDPOINT,
-    );
+    let execution = offline_execution();
     for after_batch in [false, true] {
         let cancellation = Cancellation::new(
             execution.runtime.clone(),
@@ -281,10 +275,7 @@ fn an_explicit_destination_keeps_schema_metadata_but_discards_result_pages() {
         br#"{"jobComplete":true,"schema":{"fields":[{"name":"value","type":"INTEGER"}]},"rows":[{"f":[{"v":"7"}]}],"totalBytesProcessed":"3","statementType":"SELECT"}"#,
         false,
     );
-    let execution = execution_at(
-        &crate::runtime::new_runtime().unwrap(),
-        crate::test_support::UNREACHABLE_ENDPOINT,
-    );
+    let execution = offline_execution();
 
     let mut reader = reader_from_rest_query(&execution, complete, None, None).unwrap();
     assert_eq!(reader.schema().field(0).name(), "value");
@@ -505,10 +496,7 @@ fn a_result_completed_by_a_poll_reports_the_costs_the_poll_omits() {
 /// Storage Read it fails, saying how to read it.
 #[test]
 fn a_result_too_large_for_rest_fails_without_storage_read() {
-    let mut execution = execution_at(
-        &crate::runtime::new_runtime().unwrap(),
-        crate::test_support::UNREACHABLE_ENDPOINT,
-    );
+    let mut execution = offline_execution();
     execution.result_options.use_storage_read = false;
     let mut complete = completed(
         br#"{"jobComplete":true,"jobReference":{"projectId":"project","jobId":"job","location":"US"},"statementType":"SELECT","schema":{"fields":[{"name":"big","type":"STRING"}]},"totalRows":"2"}"#,

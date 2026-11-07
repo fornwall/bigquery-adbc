@@ -63,34 +63,41 @@ fn assert_one_cancel(requests: CapturedServer, job_id: &str) {
     );
 }
 
+#[track_caller]
+fn assert_status<T: std::fmt::Debug>(result: adbc_core::error::Result<T>, status: Status) {
+    assert_eq!(result.unwrap_err().status, status);
+}
+
+#[track_caller]
+fn assert_reports_cancellation(
+    item: Option<Result<arrow_array::RecordBatch, arrow_schema::ArrowError>>,
+) {
+    let arrow_schema::ArrowError::ExternalError(source) = item.unwrap().unwrap_err() else {
+        panic!("expected the reader to report ADBC cancellation");
+    };
+    let source = source.downcast_ref::<adbc_core::error::Error>().unwrap();
+    assert_eq!(source.status, Status::Cancelled);
+}
+
 #[test]
 fn cancellation_tracks_active_operation_lifecycle() {
     let cancellation = cancellation();
     let handle = OperationCancelHandle(cancellation.clone());
-    assert_eq!(
-        handle.try_cancel().unwrap_err().status,
-        Status::InvalidState
-    );
+    assert_status(handle.try_cancel(), Status::InvalidState);
 
     let first = cancellation.begin();
     let second = cancellation.begin();
-    assert_eq!(first.check().unwrap_err().status, Status::Cancelled);
+    assert_status(first.check(), Status::Cancelled);
     assert!(second.check().is_ok());
 
     handle.try_cancel().unwrap();
-    assert_eq!(second.check().unwrap_err().status, Status::Cancelled);
+    assert_status(second.check(), Status::Cancelled);
     second.finish();
-    assert_eq!(
-        handle.try_cancel().unwrap_err().status,
-        Status::InvalidState
-    );
+    assert_status(handle.try_cancel(), Status::InvalidState);
 
     let abandoned = cancellation.begin();
     drop(abandoned);
-    assert_eq!(
-        handle.try_cancel().unwrap_err().status,
-        Status::InvalidState
-    );
+    assert_status(handle.try_cancel(), Status::InvalidState);
 }
 
 #[test]
@@ -119,12 +126,9 @@ fn synchronous_work_finishes_retained_operations_and_cancels_unfinished_jobs() {
             assert_eq!(failure.message, "work failed");
         }
         assert!(retained.unwrap().is_cancelled());
-        assert_eq!(
-            OperationCancelHandle(cancellation)
-                .try_cancel()
-                .unwrap_err()
-                .status,
-            Status::InvalidState
+        assert_status(
+            OperationCancelHandle(cancellation).try_cancel(),
+            Status::InvalidState,
         );
         assert_one_cancel(requests, "unfinished");
     }
@@ -164,12 +168,9 @@ fn dropping_an_incomplete_reader_cancels_retained_operation_clones() {
     drop(operation_reader(inner, operation));
 
     assert!(retained.is_cancelled());
-    assert_eq!(
-        OperationCancelHandle(cancellation)
-            .try_cancel()
-            .unwrap_err()
-            .status,
-        Status::InvalidState
+    assert_status(
+        OperationCancelHandle(cancellation).try_cancel(),
+        Status::InvalidState,
     );
 }
 
@@ -264,17 +265,7 @@ fn cancelled_operation_readers_release_retained_buffers() {
             OperationCancelHandle(cancellation).try_cancel().unwrap();
         }
         assert!(observer.strong_count() > 1);
-        let arrow_schema::ArrowError::ExternalError(source) = reader.next().unwrap().unwrap_err()
-        else {
-            panic!("expected the reader to report ADBC cancellation");
-        };
-        assert_eq!(
-            source
-                .downcast_ref::<adbc_core::error::Error>()
-                .unwrap()
-                .status,
-            Status::Cancelled
-        );
+        assert_reports_cancellation(reader.next());
         assert_eq!(observer.strong_count(), 1, "during_read={during_read}");
         assert_eq!(reader.schema(), schema);
         assert!(reader.next().is_none());
@@ -344,10 +335,7 @@ fn failed_runtime_thread_cancel_rearms_the_same_confirmed_reference() {
         std::thread::sleep(Duration::from_millis(10));
     }
 
-    assert_eq!(
-        operation.register_job(&reference).unwrap_err().status,
-        Status::Cancelled
-    );
+    assert_status(operation.register_job(&reference), Status::Cancelled);
     assert_eq!(requests.join().unwrap().len(), 2);
 }
 
@@ -384,10 +372,7 @@ fn cancellation_before_job_registration_cancels_job_when_known() {
     OperationCancelHandle(cancellation).try_cancel().unwrap();
 
     let reference = job("late-query-job");
-    assert_eq!(
-        operation.register_job(&reference).unwrap_err().status,
-        Status::Cancelled
-    );
+    assert_status(operation.register_job(&reference), Status::Cancelled);
     assert_one_cancel(requests, "late-query-job");
 }
 
@@ -429,12 +414,9 @@ fn a_cancelled_operation_refuses_a_provisional_job_and_cancels_nothing() {
     let operation = cancellation.begin();
     OperationCancelHandle(cancellation).try_cancel().unwrap();
 
-    assert_eq!(
-        operation
-            .register_provisional_job(&job("never-sent"))
-            .unwrap_err()
-            .status,
-        Status::Cancelled
+    assert_status(
+        operation.register_provisional_job(&job("never-sent")),
+        Status::Cancelled,
     );
     operation.finish();
     drop(operation);
@@ -457,10 +439,7 @@ fn a_more_specific_reference_rearms_an_already_cancelled_job() {
         Some("europe-north1"),
         "query-job".to_owned(),
     );
-    assert_eq!(
-        operation.register_job(&canonical).unwrap_err().status,
-        Status::Cancelled
-    );
+    assert_status(operation.register_job(&canonical), Status::Cancelled);
 
     let requests = requests.join().unwrap();
     assert_eq!(requests.len(), 2);
@@ -484,10 +463,7 @@ fn failed_provisional_cancel_retries_after_submission_confirmation() {
     operation.register_provisional_job(&reference).unwrap();
 
     OperationCancelHandle(cancellation).try_cancel().unwrap();
-    assert_eq!(
-        operation.register_job(&reference).unwrap_err().status,
-        Status::Cancelled
-    );
+    assert_status(operation.register_job(&reference), Status::Cancelled);
 
     assert_eq!(
         requests.join().unwrap().len(),
@@ -517,10 +493,7 @@ fn in_flight_provisional_cancel_retains_confirmation_after_the_caller_drops() {
             .unwrap();
     });
     first_received.recv_timeout(EVENT_TIMEOUT).unwrap();
-    assert_eq!(
-        operation.register_job(&reference).unwrap_err().status,
-        Status::Cancelled
-    );
+    assert_status(operation.register_job(&reference), Status::Cancelled);
     operation.finish();
     drop(operation);
     release.send(()).unwrap();
@@ -545,7 +518,7 @@ fn concurrent_operations_outlive_the_calls_that_follow_them() {
     );
 
     let later = cancellation.begin();
-    assert_eq!(superseded.check().unwrap_err().status, Status::Cancelled);
+    assert_status(superseded.check(), Status::Cancelled);
     assert!(first.check().is_ok());
     assert!(second.check().is_ok());
 
@@ -554,18 +527,15 @@ fn concurrent_operations_outlive_the_calls_that_follow_them() {
         .try_cancel()
         .unwrap();
     for operation in [&first, &second, &later] {
-        assert_eq!(operation.check().unwrap_err().status, Status::Cancelled);
+        assert_status(operation.check(), Status::Cancelled);
     }
 
     first.finish();
     second.finish();
     later.finish();
-    assert_eq!(
-        OperationCancelHandle(cancellation)
-            .try_cancel()
-            .unwrap_err()
-            .status,
-        Status::InvalidState
+    assert_status(
+        OperationCancelHandle(cancellation).try_cancel(),
+        Status::InvalidState,
     );
 }
 
@@ -589,8 +559,8 @@ fn every_concurrent_operation_is_locally_cancelled_before_the_first_remote_answe
     let cancel = std::thread::spawn(move || handle.try_cancel());
     seen.recv_timeout(EVENT_TIMEOUT)
         .expect("the first remote cancellation did not arrive");
-    assert_eq!(first.check().unwrap_err().status, Status::Cancelled);
-    assert_eq!(second.check().unwrap_err().status, Status::Cancelled);
+    assert_status(first.check(), Status::Cancelled);
+    assert_status(second.check(), Status::Cancelled);
 
     release.send(()).unwrap();
     cancel.join().unwrap().unwrap();
@@ -606,7 +576,7 @@ fn superseding_an_operation_cancels_its_registered_job() {
     first.register_job(&reference).unwrap();
 
     let replacement = cancellation.begin();
-    assert_eq!(first.check().unwrap_err().status, Status::Cancelled);
+    assert_status(first.check(), Status::Cancelled);
     replacement.finish();
 
     assert_one_cancel(requests, "superseded-job");
@@ -641,22 +611,9 @@ fn a_terminal_job_leaves_its_reader_cancellable_without_a_remote_request() {
     let handle = OperationCancelHandle(cancellation);
 
     handle.try_cancel().unwrap();
-    let arrow_schema::ArrowError::ExternalError(source) = reader.next().unwrap().unwrap_err()
-    else {
-        panic!("expected the reader to report ADBC cancellation");
-    };
-    assert_eq!(
-        source
-            .downcast_ref::<adbc_core::error::Error>()
-            .unwrap()
-            .status,
-        Status::Cancelled
-    );
+    assert_reports_cancellation(reader.next());
     assert!(reader.next().is_none());
-    assert_eq!(
-        handle.try_cancel().unwrap_err().status,
-        Status::InvalidState
-    );
+    assert_status(handle.try_cancel(), Status::InvalidState);
 }
 
 #[test]
@@ -697,7 +654,7 @@ fn cancel_failure_reports_unknown_after_stopping_local_work() {
         .try_cancel()
         .unwrap_err();
     assert_failure(&failure, Status::Unknown, &["cancel denied"]);
-    assert_eq!(operation.check().unwrap_err().status, Status::Cancelled);
+    assert_status(operation.check(), Status::Cancelled);
     assert_eq!(requests.join().unwrap().len(), 1);
 }
 
@@ -753,12 +710,9 @@ fn terminal_status_during_a_provisional_cancel_suppresses_confirmation_retry() {
     operation.register_provisional_job(&reference).unwrap();
     let cancel = std::thread::spawn(move || OperationCancelHandle(cancellation).try_cancel());
     received.recv_timeout(EVENT_TIMEOUT).unwrap();
-    assert_eq!(
-        operation
-            .register_completed_job(&reference)
-            .unwrap_err()
-            .status,
-        Status::Cancelled
+    assert_status(
+        operation.register_completed_job(&reference),
+        Status::Cancelled,
     );
     release.send(()).unwrap();
     assert_eq!(cancel.join().unwrap().unwrap_err().status, Status::Unknown);
@@ -780,6 +734,6 @@ fn a_cancellation_wakes_an_operation_parked_in_wait() {
             handle.try_cancel().unwrap();
         };
         let (waited, ()) = tokio::join!(operation.wait(std::future::pending::<()>()), cancel);
-        assert_eq!(waited.unwrap_err().status, Status::Cancelled);
+        assert_status(waited, Status::Cancelled);
     });
 }

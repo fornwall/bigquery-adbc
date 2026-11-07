@@ -27,15 +27,7 @@ fn a_replayed_jobs_query_reads_the_job_its_first_attempt_created() {
             "statistics": {"query": {"statementType": "SELECT"}}
         })),
     ]);
-    let (runtime, client) = client(&endpoint);
-    let completed = complete(
-        &runtime,
-        client,
-        plan(StatementQueryOptions::default()),
-        QueryResultMode::Rows,
-        "test",
-    )
-    .unwrap();
+    let completed = run(&endpoint, plan(StatementQueryOptions::default())).unwrap();
 
     assert_eq!(completed.metadata.statement_type, "SELECT");
     assert!(completed.completed_job.is_some());
@@ -70,15 +62,7 @@ fn jobs_query_jobless_result_keeps_initial_page_and_wire_invariants() {
         "statementType": "SELECT",
         "sessionInfo": {"sessionId":"session-1"}
     }))]);
-    let (runtime, client) = client(&endpoint);
-    let completed = complete(
-        &runtime,
-        client,
-        plan_at(StatementQueryOptions::default(), None),
-        QueryResultMode::Rows,
-        "test",
-    )
-    .unwrap();
+    let completed = run(&endpoint, plan_at(StatementQueryOptions::default(), None)).unwrap();
 
     assert!(completed.metadata.job_reference.is_none());
     assert_eq!(completed.metadata.query_id, "query-1");
@@ -178,15 +162,7 @@ fn optional_job_creation_rejects_an_incomplete_response_without_a_job_reference(
     let (endpoint, captured) = capture_requests(vec![ok(
         json!({"jobComplete": false, "queryId": "jobless-query"}),
     )]);
-    let (runtime, client) = client(&endpoint);
-    let failure = complete(
-        &runtime,
-        client,
-        plan(StatementQueryOptions::default()),
-        QueryResultMode::Rows,
-        "test",
-    )
-    .unwrap_err();
+    let failure = run(&endpoint, plan(StatementQueryOptions::default())).unwrap_err();
 
     assert_failure(
         &failure,
@@ -263,8 +239,7 @@ fn non_dry_insert_without_location_polls_where_bigquery_ran_the_job() {
             "rows":[{"f":[{"v":"7"}]}]
         })),
     ]);
-    let (runtime, client) = client(&endpoint);
-    let completed = complete(&runtime, client, plan, QueryResultMode::Rows, "test").unwrap();
+    let completed = run(&endpoint, plan).unwrap();
 
     assert_eq!(completed.page.rows.len(), 1);
     assert_eq!(
@@ -383,8 +358,7 @@ fn non_dry_insert_requires_and_uses_the_exact_caller_job_id() {
             "pageToken":"next-page"
         })),
     ]);
-    let (runtime, client) = client(&endpoint);
-    let completed = complete(&runtime, client, plan, QueryResultMode::Rows, "test").unwrap();
+    let completed = run(&endpoint, plan).unwrap();
     assert!(completed.completed_job.is_some());
     assert_eq!(completed.metadata.total_bytes_billed, Some(9));
     assert_eq!(completed.page.rows.len(), 1);
@@ -489,8 +463,7 @@ fn running_insert_preserves_the_session_its_result_poll_cannot_return() {
             "totalBytesProcessed":"2"
         })),
     ]);
-    let (runtime, client) = client(&endpoint);
-    let completed = complete(&runtime, client, plan, QueryResultMode::Rows, "test").unwrap();
+    let completed = run(&endpoint, plan).unwrap();
 
     assert_eq!(
         completed.metadata.session_id.as_deref(),
@@ -543,16 +516,12 @@ fn a_job_the_job_timeout_stopped_is_a_timeout_naming_the_option() {
         ),
     ] {
         let (endpoint, captured) = capture_requests(vec![(499, error_body("stopped", message))]);
-        let (runtime, client) = client(&endpoint);
-        let failure = complete(
-            &runtime,
-            client,
+        let failure = run(
+            &endpoint,
             plan(StatementQueryOptions {
                 job_timeout_ms: 2000,
                 ..StatementQueryOptions::default()
             }),
-            QueryResultMode::Rows,
-            "test",
         )
         .unwrap_err();
         let failure = explain_job_timeout(failure, 2000);

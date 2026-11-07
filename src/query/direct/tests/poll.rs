@@ -18,15 +18,7 @@ fn incomplete_warning_polls_same_default_location_job() {
             "rows": []
         })),
     ]);
-    let (runtime, client) = client(&endpoint);
-    let completed = complete(
-        &runtime,
-        client,
-        plan_at(StatementQueryOptions::default(), None),
-        QueryResultMode::Rows,
-        "test",
-    )
-    .unwrap();
+    let completed = run(&endpoint, plan_at(StatementQueryOptions::default(), None)).unwrap();
     assert_eq!(
         completed.metadata.job_reference.as_ref().unwrap().location,
         None
@@ -70,15 +62,7 @@ fn a_row_too_large_for_any_response_leaves_the_rows_to_storage_read() {
             "statistics": {"query": {"statementType": "SELECT"}}
         })),
     ]);
-    let (runtime, client) = client(&endpoint);
-    let completed = complete(
-        &runtime,
-        client,
-        plan(StatementQueryOptions::default()),
-        QueryResultMode::Rows,
-        "test",
-    )
-    .unwrap();
+    let completed = run(&endpoint, plan(StatementQueryOptions::default())).unwrap();
 
     assert!(completed.metadata.rows_exceed_rest);
     assert_eq!(completed.metadata.total_rows, Some(2));
@@ -154,15 +138,7 @@ fn completed_warning_is_verified_as_success_without_reissue() {
             "status": {"state":"DONE","errors":[{"reason":"backendError","message":"warning"}]}
         })),
     ]);
-    let (runtime, client) = client(&endpoint);
-    complete(
-        &runtime,
-        client,
-        plan(StatementQueryOptions::default()),
-        QueryResultMode::Rows,
-        "test",
-    )
-    .unwrap();
+    run(&endpoint, plan(StatementQueryOptions::default())).unwrap();
     let captured = captured.join().unwrap();
     assert_eq!(captured.len(), 2);
     assert!(captured[0].line.starts_with("POST "));
@@ -180,15 +156,7 @@ fn completed_no_schema_response_verifies_errors_as_warnings() {
         })),
         ok(json!({"jobReference":reference,"status":{"state":"DONE"}})),
     ]);
-    let (runtime, client) = client(&endpoint);
-    let completed = complete(
-        &runtime,
-        client,
-        plan_at(StatementQueryOptions::default(), None),
-        QueryResultMode::Rows,
-        "test",
-    )
-    .unwrap();
+    let completed = run(&endpoint, plan_at(StatementQueryOptions::default(), None)).unwrap();
     assert!(completed.metadata.job_reference.is_some());
     assert!(completed.metadata.schema.is_none());
     assert_eq!(captured.join().unwrap().len(), 2);

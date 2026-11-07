@@ -91,3 +91,9 @@ fn complete(
         context,
     ))
 }
+
+/// Runs `plan` for its rows against `endpoint`.
+fn run(endpoint: &str, plan: QueryPlan) -> Result<CompletedQuery> {
+    let (runtime, client) = client(endpoint);
+    complete(&runtime, client, plan, QueryResultMode::Rows, "test")
+}

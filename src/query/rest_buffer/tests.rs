@@ -1,24 +1,36 @@
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
+
+use arrow_array::Int64Array;
+use arrow_schema::{DataType, Field, Schema};
+use serde_json::json;
+
+use super::*;
+use crate::pipeline::{BATCH_SIZE, QUERY_RESULT_BUFFER_SIZE};
+use crate::query::response::{QueryPage, QueryResponse};
+use crate::rest::jobs::{JobClient, JobReference};
+use crate::rows::RestValue;
+use crate::runtime::new_runtime;
+use crate::test_support::UNREACHABLE_ENDPOINT;
+use crate::test_support::http::{
+    accept, capture_requests_gated, mock_listener, ok, read_captured_request, retire,
+    write_response,
+};
+
+fn row(value: impl ToString) -> RestRow {
+    RestRow::new(vec![RestValue::String(value.to_string())])
+}
+
+fn integer_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![Field::new("n", DataType::Int64, true)]))
+}
+
 #[test]
 fn delivers_resident_rows_while_the_next_page_is_waiting() {
-    use std::sync::Arc;
-    use std::time::Duration;
-
-    use arrow_array::Int64Array;
-    use arrow_schema::{DataType, Field, Schema};
-    use serde_json::json;
-
-    use super::{QueryPager, QueryResultOptions, buffer_rest_query_results};
-    use crate::pipeline::{BATCH_SIZE, ResultSink};
-    use crate::query::response::QueryPage;
-    use crate::rest::jobs::{JobClient, JobReference};
-    use crate::rows::{RestRow, RestValue};
-    use crate::runtime::new_runtime;
-    use crate::test_support::http::{capture_requests_gated, ok};
-
     for concurrency in [1, 10] {
         for row_count in [1, BATCH_SIZE, 10_000] {
             let (requested, request_received) = tokio::sync::oneshot::channel();
-            let (release, wait_for_release) = std::sync::mpsc::channel();
+            let (release, wait_for_release) = mpsc::channel();
             let (endpoint, captured) = capture_requests_gated(
                 vec![ok(
                     json!({"jobComplete":true,"rows":[{"f":[{"v":"10000"}]}]}),
@@ -40,14 +52,12 @@ fn delivers_resident_rows_while_the_next_page_is_waiting() {
                 Some(JobReference::new("project", Some("EU"), "job".to_owned())),
                 None,
                 QueryPage {
-                    rows: (0..row_count)
-                        .map(|index| RestRow::new(vec![RestValue::String(index.to_string())]))
-                        .collect(),
+                    rows: (0..row_count).map(|index| row(index)).collect(),
                     page_token: Some("next".to_owned()),
                     encoded_len: 0,
                 },
             );
-            let schema = Arc::new(Schema::new(vec![Field::new("n", DataType::Int64, true)]));
+            let schema = integer_schema();
             let (sink, mut batches) = ResultSink::for_test_reading(schema);
             let mut options = QueryResultOptions::default();
             options
@@ -96,12 +106,12 @@ fn delivers_resident_rows_while_the_next_page_is_waiting() {
 
 #[test]
 fn dropping_conversion_tasks_stops_started_blocking_work_cooperatively() {
-    let runtime = crate::runtime::new_runtime().unwrap();
-    let cancellation = crate::pipeline::ResultPipelineCancellation::new(None);
+    let runtime = new_runtime().unwrap();
+    let cancellation = ResultPipelineCancellation::new(None);
     let conversion_cancellation = cancellation.clone();
-    let (started_sender, started_receiver) = std::sync::mpsc::channel();
-    let (stopped_sender, stopped_receiver) = std::sync::mpsc::channel();
-    let mut conversions = super::ConversionTasks::new(cancellation);
+    let (started_sender, started_receiver) = mpsc::channel();
+    let (stopped_sender, stopped_receiver) = mpsc::channel();
+    let mut conversions = ConversionTasks::new(cancellation);
     conversions.push(
         runtime.spawn_blocking(move || {
             started_sender.send(()).unwrap();
@@ -114,30 +124,30 @@ fn dropping_conversion_tasks_stops_started_blocking_work_cooperatively() {
         0,
     );
     started_receiver
-        .recv_timeout(std::time::Duration::from_secs(5))
+        .recv_timeout(Duration::from_secs(5))
         .unwrap();
 
     drop(conversions);
 
     stopped_receiver
-        .recv_timeout(std::time::Duration::from_secs(5))
+        .recv_timeout(Duration::from_secs(5))
         .unwrap();
 }
 
 #[test]
 fn operation_cancellation_stops_started_result_conversion() {
-    let runtime = crate::runtime::new_runtime().unwrap();
+    let runtime = new_runtime().unwrap();
     let operation_cancellation = crate::cancellation::Cancellation::new(
         runtime.clone(),
         crate::clients::ClientState::for_test(),
         "statement",
     );
     let operation = operation_cancellation.begin();
-    let cancellation = crate::pipeline::ResultPipelineCancellation::new(Some(operation));
+    let cancellation = ResultPipelineCancellation::new(Some(operation));
     let conversion_cancellation = cancellation.clone();
-    let (started_sender, started_receiver) = std::sync::mpsc::channel();
-    let (stopped_sender, stopped_receiver) = std::sync::mpsc::channel();
-    let mut conversions = super::ConversionTasks::new(cancellation);
+    let (started_sender, started_receiver) = mpsc::channel();
+    let (stopped_sender, stopped_receiver) = mpsc::channel();
+    let mut conversions = ConversionTasks::new(cancellation);
     conversions.push(
         runtime.spawn_blocking(move || {
             started_sender.send(()).unwrap();
@@ -150,7 +160,7 @@ fn operation_cancellation_stops_started_result_conversion() {
         0,
     );
     started_receiver
-        .recv_timeout(std::time::Duration::from_secs(5))
+        .recv_timeout(Duration::from_secs(5))
         .unwrap();
 
     adbc_core::CancelHandle::try_cancel(&crate::cancellation::OperationCancelHandle(
@@ -159,7 +169,7 @@ fn operation_cancellation_stops_started_result_conversion() {
     .unwrap();
 
     stopped_receiver
-        .recv_timeout(std::time::Duration::from_secs(5))
+        .recv_timeout(Duration::from_secs(5))
         .unwrap();
     assert!(
         runtime
@@ -175,12 +185,11 @@ fn operation_cancellation_stops_started_result_conversion() {
 /// be exceeded, and delivering a conversion returns its bytes to the window.
 #[test]
 fn the_conversion_window_bounds_in_flight_rows_by_bytes_as_well_as_count() {
-    let runtime = crate::runtime::new_runtime().unwrap();
+    let runtime = new_runtime().unwrap();
     let spawn = || runtime.spawn(async { Ok(None) });
-    let mut conversions =
-        super::ConversionTasks::new(crate::pipeline::ResultPipelineCancellation::new(None));
+    let mut conversions = ConversionTasks::new(ResultPipelineCancellation::new(None));
     assert!(conversions.may_start(1));
-    conversions.push(spawn(), 2 * super::CONVERSION_WINDOW_BYTES);
+    conversions.push(spawn(), 2 * CONVERSION_WINDOW_BYTES);
     assert!(
         !conversions.may_start(10),
         "a full byte window admitted a conversion"
@@ -195,7 +204,7 @@ fn the_conversion_window_bounds_in_flight_rows_by_bytes_as_well_as_count() {
     conversions.push(spawn(), 1);
     assert!(conversions.may_start(2));
     assert!(!conversions.may_start(1), "the prefetch width was exceeded");
-    conversions.push(spawn(), super::CONVERSION_WINDOW_BYTES - 1);
+    conversions.push(spawn(), CONVERSION_WINDOW_BYTES - 1);
     assert!(!conversions.may_start(10));
     runtime
         .block_on(conversions.next())
@@ -213,13 +222,6 @@ fn the_conversion_window_bounds_in_flight_rows_by_bytes_as_well_as_count() {
 
 #[test]
 fn a_skewed_page_charges_the_wide_batch_its_retained_allocation() {
-    use super::conversion_input_bytes;
-    use crate::pipeline::{BATCH_SIZE, ResultSink};
-    use crate::query::pager::QueryPager;
-    use crate::query::response::QueryResponse;
-    use crate::rest::jobs::JobClient;
-    use crate::rows::{RestRow, RestValue};
-
     const PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
     const ROWS: usize = 16 * BATCH_SIZE;
     let body = format!(
@@ -231,13 +233,8 @@ fn a_skewed_page_charges_the_wide_batch_its_retained_allocation() {
         .unwrap()
         .page();
     let previous_charge = (page.encoded_len / page.rows.len()) * BATCH_SIZE;
-    let runtime = crate::runtime::new_runtime().unwrap();
-    let mut pager = QueryPager::new(
-        JobClient::for_test(crate::test_support::UNREACHABLE_ENDPOINT),
-        None,
-        None,
-        page,
-    );
+    let runtime = new_runtime().unwrap();
+    let mut pager = QueryPager::new(JobClient::for_test(UNREACHABLE_ENDPOINT), None, None, page);
     let batch = runtime
         .block_on(pager.next_batch(&ResultSink::for_test()))
         .unwrap()
@@ -252,34 +249,31 @@ fn a_skewed_page_charges_the_wide_batch_its_retained_allocation() {
     assert_eq!(charged, expected);
     assert!(previous_charge < PAYLOAD_BYTES / 8);
 
-    let mut conversions =
-        super::ConversionTasks::new(crate::pipeline::ResultPipelineCancellation::new(None));
+    let mut conversions = ConversionTasks::new(ResultPipelineCancellation::new(None));
     for _ in 0..8 {
         assert!(conversions.may_start(10));
         conversions.push(runtime.spawn(async { Ok(None) }), charged);
     }
     assert!(!conversions.may_start(10));
-    assert!(8 * previous_charge < super::CONVERSION_WINDOW_BYTES);
+    assert!(8 * previous_charge < CONVERSION_WINDOW_BYTES);
 }
 
 /// A conversion that panicked reaches the reader as the driver defect it is, not as a bare
 /// `JoinError` without a status.
 #[test]
 fn a_panicked_conversion_is_reported_as_an_internal_driver_defect() {
-    let runtime = crate::runtime::new_runtime().unwrap();
-    let (sink, _batches) = crate::pipeline::ResultSink::for_test_reading(std::sync::Arc::new(
-        arrow_schema::Schema::empty(),
-    ));
-    let mut conversions = super::ConversionTasks::new(sink.cancellation.clone());
+    let runtime = new_runtime().unwrap();
+    let (sink, _batches) = ResultSink::for_test_reading(Arc::new(Schema::empty()));
+    let mut conversions = ConversionTasks::new(sink.cancellation.clone());
     conversions.push(
-        runtime.spawn_blocking(|| -> super::ConversionResult { panic!("conversion exploded") }),
+        runtime.spawn_blocking(|| -> ConversionResult { panic!("conversion exploded") }),
         0,
     );
 
     let failure = runtime
-        .block_on(async { super::deliver_conversion(conversions.next().await, &sink).await })
+        .block_on(async { deliver_conversion(conversions.next().await, &sink).await })
         .unwrap_err();
-    let arrow_schema::ArrowError::ExternalError(source) = failure else {
+    let ArrowError::ExternalError(source) = failure else {
         panic!("expected an embedded driver error, got {failure:?}");
     };
     let error = source.downcast_ref::<adbc_core::error::Error>().unwrap();
@@ -303,22 +297,6 @@ fn a_panicked_conversion_is_reported_as_an_internal_driver_defect() {
 /// with the producer parked on delivery.
 #[test]
 fn a_reader_pausing_past_the_request_timeout_does_not_repeat_a_page_request() {
-    use std::sync::{Arc, mpsc};
-    use std::time::Duration;
-
-    use arrow_array::{Int64Array, RecordBatch};
-    use arrow_schema::{DataType, Field, Schema};
-    use serde_json::json;
-
-    use super::{QueryPager, QueryResultOptions, buffer_rest_query_results};
-    use crate::pipeline::{QUERY_RESULT_BUFFER_SIZE, ResultSink};
-    use crate::query::response::QueryPage;
-    use crate::rest::jobs::{JobClient, JobReference};
-    use crate::rows::{RestRow, RestValue};
-    use crate::test_support::http::{
-        accept, mock_listener, read_captured_request, retire, write_response,
-    };
-
     const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
     let (listener, endpoint) = mock_listener();
     let (stop, stopped) = mpsc::channel::<()>();
@@ -362,12 +340,12 @@ fn a_reader_pausing_past_the_request_timeout_does_not_repeat_a_page_request() {
         Some(JobReference::new("project", Some("EU"), "job".to_owned())),
         None,
         QueryPage {
-            rows: vec![RestRow::new(vec![RestValue::String("1".to_owned())])],
+            rows: vec![row(1)],
             page_token: Some("next".to_owned()),
             encoded_len: 0,
         },
     );
-    let schema = Arc::new(Schema::new(vec![Field::new("n", DataType::Int64, true)]));
+    let schema = integer_schema();
     let filler =
         RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(vec![0]))]).unwrap();
     let (sink, mut batches) = ResultSink::for_test_reading(schema);

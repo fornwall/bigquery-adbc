@@ -8,6 +8,11 @@ use tokio::sync::{Semaphore, mpsc};
 
 use super::{BufferedBigQueryRecordBatchReader, ResultPipelineCancellation, buffer_batch};
 
+fn value_batch() -> RecordBatch {
+    RecordBatch::try_from_iter([("value", Arc::new(Int64Array::from(vec![42])) as ArrayRef)])
+        .unwrap()
+}
+
 enum TestProducerOutcome {
     Success,
     Error,
@@ -17,9 +22,7 @@ enum TestProducerOutcome {
 fn test_buffered_reader(
     outcome: TestProducerOutcome,
 ) -> (RecordBatch, BufferedBigQueryRecordBatchReader) {
-    let batch =
-        RecordBatch::try_from_iter([("value", Arc::new(Int64Array::from(vec![42])) as ArrayRef)])
-            .unwrap();
+    let batch = value_batch();
     let runtime = crate::runtime::new_runtime().unwrap();
     let (sender, receiver) = mpsc::channel(1);
     let produced_batch = batch.clone();
@@ -51,9 +54,7 @@ fn test_buffered_reader(
 /// into the same channel under the same byte budget, and one cancellation stops them all.
 #[test]
 fn cloned_sinks_share_the_channel_budget_and_cancellation() {
-    let batch =
-        RecordBatch::try_from_iter([("value", Arc::new(Int64Array::from(vec![42])) as ArrayRef)])
-            .unwrap();
+    let batch = value_batch();
     let runtime = crate::runtime::new_runtime().unwrap();
     let (sender, mut receiver) = mpsc::channel(4);
     let sink = super::ResultSink {
@@ -96,9 +97,7 @@ fn cloned_sinks_share_the_channel_budget_and_cancellation() {
 #[test]
 fn the_delivery_slot_bounds_the_batches_outside_the_byte_budget() {
     let slots = 3;
-    let batch =
-        RecordBatch::try_from_iter([("value", Arc::new(Int64Array::from(vec![42])) as ArrayRef)])
-            .unwrap();
+    let batch = value_batch();
     let runtime = crate::runtime::new_runtime().unwrap();
     let (sender, mut receiver) = mpsc::channel(slots + 1);
     let sink = super::ResultSink {
@@ -162,9 +161,7 @@ fn the_delivery_slot_bounds_the_batches_outside_the_byte_budget() {
 /// waiting deliveries.
 #[test]
 fn completed_batch_holds_its_memory_budget_until_dequeued() {
-    let batch =
-        RecordBatch::try_from_iter([("value", Arc::new(Int64Array::from(vec![42])) as ArrayRef)])
-            .unwrap();
+    let batch = value_batch();
     let batch_size = super::buffered_batch_size(&batch);
     let budget = Arc::new(Semaphore::new(batch_size));
     let runtime = crate::runtime::new_runtime().unwrap();
@@ -254,11 +251,7 @@ fn dropping_a_reader_mid_stream_stops_its_producer() {
 
     for parked in [false, true] {
         let runtime = crate::runtime::new_runtime().unwrap();
-        let batch = RecordBatch::try_from_iter([(
-            "value",
-            Arc::new(Int64Array::from(vec![42])) as ArrayRef,
-        )])
-        .unwrap();
+        let batch = value_batch();
         let (stopped, producer_stopped) = std::sync::mpsc::channel();
         let mut reader = super::spawn_result_reader(
             runtime.clone(),

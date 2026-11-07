@@ -127,8 +127,7 @@ fn both_routes_keep_the_services_canonical_location_casing() {
             vec![(200, results)]
         };
         let (endpoint, captured) = capture_requests(responses);
-        let (runtime, client) = client(&endpoint);
-        let completed = complete(&runtime, client, plan, QueryResultMode::Rows, "test").unwrap();
+        let completed = run(&endpoint, plan).unwrap();
 
         assert_eq!(
             completed
@@ -188,8 +187,7 @@ fn both_query_routes_follow_a_numeric_projects_canonical_identity() {
             })),
         ]);
         let (endpoint, captured) = capture_requests(responses);
-        let (runtime, client) = client(&endpoint);
-        let completed = complete(&runtime, client, plan, QueryResultMode::Rows, "test").unwrap();
+        let completed = run(&endpoint, plan).unwrap();
         assert_eq!(
             completed.metadata.job_reference.unwrap(),
             JobReference::new("canonical-project", Some("EU"), job_id.clone())
