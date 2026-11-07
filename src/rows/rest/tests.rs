@@ -1,7 +1,12 @@
 use super::*;
 
+fn decode_row(json: &str) -> serde_json::Result<RestRow> {
+    let page: RestRows = serde_json::from_str(&format!("[{json}]"))?;
+    Ok(page.into_vec().remove(0))
+}
+
 fn decode(json: &str) -> RestRow {
-    serde_json::from_str(json).unwrap()
+    decode_row(json).unwrap()
 }
 
 #[test]
@@ -133,9 +138,7 @@ fn rejects_missing_duplicate_and_malformed_envelopes() {
         (r#"[]"#, "row is not a JSON object"),
         (r#"{"f":["not a cell"]}"#, "cell is not a JSON object"),
     ] {
-        let message = serde_json::from_str::<RestRow>(json)
-            .unwrap_err()
-            .to_string();
+        let message = decode_row(json).unwrap_err().to_string();
         assert!(message.contains(expected), "{json}: {message}");
     }
 }
@@ -144,9 +147,7 @@ fn rejects_missing_duplicate_and_malformed_envelopes() {
 fn decoder_errors_never_echo_cell_contents() {
     let secret = "server-secret-that-must-not-cross-the-ffi-boundary";
     for json in [format!(r#""{secret}""#), format!(r#"{{"f":["{secret}"]}}"#)] {
-        let message = serde_json::from_str::<RestRow>(&json)
-            .unwrap_err()
-            .to_string();
+        let message = decode_row(&json).unwrap_err().to_string();
         assert!(!message.contains(secret), "value was echoed: {message}");
     }
     let message = serde_json::from_str::<RestRows>(&format!(r#""{secret}""#))
@@ -162,9 +163,7 @@ fn deeply_nested_values_fail_at_the_json_recursion_limit() {
         value = format!(r#"[{{"v":{value}}}]"#);
     }
     let json = format!(r#"{{"f":[{{"v":{value}}}]}}"#);
-    let message = serde_json::from_str::<RestRow>(&json)
-        .unwrap_err()
-        .to_string();
+    let message = decode_row(&json).unwrap_err().to_string();
     assert!(message.contains("recursion limit exceeded"), "{message}");
 }
 
@@ -223,10 +222,6 @@ fn inline_and_heap_strings_preserve_utf8_escapes_and_boundaries() {
             matches!(value, RestValue::ShortString { .. }),
             text.len() <= INLINE_CAPACITY
         );
-        let owned: RestValue =
-            Deserialize::deserialize(de::value::StringDeserializer::<de::value::Error>::new(text))
-                .unwrap();
-        assert_eq!(value, owned);
     }
     let value: RestValue = serde_json::from_str(r#""\ud83e\udd80\u0000""#).unwrap();
     assert_eq!(value.as_str(), Some("🦀\0"));

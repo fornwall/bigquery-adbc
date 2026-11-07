@@ -9,6 +9,7 @@ use arrow_schema::Schema;
 
 use crate::pipeline::BATCH_SIZE;
 use crate::rest::model::TableFieldSchema;
+use crate::rows::RestRows;
 use crate::test_support::schema::{field, field_mode, range_field, record, table_schema};
 use crate::types::decimal::{BIGNUMERIC_PRECISION, BIGNUMERIC_SCALE};
 use crate::types::schema::convert_schema;
@@ -729,7 +730,7 @@ fn decodes_rest_wire_scalars_and_composites_into_arrow() {
         field_mode("numbers", "INT64", "REPEATED"),
     ]);
     let schema = convert_schema(&table).unwrap();
-    let rows: Vec<RestRow> = serde_json::from_str(
+    let rows: RestRows = serde_json::from_str(
         r#"[{"f":[
             {"v":"text"},
             {"v":"AQID"},
@@ -751,7 +752,7 @@ fn decodes_rest_wire_scalars_and_composites_into_arrow() {
         ]}]"#,
     )
     .unwrap();
-    let batch = rest_rows_to_record_batch(rows, 0, schema, &uncancelled())
+    let batch = rest_rows_to_record_batch(rows.into_vec(), 0, schema, &uncancelled())
         .unwrap()
         .unwrap();
 
@@ -800,9 +801,8 @@ fn preserves_row_count_for_zero_column_batches() {
 fn normalizes_null_repeated_rest_values_to_empty_arrays() {
     let schema =
         convert_schema(&table_schema([field_mode("numbers", "INT64", "REPEATED")])).unwrap();
-    let rows: Vec<RestRow> =
-        serde_json::from_str(r#"[{"f":[{"v":null}]},{"f":[{"v":[]}]}]"#).unwrap();
-    let batch = rest_rows_to_record_batch(rows, 0, schema, &uncancelled())
+    let rows: RestRows = serde_json::from_str(r#"[{"f":[{"v":null}]},{"f":[{"v":[]}]}]"#).unwrap();
+    let batch = rest_rows_to_record_batch(rows.into_vec(), 0, schema, &uncancelled())
         .unwrap()
         .unwrap();
     let numbers = batch.column(0).as_list::<i32>();
