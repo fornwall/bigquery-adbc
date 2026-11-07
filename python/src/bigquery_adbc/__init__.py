@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import importlib.metadata
 import os
 from collections.abc import Mapping
@@ -58,11 +57,19 @@ def _validated_library_path(path: Path, source: str) -> str:
     return str(path.resolve(strict=True))
 
 
-@functools.lru_cache(maxsize=1)
-def _bundled_library_path(package_dir: Path) -> str:
-    """Resolve once per package directory; installed libraries are immutable."""
+def driver_path() -> str:
+    """Return the absolute path of the native BigQuery ADBC driver library.
 
-    candidates = [path for filename in _LIBRARY_FILENAMES if (path := package_dir / filename).is_file()]
+    ``BIGQUERY_ADBC_LIBRARY``, if set, names a development build to use instead of
+    the library bundled beside this module. It is read on every call, so a running
+    session can switch builds.
+    """
+
+    override = os.environ.get(_LIBRARY_ENV)
+    if override:
+        return _validated_library_path(Path(override).expanduser(), f"the {_LIBRARY_ENV} environment variable")
+
+    candidates = [path for filename in _LIBRARY_FILENAMES if (path := _PACKAGE_DIR / filename).is_file()]
     if not candidates:
         expected = ", ".join(_LIBRARY_FILENAMES)
         raise FileNotFoundError(
@@ -75,21 +82,6 @@ def _bundled_library_path(package_dir: Path) -> str:
         raise RuntimeError(f"Expected exactly one bundled BigQuery ADBC driver library, but found: {found}")
 
     return _validated_library_path(candidates[0], "the installed Python package")
-
-
-def driver_path() -> str:
-    """Return the absolute path of the native BigQuery ADBC driver library.
-
-    ``BIGQUERY_ADBC_LIBRARY``, if set, names a development build to use instead of
-    the library bundled beside this module. It is read on every call, so a running
-    session can switch builds; the bundled path is cached.
-    """
-
-    override = os.environ.get(_LIBRARY_ENV)
-    if override:
-        return _validated_library_path(Path(override).expanduser(), f"the {_LIBRARY_ENV} environment variable")
-
-    return _bundled_library_path(_PACKAGE_DIR)
 
 
 def connect(

@@ -88,24 +88,6 @@ def test_driver_path_rereads_the_override_on_every_call(monkeypatch: pytest.Monk
     assert driver.driver_path() == str(second.resolve())
 
 
-def test_driver_path_does_not_restat_the_bundled_library(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """An installed package's own library is fixed, so it is looked up once."""
-
-    library = tmp_path / "libadbc_driver_bigquery.so"
-    library.touch()
-    monkeypatch.delenv("BIGQUERY_ADBC_LIBRARY", raising=False)
-    monkeypatch.setattr(driver, "_PACKAGE_DIR", tmp_path)
-    driver._bundled_library_path.cache_clear()
-
-    before = driver._bundled_library_path.cache_info()
-    assert driver.driver_path() == str(library.resolve())
-    assert driver.driver_path() == str(library.resolve())
-    after = driver._bundled_library_path.cache_info()
-
-    assert after.misses - before.misses == 1
-    assert after.hits - before.hits == 1
-
-
 @pytest.mark.parametrize(
     ("uri", "options", "expected_uri"),
     [
