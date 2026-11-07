@@ -966,6 +966,45 @@ fn a_control_statement_whose_answer_is_lost_reports_what_it_did() {
     }
 }
 
+/// A `COMMIT TRANSACTION` in the caller's SQL runs on `jobs.query`, so losing its answer reports
+/// "No active transaction found" from the replay. That answer proves the session has no
+/// transaction, so the next statement begins one rather than autocommitting there unseen.
+#[test]
+fn a_statement_told_no_transaction_is_active_makes_the_next_one_begin_again() {
+    let (endpoint, requests) = bigquery_losing_the_answer_to("COMMIT TRANSACTION", 9);
+    let mut connection = test_connection_at(&endpoint);
+    set_option(&mut connection, OptionConnection::AutoCommit, false);
+    let mut statement = connection.new_statement().unwrap();
+    for (sql, failure) in [
+        ("INSERT dataset.table VALUES (42)", None),
+        ("COMMIT TRANSACTION", Some("No active transaction found")),
+        ("INSERT dataset.table VALUES (43)", None),
+    ] {
+        statement.set_sql_query(sql).unwrap();
+        match (statement.execute_update(), failure) {
+            (Ok(_), None) => {}
+            (Err(error), Some(failure)) => assert_message(&error, &[failure]),
+            (outcome, _) => panic!("{sql}: {outcome:?}"),
+        }
+    }
+    drop(statement);
+    drop(connection);
+    assert_sql(
+        requests,
+        &[
+            "SELECT 1",
+            "BEGIN TRANSACTION",
+            "INSERT dataset.table VALUES (42)",
+            "COMMIT TRANSACTION",
+            "COMMIT TRANSACTION",
+            "BEGIN TRANSACTION",
+            "INSERT dataset.table VALUES (43)",
+            "ROLLBACK TRANSACTION",
+            "CALL BQ.ABORT_SESSION('mock-session')",
+        ],
+    );
+}
+
 /// `CALL BQ.ABORT_SESSION` queues behind whatever its session is running, and no one can cancel
 /// it, so the caller stops waiting for it, and does not claim the session ended.
 #[test]

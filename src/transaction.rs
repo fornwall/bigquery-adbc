@@ -484,11 +484,18 @@ const CONTROL_TIMEOUT: Duration = Duration::from_secs(60);
 /// needs its answer, and it queues behind whatever the session is still running.
 const ABORT_WAIT: Duration = Duration::from_secs(if cfg!(test) { 3 } else { 10 });
 
-/// Whether a failed `BEGIN`, `COMMIT` or `ROLLBACK` may still have taken effect: BigQuery gave
-/// no verdict on it, only a transport failure, a server error or a timeout
-/// ([`retryable_failure`]).
+/// Whether a failed `BEGIN`, `COMMIT` or `ROLLBACK` may still have taken effect: BigQuery gave no
+/// verdict on it, only a transport failure, a server error or a timeout ([`retryable_failure`]),
+/// an answer the driver could not read, or a defect on the driver's side.
 pub(crate) fn outcome_unknown(failure: &adbc_core::error::Error) -> bool {
     retryable_failure(failure.status)
+        || matches!(failure.status, Status::InvalidData | Status::Internal)
+}
+
+/// Whether BigQuery answered that its session has no transaction, which proves it whatever the
+/// driver believed. The message is the only signal: the reason is the generic `invalidQuery`.
+pub(crate) fn no_active_transaction(failure: &adbc_core::error::Error) -> bool {
+    failure.message.contains("No active transaction found")
 }
 
 /// Whether a query failed because its session has ended. The message is the only signal: BigQuery

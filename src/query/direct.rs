@@ -22,7 +22,7 @@ use crate::query::ExecutionProgress;
 use crate::rest::jobs::{JobClient, JobReference};
 use crate::rest::model::ErrorProto;
 use crate::runtime::SharedRuntime;
-use crate::transaction::{TransactionContext, session_expired};
+use crate::transaction::{TransactionContext, no_active_transaction, session_expired};
 use tokio::sync::Semaphore;
 
 mod attempt;
@@ -75,6 +75,13 @@ pub(super) fn complete_statement_query(
     };
     let failure = match complete_in_session(context, plan.clone(), result_mode, what) {
         Err(failure) if session_expired(&failure) => failure,
+        // The caller's `COMMIT` ended the transaction unseen, perhaps on an attempt whose answer
+        // was lost: BigQuery does not deduplicate one by request ID. Left active, every later
+        // statement would autocommit in the session.
+        Err(failure) if no_active_transaction(&failure) => {
+            context.transaction.ended_by_statement(ended);
+            return Err(failure);
+        }
         outcome => return outcome,
     };
     let session_id = if context.options.dry_run {

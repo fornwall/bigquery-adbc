@@ -4,8 +4,9 @@ use adbc_core::error::Status;
 
 use super::{
     EnableAutocommit, FinishTransaction, QueryStart, QueryTransaction, State, TransactionState,
-    googlesql_string_literal, unexpected_transition,
+    googlesql_string_literal, outcome_unknown, unexpected_transition,
 };
+use crate::error::error;
 use crate::test_support::errors::{assert_message, assert_message_omits};
 
 /// GoogleSQL escapes with backslashes: a doubled quote lexes as two adjacent literals, and an
@@ -26,6 +27,27 @@ fn a_session_id_is_spelled_as_a_googlesql_literal() {
         ),
     ] {
         assert_eq!(googlesql_string_literal(value), literal, "{value:?}");
+    }
+}
+
+/// Only BigQuery refusing a statement is a verdict. An answer the driver could not read, or a
+/// defect on its side, says as little as a lost one: a commit may have landed behind either.
+#[test]
+fn only_a_refusal_settles_a_control_statement() {
+    for (status, unknown) in [
+        (Status::IO, true),
+        (Status::Timeout, true),
+        (Status::InvalidData, true),
+        (Status::Internal, true),
+        (Status::InvalidArguments, false),
+        (Status::Unauthorized, false),
+        (Status::Unauthenticated, false),
+    ] {
+        assert_eq!(
+            outcome_unknown(&error("failed", status)),
+            unknown,
+            "{status:?}"
+        );
     }
 }
 

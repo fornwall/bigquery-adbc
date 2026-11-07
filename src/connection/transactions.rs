@@ -6,8 +6,8 @@ use adbc_core::error::{Result, Status};
 use super::BigQueryConnection;
 use crate::query::ExecutionContext;
 use crate::transaction::{
-    EnableAutocommit, FinishTransaction, SessionRelease, TransactionContext, outcome_unknown,
-    session_expired,
+    EnableAutocommit, FinishTransaction, SessionRelease, TransactionContext, no_active_transaction,
+    outcome_unknown, session_expired,
 };
 
 impl BigQueryConnection {
@@ -127,7 +127,7 @@ impl Drop for BigQueryConnection {
 /// Whether BigQuery answered a `COMMIT` or `ROLLBACK` with the transaction already gone, or with
 /// its session ended. Neither answer has a reason of its own, so the message is the only signal.
 fn transaction_lost(failure: &adbc_core::error::Error) -> bool {
-    failure.message.contains("No active transaction found") || session_expired(failure)
+    no_active_transaction(failure) || session_expired(failure)
 }
 
 /// Whether BigQuery refused a `COMMIT`, which leaves its transaction open.

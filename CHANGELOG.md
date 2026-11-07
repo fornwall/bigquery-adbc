@@ -77,6 +77,10 @@ changes.
 - Ending a BigQuery session no longer blocks without limit: the caller waits at most ten seconds,
   which bounds commit, rollback, autocommit changes and connection release. An error now says when
   the session could not be ended, instead of claiming it was.
+- A `BEGIN`, `COMMIT` or `ROLLBACK` answered with something the driver cannot read now counts as an
+  unknown outcome, instead of a refusal that kept a possibly committed transaction open.
+- After a statement fails with "No active transaction found", the next one begins a new transaction
+  instead of autocommitting in the session.
 
 ## [0.2.0] - 2026-11-06
 
