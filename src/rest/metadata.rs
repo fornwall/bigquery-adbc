@@ -415,6 +415,12 @@ impl MetadataClient {
         }
     }
 
+    /// Backs off before `round` + 1 of a read-modify-write the caller repeats itself.
+    pub(crate) async fn back_off(&self, operation: &Operation, round: u32) -> Result<()> {
+        let delay = self.delays.delay(RetryClass::Transient, round);
+        cancellation::sleep(Some(operation), delay).await
+    }
+
     /// The body of one successful `GET`. See [`Self::send_with_retry`].
     async fn read(&self, operation: Option<&Operation>, url: &str) -> MetadataResult<bytes::Bytes> {
         self.send_with_retry(operation, url, Call::Get).await

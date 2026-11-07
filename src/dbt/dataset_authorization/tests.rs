@@ -469,6 +469,28 @@ fn a_lost_etag_race_is_patched_again_under_the_fresh_etag() {
     );
 }
 
+/// Every race lost is another writer's success, so a grant outlasts eight dbt threads racing for
+/// one dataset.
+#[test]
+fn a_grant_outlasts_every_other_thread_of_a_dbt_run() {
+    let mut responses = Vec::new();
+    for round in 0..7 {
+        responses.push((200, json!({"etag": format!("etag-{round}"), "access": []})));
+        responses.push(precondition_failed());
+    }
+    responses.push((200, json!({"etag": "last-etag", "access": []})));
+    responses.push((200, json!({})));
+    let (endpoint, captured) = capture_requests(responses);
+    let mut statement = test_statement_at(&endpoint);
+    authorize_granted_view(&mut statement);
+
+    assert_eq!(statement.execute_update().unwrap(), Some(0));
+    assert_eq!(
+        captured.join().unwrap().last().unwrap().header("If-Match"),
+        Some("last-etag")
+    );
+}
+
 /// A patch that may have applied unseen (a 503 or a lost answer) is not replayed: the re-read
 /// shows the view listed, so nothing more is sent.
 #[test]

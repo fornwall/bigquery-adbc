@@ -96,15 +96,16 @@ impl DatasetAuthorizationOptions {
     }
 }
 
-/// Read-modify-write rounds one grant may take. See [`authorize`].
-const MAX_GRANT_ROUNDS: u32 = 3;
+/// Read-modify-write rounds one grant may take. Each race lost is another writer's success, so
+/// this is how many dbt threads can grant on one dataset at once. See [`authorize`].
+const MAX_GRANT_ROUNDS: u32 = 16;
 
 /// Lists `view` in the access control list of `dataset`.
 ///
 /// The whole list is sent back, so the patch carries the fetched ETag as `If-Match` and another
 /// writer's entries are never dropped. A patch that lost that race (412), or that failed in a way
-/// that may have applied it unseen, starts another round: the fresh read shows whether the view is
-/// listed, and otherwise supplies the ETag to patch under.
+/// that may have applied it unseen, starts another round after a jittered backoff: the fresh read
+/// shows whether the view is listed, and otherwise supplies the ETag to patch under.
 async fn authorize(
     client: &MetadataClient,
     operation: &Operation,
@@ -115,7 +116,6 @@ async fn authorize(
     let action = format!("authorize view {view_name} on BigQuery dataset {dataset}");
     let mut round = 1;
     loop {
-        operation.check()?;
         let metadata = Box::pin(client.get_dataset_access(Some(operation), dataset))
             .await
             .map_err(|source| {
@@ -165,6 +165,7 @@ async fn authorize(
             "re-reading the access list of {dataset} after: {}",
             failure.message
         );
+        client.back_off(operation, round).await?;
         round += 1;
     }
 }
