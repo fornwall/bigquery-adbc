@@ -1,7 +1,5 @@
 //! The ADBC C ABI, transcribed from `arrow-adbc/c/include/arrow-adbc/adbc.h`.
 //!
-//! Declarations only, so the file can be diffed against the upstream header.
-//!
 //! Field order in [`AdbcDriver`] is the vtable layout the driver manager indexes into. Never
 //! reorder; append at the end, mirroring the header.
 
@@ -104,6 +102,30 @@ pub(crate) struct AdbcPartitions {
     pub(crate) release: Option<unsafe extern "C" fn(*mut Self)>,
 }
 
+/// A vtable slot taking only its object and an error.
+type Call<H> = Option<unsafe extern "C" fn(*mut H, *mut AdbcError) -> AdbcStatusCode>;
+/// `Adbc*SetOption` and its double and integer forms, where `T` is the value.
+type SetOption<H, T> =
+    Option<unsafe extern "C" fn(*mut H, *const c_char, T, *mut AdbcError) -> AdbcStatusCode>;
+type SetOptionBytes<H> = Option<
+    unsafe extern "C" fn(*mut H, *const c_char, *const u8, usize, *mut AdbcError) -> AdbcStatusCode,
+>;
+/// `Adbc*GetOption` and `Adbc*GetOptionBytes`, which share the in/out length protocol.
+type GetOptionBuffer<H, T> = Option<
+    unsafe extern "C" fn(
+        *mut H,
+        *const c_char,
+        *mut T,
+        *mut usize,
+        *mut AdbcError,
+    ) -> AdbcStatusCode,
+>;
+/// `Adbc*GetOptionDouble` and `Adbc*GetOptionInt`.
+type GetOptionScalar<H, T> =
+    Option<unsafe extern "C" fn(*mut H, *const c_char, *mut T, *mut AdbcError) -> AdbcStatusCode>;
+/// A vtable slot writing one output before its error.
+type Output<H, T> = Option<unsafe extern "C" fn(*mut H, *mut T, *mut AdbcError) -> AdbcStatusCode>;
+
 /// The driver vtable. Fields before `ErrorGetDetailCount` are ADBC 1.0.0; the rest are 1.1.0. A
 /// `None` slot means "not implemented".
 #[repr(C)]
@@ -113,22 +135,11 @@ pub(crate) struct AdbcDriver {
     pub(crate) release: Option<unsafe extern "C" fn(*mut Self, *mut AdbcError) -> AdbcStatusCode>,
 
     // --- ADBC 1.0.0 ---
-    pub(crate) DatabaseInit:
-        Option<unsafe extern "C" fn(*mut AdbcDatabase, *mut AdbcError) -> AdbcStatusCode>,
-    pub(crate) DatabaseNew:
-        Option<unsafe extern "C" fn(*mut AdbcDatabase, *mut AdbcError) -> AdbcStatusCode>,
-    pub(crate) DatabaseSetOption: Option<
-        unsafe extern "C" fn(
-            *mut AdbcDatabase,
-            *const c_char,
-            *const c_char,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) DatabaseRelease:
-        Option<unsafe extern "C" fn(*mut AdbcDatabase, *mut AdbcError) -> AdbcStatusCode>,
-    pub(crate) ConnectionCommit:
-        Option<unsafe extern "C" fn(*mut AdbcConnection, *mut AdbcError) -> AdbcStatusCode>,
+    pub(crate) DatabaseInit: Call<AdbcDatabase>,
+    pub(crate) DatabaseNew: Call<AdbcDatabase>,
+    pub(crate) DatabaseSetOption: SetOption<AdbcDatabase, *const c_char>,
+    pub(crate) DatabaseRelease: Call<AdbcDatabase>,
+    pub(crate) ConnectionCommit: Call<AdbcConnection>,
     pub(crate) ConnectionGetInfo: Option<
         unsafe extern "C" fn(
             *mut AdbcConnection,
@@ -161,30 +172,10 @@ pub(crate) struct AdbcDriver {
             *mut AdbcError,
         ) -> AdbcStatusCode,
     >,
-    pub(crate) ConnectionGetTableTypes: Option<
-        unsafe extern "C" fn(
-            *mut AdbcConnection,
-            *mut FFI_ArrowArrayStream,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) ConnectionInit: Option<
-        unsafe extern "C" fn(
-            *mut AdbcConnection,
-            *mut AdbcDatabase,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) ConnectionNew:
-        Option<unsafe extern "C" fn(*mut AdbcConnection, *mut AdbcError) -> AdbcStatusCode>,
-    pub(crate) ConnectionSetOption: Option<
-        unsafe extern "C" fn(
-            *mut AdbcConnection,
-            *const c_char,
-            *const c_char,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
+    pub(crate) ConnectionGetTableTypes: Output<AdbcConnection, FFI_ArrowArrayStream>,
+    pub(crate) ConnectionInit: Output<AdbcConnection, AdbcDatabase>,
+    pub(crate) ConnectionNew: Call<AdbcConnection>,
+    pub(crate) ConnectionSetOption: SetOption<AdbcConnection, *const c_char>,
     pub(crate) ConnectionReadPartition: Option<
         unsafe extern "C" fn(
             *mut AdbcConnection,
@@ -194,10 +185,8 @@ pub(crate) struct AdbcDriver {
             *mut AdbcError,
         ) -> AdbcStatusCode,
     >,
-    pub(crate) ConnectionRelease:
-        Option<unsafe extern "C" fn(*mut AdbcConnection, *mut AdbcError) -> AdbcStatusCode>,
-    pub(crate) ConnectionRollback:
-        Option<unsafe extern "C" fn(*mut AdbcConnection, *mut AdbcError) -> AdbcStatusCode>,
+    pub(crate) ConnectionRelease: Call<AdbcConnection>,
+    pub(crate) ConnectionRollback: Call<AdbcConnection>,
     pub(crate) StatementBind: Option<
         unsafe extern "C" fn(
             *mut AdbcStatement,
@@ -206,13 +195,7 @@ pub(crate) struct AdbcDriver {
             *mut AdbcError,
         ) -> AdbcStatusCode,
     >,
-    pub(crate) StatementBindStream: Option<
-        unsafe extern "C" fn(
-            *mut AdbcStatement,
-            *mut FFI_ArrowArrayStream,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
+    pub(crate) StatementBindStream: Output<AdbcStatement, FFI_ArrowArrayStream>,
     pub(crate) StatementExecuteQuery: Option<
         unsafe extern "C" fn(
             *mut AdbcStatement,
@@ -230,32 +213,11 @@ pub(crate) struct AdbcDriver {
             *mut AdbcError,
         ) -> AdbcStatusCode,
     >,
-    pub(crate) StatementGetParameterSchema: Option<
-        unsafe extern "C" fn(
-            *mut AdbcStatement,
-            *mut FFI_ArrowSchema,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) StatementNew: Option<
-        unsafe extern "C" fn(
-            *mut AdbcConnection,
-            *mut AdbcStatement,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) StatementPrepare:
-        Option<unsafe extern "C" fn(*mut AdbcStatement, *mut AdbcError) -> AdbcStatusCode>,
-    pub(crate) StatementRelease:
-        Option<unsafe extern "C" fn(*mut AdbcStatement, *mut AdbcError) -> AdbcStatusCode>,
-    pub(crate) StatementSetOption: Option<
-        unsafe extern "C" fn(
-            *mut AdbcStatement,
-            *const c_char,
-            *const c_char,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
+    pub(crate) StatementGetParameterSchema: Output<AdbcStatement, FFI_ArrowSchema>,
+    pub(crate) StatementNew: Output<AdbcConnection, AdbcStatement>,
+    pub(crate) StatementPrepare: Call<AdbcStatement>,
+    pub(crate) StatementRelease: Call<AdbcStatement>,
+    pub(crate) StatementSetOption: SetOption<AdbcStatement, *const c_char>,
     pub(crate) StatementSetSqlQuery: Option<
         unsafe extern "C" fn(*mut AdbcStatement, *const c_char, *mut AdbcError) -> AdbcStatusCode,
     >,
@@ -275,101 +237,18 @@ pub(crate) struct AdbcDriver {
     pub(crate) ErrorFromArrayStream: Option<
         unsafe extern "C" fn(*mut FFI_ArrowArrayStream, *mut AdbcStatusCode) -> *const AdbcError,
     >,
-    pub(crate) DatabaseGetOption: Option<
-        unsafe extern "C" fn(
-            *mut AdbcDatabase,
-            *const c_char,
-            *mut c_char,
-            *mut usize,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) DatabaseGetOptionBytes: Option<
-        unsafe extern "C" fn(
-            *mut AdbcDatabase,
-            *const c_char,
-            *mut u8,
-            *mut usize,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) DatabaseGetOptionDouble: Option<
-        unsafe extern "C" fn(
-            *mut AdbcDatabase,
-            *const c_char,
-            *mut f64,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) DatabaseGetOptionInt: Option<
-        unsafe extern "C" fn(
-            *mut AdbcDatabase,
-            *const c_char,
-            *mut i64,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) DatabaseSetOptionBytes: Option<
-        unsafe extern "C" fn(
-            *mut AdbcDatabase,
-            *const c_char,
-            *const u8,
-            usize,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) DatabaseSetOptionDouble: Option<
-        unsafe extern "C" fn(
-            *mut AdbcDatabase,
-            *const c_char,
-            f64,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) DatabaseSetOptionInt: Option<
-        unsafe extern "C" fn(
-            *mut AdbcDatabase,
-            *const c_char,
-            i64,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) ConnectionCancel:
-        Option<unsafe extern "C" fn(*mut AdbcConnection, *mut AdbcError) -> AdbcStatusCode>,
-    pub(crate) ConnectionGetOption: Option<
-        unsafe extern "C" fn(
-            *mut AdbcConnection,
-            *const c_char,
-            *mut c_char,
-            *mut usize,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) ConnectionGetOptionBytes: Option<
-        unsafe extern "C" fn(
-            *mut AdbcConnection,
-            *const c_char,
-            *mut u8,
-            *mut usize,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) ConnectionGetOptionDouble: Option<
-        unsafe extern "C" fn(
-            *mut AdbcConnection,
-            *const c_char,
-            *mut f64,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) ConnectionGetOptionInt: Option<
-        unsafe extern "C" fn(
-            *mut AdbcConnection,
-            *const c_char,
-            *mut i64,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
+    pub(crate) DatabaseGetOption: GetOptionBuffer<AdbcDatabase, c_char>,
+    pub(crate) DatabaseGetOptionBytes: GetOptionBuffer<AdbcDatabase, u8>,
+    pub(crate) DatabaseGetOptionDouble: GetOptionScalar<AdbcDatabase, f64>,
+    pub(crate) DatabaseGetOptionInt: GetOptionScalar<AdbcDatabase, i64>,
+    pub(crate) DatabaseSetOptionBytes: SetOptionBytes<AdbcDatabase>,
+    pub(crate) DatabaseSetOptionDouble: SetOption<AdbcDatabase, f64>,
+    pub(crate) DatabaseSetOptionInt: SetOption<AdbcDatabase, i64>,
+    pub(crate) ConnectionCancel: Call<AdbcConnection>,
+    pub(crate) ConnectionGetOption: GetOptionBuffer<AdbcConnection, c_char>,
+    pub(crate) ConnectionGetOptionBytes: GetOptionBuffer<AdbcConnection, u8>,
+    pub(crate) ConnectionGetOptionDouble: GetOptionScalar<AdbcConnection, f64>,
+    pub(crate) ConnectionGetOptionInt: GetOptionScalar<AdbcConnection, i64>,
     pub(crate) ConnectionGetStatistics: Option<
         unsafe extern "C" fn(
             *mut AdbcConnection,
@@ -381,106 +260,19 @@ pub(crate) struct AdbcDriver {
             *mut AdbcError,
         ) -> AdbcStatusCode,
     >,
-    pub(crate) ConnectionGetStatisticNames: Option<
-        unsafe extern "C" fn(
-            *mut AdbcConnection,
-            *mut FFI_ArrowArrayStream,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) ConnectionSetOptionBytes: Option<
-        unsafe extern "C" fn(
-            *mut AdbcConnection,
-            *const c_char,
-            *const u8,
-            usize,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) ConnectionSetOptionDouble: Option<
-        unsafe extern "C" fn(
-            *mut AdbcConnection,
-            *const c_char,
-            f64,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) ConnectionSetOptionInt: Option<
-        unsafe extern "C" fn(
-            *mut AdbcConnection,
-            *const c_char,
-            i64,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) StatementCancel:
-        Option<unsafe extern "C" fn(*mut AdbcStatement, *mut AdbcError) -> AdbcStatusCode>,
-    pub(crate) StatementExecuteSchema: Option<
-        unsafe extern "C" fn(
-            *mut AdbcStatement,
-            *mut FFI_ArrowSchema,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) StatementGetOption: Option<
-        unsafe extern "C" fn(
-            *mut AdbcStatement,
-            *const c_char,
-            *mut c_char,
-            *mut usize,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) StatementGetOptionBytes: Option<
-        unsafe extern "C" fn(
-            *mut AdbcStatement,
-            *const c_char,
-            *mut u8,
-            *mut usize,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) StatementGetOptionDouble: Option<
-        unsafe extern "C" fn(
-            *mut AdbcStatement,
-            *const c_char,
-            *mut f64,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) StatementGetOptionInt: Option<
-        unsafe extern "C" fn(
-            *mut AdbcStatement,
-            *const c_char,
-            *mut i64,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) StatementSetOptionBytes: Option<
-        unsafe extern "C" fn(
-            *mut AdbcStatement,
-            *const c_char,
-            *const u8,
-            usize,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) StatementSetOptionDouble: Option<
-        unsafe extern "C" fn(
-            *mut AdbcStatement,
-            *const c_char,
-            f64,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
-    pub(crate) StatementSetOptionInt: Option<
-        unsafe extern "C" fn(
-            *mut AdbcStatement,
-            *const c_char,
-            i64,
-            *mut AdbcError,
-        ) -> AdbcStatusCode,
-    >,
+    pub(crate) ConnectionGetStatisticNames: Output<AdbcConnection, FFI_ArrowArrayStream>,
+    pub(crate) ConnectionSetOptionBytes: SetOptionBytes<AdbcConnection>,
+    pub(crate) ConnectionSetOptionDouble: SetOption<AdbcConnection, f64>,
+    pub(crate) ConnectionSetOptionInt: SetOption<AdbcConnection, i64>,
+    pub(crate) StatementCancel: Call<AdbcStatement>,
+    pub(crate) StatementExecuteSchema: Output<AdbcStatement, FFI_ArrowSchema>,
+    pub(crate) StatementGetOption: GetOptionBuffer<AdbcStatement, c_char>,
+    pub(crate) StatementGetOptionBytes: GetOptionBuffer<AdbcStatement, u8>,
+    pub(crate) StatementGetOptionDouble: GetOptionScalar<AdbcStatement, f64>,
+    pub(crate) StatementGetOptionInt: GetOptionScalar<AdbcStatement, i64>,
+    pub(crate) StatementSetOptionBytes: SetOptionBytes<AdbcStatement>,
+    pub(crate) StatementSetOptionDouble: SetOption<AdbcStatement, f64>,
+    pub(crate) StatementSetOptionInt: SetOption<AdbcStatement, i64>,
 }
 
 /// `offsetof(struct AdbcDriver, ErrorGetDetailCount)`: the bytes a 1.0.0 caller allocated, and the
