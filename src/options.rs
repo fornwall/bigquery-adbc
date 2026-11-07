@@ -80,7 +80,7 @@ macro_rules! string_enum {
             pub(crate) const ALL: &'static [Self] = &[$(Self::$variant),+];
 
             /// Each value's Rust name, canonical spelling and documentation.
-            #[cfg(feature = "python-option-codegen")]
+            #[cfg(any(test, feature = "python-option-codegen"))]
             pub(crate) const DECLARED: &'static [(&'static str, &'static str, &'static str)] = &[$((
                 stringify!($variant),
                 $value,
@@ -147,7 +147,7 @@ macro_rules! string_enum {
 pub(crate) use string_enum;
 
 /// The text of one `string_enum!` attribute: a doc comment's, and nothing for any other.
-#[cfg(feature = "python-option-codegen")]
+#[cfg(any(test, feature = "python-option-codegen"))]
 macro_rules! doc_text {
     (doc = $text:literal) => {
         $text
@@ -157,7 +157,7 @@ macro_rules! doc_text {
     };
 }
 
-#[cfg(feature = "python-option-codegen")]
+#[cfg(any(test, feature = "python-option-codegen"))]
 pub(crate) use doc_text;
 
 // Canonical names and enum values have the same declaration order. Share their scan across
