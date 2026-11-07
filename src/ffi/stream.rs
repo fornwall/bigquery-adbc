@@ -53,13 +53,7 @@ struct LastError {
 /// keeps the comparison exact where function addresses are not unique, as under Miri.
 static RELEASE: unsafe extern "C" fn(*mut FFI_ArrowArrayStream) = release;
 
-/// Tags [`PrivateData`] so [`error_from_array_stream`] can recognize this driver's own streams.
-/// The release-callback address is the primary check; the magic guards against a linker folding
-/// a byte-identical foreign release function onto that address.
-const STREAM_MAGIC: u64 = 0x4249_4751_5354_524d; // "BIGQSTRM"
-
 struct PrivateData {
-    magic: u64,
     reader: Box<dyn RecordBatchReader + Send>,
     last_error: Option<LastError>,
     /// Backing store for the `AdbcError` that [`error_from_array_stream`] returns, which must stay
@@ -81,7 +75,6 @@ impl Drop for PrivateData {
 /// Hand a driver-produced reader over as an Arrow C stream.
 pub(super) fn export_reader(reader: Box<dyn RecordBatchReader + Send>) -> FFI_ArrowArrayStream {
     let private_data = Box::new(PrivateData {
-        magic: STREAM_MAGIC,
         reader,
         last_error: None,
         exported_error: ADBC_ERROR_INIT,
@@ -175,8 +168,8 @@ unsafe extern "C" fn get_last_error(stream: *mut FFI_ArrowArrayStream) -> *const
 /// failed stream callback, which the Arrow C Stream Interface itself can only report as an
 /// errno and a message.
 ///
-/// Recognize streams by their [`RELEASE`] callback and [`STREAM_MAGIC`]. Unrecognized or released
-/// streams return null with `status` untouched.
+/// Recognize streams by their [`RELEASE`] callback. Unrecognized or released streams return null
+/// with `status` untouched.
 ///
 /// Identical code folding (`-Wl,--icf=all`, see BINARY-SIZE.md) could merge [`release`] with
 /// another stream release callback in this artifact, and the `fn_addr_eq` below would then read
@@ -207,9 +200,6 @@ pub(super) unsafe extern "C" fn error_from_array_stream(
         let Some(private) = (unsafe { private_data(stream) }) else {
             return std::ptr::null();
         };
-        if private.magic != STREAM_MAGIC {
-            return std::ptr::null();
-        }
         // The error lives in `PrivateData` to outlive this call.
         let exported = &raw mut private.exported_error;
         let code = if let Some(last) = private.last_error.as_mut() {
