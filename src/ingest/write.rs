@@ -310,7 +310,13 @@ impl FinalizedStream {
         let Self { writer, total_rows } = self;
         let total_rows = *total_rows;
         let stream = writer.write_stream();
-        let committed = close_stream_call(
+        // A commit that did not answer may still have been applied; say so, or a caller may
+        // rerun the ingest and duplicate every row.
+        let unknown = format!(
+            "whether its {total_rows} rows were committed is unknown; check {table_path} before \
+             retrying"
+        );
+        let outcome = close_stream_call(
             || async {
                 // Only transport failures are retryable. Keep stream-level refusals intact:
                 // STREAM_ALREADY_COMMITTED can acknowledge our own previous commit.
@@ -325,62 +331,43 @@ impl FinalizedStream {
         )
         .await
         .map_err(|mut source| {
-            // A commit that did not answer may still have been applied; say so, or a caller may
-            // rerun the ingest and duplicate every row.
-            source.message = format!(
-                "{}; whether its {total_rows} rows were committed is unknown, so check \
-                 {table_path} before retrying",
-                source.message
-            );
+            source.message = format!("{}; {unknown}", source.message);
             source
         })?;
-        let unknown_commit_outcome = || {
-            error(
-                format!(
-                    "BigQuery reported no commit time for ingest stream {stream} on \
-                     {table_path}, so whether its {total_rows} rows were committed is unknown; \
-                     check the table before retrying"
-                ),
-                Status::IO,
-            )
-        };
-        let committed = match committed {
-            Ok(committed) => committed,
-            Err(CommitError::FailedTransaction { stream_errors, .. }) => {
-                if commit_already_landed(&stream_errors) {
-                    return Ok(total_rows);
-                }
-                if stream_errors.is_empty() {
-                    return Err(unknown_commit_outcome());
-                }
-                // Cap the service-supplied list before crossing the FFI boundary.
-                let status = stream_errors.first().map_or(Status::InvalidData, |source| {
-                    storage_error_status(&source.code)
-                });
-                let messages = summarize_errors(stream_errors.iter().map(format_storage_error));
-                return Err(error(
-                    format!(
-                        "BigQuery refused to commit ingest stream {stream} for {table_path}: \
-                         {messages}; none of its {total_rows} rows were written, so the ingest \
-                         can be retried"
-                    ),
-                    status,
-                ));
-            }
+        let stream_errors = match outcome {
+            Ok(_) => return Ok(total_rows),
+            Err(CommitError::FailedTransaction { stream_errors, .. }) => stream_errors,
             Err(source) => {
                 return Err(error(
                     format!(
-                        "failed to commit BigQuery ingest stream {stream} for {table_path}: {source}; \
-                         check the table before retrying"
+                        "failed to commit BigQuery ingest stream {stream} for {table_path}: \
+                         {source}; {unknown}"
                     ),
                     Status::Unknown,
                 ));
             }
         };
-        if committed.commit_time.is_none() {
-            return Err(unknown_commit_outcome());
+        if commit_already_landed(&stream_errors) {
+            return Ok(total_rows);
         }
-        Ok(total_rows)
+        let Some(first) = stream_errors.first() else {
+            return Err(error(
+                format!(
+                    "BigQuery reported no commit time for ingest stream {stream} on \
+                     {table_path}, so {unknown}"
+                ),
+                Status::IO,
+            ));
+        };
+        // Cap the service-supplied list before crossing the FFI boundary.
+        let messages = summarize_errors(stream_errors.iter().map(format_storage_error));
+        Err(error(
+            format!(
+                "BigQuery refused to commit ingest stream {stream} for {table_path}: {messages}; \
+                 none of its {total_rows} rows were written, so the ingest can be retried"
+            ),
+            storage_error_status(&first.code),
+        ))
     }
 }
 
