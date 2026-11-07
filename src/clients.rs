@@ -124,45 +124,35 @@ impl ClientState {
         &self,
         runtime: &SharedRuntime,
     ) -> Result<Arc<ClientConfiguration>> {
-        if let Some(configuration) = self.cache.configuration.get() {
-            return Ok(configuration.clone());
-        }
-
         // Credential construction may read a JSON file or discover Application Default
         // Credentials. Build outside the OnceLock so a concurrent cancellation can initialize its
         // job transport without waiting on this builder.
-        let _runtime_guard = runtime.enter();
-        let configuration = Arc::new(ClientConfiguration::build(&self.settings)?);
-        Ok(self
-            .cache
-            .configuration
-            .get_or_init(|| configuration)
-            .clone())
+        cached(&self.cache.configuration, || {
+            let _runtime_guard = runtime.enter();
+            ClientConfiguration::build(&self.settings).map(Arc::new)
+        })
     }
 
     pub(crate) fn metadata_client(&self, runtime: &SharedRuntime) -> Result<MetadataClient> {
-        if let Some(client) = self.cache.metadata.get() {
-            return Ok(client.clone());
-        }
-
-        let configuration = self.configuration(runtime)?;
-        let client = MetadataClient::new(
-            configuration.credentials.clone(),
-            configuration.endpoints.get(ServiceEndpointKind::BigQuery),
-            self.rest_client()?,
-        );
-        Ok(self.cache.metadata.get_or_init(|| client).clone())
+        cached(&self.cache.metadata, || {
+            let configuration = self.configuration(runtime)?;
+            Ok(MetadataClient::new(
+                configuration.credentials.clone(),
+                configuration.endpoints.get(ServiceEndpointKind::BigQuery),
+                self.rest_client()?,
+            ))
+        })
     }
 
     /// Reuses one TLS configuration and connection pool for all REST operations. Per-request
     /// deadlines in `rest::request` let media uploads use the same pool.
     pub(crate) fn rest_client(&self) -> Result<RestClient> {
-        if let Some(client) = self.cache.rest.get() {
-            return Ok(client.clone());
-        }
-        let client = rest_client_with_user_agent("direct REST transport", &self.user_agent())?
-            .with_unauthenticated_remedy(unauthenticated_remedy(&self.settings));
-        Ok(self.cache.rest.get_or_init(|| client).clone())
+        cached(&self.cache.rest, || {
+            Ok(
+                rest_client_with_user_agent("direct REST transport", &self.user_agent())?
+                    .with_unauthenticated_remedy(unauthenticated_remedy(&self.settings)),
+            )
+        })
     }
 
     pub(crate) fn user_agent(&self) -> Cow<'static, str> {
@@ -172,16 +162,14 @@ impl ClientState {
     /// Dataset-location resolvers are attached only to returned clones: attaching one to the
     /// cached client would create an `Arc` cycle back to this state.
     pub(crate) fn rest_job_client(&self, runtime: &SharedRuntime) -> Result<JobClient> {
-        if let Some(client) = self.cache.jobs.get() {
-            return Ok(client.clone());
-        }
-        let configuration = self.configuration(runtime)?;
-        let client = JobClient::new(
-            configuration.credentials.clone(),
-            configuration.endpoints.get(ServiceEndpointKind::BigQuery),
-            self.rest_client()?,
-        );
-        Ok(self.cache.jobs.get_or_init(|| client).clone())
+        cached(&self.cache.jobs, || {
+            let configuration = self.configuration(runtime)?;
+            Ok(JobClient::new(
+                configuration.credentials.clone(),
+                configuration.endpoints.get(ServiceEndpointKind::BigQuery),
+                self.rest_client()?,
+            ))
+        })
     }
 
     /// `operation` gates the build: a metadata-server credential looks up its universe here, and
@@ -191,18 +179,17 @@ impl ClientState {
         runtime: &SharedRuntime,
         operation: Option<&Operation>,
     ) -> Result<Arc<Write>> {
-        if let Some(client) = self.cache.write.get() {
-            return Ok(client.clone());
-        }
-        let configuration = self.configuration(runtime)?;
-        let mut builder = Write::builder().with_credentials(configuration.credentials.clone());
-        if let Some(endpoint) = configuration.endpoints.get(ServiceEndpointKind::Storage) {
-            builder = builder.with_endpoint(endpoint);
-        }
-        let client = runtime
-            .block_on(gate(operation, Box::pin(builder.build())))?
-            .map_err(|source| storage_client_error("Storage Write", &source))?;
-        Ok(self.cache.write.get_or_init(|| Arc::new(client)).clone())
+        cached(&self.cache.write, || {
+            let configuration = self.configuration(runtime)?;
+            let mut builder = Write::builder().with_credentials(configuration.credentials.clone());
+            if let Some(endpoint) = configuration.endpoints.get(ServiceEndpointKind::Storage) {
+                builder = builder.with_endpoint(endpoint);
+            }
+            runtime
+                .block_on(gate(operation, Box::pin(builder.build())))?
+                .map(Arc::new)
+                .map_err(|source| storage_client_error("Storage Write", &source))
+        })
     }
 
     /// Async because Storage Read may initialize from a task already on the shared runtime.
@@ -308,6 +295,16 @@ impl ClientState {
         config.endpoints.set(kind, Some(Arc::from(endpoint)));
         Self::new(&config)
     }
+}
+
+/// The cell's value, built if it has none. A failure is not cached, so the next caller tries again;
+/// a build that loses a race is dropped. `OnceLock::get_or_try_init` is unstable.
+fn cached<T: Clone>(cell: &OnceLock<T>, build: impl FnOnce() -> Result<T>) -> Result<T> {
+    if let Some(value) = cell.get() {
+        return Ok(value.clone());
+    }
+    let value = build()?;
+    Ok(cell.get_or_init(|| value).clone())
 }
 
 /// The remedy for an HTTP 401 under the two credential types that never mint a token, where the

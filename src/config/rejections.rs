@@ -166,6 +166,15 @@ fn cleartext(scheme: &str) -> &'static str {
     }
 }
 
+/// The hosts a credential exchange may reach, as a refusal names them.
+fn trusted_hosts(legacy_oauth_host: bool) -> String {
+    if legacy_oauth_host {
+        format!("googleapis.com or {GOOGLE_OAUTH_HOST}")
+    } else {
+        "googleapis.com".to_owned()
+    }
+}
+
 /// Reject an untrusted credential-exchange URL. Its host is safe to quote because
 /// `parse_credential_url` rejects user information.
 pub(super) fn untrusted_credential_url(
@@ -177,11 +186,7 @@ pub(super) fn untrusted_credential_url(
     legacy_oauth_host: bool,
 ) -> adbc_core::error::Error {
     let cleartext = cleartext(scheme);
-    let trusted = if legacy_oauth_host {
-        format!("googleapis.com or {GOOGLE_OAUTH_HOST}")
-    } else {
-        "googleapis.com".to_owned()
-    };
+    let trusted = trusted_hosts(legacy_oauth_host);
     invalid_argument(format!(
         "BigQuery option {} must be an HTTPS endpoint on {trusted}, but resolves to host \
          {host:?} over {scheme}; {exchange} there{cleartext}; use {google}, or set {}=true to \
@@ -204,11 +209,7 @@ pub(super) fn untrusted_document_destination(
     legacy_oauth_host: bool,
 ) -> adbc_core::error::Error {
     let cleartext = cleartext(scheme);
-    let trusted = if legacy_oauth_host {
-        format!("googleapis.com or {GOOGLE_OAUTH_HOST}")
-    } else {
-        "googleapis.com".to_owned()
-    };
+    let trusted = trusted_hosts(legacy_oauth_host);
     invalid_argument(format!(
         "the JSON credential document in BigQuery option {} must send credentials over HTTPS to \
          {trusted}, but its {field} field resolves to host {host:?} over {scheme}; a credential \

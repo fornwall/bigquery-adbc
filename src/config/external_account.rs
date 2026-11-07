@@ -195,18 +195,13 @@ fn external_account_builder<'a>(
     }
     // `bigquery.auth.scopes` wins; `bigquery.impersonate.scopes` is the fallback dbt-core 2.0
     // WIF profiles set.
-    let scopes: Vec<&str> = if settings.scopes.is_empty() {
-        settings
-            .impersonation
-            .scopes
-            .iter()
-            .map(AsRef::as_ref)
-            .collect()
+    let scopes = if settings.scopes.is_empty() {
+        &settings.impersonation.scopes
     } else {
-        settings.configured_scopes().collect()
+        &settings.scopes
     };
     if !scopes.is_empty() {
-        builder = builder.with_scopes(scopes);
+        builder = builder.with_scopes(scopes.iter().map(AsRef::<str>::as_ref));
     }
     let mut principal = None;
     if let Some(url) = config.impersonation_url.as_deref() {

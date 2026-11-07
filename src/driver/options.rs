@@ -31,19 +31,14 @@ impl BigQueryDatabase {
     fn set_uri(&mut self, uri: &str) -> Result<()> {
         let mut staged = DatabaseConfig::default();
         for (option, value) in parse_bigquery_uri(uri)? {
-            apply_option(
-                &mut staged,
-                option,
-                option.as_str(),
-                OptionValue::String(value),
-            )
-            // The rejection names the option, which a caller who only set a URI never set.
-            .map_err(|mut error| {
-                error
-                    .message
-                    .push_str("; the value came from the connection URI");
-                error
-            })?;
+            apply_option(&mut staged, option, option.as_str(), value)
+                // The rejection names the option, which a caller who only set a URI never set.
+                .map_err(|mut error| {
+                    error
+                        .message
+                        .push_str("; the value came from the connection URI");
+                    error
+                })?;
         }
         // Applying the authority above went through the option path, which marks it explicit.
         staged.endpoint_from_uri = true;
@@ -63,107 +58,87 @@ fn apply_option(
     config: &mut DatabaseConfig,
     option: BigQueryDatabaseOption,
     key: &str,
-    value: OptionValue,
+    value: String,
 ) -> Result<bool> {
     use BigQueryDatabaseOption as O;
-    if let Some(kind) = ServiceEndpointKind::from_option(option) {
-        let endpoint = normalize_endpoint(string_value(key, value)?, key)?.map(Arc::from);
-        config.endpoints.set(kind, endpoint);
-        if kind == ServiceEndpointKind::BigQuery {
-            config.endpoint_from_uri = false;
-        }
-        return Ok(true);
-    }
     match option {
         O::Endpoint
         | O::StorageEndpoint
         | O::GcsEndpoint
         | O::DataprocEndpoint
         | O::VertexEndpoint => {
-            unreachable!("service endpoint option {option:?} is handled above")
+            let kind = service_endpoint(option);
+            config
+                .endpoints
+                .set(kind, normalize_endpoint(value, key)?.map(Arc::from));
+            if kind == ServiceEndpointKind::BigQuery {
+                config.endpoint_from_uri = false;
+            }
         }
         // Dataset and location affect new connections, not cached clients.
         O::DatasetId => {
-            let dataset_id = string_value(key, value)?;
-            validate_dataset_id(&format!("BigQuery option {key}"), &dataset_id)?;
-            config.dataset_id = nonempty_arc(dataset_id);
+            validate_dataset_id(&format!("BigQuery option {key}"), &value)?;
+            config.dataset_id = nonempty_arc(value);
             return Ok(false);
         }
         O::Location => {
-            let location = string_value(key, value)?;
             reject_whitespace(
                 key,
-                &location,
+                &value,
                 "a location name such as US, EU, or us-central1",
             )?;
-            config.location = nonempty_arc(location);
+            config.location = nonempty_arc(value);
             return Ok(false);
         }
-        O::ProjectId => {
-            let project = string_value(key, value)?;
-            config.project_id = (!project.is_empty())
-                .then(|| ProjectIdentifier::try_new_from(&format!("the {key} option"), project))
-                .transpose()?;
+        O::ProjectId => config.project_id = project_identifier(key, value)?,
+        O::AllowUntrustedEndpoint => {
+            config.allow_untrusted_endpoint = boolean_value(key, OptionValue::String(value))?;
         }
-        O::AllowUntrustedEndpoint => config.allow_untrusted_endpoint = boolean_value(key, value)?,
-        O::AuthenticationType => config.authentication_type = enum_value(key, value)?,
-        O::AuthenticationCredentials => {
-            config.credentials = nonempty_secret(string_value(key, value)?);
+        O::AuthenticationType => {
+            config.authentication_type = enum_value(key, OptionValue::String(value))?;
         }
+        O::AuthenticationCredentials => config.credentials = nonempty_secret(value),
         O::AuthenticationCredentialsType => {
-            config.credentials_type = optional_enum_value(key, value)?;
+            config.credentials_type = optional_enum_value(key, OptionValue::String(value))?;
         }
         O::AuthenticationClientId => {
-            config.user_authentication.client_id = nonempty_arc(string_value(key, value)?);
+            config.user_authentication.client_id = nonempty_arc(value);
         }
         O::AuthenticationClientSecret => {
-            config.user_authentication.client_secret = nonempty_secret(string_value(key, value)?);
+            config.user_authentication.client_secret = nonempty_secret(value);
         }
         O::AuthenticationRefreshToken => {
-            config.user_authentication.refresh_token = nonempty_secret(string_value(key, value)?);
+            config.user_authentication.refresh_token = nonempty_secret(value);
         }
-        O::AuthenticationAccessToken => {
-            config.access_token = nonempty_secret(string_value(key, value)?);
-        }
+        O::AuthenticationAccessToken => config.access_token = nonempty_secret(value),
         O::AuthenticationAccessTokenEndpoint => {
-            let endpoint = string_value(key, value)?;
-            reject_whitespace(key, &endpoint, "a token endpoint URL")?;
-            config.user_authentication.access_token_endpoint = nonempty_arc(endpoint);
+            reject_whitespace(key, &value, "a token endpoint URL")?;
+            config.user_authentication.access_token_endpoint = nonempty_arc(value);
         }
-        O::AuthenticationQuotaProject => {
-            let project = string_value(key, value)?;
-            config.quota_project = (!project.is_empty())
-                .then(|| ProjectIdentifier::try_new_from(&format!("the {key} option"), project))
-                .transpose()?;
-        }
+        O::AuthenticationQuotaProject => config.quota_project = project_identifier(key, value)?,
         O::AuthenticationScopes => {
-            config.scopes =
-                parse_comma_separated(key, &string_value(key, value)?, "OAuth scope URLs")?;
+            config.scopes = parse_comma_separated(key, &value, "OAuth scope URLs")?;
         }
         O::AuthenticationExternalAccountAudience => {
-            let audience = string_value(key, value)?;
-            reject_whitespace(key, &audience, "a workload identity pool provider resource")?;
-            reject_workforce_pool_audience(key, &audience)?;
-            config.external_account.audience = nonempty_arc(audience);
+            reject_whitespace(key, &value, "a workload identity pool provider resource")?;
+            reject_workforce_pool_audience(key, &value)?;
+            config.external_account.audience = nonempty_arc(value);
         }
         O::AuthenticationExternalAccountRequestUrl => {
-            let request_url = string_value(key, value)?;
-            reject_malformed_request_url(key, &request_url)?;
-            config.external_account.request_url = nonempty_secret(request_url);
+            reject_malformed_request_url(key, &value)?;
+            config.external_account.request_url = nonempty_secret(value);
         }
         O::AuthenticationExternalAccountRequestData => {
-            config.external_account.request_data = nonempty_secret(string_value(key, value)?);
+            config.external_account.request_data = nonempty_secret(value);
         }
         O::AuthenticationExternalAccountImpersonationUrl => {
-            let impersonation_url = string_value(key, value)?;
-            if !impersonation_url.is_empty() {
-                impersonation_principal(&impersonation_url)?;
+            if !value.is_empty() {
+                impersonation_principal(&value)?;
             }
-            config.external_account.impersonation_url = nonempty_arc(impersonation_url);
+            config.external_account.impersonation_url = nonempty_arc(value);
         }
         O::AuthenticationExternalAccountSubjectTokenType => {
-            let token_type = string_value(key, value)?;
-            if !token_type.is_empty() && !SUBJECT_TOKEN_TYPES.contains(&token_type.as_str()) {
+            if !value.is_empty() && !SUBJECT_TOKEN_TYPES.contains(&value.as_str()) {
                 // Complete external-account documents support additional STS token types.
                 return Err(invalid_argument(format!(
                     "BigQuery option {key} must be {:?} or {:?}; for another subject-token \
@@ -175,26 +150,20 @@ fn apply_option(
                     BigQueryAuthenticationType::JsonCredentialString.as_str(),
                 )));
             }
-            config.external_account.subject_token_type = nonempty_arc(token_type);
+            config.external_account.subject_token_type = nonempty_arc(value);
         }
         O::AuthenticationExternalAccountTokenUrl => {
-            let token_url = string_value(key, value)?;
-            reject_whitespace(key, &token_url, "a token endpoint URL")?;
-            config.external_account.token_url = nonempty_arc(token_url);
+            reject_whitespace(key, &value, "a token endpoint URL")?;
+            config.external_account.token_url = nonempty_arc(value);
         }
         O::ImpersonationTargetPrincipal => {
-            let target = string_value(key, value)?;
-            if !target.is_empty() && !valid_service_account_principal(&target) {
+            if !value.is_empty() && !valid_service_account_principal(&value) {
                 return Err(invalid_service_account_principal(key, None));
             }
-            config.impersonation.target_principal = nonempty_arc(target);
+            config.impersonation.target_principal = nonempty_arc(value);
         }
         O::ImpersonationDelegates => {
-            let delegates = parse_comma_separated(
-                key,
-                &string_value(key, value)?,
-                "service account email addresses",
-            )?;
+            let delegates = parse_comma_separated(key, &value, "service account email addresses")?;
             if let Some(index) = delegates
                 .iter()
                 .position(|delegate| !valid_service_account_principal(delegate))
@@ -204,22 +173,19 @@ fn apply_option(
             config.impersonation.delegates = delegates;
         }
         O::ImpersonationScopes => {
-            config.impersonation.scopes =
-                parse_comma_separated(key, &string_value(key, value)?, "OAuth scope URLs")?;
+            config.impersonation.scopes = parse_comma_separated(key, &value, "OAuth scope URLs")?;
         }
         O::ImpersonationLifetime => {
-            let lifetime = string_value(key, value)?;
-            config.impersonation.lifetime = if lifetime.is_empty() {
+            config.impersonation.lifetime = if value.is_empty() {
                 None
             } else {
-                Some(parse_impersonation_lifetime(key, &lifetime)?)
+                Some(parse_impersonation_lifetime(key, &value)?)
             };
         }
         O::UserAgent => {
-            let user_agent = string_value(key, value)?;
             // What an HTTP header value admits, short of tabs and non-ASCII bytes that some
             // proxies mangle.
-            if !user_agent
+            if !value
                 .bytes()
                 .all(|byte| byte == b' ' || byte.is_ascii_graphic())
             {
@@ -227,78 +193,63 @@ fn apply_option(
                     "BigQuery option {key} must be printable ASCII text, such as my-app/1.0"
                 )));
             }
-            config.user_agent = nonempty_arc(user_agent);
+            config.user_agent = nonempty_arc(value);
         }
     }
     Ok(true)
 }
 
-/// Report one BigQuery database option.
+/// Report one BigQuery database option. An unset option is reported by its key, which is all a
+/// caller behind a driver manager has.
 fn read_option(config: &DatabaseConfig, option: BigQueryDatabaseOption) -> Result<String> {
     use BigQueryDatabaseOption as O;
-    if let Some(kind) = ServiceEndpointKind::from_option(option) {
-        return configured_string(option, config.endpoints.get(kind));
-    }
-    match option {
+    let user = &config.user_authentication;
+    let external = &config.external_account;
+    let impersonation = &config.impersonation;
+    let value = match option {
         O::Endpoint
         | O::StorageEndpoint
         | O::GcsEndpoint
         | O::DataprocEndpoint
-        | O::VertexEndpoint => {
-            unreachable!("service endpoint option {option:?} is handled above")
-        }
+        | O::VertexEndpoint => config.endpoints.get(service_endpoint(option)),
         O::AuthenticationCredentials
         | O::AuthenticationClientSecret
         | O::AuthenticationRefreshToken
         | O::AuthenticationAccessToken
         | O::AuthenticationExternalAccountRequestUrl
-        | O::AuthenticationExternalAccountRequestData => Err(not_found(format!(
-            "BigQuery option {} is write-only and cannot be read back",
-            option.as_str()
-        ))),
-        O::ProjectId => configured_string(option, config.project_id.as_deref()),
-        O::DatasetId => configured_string(option, config.dataset_id.as_deref()),
-        O::Location => configured_string(option, config.location.as_deref()),
-        O::AllowUntrustedEndpoint => Ok(boolean_option(config.allow_untrusted_endpoint)),
-        O::AuthenticationType => Ok(config.authentication_type.as_str().to_owned()),
-        O::AuthenticationCredentialsType => {
-            configured_string(option, config.credentials_type.map(|value| value.as_str()))
+        | O::AuthenticationExternalAccountRequestData => {
+            return Err(not_found(format!(
+                "BigQuery option {} is write-only and cannot be read back",
+                option.as_str()
+            )));
         }
-        O::AuthenticationClientId => {
-            configured_string(option, config.user_authentication.client_id.as_deref())
-        }
-        O::AuthenticationAccessTokenEndpoint => configured_string(
-            option,
-            config.user_authentication.access_token_endpoint.as_deref(),
-        ),
-        O::AuthenticationQuotaProject => configured_string(option, config.quota_project.as_deref()),
-        O::AuthenticationScopes => configured_list(option, &config.scopes),
-        O::AuthenticationExternalAccountAudience => {
-            configured_string(option, config.external_account.audience.as_deref())
-        }
-        O::AuthenticationExternalAccountImpersonationUrl => {
-            configured_string(option, config.external_account.impersonation_url.as_deref())
-        }
-        O::AuthenticationExternalAccountSubjectTokenType => configured_string(
-            option,
-            config.external_account.subject_token_type.as_deref(),
-        ),
-        O::AuthenticationExternalAccountTokenUrl => {
-            configured_string(option, config.external_account.token_url.as_deref())
-        }
-        O::ImpersonationTargetPrincipal => {
-            configured_string(option, config.impersonation.target_principal.as_deref())
-        }
-        O::ImpersonationDelegates => configured_list(option, &config.impersonation.delegates),
-        O::ImpersonationScopes => configured_list(option, &config.impersonation.scopes),
-        O::UserAgent => configured_string(option, config.user_agent.as_deref()),
+        O::ProjectId => config.project_id.as_deref(),
+        O::DatasetId => config.dataset_id.as_deref(),
+        O::Location => config.location.as_deref(),
+        O::AllowUntrustedEndpoint => return Ok(boolean_option(config.allow_untrusted_endpoint)),
+        O::AuthenticationType => Some(config.authentication_type.as_str()),
+        O::AuthenticationCredentialsType => config.credentials_type.map(|value| value.as_str()),
+        O::AuthenticationClientId => user.client_id.as_deref(),
+        O::AuthenticationAccessTokenEndpoint => user.access_token_endpoint.as_deref(),
+        O::AuthenticationQuotaProject => config.quota_project.as_deref(),
+        O::AuthenticationScopes => return configured_list(option, &config.scopes),
+        O::AuthenticationExternalAccountAudience => external.audience.as_deref(),
+        O::AuthenticationExternalAccountImpersonationUrl => external.impersonation_url.as_deref(),
+        O::AuthenticationExternalAccountSubjectTokenType => external.subject_token_type.as_deref(),
+        O::AuthenticationExternalAccountTokenUrl => external.token_url.as_deref(),
+        O::ImpersonationTargetPrincipal => impersonation.target_principal.as_deref(),
+        O::ImpersonationDelegates => return configured_list(option, &impersonation.delegates),
+        O::ImpersonationScopes => return configured_list(option, &impersonation.scopes),
+        O::UserAgent => config.user_agent.as_deref(),
         // Go reports the one-hour default whenever impersonation is configured.
-        O::ImpersonationLifetime => match config.impersonation.lifetime {
-            Some(lifetime) => Ok(format_go_duration(lifetime)),
-            None if config.impersonation.is_configured() => Ok("1h0m0s".to_owned()),
-            None => Err(option_not_set(option.as_str())),
+        O::ImpersonationLifetime => match impersonation.lifetime {
+            Some(lifetime) => return Ok(format_go_duration(lifetime)),
+            None => impersonation.is_configured().then_some("1h0m0s"),
         },
-    }
+    };
+    value
+        .map(str::to_owned)
+        .ok_or_else(|| option_not_set(option.as_str()))
 }
 
 impl Optionable for BigQueryDatabase {
@@ -310,6 +261,7 @@ impl Optionable for BigQueryDatabase {
         }
         match database_option_key(&key) {
             Some(option) => {
+                let value = string_value(key.as_ref(), value)?;
                 if apply_option(&mut self.config, option, key.as_ref(), value)? {
                     self.invalidate_clients();
                 }
@@ -377,14 +329,19 @@ pub(crate) fn database_option_kind(key: &OptionDatabase) -> Option<OptionKind> {
     }
 }
 
-/// An unset option is reported by its key, which is all a caller behind a driver manager has.
-fn configured_string(option: BigQueryDatabaseOption, value: Option<&str>) -> Result<String> {
-    value
-        .map(str::to_owned)
-        .ok_or_else(|| option_not_set(option.as_str()))
+/// The service an endpoint option configures, for callers matching on the endpoint options.
+fn service_endpoint(option: BigQueryDatabaseOption) -> ServiceEndpointKind {
+    ServiceEndpointKind::from_option(option).expect("the caller matched an endpoint option")
 }
 
-/// [`configured_string`] for a comma-separated list option, which is unset when empty.
+/// A project option's value, which the empty string clears.
+fn project_identifier(key: &str, value: String) -> Result<Option<ProjectIdentifier>> {
+    (!value.is_empty())
+        .then(|| ProjectIdentifier::try_new_from(&format!("the {key} option"), value))
+        .transpose()
+}
+
+/// A comma-separated list option, which is unset when empty.
 fn configured_list(option: BigQueryDatabaseOption, values: &[Arc<str>]) -> Result<String> {
     if values.is_empty() {
         return Err(option_not_set(option.as_str()));
