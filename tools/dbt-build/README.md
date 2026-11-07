@@ -27,16 +27,21 @@ fails rather than falling back to dbt's driver. `DBT_ADBC_BIGQUERY_USE_FOUNDRY` 
 
 ## Building
 
-Needs [rustup](https://rustup.rs/), [uv](https://docs.astral.sh/uv/), `protoc` and a C toolchain.
-Linux and macOS only.
+Needs [rustup](https://rustup.rs/), [uv](https://docs.astral.sh/uv/), `protoc` and a C toolchain. On
+Windows, run it in Git Bash with Visual Studio's C++ tools, and give a non-release build
+`--driver-archive`.
 
 ```sh
 tools/dbt-build/build.sh
 ```
 
-This writes `dist/dbt-bigquery-adbc-<driver version>-<platform>.tar.gz`, working in
-`target/dbt-build/`. A clean checkout of a release tag makes a release build, which needs that
-release's driver asset to be published already, because the binary carries its hash.
+This writes `dist/dbt-bigquery-adbc-<driver version>-<platform>.tar.gz`, or a `.zip` on Windows,
+working in `target/dbt-build/`. A clean checkout of a release tag makes a release build, which needs
+that release's driver asset to be published already, because the binary carries its hash.
+
+Before packaging, the script runs `dbt debug` with the [smoke profile](smoke/profiles.yml), whose
+fake key this driver refuses with an error of its own, to check that dbt loads the driver. A release
+build downloads it first, so on a tag this checks the published asset on every platform.
 
 | Option | Purpose |
 | --- | --- |

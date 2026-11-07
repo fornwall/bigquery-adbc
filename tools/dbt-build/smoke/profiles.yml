@@ -1,0 +1,23 @@
+# build.sh runs `dbt debug` with this profile to check that dbt loads the driver. The key is fake,
+# and its plain-http token_uri makes the driver refuse it before sending a request.
+smoke:
+  target: default
+  outputs:
+    default:
+      type: bigquery
+      method: service-account-json
+      project: smoke
+      dataset: smoke
+      threads: 1
+      # dbt rejects a key that lacks any of these fields.
+      keyfile_json:
+        type: service_account
+        project_id: smoke
+        private_key_id: unused
+        private_key: unused
+        client_email: smoke@example.invalid
+        client_id: unused
+        auth_uri: http://127.0.0.1:9/
+        token_uri: http://127.0.0.1:9/
+        auth_provider_x509_cert_url: http://127.0.0.1:9/
+        client_x509_cert_url: http://127.0.0.1:9/

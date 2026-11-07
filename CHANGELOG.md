@@ -5,6 +5,10 @@ changes.
 
 ## [Unreleased]
 
+### Added
+
+- The patched dbt is also built for Windows x86-64.
+
 ## [0.4.0] - 2026-11-07
 
 ### Added

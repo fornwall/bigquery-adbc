@@ -78,9 +78,9 @@ failure behavior of each ingest mode.
 - Successful Dataproc and Vertex AI execution and polling in `src/dbt` have mock coverage only.
   The live dbt suite checks a real Cloud Storage upload followed by a rejected Dataproc
   submission; it does not validate a successful Python model or Dataproc `requestId` deduplication.
-- The [patched dbt](../tools/dbt-build/README.md) is built for Linux and macOS, not Windows. CI
-  builds it without running it against BigQuery, so a release's download is only exercised by
-  running the dbt integration suite on that release's archive.
+- CI checks that each [patched dbt](../tools/dbt-build/README.md) loads this driver, and on a tag
+  that it downloads and verifies the release's asset, but never runs it against BigQuery. The dbt
+  integration suite, which does, runs only on Linux.
 - The dbt integration suite runs manually against BigQuery with ADC. CI tests its assertion
   helpers, but does not run dbt or the warehouse fixtures. Other dbt profile authentication
   methods are not covered end to end by this suite.

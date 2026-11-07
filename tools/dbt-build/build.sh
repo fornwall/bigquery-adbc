@@ -31,16 +31,25 @@ while [ $# -gt 0 ]; do
   shift 2
 done
 
+# Windows runs this in Git Bash, where uname -s reads like MINGW64_NT-10.0-26100.
+exe=
 case $(uname -s)-$(uname -m) in
-  Linux-x86_64) platform=linux-x86_64 library_suffix=so ;;
-  Linux-aarch64) platform=linux-aarch64 library_suffix=so ;;
-  Darwin-x86_64) platform=macos-x86_64 library_suffix=dylib ;;
-  Darwin-arm64) platform=macos-aarch64 library_suffix=dylib ;;
+  Linux-x86_64) platform=linux-x86_64 library=libadbc_driver_bigquery.so ;;
+  Linux-aarch64) platform=linux-aarch64 library=libadbc_driver_bigquery.so ;;
+  Darwin-x86_64) platform=macos-x86_64 library=libadbc_driver_bigquery.dylib ;;
+  Darwin-arm64) platform=macos-aarch64 library=libadbc_driver_bigquery.dylib ;;
+  MINGW64_NT-*-x86_64) platform=windows-x86_64 library=adbc_driver_bigquery.dll exe=.exe ;;
   *)
     echo "error: unsupported platform $(uname -s)-$(uname -m)" >&2
     exit 1
     ;;
 esac
+
+# Windows archives are zip files, which Windows' own tar reads and writes. It is a native program,
+# so it takes Windows paths.
+windows_tar() {
+  "$(cygpath -S)/tar.exe" "$@"
+}
 
 mkdir -p "$work" "$output"
 work=$(cd "$work" && pwd)
@@ -52,7 +61,7 @@ driver_version=$(git -C "$root" describe --tags --dirty --match 'v[0-9]*.[0-9]*.
 driver_version=${driver_version#v}
 
 if [ -z "$driver_url" ] && [[ $driver_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  asset=libadbc_driver_bigquery-$driver_version-$platform.$library_suffix.zst
+  asset=${library%.*}-$driver_version-$platform.${library##*.}.zst
   driver_url=$RELEASES/v$driver_version/$asset
 fi
 
@@ -80,6 +89,10 @@ if [ -n "$driver_url" ]; then
   export BIGQUERY_ADBC_DRIVER_SHA256=${driver_sha256%% *}
 else
   if [ -z "$driver_archive" ]; then
+    if [ -n "$exe" ]; then
+      echo "error: on Windows, pass --driver-archive" >&2
+      exit 2
+    fi
     driver_archive=$(
       cd "$root"
       uv run --project python --locked python tools/package_native.py \
@@ -87,13 +100,21 @@ else
     )
   fi
   mkdir -p "$stage/lib/dbt"
-  tar -xzf "$driver_archive" -C "$stage/lib/dbt" --strip-components=1 \
-    "$(basename "$driver_archive" .tar.gz)/libadbc_driver_bigquery.$library_suffix"
+  if [ -n "$exe" ]; then
+    windows_tar -x -f "$(cygpath -m "$driver_archive")" -C "$(cygpath -m "$stage/lib/dbt")" \
+      --strip-components=1 "$(basename "$driver_archive" .zip)/$library"
+  else
+    tar -xzf "$driver_archive" -C "$stage/lib/dbt" --strip-components=1 \
+      "$(basename "$driver_archive" .tar.gz)/$library"
+  fi
 fi
 
 source_dir=$work/dbt
 patches=("$root"/tools/dbt-build/patches/*.patch)
 git init --quiet "$source_dir"
+# The patches apply to dbt's files as committed, and its paths outgrow Windows' default limit.
+git -C "$source_dir" config core.autocrlf false
+git -C "$source_dir" config core.longpaths true
 # Reapplying would touch the patched files and rebuild most of the dbt workspace.
 if [ "$(git -C "$source_dir" rev-parse --verify --quiet HEAD)" != "$DBT_COMMIT" ] ||
   ! git -C "$source_dir" apply --reverse --check "${patches[@]}" 2> /dev/null; then
@@ -115,8 +136,11 @@ identifier="(modified with bigquery-adbc $driver_version) ${DBT_COMMIT:0:10} $db
     cargo build --release --locked --bin dbt --target-dir "$work/target"
 )
 
-cp "$work/target/release/dbt" "$stage/dbt"
-strip "$stage/dbt"
+cp "$work/target/release/dbt$exe" "$stage/dbt$exe"
+# MSVC writes a Windows binary's debug information to a separate .pdb, leaving nothing to strip.
+if [ -z "$exe" ]; then
+  strip "$stage/dbt"
+fi
 if [ "$(uname -s)" = Darwin ]; then
   # Stripping invalidates the linker's ad-hoc signature, and arm64 macOS kills unsigned binaries.
   codesign --force --sign - "$stage/dbt"
@@ -124,11 +148,39 @@ fi
 cp "$source_dir/LICENSE" "$stage/licenses/dbt/"
 cp "${patches[@]}" "$stage/licenses/dbt/patches/"
 
-reported=$("$stage/dbt" --version)
+reported=$("$stage/dbt$exe" --version)
 if [ "$reported" != "dbt $identifier" ]; then
   echo "error: dbt --version reported '$reported', expected 'dbt $identifier'" >&2
   exit 1
 fi
 
-tar -czf "$output/$name.tar.gz" -C "$work/stage" "$name"
-echo "$output/$name.tar.gz"
+# dbt loads its driver only to connect. The smoke profile's key makes this driver fail with an error
+# that names one of its options, before sending a request, so the error proves that dbt loaded this
+# driver and passed it options. A release build downloads the driver first. The fresh cache makes it
+# download every time, except on Windows, whose cache folder cannot be moved.
+smoke=$work/smoke
+rm -rf "$smoke"
+mkdir -p "$smoke/cache"
+cp "$root"/tools/dbt-build/smoke/*.yml "$smoke/"
+if (
+  cd "$smoke"
+  export DO_NOT_TRACK=1 HOME=$smoke/cache XDG_CACHE_HOME=$smoke/cache
+  "$stage/dbt$exe" debug --project-dir . --profiles-dir . --log-path logs --no-version-check
+) > "$smoke/output.txt" 2>&1; then
+  echo "error: dbt debug connected with a key that cannot work" >&2
+  exit 1
+fi
+if ! grep -F -q bigquery.allow_untrusted_endpoint "$smoke/output.txt"; then
+  cat "$smoke/output.txt" >&2
+  echo "error: dbt debug did not reach this repository's driver" >&2
+  exit 1
+fi
+
+if [ -n "$exe" ]; then
+  archive=$output/$name.zip
+  windows_tar -a -c -f "$(cygpath -m "$archive")" -C "$(cygpath -m "$work/stage")" "$name"
+else
+  archive=$output/$name.tar.gz
+  tar -czf "$archive" -C "$work/stage" "$name"
+fi
+echo "$archive"
