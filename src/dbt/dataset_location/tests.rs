@@ -4,8 +4,8 @@ use arrow_array::{Array as _, RecordBatchReader, StringArray};
 use serde_json::{Value, json};
 
 use crate::test_support::driver::{test_statement, test_statement_at};
-use crate::test_support::errors::{assert_message, assert_message_omits};
-use crate::test_support::http::capture_requests;
+use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
+use crate::test_support::http::{capture_requests, ok};
 use crate::test_support::options::{assert_string_option, set_option, set_option_error};
 use crate::{BigQueryStatement, BigQueryStatementOption};
 
@@ -53,7 +53,7 @@ fn locations(reader: impl RecordBatchReader) -> Vec<String> {
 
 #[test]
 fn an_existing_dataset_returns_one_location_row() {
-    let (endpoint, captured) = capture_requests(vec![(200, json!({"location": "us-west1"}))]);
+    let (endpoint, captured) = capture_requests(vec![ok(json!({"location": "us-west1"}))]);
     let mut statement = lookup_at(&endpoint);
 
     let (reader, rows_affected) = statement.execute_with_rows_affected().unwrap();
@@ -83,30 +83,16 @@ fn a_missing_dataset_returns_no_rows() {
 /// A missing project is a 404 with the same reason as a missing dataset, but it is a configuration
 /// error: reporting no rows would read as "this dataset does not exist yet".
 #[test]
-fn a_missing_project_is_an_error_rather_than_an_absent_dataset() {
-    const MESSAGE: &str = "Project data-project is not found. Make sure it references valid GCP \
-                           project that hasn't been deleted.; Project id: data-project";
-    let (endpoint, captured) =
-        capture_requests(vec![(404, google_error(404, "notFound", MESSAGE))]);
-    let mut statement = lookup_at(&endpoint);
-
-    let error = statement.execute_with_rows_affected().err().unwrap();
-
-    assert_eq!(error.status, Status::NotFound);
-    assert_message(
-        &error,
-        &[
-            "failed to get the location of BigQuery dataset data-project.analytics",
-            "Project data-project is not found",
-        ],
-    );
-    captured.join().unwrap();
-}
-
-#[test]
 fn other_rejections_are_errors() {
     for (code, reason, message, status) in [
         (403, "accessDenied", "Access Denied", Status::Unauthorized),
+        (
+            404,
+            "notFound",
+            "Project data-project is not found. Make sure it references valid GCP project that \
+             hasn't been deleted.; Project id: data-project",
+            Status::NotFound,
+        ),
         // A 404 that names neither, as a malformed path draws.
         (
             404,
@@ -121,8 +107,14 @@ fn other_rejections_are_errors() {
 
         let error = statement.execute_with_rows_affected().err().unwrap();
 
-        assert_eq!(error.status, status, "{message}");
-        assert_message(&error, &["data-project.analytics", message]);
+        assert_failure(
+            &error,
+            status,
+            &[
+                "failed to get the location of BigQuery dataset data-project.analytics",
+                message,
+            ],
+        );
         captured.join().unwrap();
     }
 }
@@ -223,13 +215,12 @@ fn the_payload_reads_back_as_set_and_clearing_it_leaves_no_query() {
     set_option(&mut statement, OPTION, "");
     assert_string_option(&statement, OPTION, None);
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(&error, &["without a SQL query"]);
+    assert_failure(&error, Status::InvalidState, &["without a SQL query"]);
 }
 
 #[test]
 fn execute_update_reads_the_location_and_reports_an_unknown_count_as_a_query_does() {
-    let (endpoint, captured) = capture_requests(vec![(200, json!({"location": "EU"}))]);
+    let (endpoint, captured) = capture_requests(vec![ok(json!({"location": "EU"}))]);
     let mut statement = lookup_at(&endpoint);
 
     assert_eq!(statement.execute_update().unwrap(), None);
@@ -248,6 +239,31 @@ fn execute_schema_describes_the_result_without_a_request() {
     assert_eq!(schema.field(0).data_type(), &arrow_schema::DataType::Utf8);
 }
 
+/// The lookup is the only option-only operation with rows to describe.
+#[test]
+fn other_operations_have_no_result_schema() {
+    for (option, value) in [
+        (BigQueryStatementOption::WriteGcsBucket, "dbt-python"),
+        (
+            BigQueryStatementOption::AuthorizeViewToDatasets,
+            r#"{"data-project.analytics.model":[{"project":"data-project","dataset":"raw"}]}"#,
+        ),
+        (
+            BigQueryStatementOption::CopyTableSource,
+            "data-project.analytics.model",
+        ),
+    ] {
+        let mut statement = test_statement();
+        set_option(&mut statement, option, value);
+        assert_eq!(
+            statement.execute_schema().unwrap_err().status,
+            Status::InvalidState,
+            "{}",
+            option.as_str()
+        );
+    }
+}
+
 #[test]
 fn execute_partitions_is_refused_before_any_request() {
     let mut statement = test_statement();
@@ -255,8 +271,11 @@ fn execute_partitions_is_refused_before_any_request() {
 
     let error = statement.execute_partitions().unwrap_err();
 
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(&error, &["creates no job to partition", OPTION.as_str()]);
+    assert_failure(
+        &error,
+        Status::InvalidState,
+        &["creates no job to partition", OPTION.as_str()],
+    );
 }
 
 #[test]
@@ -271,8 +290,11 @@ fn a_pending_table_description_update_is_refused() {
 
     let error = statement.execute_with_rows_affected().err().unwrap();
 
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(&error, &["cannot be combined", OPTION.as_str()]);
+    assert_failure(
+        &error,
+        Status::InvalidState,
+        &["cannot be combined", OPTION.as_str()],
+    );
 }
 
 #[test]

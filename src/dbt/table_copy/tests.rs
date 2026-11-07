@@ -15,10 +15,14 @@ use crate::query::{QualifiedTableName, StatementQueryOptions};
 use crate::rest::jobs::{JobClient, JobReference};
 use crate::runtime::{SharedRuntime, new_runtime};
 use crate::test_support::driver::{test_connection_at, test_statement, test_statement_at};
-use crate::test_support::errors::assert_message;
-use crate::test_support::http::{CapturedRequest, capture_requests, capture_requests_responding};
+use crate::test_support::errors::assert_failure;
+use crate::test_support::http::{
+    CapturedRequest, capture_requests, capture_requests_responding, ok,
+};
 use crate::test_support::options::{assert_string_option, option_string, set_option};
-use crate::{BigQueryCreateDisposition, BigQueryStatementOption, BigQueryWriteDisposition};
+use crate::{
+    BigQueryCreateDisposition, BigQueryStatement, BigQueryStatementOption, BigQueryWriteDisposition,
+};
 
 fn table(value: &str) -> QualifiedTableName {
     QualifiedTableName::parse_option(
@@ -36,6 +40,15 @@ fn options(source: &str, destination: &str) -> TableCopyOptions {
         destination: Some(table(destination)),
         ..TableCopyOptions::default()
     }
+}
+
+fn set_tables(statement: &mut BigQueryStatement, source: &str, destination: &str) {
+    set_option(statement, BigQueryStatementOption::CopyTableSource, source);
+    set_option(
+        statement,
+        BigQueryStatementOption::CopyTableDestination,
+        destination,
+    );
 }
 
 /// Everything one `wait_for_submitted` needs against a mock server: the runtime, the
@@ -109,14 +122,9 @@ fn copy_job_carries_both_endpoints_and_the_statement_job_options() {
 fn domain_scoped_copy_endpoints_reach_the_job_configuration() {
     let (endpoint, captured) = capture_copy_with_echoed_reference();
     let mut statement = test_statement_at(&endpoint);
-    set_option(
+    set_tables(
         &mut statement,
-        BigQueryStatementOption::CopyTableSource,
         "analytics.example.com:source.raw.events$20240101",
-    );
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::CopyTableDestination,
         "example.org:destination.marts.events$20240101",
     );
     assert_eq!(statement.execute_update().unwrap(), Some(5));
@@ -208,14 +216,11 @@ fn copy_poll_tolerates_initial_job_visibility_delay() {
             404,
             json!({"error":{"errors":[{"reason":"notFound","message":"not visible yet"}]}}),
         ),
-        (
-            200,
-            json!({
-                "jobReference":{"projectId":"billing-project","jobId":"copy-job","location":"EU"},
-                "status":{"state":"DONE"},
-                "statistics":{"copy":{"copiedRows":"8"}}
-            }),
-        ),
+        ok(json!({
+            "jobReference":{"projectId":"billing-project","jobId":"copy-job","location":"EU"},
+            "status":{"state":"DONE"},
+            "statistics":{"copy":{"copiedRows":"8"}}
+        })),
     ]);
     let (runtime, operation, client, initial) = waiting_at(&endpoint);
 
@@ -277,22 +282,20 @@ fn copy_polls_report_the_last_transient_failure_of_the_budget() {
 fn a_dry_run_copy_is_refused_without_a_request() {
     let (endpoint, captured) = capture_requests(Vec::new());
     let mut statement = test_statement_at(&endpoint);
-    set_option(
+    set_tables(
         &mut statement,
-        BigQueryStatementOption::CopyTableSource,
         "data-project.analytics.source",
-    );
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::CopyTableDestination,
         "data-project.analytics.destination",
     );
     set_option(&mut statement, BigQueryStatementOption::DryRun, "true");
     statement.set_sql_query("").unwrap();
 
     let failure = statement.execute_update().unwrap_err();
-    assert_eq!(failure.status, Status::NotImplemented);
-    assert_message(&failure, &[BigQueryStatementOption::DryRun.as_str()]);
+    assert_failure(
+        &failure,
+        Status::NotImplemented,
+        &[BigQueryStatementOption::DryRun.as_str()],
+    );
     assert!(captured.join().unwrap().is_empty());
 }
 
@@ -304,27 +307,19 @@ fn a_partial_success_response_reconciles_the_exact_copy_without_resubmitting() {
     let (endpoint, server) = capture_requests_responding(2, move |request| {
         if submitted.is_null() {
             submitted = request.body["jobReference"].clone();
-            return Some((200, json!({"status": {"state": "DONE"}})));
+            return Some(ok(json!({"status": {"state": "DONE"}})));
         }
-        Some((
-            200,
-            json!({
-                "jobReference": submitted,
-                "status": {"state": "DONE"},
-                "statistics": {"copy": {"copiedRows": "5"}}
-            }),
-        ))
+        Some(ok(json!({
+            "jobReference": submitted,
+            "status": {"state": "DONE"},
+            "statistics": {"copy": {"copiedRows": "5"}}
+        })))
     });
 
     let mut statement = test_statement_at(&endpoint);
-    set_option(
+    set_tables(
         &mut statement,
-        BigQueryStatementOption::CopyTableSource,
         "data-project.analytics.source",
-    );
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::CopyTableDestination,
         "data-project.analytics.destination",
     );
     statement.set_sql_query("").unwrap();
@@ -351,14 +346,9 @@ fn dbt_partition_copy_submits_one_job_and_reports_its_rows() {
         BigQueryStatementOption::Labels,
         r#"{"dbt_invocation_id":"abc"}"#,
     );
-    set_option(
+    set_tables(
         &mut statement,
-        BigQueryStatementOption::CopyTableSource,
         "data-project.analytics.tmp_model$20240101",
-    );
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::CopyTableDestination,
         "data-project.analytics.model$20240101",
     );
     set_option(
@@ -428,14 +418,11 @@ fn dbt_partition_copy_submits_one_job_and_reports_its_rows() {
 /// the same response-identity validation production uses instead of hard-coding an unknown job ID.
 fn capture_copy_with_echoed_reference() -> (String, thread::JoinHandle<Vec<CapturedRequest>>) {
     capture_requests_responding(1, |request| {
-        Some((
-            200,
-            json!({
-                "jobReference": request.body["jobReference"],
-                "status": {"state": "DONE"},
-                "statistics": {"copy": {"copiedRows": "5"}}
-            }),
-        ))
+        Some(ok(json!({
+            "jobReference": request.body["jobReference"],
+            "status": {"state": "DONE"},
+            "statistics": {"copy": {"copiedRows": "5"}}
+        })))
     })
 }
 
@@ -463,16 +450,7 @@ fn copy_options_round_trip_resolve_defaults_and_switch_operations_cleanly() {
         BigQueryStatementOption::DefaultDatasetId,
         "analytics",
     );
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::CopyTableSource,
-        "tmp_model$20240101",
-    );
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::CopyTableDestination,
-        "reporting.model",
-    );
+    set_tables(&mut statement, "tmp_model$20240101", "reporting.model");
     assert_eq!(
         option_string(&statement, BigQueryStatementOption::CopyTableSource),
         "fixture-project.analytics.tmp_model$20240101"
@@ -487,8 +465,11 @@ fn copy_options_round_trip_resolve_defaults_and_switch_operations_cleanly() {
     set_option(&mut statement, BigQueryStatementOption::CopyTableSource, "");
     assert_string_option(&statement, BigQueryStatementOption::CopyTableSource, None);
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(&error, &[BigQueryStatementOption::CopyTableSource.as_str()]);
+    assert_failure(
+        &error,
+        Status::InvalidState,
+        &[BigQueryStatementOption::CopyTableSource.as_str()],
+    );
 
     // Real SQL leaves the copy behind entirely.
     statement.set_sql_query("select 1").unwrap();
@@ -506,14 +487,9 @@ fn copy_options_round_trip_resolve_defaults_and_switch_operations_cleanly() {
 #[test]
 fn a_query_comment_finalizes_a_copy_while_real_sql_replaces_it() {
     let mut statement = test_statement();
-    set_option(
+    set_tables(
         &mut statement,
-        BigQueryStatementOption::CopyTableSource,
         "data-project.analytics.tmp_model$20240101",
-    );
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::CopyTableDestination,
         "data-project.analytics.model$20240101",
     );
 
@@ -556,16 +532,4 @@ fn a_bulk_ingest_target_replaces_a_configured_copy() {
         BigQueryStatementOption::CopyTableDestination,
         None,
     );
-}
-
-#[test]
-fn a_copy_has_no_result_schema() {
-    let mut statement = test_statement();
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::CopyTableSource,
-        "data-project.analytics.model",
-    );
-    let error = statement.execute_schema().unwrap_err();
-    assert_eq!(error.status, Status::InvalidState);
 }

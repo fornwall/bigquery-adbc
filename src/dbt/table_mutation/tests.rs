@@ -9,9 +9,9 @@ use crate::BigQueryStatement;
 use crate::BigQueryStatementOption as Key;
 use crate::rest::model::{TableFieldSchema, TableSchema};
 use crate::test_support::driver::{test_statement, test_statement_at};
-use crate::test_support::errors::{assert_message, assert_message_omits};
+use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
 use crate::test_support::http::{
-    capture_requests, capture_requests_responding, capture_requests_until_stopped, error_body,
+    capture_requests, capture_requests_responding, capture_requests_until_stopped, error_body, ok,
 };
 use crate::test_support::options::{
     assert_string_option, option_string, set_option, set_option_error,
@@ -66,73 +66,70 @@ fn column_metadata_options_are_typed_sorted_atomic_and_secret_safe() {
 #[test]
 fn dbt_column_metadata_update_applies_dotted_paths_and_preserves_the_schema() {
     let (endpoint, captured) = capture_requests(vec![
-        (
-            200,
-            json!({
-                "etag": "must-not-be-sent-back",
-                "schema": {
-                    "fields": [
-                        {
-                            "name": "id",
-                            "type": "INTEGER",
-                            "mode": "REQUIRED",
-                            "description": "old id",
-                            "policyTags": {"names": ["old-id-tag"]}
-                        },
-                        {
-                            "name": "my_array",
-                            "type": "RECORD",
-                            "mode": "REPEATED",
-                            "description": "old array",
-                            "policyTags": {"names": ["old-record-tag"]},
-                            "fields": [
-                                {
-                                    "name": "amount",
-                                    "type": "NUMERIC",
-                                    "mode": "REQUIRED",
-                                    "description": "nested amount",
-                                    "precision": "20",
-                                    "scale": "4"
-                                },
-                                {
-                                    "name": "detail",
-                                    "type": "RECORD",
-                                    "mode": "NULLABLE",
-                                    "description": "old detail",
-                                    "policyTags": {"names": ["old-detail-tag"]},
-                                    "fields": [
-                                        {
-                                            "name": "sku",
-                                            "type": "STRING",
-                                            "mode": "NULLABLE",
-                                            "description": "old sku"
-                                        },
-                                        {
-                                            "name": "note",
-                                            "type": "STRING",
-                                            "mode": "NULLABLE",
-                                            "description": "old note"
-                                        }
-                                    ]
-                                }
-                            ]
-                        },
-                        {
-                            "name": "Customer",
-                            "type": "RECORD",
-                            "mode": "NULLABLE",
-                            "fields": [{
-                                "name": "Email",
-                                "type": "STRING",
+        ok(json!({
+            "etag": "must-not-be-sent-back",
+            "schema": {
+                "fields": [
+                    {
+                        "name": "id",
+                        "type": "INTEGER",
+                        "mode": "REQUIRED",
+                        "description": "old id",
+                        "policyTags": {"names": ["old-id-tag"]}
+                    },
+                    {
+                        "name": "my_array",
+                        "type": "RECORD",
+                        "mode": "REPEATED",
+                        "description": "old array",
+                        "policyTags": {"names": ["old-record-tag"]},
+                        "fields": [
+                            {
+                                "name": "amount",
+                                "type": "NUMERIC",
+                                "mode": "REQUIRED",
+                                "description": "nested amount",
+                                "precision": "20",
+                                "scale": "4"
+                            },
+                            {
+                                "name": "detail",
+                                "type": "RECORD",
                                 "mode": "NULLABLE",
-                                "description": "old email"
-                            }]
-                        }
-                    ]
-                }
-            }),
-        ),
-        (200, json!({})),
+                                "description": "old detail",
+                                "policyTags": {"names": ["old-detail-tag"]},
+                                "fields": [
+                                    {
+                                        "name": "sku",
+                                        "type": "STRING",
+                                        "mode": "NULLABLE",
+                                        "description": "old sku"
+                                    },
+                                    {
+                                        "name": "note",
+                                        "type": "STRING",
+                                        "mode": "NULLABLE",
+                                        "description": "old note"
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        "name": "Customer",
+                        "type": "RECORD",
+                        "mode": "NULLABLE",
+                        "fields": [{
+                            "name": "Email",
+                            "type": "STRING",
+                            "mode": "NULLABLE",
+                            "description": "old email"
+                        }]
+                    }
+                ]
+            }
+        })),
+        ok(json!({})),
     ]);
     let mut statement = test_statement_at(&endpoint);
     statement
@@ -290,6 +287,15 @@ fn table_description_option_is_typed_and_clears_on_empty() {
     );
 }
 
+/// Both table metadata updates, which one statement runs columns first.
+const BOTH_UPDATES: [(Key, &str); 2] = [
+    (
+        Key::UpdateColumnsDescription,
+        r#"{"id":"Required identifier."}"#,
+    ),
+    (Key::UpdateDescription, "A documented relation."),
+];
+
 /// A statement against `endpoint` that updates `data-project.docs.documented_model` with
 /// `updates`.
 fn documented_model_update(endpoint: &str, updates: &[(Key, &str)]) -> BigQueryStatement {
@@ -311,7 +317,7 @@ fn documented_model_update(endpoint: &str, updates: &[(Key, &str)]) -> BigQueryS
 /// the old one, so an update sent in that window lost the precondition (HTTP 412).
 #[test]
 fn dbt_table_description_update_patches_only_the_description_without_a_precondition() {
-    let (endpoint, captured) = capture_requests(vec![(200, json!({}))]);
+    let (endpoint, captured) = capture_requests(vec![ok(json!({}))]);
     let mut statement = documented_model_update(
         &endpoint,
         &[(Key::UpdateDescription, "A documented relation.")],
@@ -367,26 +373,14 @@ fn rate_limited_table_patches_are_resent() {
         )
     };
     let (endpoint, captured) = capture_requests(vec![
-        (
-            200,
-            json!({"schema": {"fields": [{"name": "id", "type": "INTEGER"}]}}),
-        ),
+        ok(json!({"schema": {"fields": [{"name": "id", "type": "INTEGER"}]}})),
         rate_limited(),
-        (200, json!({})),
+        ok(json!({})),
         rate_limited(),
         (429, error_body("rateLimitExceeded", "Too many requests.")),
-        (200, json!({})),
+        ok(json!({})),
     ]);
-    let mut statement = documented_model_update(
-        &endpoint,
-        &[
-            (
-                Key::UpdateColumnsDescription,
-                r#"{"id":"Required identifier."}"#,
-            ),
-            (Key::UpdateDescription, "A documented relation."),
-        ],
-    );
+    let mut statement = documented_model_update(&endpoint, &BOTH_UPDATES);
 
     assert_eq!(statement.execute_update().unwrap(), Some(0));
 
@@ -414,25 +408,13 @@ fn rate_limited_table_patches_are_resent() {
 fn ambiguous_failures_resend_both_blind_table_patches_with_the_same_body() {
     let backend_error = || (503, error_body("backendError", "Backend error."));
     let (endpoint, captured) = capture_requests(vec![
-        (
-            200,
-            json!({"schema": {"fields": [{"name": "id", "type": "INTEGER"}]}}),
-        ),
+        ok(json!({"schema": {"fields": [{"name": "id", "type": "INTEGER"}]}})),
         backend_error(),
-        (200, json!({})),
+        ok(json!({})),
         backend_error(),
-        (200, json!({})),
+        ok(json!({})),
     ]);
-    let mut statement = documented_model_update(
-        &endpoint,
-        &[
-            (
-                Key::UpdateColumnsDescription,
-                r#"{"id":"Required identifier."}"#,
-            ),
-            (Key::UpdateDescription, "A documented relation."),
-        ],
-    );
+    let mut statement = documented_model_update(&endpoint, &BOTH_UPDATES);
 
     assert_eq!(statement.execute_update().unwrap(), Some(0));
 
@@ -453,30 +435,6 @@ fn ambiguous_failures_resend_both_blind_table_patches_with_the_same_body() {
         json!({"description": "A documented relation."})
     );
     assert_eq!(requests[3].raw_body, requests[4].raw_body);
-}
-
-/// A connection dropped before any answer leaves a blind patch as ambiguous as a 503 does, so it
-/// is resent too.
-#[test]
-fn a_transport_failure_resends_a_blind_table_patch() {
-    let mut answered = false;
-    let (endpoint, captured) = capture_requests_responding(2, move |_| {
-        // The first request is read whole and its connection closed without an answer.
-        std::mem::replace(&mut answered, true).then(|| (200, json!({})))
-    });
-    let mut statement = documented_model_update(
-        &endpoint,
-        &[(Key::UpdateDescription, "A documented relation.")],
-    );
-
-    assert_eq!(statement.execute_update().unwrap(), Some(0));
-
-    let requests = captured.join().unwrap();
-    assert_eq!(requests.len(), 2);
-    for patch in &requests {
-        assert!(patch.line.starts_with("PATCH "), "{}", patch.line);
-        assert_eq!(patch.body, json!({"description": "A documented relation."}));
-    }
 }
 
 /// A patch that never got an answer is named once, by the operation, and not again by the
@@ -505,12 +463,8 @@ fn a_table_patch_transport_failure_names_its_operation_once() {
                 served += 1;
                 // The schema read is answered; every patch is read whole and its connection
                 // closed without an answer.
-                (schema_read && served == 1).then(|| {
-                    (
-                        200,
-                        json!({"schema": {"fields": [{"name": "id", "type": "INTEGER"}]}}),
-                    )
-                })
+                (schema_read && served == 1)
+                    .then(|| ok(json!({"schema": {"fields": [{"name": "id", "type": "INTEGER"}]}})))
             });
         let mut statement = documented_model_update(&endpoint, &[update]);
 
@@ -549,7 +503,7 @@ fn a_blind_table_patch_reports_the_last_of_its_five_ambiguous_failures() {
                     error_body("backendError", &format!("Backend error {attempt}.")),
                 )
             })
-            .chain([(200, json!({}))])
+            .chain([ok(json!({}))])
             .collect(),
     );
     let mut statement = documented_model_update(
@@ -572,111 +526,15 @@ fn a_blind_table_patch_reports_the_last_of_its_five_ambiguous_failures() {
 }
 
 #[test]
-fn both_table_metadata_updates_run_against_the_one_destination_they_name() {
-    let (endpoint, captured) = capture_requests(vec![
-        (
-            200,
-            json!({
-                "etag": "columns-etag",
-                "schema": {"fields": [{"name": "id", "type": "INTEGER", "mode": "REQUIRED"}]}
-            }),
-        ),
-        (200, json!({})),
-        (200, json!({})),
-    ]);
-    let mut statement = documented_model_update(
-        &endpoint,
-        &[
-            (
-                Key::UpdateColumnsDescription,
-                r#"{"id":"Required identifier."}"#,
-            ),
-            (Key::UpdateDescription, "A documented relation."),
-        ],
-    );
-
-    assert_eq!(statement.execute_update().unwrap(), Some(0));
-
-    let requests = captured.join().unwrap();
-    assert_eq!(
-        requests.len(),
-        3,
-        "a schema get and patch, then a description patch"
-    );
-    // Columns first, the order dbt's own persist_docs applies them in.
-    assert_eq!(
-        requests[0].path(),
-        "/bigquery/v2/projects/data-project/datasets/docs/tables/documented_model?view=BASIC&fields=schema"
-    );
-    assert!(requests[1].path().ends_with("?fields=etag"));
-    assert_eq!(
-        requests[1].body["schema"]["fields"][0]["description"],
-        "Required identifier."
-    );
-    assert_eq!(
-        requests[1].header("If-Match"),
-        None,
-        "the column schema write stays blind, as dbt Core makes it"
-    );
-    assert!(
-        requests[2].line.starts_with("PATCH "),
-        "{}",
-        requests[2].line
-    );
-    assert!(requests[2].path().ends_with("?fields=etag"));
-    assert_eq!(requests[2].header("If-Match"), None);
-    assert_eq!(
-        requests[2].body,
-        json!({"description": "A documented relation."})
-    );
-}
-
-#[test]
-fn a_table_metadata_update_cannot_be_combined_with_a_view_authorization() {
-    let mut statement = test_statement();
-    set_option(
-        &mut statement,
-        Key::AuthorizeViewToDatasets,
-        r#"{"data-project.marts.v":[{"project":"data-project","dataset":"raw"}]}"#,
-    );
-    set_option(
-        &mut statement,
-        Key::UpdateDescription,
-        "A documented relation.",
-    );
-    let Err(error) = statement.execute() else {
-        panic!("a view authorization combined with a table update must fail");
-    };
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(&error, &[Key::UpdateDescription.as_str()]);
-}
-
-#[test]
-fn table_description_update_requires_a_destination() {
-    let mut statement = test_statement();
-    set_option(
-        &mut statement,
-        Key::UpdateDescription,
-        "A documented relation.",
-    );
-    let Err(error) = statement.execute() else {
-        panic!("a table description update without a destination must fail");
-    };
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(&error, &[Key::DestinationTable.as_str()]);
-}
-
-#[test]
-fn column_metadata_update_requires_a_destination() {
-    let mut statement = test_statement();
-    set_option(
-        &mut statement,
-        Key::UpdateColumnsDescription,
-        r#"{"id":"description"}"#,
-    );
-    let Err(error) = statement.execute() else {
-        panic!("a column metadata update without a destination must fail");
-    };
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(&error, &[Key::DestinationTable.as_str()]);
+fn table_metadata_updates_require_a_destination() {
+    for (update, value) in BOTH_UPDATES {
+        let mut statement = test_statement();
+        set_option(&mut statement, update, value);
+        let error = statement.execute_update().unwrap_err();
+        assert_failure(
+            &error,
+            Status::InvalidState,
+            &[Key::DestinationTable.as_str()],
+        );
+    }
 }

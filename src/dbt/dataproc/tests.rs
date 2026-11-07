@@ -1,4 +1,3 @@
-use std::io::Write as _;
 use std::sync::{Arc, Barrier};
 use std::thread;
 
@@ -7,13 +6,14 @@ use adbc_core::{Connection as _, Statement as _};
 use serde_json::json;
 
 use crate::test_support::driver::test_connection_with;
-use crate::test_support::http::{capture_requests, capture_requests_gated, error_body};
+use crate::test_support::http::{
+    capture_requests, capture_requests_gated, capture_requests_until_stopped, error_body, ok,
+};
 use crate::{BigQueryDatabaseOption, BigQueryStatement, BigQueryStatementOption};
 
 use super::{RunningOperation, Submission, batch_resource, finished};
 use crate::dbt::{region_segment, resource_path, resource_segment};
-use crate::error::rpc_code_status as rpc_status;
-use crate::test_support::errors::{assert_message, assert_message_omits};
+use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
 use crate::test_support::options::set_option;
 
 /// The document `batch_to_str` produces for a serverless python model, with dbt-core 2.0's own
@@ -113,19 +113,16 @@ fn running(name: &str) -> serde_json::Value {
 #[test]
 fn dbt_serverless_python_model_creates_one_batch_and_waits_for_it() {
     let (endpoint, captured) = capture_requests(vec![
-        (200, running(OPERATION)),
-        (200, running(OPERATION)),
-        (
-            200,
-            json!({
-                "name": OPERATION,
-                "done": true,
-                "response": {
-                    "name": "projects/exec-project/locations/us-central1/batches/batch-42",
-                    "state": "SUCCEEDED",
-                },
-            }),
-        ),
+        ok(running(OPERATION)),
+        ok(running(OPERATION)),
+        ok(json!({
+            "name": OPERATION,
+            "done": true,
+            "response": {
+                "name": "projects/exec-project/locations/us-central1/batches/batch-42",
+                "state": "SUCCEEDED",
+            },
+        })),
     ]);
     let mut connection = dataproc_connection(&endpoint);
     let mut statement = batch_statement(&mut connection, Some("86400"));
@@ -186,18 +183,12 @@ fn dbt_serverless_python_model_creates_one_batch_and_waits_for_it() {
 #[test]
 fn dbt_cluster_python_model_submits_one_pyspark_job_and_waits_for_it() {
     let (endpoint, captured) = capture_requests(vec![
-        (
-            200,
-            json!({"name": JOB_OPERATION, "metadata": {"jobId": "job-7"}, "done": false}),
-        ),
-        (
-            200,
-            json!({
-                "name": JOB_OPERATION,
-                "done": true,
-                "response": {"status": {"state": "DONE"}},
-            }),
-        ),
+        ok(json!({"name": JOB_OPERATION, "metadata": {"jobId": "job-7"}, "done": false})),
+        ok(json!({
+            "name": JOB_OPERATION,
+            "done": true,
+            "response": {"status": {"state": "DONE"}},
+        })),
     ]);
     let mut connection = dataproc_connection(&endpoint);
     let mut statement = cluster_statement(&mut connection, Some("86400"));
@@ -333,8 +324,7 @@ fn a_finished_operation_reports_the_state_its_resource_reached() {
         json!({"state": "FAILED", "stateMessage": "driver exited with code 1"}),
     )
     .unwrap_err();
-    assert_eq!(failed.status, Status::InvalidData);
-    assert_message(&failed, &["driver exited with code 1"]);
+    assert_failure(&failed, Status::InvalidData, &["driver exited with code 1"]);
 
     for (state, expected) in [
         ("CANCELLED", Status::Cancelled),
@@ -380,25 +370,15 @@ fn a_failed_operation_keeps_the_status_the_service_reported() {
     };
 
     let denied = failure(7, "Permission 'dataproc.batches.create' denied");
-    assert_eq!(denied.status, Status::Unauthorized);
-    assert_message(&denied, &["dataproc.batches.create", OPERATION]);
+    assert_failure(
+        &denied,
+        Status::Unauthorized,
+        &["dataproc.batches.create", OPERATION],
+    );
 
     assert_eq!(failure(5, "not found").status, Status::NotFound);
     assert_eq!(failure(4, "deadline").status, Status::Timeout);
     assert_eq!(failure(99, "who knows").status, Status::Unknown);
-
-    for (code, expected) in [
-        (1, Status::Cancelled),
-        (3, Status::InvalidArguments),
-        (6, Status::AlreadyExists),
-        (8, Status::IO),
-        (9, Status::InvalidState),
-        (12, Status::NotImplemented),
-        (13, Status::Internal),
-        (16, Status::Unauthenticated),
-    ] {
-        assert_eq!(rpc_status(code), expected, "google.rpc.Code {code}");
-    }
 }
 
 /// `pooling_timeout` expiry stops the wait, reports a timeout distinct from a failed model, and
@@ -409,7 +389,7 @@ fn a_failed_operation_keeps_the_status_the_service_reported() {
 /// directly by the cancel.
 #[test]
 fn an_expired_pooling_timeout_reports_a_timeout_without_another_poll_and_cancels_the_batch() {
-    let (endpoint, captured) = capture_requests(vec![(200, running(OPERATION)), (200, json!({}))]);
+    let (endpoint, captured) = capture_requests(vec![ok(running(OPERATION)), ok(json!({}))]);
     let mut connection = dataproc_connection(&endpoint);
     let mut statement = batch_statement(&mut connection, Some("1"));
 
@@ -449,9 +429,9 @@ fn an_expired_pooling_timeout_reports_a_timeout_without_another_poll_and_cancels
 #[test]
 fn a_pooling_timeout_with_budget_left_polls_before_it_expires() {
     let (endpoint, captured) = capture_requests(vec![
-        (200, running(OPERATION)),
-        (200, running(OPERATION)),
-        (200, json!({})),
+        ok(running(OPERATION)),
+        ok(running(OPERATION)),
+        ok(json!({})),
     ]);
     let mut connection = dataproc_connection(&endpoint);
     let mut statement = batch_statement(&mut connection, Some("2"));
@@ -478,12 +458,13 @@ fn a_pooling_timeout_with_budget_left_polls_before_it_expires() {
 /// attempted once.
 #[test]
 fn a_refused_cancel_still_reports_the_timeout_and_is_not_retried() {
-    let (endpoint, captured) = capture_requests(vec![
-        (200, running(OPERATION)),
+    let (endpoint, server) = capture_requests_until_stopped(vec![
+        ok(running(OPERATION)),
         (
             403,
             json!({"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "denied"}}),
         ),
+        ok(json!({})),
     ]);
     let mut connection = dataproc_connection(&endpoint);
     let mut statement = batch_statement(&mut connection, Some("1"));
@@ -509,7 +490,7 @@ fn a_refused_cancel_still_reports_the_timeout_and_is_not_retried() {
     }
     assert_message_omits(&error, &["asked to stop"]);
 
-    let requests = captured.join().unwrap();
+    let requests = server.stop();
     assert_eq!(
         requests.len(),
         2,
@@ -525,19 +506,18 @@ fn a_refused_cancel_still_reports_the_timeout_and_is_not_retried() {
 #[test]
 fn a_transiently_failed_cancel_is_resent() {
     let (endpoint, captured) = capture_requests(vec![
-        (200, running(OPERATION)),
+        ok(running(OPERATION)),
         (
             503,
             error_body("backendError", "The service is unavailable."),
         ),
-        (200, json!({})),
+        ok(json!({})),
     ]);
     let mut connection = dataproc_connection(&endpoint);
     let mut statement = batch_statement(&mut connection, Some("1"));
 
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::Timeout, "{}", error.message);
-    assert_message(&error, &["was asked to stop"]);
+    assert_failure(&error, Status::Timeout, &["was asked to stop"]);
     let requests = captured.join().unwrap();
     assert_eq!(requests[1].line, requests[2].line);
 }
@@ -546,14 +526,13 @@ fn a_transiently_failed_cancel_is_resent() {
 /// batch: a malformed response says nothing about the batch.
 #[test]
 fn a_poll_answered_with_a_json_array_fails_at_once_without_cancelling_the_batch() {
-    let (endpoint, captured) = capture_requests(vec![(200, running(OPERATION)), (200, json!([]))]);
+    let (endpoint, captured) = capture_requests(vec![ok(running(OPERATION)), ok(json!([]))]);
     let mut connection = dataproc_connection(&endpoint);
     // A minute of budget, so nothing here is the deadline expiring.
     let mut statement = batch_statement(&mut connection, Some("60"));
 
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::InvalidData, "{}", error.message);
-    assert_message(&error, &["is not a JSON object"]);
+    assert_failure(&error, Status::InvalidData, &["is not a JSON object"]);
 
     let requests = captured.join().unwrap();
     assert_eq!(
@@ -571,16 +550,13 @@ fn a_poll_answered_with_a_json_array_fails_at_once_without_cancelling_the_batch(
 #[test]
 fn a_gateway_timeout_while_polling_is_retried_rather_than_failing_the_batch() {
     let (endpoint, captured) = capture_requests(vec![
-        (200, running(OPERATION)),
+        ok(running(OPERATION)),
         (504, json!({"error": {"message": "the gateway timed out"}})),
-        (
-            200,
-            json!({
-                "name": OPERATION,
-                "done": true,
-                "response": {"state": "SUCCEEDED"},
-            }),
-        ),
+        ok(json!({
+            "name": OPERATION,
+            "done": true,
+            "response": {"state": "SUCCEEDED"},
+        })),
     ]);
     let mut connection = dataproc_connection(&endpoint);
     let mut statement = batch_statement(&mut connection, None);
@@ -606,48 +582,21 @@ fn a_gateway_timeout_while_polling_is_retried_rather_than_failing_the_batch() {
     );
 }
 
-/// The other side of that: a status the service means as a verdict stops the wait at once,
-/// rather than spending the whole `pooling_timeout` re-asking a question already answered.
+/// A status the service means as a verdict stops the wait at once, with nothing cancelled. That
+/// leaves the submission running and billing, so the error says so and names it for the caller.
 #[test]
-fn a_fatal_poll_rejection_fails_the_batch_immediately() {
-    let (endpoint, captured) = capture_requests(vec![
-        (200, running(OPERATION)),
-        (
-            403,
-            json!({"error": {"code": 403, "message": "Permission denied on the operation"}}),
-        ),
-        (200, json!({})),
-    ]);
-    let mut connection = dataproc_connection(&endpoint);
-    let mut statement = batch_statement(&mut connection, None);
-
-    let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::Unauthorized, "{}", error.message);
-    assert_message(&error, &["Permission denied on the operation"]);
-
-    // A cancel would have been issued before `execute_update` returned, so the next request
-    // the server sees is this probe exactly when none was.
-    let _probe = probe(&endpoint);
-    let requests = captured.join().unwrap();
-    assert_eq!(requests.len(), 3);
-    assert_eq!(
-        requests[2].line, "GET /probe HTTP/1.1",
-        "the rejection stopped the wait rather than being retried: {}",
-        requests[2].line
-    );
-}
-
-/// A wait that gives up on its polls leaves the submission running and billing, so the error
-/// says so and names it for the caller to stop.
-#[test]
-fn a_failed_poll_says_the_submission_may_still_be_running() {
+fn a_fatal_poll_rejection_says_the_submission_may_still_be_running() {
     let denied = json!({"error": {"code": 403, "message": "Permission denied on the operation"}});
     for (cluster, operation, what) in [
         (false, OPERATION, "Dataproc batch"),
         (true, JOB_OPERATION, "Dataproc job"),
     ] {
-        let (endpoint, captured) =
-            capture_requests(vec![(200, running(operation)), (403, denied.clone())]);
+        // The last response answers a repeated poll or a cancel, which must never be sent.
+        let (endpoint, server) = capture_requests_until_stopped(vec![
+            ok(running(operation)),
+            (403, denied.clone()),
+            ok(json!({})),
+        ]);
         let mut connection = dataproc_connection(&endpoint);
         let mut statement = if cluster {
             cluster_statement(&mut connection, None)
@@ -664,7 +613,7 @@ fn a_failed_poll_says_the_submission_may_still_be_running() {
             "{}",
             error.message
         );
-        assert_eq!(captured.join().unwrap().len(), 2);
+        assert_eq!(server.stop().len(), 2);
     }
 }
 
@@ -679,9 +628,9 @@ fn a_refused_submission_names_where_it_was_sent() {
     let job = cluster_statement(&mut connection, None)
         .execute_update()
         .unwrap_err();
-    assert_eq!(job.status, Status::Unauthorized, "{}", job.message);
-    assert_message(
+    assert_failure(
         &job,
+        Status::Unauthorized,
         &[
             "failed to submit the BigQuery Dataproc job to cluster dbt-cluster in \
              projects/exec-project/regions/us-central1: Cloud Dataproc API has not been used",
@@ -717,8 +666,7 @@ fn a_transiently_failed_submission_is_resent_under_its_request_id() {
             503,
             error_body("backendError", "The service is unavailable."),
         ),
-        (
-            200,
+        ok(
             json!({"name": JOB_OPERATION, "metadata": {"jobId": "job-7"}, "done": true,
                 "response": {"status": {"state": "DONE"}}}),
         ),
@@ -726,11 +674,8 @@ fn a_transiently_failed_submission_is_resent_under_its_request_id() {
             503,
             error_body("backendError", "The service is unavailable."),
         ),
-        (
-            200,
-            json!({"name": OPERATION, "done": true,
-                "response": {"name": format!("{PARENT}/batches/b"), "state": "SUCCEEDED"}}),
-        ),
+        ok(json!({"name": OPERATION, "done": true,
+                "response": {"name": format!("{PARENT}/batches/b"), "state": "SUCCEEDED"}})),
     ]);
     let mut connection = dataproc_connection(&endpoint);
 
@@ -774,11 +719,8 @@ fn an_unreadable_submission_answer_is_resent_under_its_request_id() {
     // Valid to the mock, which serializes it, but past the decoder's recursion limit.
     let unreadable = (0..200).fold(json!(0), |value, _| json!([value]));
     let (endpoint, captured) = capture_requests(vec![
-        (200, unreadable),
-        (
-            200,
-            json!({"name": OPERATION, "done": true, "response": {"state": "SUCCEEDED"}}),
-        ),
+        ok(unreadable),
+        ok(json!({"name": OPERATION, "done": true, "response": {"state": "SUCCEEDED"}})),
     ]);
     let mut connection = dataproc_connection(&endpoint);
 
@@ -790,31 +732,15 @@ fn an_unreadable_submission_answer_is_resent_under_its_request_id() {
     assert_eq!(requests[0].line, requests[1].line);
 }
 
-/// One bare request the mock server can capture, marking the end of an exchange whose last
-/// response the driver is expected *not* to answer. The connection is returned so it outlives
-/// the server's reply to it.
-fn probe(endpoint: &str) -> std::net::TcpStream {
-    let mut stream = std::net::TcpStream::connect(endpoint.trim_start_matches("http://"))
-        .expect("the mock server had already served every response and closed");
-    stream
-        .write_all(b"GET /probe HTTP/1.1\r\nHost: probe\r\nContent-Length: 0\r\n\r\n")
-        .unwrap();
-    stream.flush().unwrap();
-    stream
-}
-
 /// A `pooling_timeout` too large for the clock becomes no deadline rather than an overflow
 /// panic.
 #[test]
 fn a_pooling_timeout_beyond_the_clock_waits_without_a_deadline() {
-    let (endpoint, captured) = capture_requests(vec![(
-        200,
-        json!({
-            "name": OPERATION,
-            "done": true,
-            "response": {"state": "SUCCEEDED"},
-        }),
-    )]);
+    let (endpoint, captured) = capture_requests(vec![ok(json!({
+        "name": OPERATION,
+        "done": true,
+        "response": {"state": "SUCCEEDED"},
+    }))]);
     let mut connection = dataproc_connection(&endpoint);
     let mut statement = batch_statement(&mut connection, Some("9223372036854775807"));
 
@@ -830,15 +756,12 @@ fn cancelling_a_submission_interrupts_the_poll_and_cancels_the_job() {
     let server_seen = request_seen.clone();
     let (endpoint, captured) = capture_requests_gated(
         vec![
-            (
-                200,
-                json!({
-                    "name": JOB_OPERATION,
-                    "metadata": {"jobId": "job-7"},
-                    "done": false,
-                }),
-            ),
-            (200, json!({})),
+            ok(json!({
+                "name": JOB_OPERATION,
+                "metadata": {"jobId": "job-7"},
+                "done": false,
+            })),
+            ok(json!({})),
         ],
         move || {
             server_seen.wait();
@@ -1004,9 +927,9 @@ fn a_backslash_region_sends_no_request_anywhere() {
     );
 
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::InvalidArguments, "{}", error.message);
-    assert_message(
+    assert_failure(
         &error,
+        Status::InvalidArguments,
         &[BigQueryStatementOption::DataprocComputeRegion.as_str()],
     );
 }

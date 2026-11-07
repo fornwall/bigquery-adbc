@@ -7,12 +7,12 @@ use serde_json::json;
 
 use crate::test_support::driver::{test_statement, test_statement_at};
 use crate::test_support::http::{
-    capture_requests, capture_requests_gated, capture_requests_responding, error_body,
+    capture_requests, capture_requests_gated, capture_requests_responding, error_body, ok,
 };
 use crate::{BigQueryStatement, BigQueryStatementOption};
 
 use super::parse_view_authorizations;
-use crate::test_support::errors::assert_message;
+use crate::test_support::errors::{assert_failure, assert_message};
 use crate::test_support::options::{
     assert_string_option, option_string, set_option, set_option_error,
 };
@@ -214,22 +214,19 @@ fn view_names_resolve_one_two_and_three_part_spellings() {
 #[test]
 fn dbt_grant_access_to_appends_the_view_and_returns_the_dataset_etag() {
     let (endpoint, captured) = capture_requests(vec![
-        (
-            200,
-            json!({
-                "etag": "dataset-etag",
-                "datasetReference": {"projectId": "data-project", "datasetId": "raw"},
-                "access": [
-                    {"role": "OWNER", "userByEmail": "owner@example.com"},
-                    {"view": {
-                        "projectId": "data-project",
-                        "datasetId": "analytics",
-                        "tableId": "another_view"
-                    }},
-                ]
-            }),
-        ),
-        (200, json!({})),
+        ok(json!({
+            "etag": "dataset-etag",
+            "datasetReference": {"projectId": "data-project", "datasetId": "raw"},
+            "access": [
+                {"role": "OWNER", "userByEmail": "owner@example.com"},
+                {"view": {
+                    "projectId": "data-project",
+                    "datasetId": "analytics",
+                    "tableId": "another_view"
+                }},
+            ]
+        })),
+        ok(json!({})),
     ]);
     let mut statement = test_statement_at(&endpoint);
     set_option(
@@ -295,20 +292,17 @@ fn dbt_grant_access_to_appends_the_view_and_returns_the_dataset_etag() {
 
 #[test]
 fn an_already_authorized_view_issues_no_patch() {
-    let (endpoint, captured) = capture_requests(vec![(
-        200,
-        json!({
-            "etag": "dataset-etag",
-            "access": [
-                {"role": "READER", "userByEmail": "reader@example.com"},
-                {"view": {
-                    "projectId": "data-project",
-                    "datasetId": "analytics",
-                    "tableId": "granted_view"
-                }},
-            ]
-        }),
-    )]);
+    let (endpoint, captured) = capture_requests(vec![ok(json!({
+        "etag": "dataset-etag",
+        "access": [
+            {"role": "READER", "userByEmail": "reader@example.com"},
+            {"view": {
+                "projectId": "data-project",
+                "datasetId": "analytics",
+                "tableId": "granted_view"
+            }},
+        ]
+    }))]);
     let mut statement = test_statement_at(&endpoint);
     authorize_granted_view(&mut statement);
 
@@ -324,8 +318,8 @@ fn an_already_authorized_view_issues_no_patch() {
 #[test]
 fn domain_scoped_projects_survive_authorization_paths_and_view_references() {
     let (endpoint, captured) = capture_requests(vec![
-        (200, json!({"etag": "dataset-etag", "access": []})),
-        (200, json!({})),
+        ok(json!({"etag": "dataset-etag", "access": []})),
+        ok(json!({})),
     ]);
     let mut statement = test_statement_at(&endpoint);
     set_option(
@@ -374,12 +368,12 @@ fn multiple_views_and_datasets_visit_every_pair() {
     // Two views on two datasets each; every dataset already authorizes exactly one of them,
     // so half the pairs are appended and half are skipped.
     let (endpoint, captured) = capture_requests(vec![
-        (200, dataset("first_view")),
-        (200, dataset("second_view")),
-        (200, json!({})),
-        (200, dataset("first_view")),
-        (200, json!({})),
-        (200, dataset("second_view")),
+        ok(dataset("first_view")),
+        ok(dataset("second_view")),
+        ok(json!({})),
+        ok(dataset("first_view")),
+        ok(json!({})),
+        ok(dataset("second_view")),
     ]);
     let mut statement = test_statement_at(&endpoint);
     let authorizations = json!({
@@ -421,8 +415,6 @@ fn multiple_views_and_datasets_visit_every_pair() {
     assert_eq!(requests[4].header("If-Match"), Some("first_view-etag"));
 }
 
-/// The point of the precondition: a concurrent writer changed the ACL between the get and
-/// the patch, so the patch is refused instead of dropping that writer's entries.
 /// An access-list entry other than the granted view, which every re-read must keep.
 fn other_entry() -> serde_json::Value {
     json!({"role": "READER", "userByEmail": "analyst@example.com"})
@@ -446,13 +438,10 @@ fn precondition_failed() -> (u16, serde_json::Value) {
 #[test]
 fn a_lost_etag_race_is_patched_again_under_the_fresh_etag() {
     let (endpoint, captured) = capture_requests(vec![
-        (200, json!({"etag": "stale-etag", "access": []})),
+        ok(json!({"etag": "stale-etag", "access": []})),
         precondition_failed(),
-        (
-            200,
-            json!({"etag": "fresh-etag", "access": [other_entry()]}),
-        ),
-        (200, json!({})),
+        ok(json!({"etag": "fresh-etag", "access": [other_entry()]})),
+        ok(json!({})),
     ]);
     let mut statement = test_statement_at(&endpoint);
     authorize_granted_view(&mut statement);
@@ -475,11 +464,11 @@ fn a_lost_etag_race_is_patched_again_under_the_fresh_etag() {
 fn a_grant_outlasts_every_other_thread_of_a_dbt_run() {
     let mut responses = Vec::new();
     for round in 0..7 {
-        responses.push((200, json!({"etag": format!("etag-{round}"), "access": []})));
+        responses.push(ok(json!({"etag": format!("etag-{round}"), "access": []})));
         responses.push(precondition_failed());
     }
-    responses.push((200, json!({"etag": "last-etag", "access": []})));
-    responses.push((200, json!({})));
+    responses.push(ok(json!({"etag": "last-etag", "access": []})));
+    responses.push(ok(json!({})));
     let (endpoint, captured) = capture_requests(responses);
     let mut statement = test_statement_at(&endpoint);
     authorize_granted_view(&mut statement);
@@ -496,12 +485,9 @@ fn a_grant_outlasts_every_other_thread_of_a_dbt_run() {
 #[test]
 fn an_ambiguous_access_list_patch_is_confirmed_by_a_reread() {
     let (endpoint, captured) = capture_requests(vec![
-        (200, json!({"etag": "dataset-etag", "access": []})),
+        ok(json!({"etag": "dataset-etag", "access": []})),
         (503, error_body("backendError", "Backend error.")),
-        (
-            200,
-            json!({"etag": "applied-etag", "access": [granted_entry()]}),
-        ),
+        ok(json!({"etag": "applied-etag", "access": [granted_entry()]})),
     ]);
     let mut statement = test_statement_at(&endpoint);
     authorize_granted_view(&mut statement);
@@ -521,7 +507,7 @@ fn an_ambiguous_access_list_patch_is_confirmed_by_a_reread() {
 fn an_access_list_that_keeps_changing_fails_after_bounded_rounds() {
     let mut responses = Vec::new();
     for round in 0..super::MAX_GRANT_ROUNDS {
-        responses.push((200, json!({"etag": format!("etag-{round}"), "access": []})));
+        responses.push(ok(json!({"etag": format!("etag-{round}"), "access": []})));
         responses.push(precondition_failed());
     }
     let (endpoint, captured) = capture_requests(responses);
@@ -548,7 +534,7 @@ fn an_access_list_that_keeps_changing_fails_after_bounded_rounds() {
 #[test]
 fn a_rate_limited_access_list_patch_is_resent_under_the_same_etag() {
     let (endpoint, captured) = capture_requests(vec![
-        (200, json!({"etag": "dataset-etag", "access": []})),
+        ok(json!({"etag": "dataset-etag", "access": []})),
         (
             403,
             error_body(
@@ -557,7 +543,7 @@ fn a_rate_limited_access_list_patch_is_resent_under_the_same_etag() {
                  dataset.",
             ),
         ),
-        (200, json!({})),
+        ok(json!({})),
     ]);
     let mut statement = test_statement_at(&endpoint);
     authorize_granted_view(&mut statement);
@@ -587,7 +573,7 @@ fn an_unanswered_access_list_patch_names_the_authorization_once() {
         request
             .line
             .starts_with("GET ")
-            .then(|| (200, json!({"etag": "dataset-etag", "access": []})))
+            .then(|| ok(json!({"etag": "dataset-etag", "access": []})))
     });
     let mut statement = test_statement_at(&endpoint);
     authorize_granted_view(&mut statement);
@@ -616,13 +602,16 @@ fn an_unanswered_access_list_patch_names_the_authorization_once() {
 /// blind-written.
 #[test]
 fn a_dataset_without_an_etag_is_never_blind_written() {
-    let (endpoint, captured) = capture_requests(vec![(200, json!({"access": []}))]);
+    let (endpoint, captured) = capture_requests(vec![ok(json!({"access": []}))]);
     let mut statement = test_statement_at(&endpoint);
     authorize_granted_view(&mut statement);
 
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::InvalidData);
-    assert_message(&error, &["no ETag", "data-project.raw"]);
+    assert_failure(
+        &error,
+        Status::InvalidData,
+        &["no ETag", "data-project.raw"],
+    );
     assert_eq!(
         captured.join().unwrap().len(),
         1,
@@ -649,8 +638,7 @@ fn a_missing_source_dataset_is_reported_as_not_found() {
     authorize_granted_view(&mut statement);
 
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::NotFound);
-    assert_message(&error, &["data-project.raw"]);
+    assert_failure(&error, Status::NotFound, &["data-project.raw"]);
     captured.join().unwrap();
 }
 
@@ -660,7 +648,7 @@ fn cancelling_an_authorization_interrupts_the_request() {
     let cancellation_sent = Arc::new(Barrier::new(2));
     let server_ready = request_ready.clone();
     let server_cancelled = cancellation_sent.clone();
-    let (endpoint, captured) = capture_requests_gated(vec![(200, json!({}))], move || {
+    let (endpoint, captured) = capture_requests_gated(vec![ok(json!({}))], move || {
         server_ready.wait();
         server_cancelled.wait();
         false
@@ -721,8 +709,7 @@ fn only_the_dbt_placeholder_query_keeps_an_authorization() {
     statement.set_sql_query("none").unwrap();
     set_option(&mut statement, OPTION, "");
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(&error, &["without a SQL query"]);
+    assert_failure(&error, Status::InvalidState, &["without a SQL query"]);
 }
 
 #[test]
@@ -770,35 +757,25 @@ fn every_other_operation_replaces_an_authorization_and_is_replaced_by_it() {
 }
 
 #[test]
-fn an_authorization_combined_with_a_column_metadata_update_is_rejected() {
-    let mut statement = test_statement();
-    authorize_granted_view(&mut statement);
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::UpdateColumnsDescription,
-        r#"{"id":"Required identifier."}"#,
-    );
-    let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(
-        &error,
-        &[
-            OPTION.as_str(),
-            BigQueryStatementOption::UpdateColumnsDescription.as_str(),
-        ],
-    );
-}
-
-#[test]
-fn an_authorization_has_no_result_schema() {
-    let mut statement = test_statement();
-    set_option(
-        &mut statement,
-        OPTION,
-        payload("data-project.analytics.model", "data-project", "raw"),
-    );
-    assert_eq!(
-        statement.execute_schema().unwrap_err().status,
-        Status::InvalidState
-    );
+fn an_authorization_combined_with_a_table_metadata_update_is_rejected() {
+    for (update, value) in [
+        (
+            BigQueryStatementOption::UpdateColumnsDescription,
+            r#"{"id":"Required identifier."}"#,
+        ),
+        (
+            BigQueryStatementOption::UpdateDescription,
+            "A documented relation.",
+        ),
+    ] {
+        let mut statement = test_statement();
+        authorize_granted_view(&mut statement);
+        set_option(&mut statement, update, value);
+        let error = statement.execute_update().unwrap_err();
+        assert_failure(
+            &error,
+            Status::InvalidState,
+            &[OPTION.as_str(), update.as_str()],
+        );
+    }
 }

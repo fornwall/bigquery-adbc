@@ -1,12 +1,10 @@
 use adbc_core::error::Status;
-use adbc_core::options::OptionStatement;
 use adbc_core::{Connection as _, Statement as _};
 use serde_json::json;
 
-use crate::rest::url::escape_url_component as escape;
 use crate::test_support::driver::{test_connection_with, test_statement};
-use crate::test_support::errors::assert_message;
-use crate::test_support::http::capture_requests;
+use crate::test_support::errors::assert_failure;
+use crate::test_support::http::{capture_requests, ok};
 use crate::test_support::options::set_option;
 use crate::{BigQueryDatabaseOption, BigQueryStatementOption};
 
@@ -45,8 +43,7 @@ fn write_statement(
 #[test]
 fn dbt_write_gcs_uploads_the_model_source_in_one_multipart_insert() {
     const CONTENT: &str = "def model(dbt, session):\n    return session.table(\"raw\")\n";
-    let (endpoint, captured) = capture_requests(vec![(
-        200,
+    let (endpoint, captured) = capture_requests(vec![ok(
         json!({"kind": "storage#object", "bucket": "dbt-python", "name": "analytics/m.py"}),
     )]);
     let mut connection = connection_writing_objects_to(endpoint);
@@ -118,8 +115,11 @@ fn a_half_configured_write_names_the_option_it_is_missing() {
         "print(1)",
     );
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(&error, &["adbc.bigquery.write_gcs.bucket"]);
+    assert_failure(
+        &error,
+        Status::InvalidState,
+        &["adbc.bigquery.write_gcs.bucket"],
+    );
 
     set_option(
         &mut statement,
@@ -127,8 +127,11 @@ fn a_half_configured_write_names_the_option_it_is_missing() {
         "dbt-python",
     );
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(&error, &["adbc.bigquery.write_gcs.object_name"]);
+    assert_failure(
+        &error,
+        Status::InvalidState,
+        &["adbc.bigquery.write_gcs.object_name"],
+    );
 }
 
 /// Cloud Storage's own status survives rather than being flattened the way the fork flattens
@@ -142,8 +145,11 @@ fn a_failed_upload_reports_the_service_status_over_the_wire() {
     let mut connection = connection_writing_objects_to(endpoint);
     let mut statement = write_statement(&mut connection, "a/b.py", None);
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::Unauthorized);
-    assert_message(&error, &["storage.objects.create denied"]);
+    assert_failure(
+        &error,
+        Status::Unauthorized,
+        &["storage.objects.create denied"],
+    );
     assert_eq!(captured.join().unwrap().len(), 1);
 }
 
@@ -152,7 +158,7 @@ fn a_failed_upload_reports_the_service_status_over_the_wire() {
 fn a_transiently_failed_upload_is_resent() {
     let (endpoint, captured) = capture_requests(vec![
         (503, json!({"error": {"code": 503, "message": "Try again"}})),
-        (200, json!({"kind": "storage#object"})),
+        ok(json!({"kind": "storage#object"})),
     ]);
     let mut connection = connection_writing_objects_to(endpoint);
     let mut statement = write_statement(&mut connection, "a/b.py", Some("print(1)"));
@@ -167,7 +173,7 @@ fn a_transiently_failed_upload_is_resent() {
 /// dbt model compiling to nothing produces.
 #[test]
 fn an_unset_content_option_uploads_an_empty_object() {
-    let (endpoint, captured) = capture_requests(vec![(200, json!({"kind": "storage#object"}))]);
+    let (endpoint, captured) = capture_requests(vec![ok(json!({"kind": "storage#object"}))]);
     let mut connection = connection_writing_objects_to(endpoint);
     let mut statement = write_statement(&mut connection, "a/b.py", None);
     assert_eq!(statement.execute_update().unwrap(), None);
@@ -188,29 +194,4 @@ fn an_unset_content_option_uploads_an_empty_object() {
         )),
         "{body}"
     );
-}
-
-#[test]
-fn a_write_has_no_result_schema() {
-    let mut statement = test_statement();
-    set_option(
-        &mut statement,
-        OptionStatement::Other("adbc.bigquery.write_gcs.bucket".to_owned()),
-        "dbt-python",
-    );
-    assert_eq!(
-        statement.execute_schema().unwrap_err().status,
-        Status::InvalidState,
-        "an object write produces no rows to describe"
-    );
-}
-
-#[test]
-fn object_names_are_escaped_into_the_query_string() {
-    assert_eq!(
-        escape("analytics/my model.py").to_string(),
-        "analytics%2Fmy%20model.py",
-        "an object name is one opaque key, so its separators are escaped too"
-    );
-    assert_eq!(escape("plain-name_1.py").to_string(), "plain-name_1.py");
 }

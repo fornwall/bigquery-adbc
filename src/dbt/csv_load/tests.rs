@@ -4,7 +4,7 @@ use std::sync::Arc;
 use adbc_core::CancelHandle as _;
 use adbc_core::error::Status;
 use arrow_schema::{DataType, Field, Schema};
-use serde_json::json;
+use serde_json::{Value as JsonValue, json};
 
 use super::{WHAT, build_load_request, submit_csv_load};
 use crate::cancellation::Operation;
@@ -18,9 +18,10 @@ use crate::rest::jobs::{JobClient, JobReference};
 use crate::rest::model::{TableFieldSchema, TableSchema};
 use crate::rest::request::{Request, RequestBody, multipart_related, multipart_related_file};
 use crate::runtime::{SharedRuntime, new_runtime};
-use crate::test_support::errors::assert_message;
+use crate::test_support::errors::assert_failure;
 use crate::test_support::http::{
     capture_requests, capture_requests_gated, capture_requests_until_stopped, error_body,
+    job_reference, ok,
 };
 use crate::{BigQueryCreateDisposition, BigQueryWriteDisposition};
 
@@ -34,11 +35,20 @@ fn destination() -> QualifiedTableName {
     .unwrap()
 }
 
-fn reference(location: Option<&str>) -> JobReference {
-    JobReference::new("example-project", location, "csv-job".to_owned())
+fn reference() -> JobReference {
+    JobReference::new("example-project", Some("EU"), "csv-job".to_owned())
 }
 
-fn operation_at(endpoint: &str) -> (SharedRuntime, Operation) {
+/// `csv-job` in `state`, with the `statistics` BigQuery reports for it.
+fn job(state: &str, statistics: &JsonValue) -> (u16, JsonValue) {
+    ok(json!({
+        "jobReference": job_reference("example-project", "csv-job"),
+        "status": {"state": state},
+        "statistics": statistics,
+    }))
+}
+
+fn cancellable_at(endpoint: &str) -> (SharedRuntime, Arc<Cancellation>, Operation) {
     let runtime = new_runtime().unwrap();
     let cancellation = Cancellation::new(
         runtime.clone(),
@@ -46,11 +56,11 @@ fn operation_at(endpoint: &str) -> (SharedRuntime, Operation) {
         "statement",
     );
     let operation = cancellation.begin();
-    (runtime, operation)
+    (runtime, cancellation, operation)
 }
 
 fn submit_at(endpoint: &str) -> (SharedRuntime, Operation, JobClient) {
-    let (runtime, operation) = operation_at(endpoint);
+    let (runtime, _, operation) = cancellable_at(endpoint);
     let client = JobClient::for_test(endpoint);
     (runtime, operation, client)
 }
@@ -62,7 +72,6 @@ fn submit(
     jobs: &JobClient,
     url: &str,
     body: RequestBody,
-    requested: &JobReference,
 ) -> adbc_core::error::Result<LoadOrCopyJob> {
     let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
     let upload = rest_client("CSV load test").unwrap();
@@ -77,7 +86,7 @@ fn submit(
             body,
             "submit the BigQuery CSV load job",
         ),
-        requested,
+        &reference(),
     ))
 }
 
@@ -114,14 +123,7 @@ fn load_metadata_is_compact_explicit_and_keeps_job_options() {
         reservation: Some(Arc::from("projects/p/locations/EU/reservations/r")),
         ..StatementQueryOptions::default()
     };
-    let request = build_load_request(
-        &options,
-        &destination(),
-        &schema,
-        ";",
-        reference(Some("EU")),
-    )
-    .unwrap();
+    let request = build_load_request(&options, &destination(), &schema, ";", reference()).unwrap();
     let body: serde_json::Value = serde_json::from_slice(request.body()).unwrap();
 
     assert_eq!(body["jobReference"]["projectId"], "example-project");
@@ -147,27 +149,13 @@ fn load_metadata_is_compact_explicit_and_keeps_job_options() {
 #[test]
 fn successful_upload_polls_the_exact_regional_job_and_reads_string_counts() {
     let (endpoint, captured) = capture_requests(vec![
-        (
-            200,
-            json!({
-                "jobReference":{"projectId":"example-project","jobId":"csv-job","location":"EU"},
-                "status":{"state":"RUNNING"}
-            }),
-        ),
+        job("RUNNING", &json!({})),
         (
             404,
             json!({"error":{"errors":[{"reason":"notFound","message":"not visible yet"}]}}),
         ),
-        (
-            200,
-            json!({
-                "jobReference":{"projectId":"example-project","jobId":"csv-job","location":"EU"},
-                "status":{"state":"DONE"},
-                "statistics":{"load":{"outputRows":"42"}}
-            }),
-        ),
+        job("DONE", &json!({"load": {"outputRows": "42"}})),
     ]);
-    let requested = reference(Some("EU"));
     let (runtime, operation, jobs) = submit_at(&endpoint);
     let url =
         format!("{endpoint}/upload/bigquery/v2/projects/example-project/jobs?uploadType=multipart");
@@ -178,7 +166,7 @@ fn successful_upload_polls_the_exact_regional_job_and_reads_string_counts() {
     assert!(body.is_streaming(), "the complete request is not buffered");
     let expected = multipart_related("test", metadata, csv, "text/csv");
 
-    let rows = submit(&runtime, &operation, &jobs, &url, body, &requested)
+    let rows = submit(&runtime, &operation, &jobs, &url, body)
         .unwrap()
         .output_rows();
     operation.finish();
@@ -214,16 +202,8 @@ fn ambiguous_upload_is_reconciled_without_replaying_the_media() {
             500,
             json!({"error":{"errors":[{"reason":"backendError","message":"later"}]}}),
         ),
-        (
-            200,
-            json!({
-                "jobReference":{"projectId":"example-project","jobId":"csv-job","location":"EU"},
-                "status":{"state":"DONE"},
-                "statistics":{"load":{"outputRows":7}}
-            }),
-        ),
+        job("DONE", &json!({"load": {"outputRows": 7}})),
     ]);
-    let requested = reference(Some("EU"));
     let (runtime, operation, jobs) = submit_at(&endpoint);
     let url =
         format!("{endpoint}/upload/bigquery/v2/projects/example-project/jobs?uploadType=multipart");
@@ -235,7 +215,6 @@ fn ambiguous_upload_is_reconciled_without_replaying_the_media() {
             &jobs,
             &url,
             bytes::Bytes::from_static(b"large-media").into(),
-            &requested
         )
         .unwrap()
         .output_rows(),
@@ -253,28 +232,14 @@ fn ambiguous_upload_is_reconciled_without_replaying_the_media() {
 
 #[test]
 fn cancellation_during_reconciliation_stops_after_confirming_the_one_shot_upload() {
-    let (cancel_endpoint, cancels) = capture_requests(vec![(200, json!({}))]);
-    let runtime = new_runtime().unwrap();
-    let cancellation = Cancellation::new(
-        runtime.clone(),
-        ClientState::for_test_at(ServiceEndpointKind::BigQuery, &cancel_endpoint),
-        "statement",
-    );
-    let operation = cancellation.begin();
+    let (cancel_endpoint, cancels) = capture_requests(vec![ok(json!({}))]);
+    let (runtime, cancellation, operation) = cancellable_at(&cancel_endpoint);
     let handle = OperationCancelHandle(cancellation);
-    let (jobs_endpoint, reconciliations) = capture_requests_gated(
-        vec![(
-            200,
-            json!({
-                "jobReference":{"projectId":"example-project","jobId":"csv-job","location":"EU"},
-                "status":{"state":"DONE"}
-            }),
-        )],
-        move || {
+    let (jobs_endpoint, reconciliations) =
+        capture_requests_gated(vec![job("DONE", &json!({}))], move || {
             handle.try_cancel().unwrap();
             true
-        },
-    );
+        });
     let jobs = JobClient::for_test(&jobs_endpoint);
     let (upload_endpoint, uploads) = capture_requests(vec![(
         500,
@@ -287,7 +252,6 @@ fn cancellation_during_reconciliation_stops_after_confirming_the_one_shot_upload
         &jobs,
         &format!("{upload_endpoint}/upload"),
         bytes::Bytes::from_static(b"large-media").into(),
-        &reference(Some("EU")),
     )
     .unwrap_err();
     operation.finish();
@@ -301,17 +265,9 @@ fn cancellation_during_reconciliation_stops_after_confirming_the_one_shot_upload
 #[test]
 fn partial_success_response_is_reconciled_as_an_accepted_upload() {
     let (endpoint, captured) = capture_requests(vec![
-        (200, json!({"status":{"state":"DONE"}})),
-        (
-            200,
-            json!({
-                "jobReference":{"projectId":"example-project","jobId":"csv-job","location":"EU"},
-                "status":{"state":"DONE"},
-                "statistics":{"load":{"outputRows":"9"}}
-            }),
-        ),
+        ok(json!({"status":{"state":"DONE"}})),
+        job("DONE", &json!({"load": {"outputRows": "9"}})),
     ]);
-    let requested = reference(Some("EU"));
     let (runtime, operation, jobs) = submit_at(&endpoint);
 
     assert_eq!(
@@ -321,7 +277,6 @@ fn partial_success_response_is_reconciled_as_an_accepted_upload() {
             &jobs,
             &format!("{endpoint}/upload"),
             bytes::Bytes::from_static(b"large-media").into(),
-            &requested
         )
         .unwrap()
         .output_rows(),
@@ -338,52 +293,27 @@ fn partial_success_response_is_reconciled_as_an_accepted_upload() {
     );
 }
 
-#[test]
-fn nonretryable_errors_never_replay_the_upload() {
-    let (endpoint, captured) = capture_requests(vec![(
-        400,
-        json!({"error":{"errors":[{"reason":"invalid","message":"bad load"}]}}),
-    )]);
-    let requested = reference(Some("EU"));
-    let (runtime, operation, jobs) = submit_at(&endpoint);
-    let failure = submit(
-        &runtime,
-        &operation,
-        &jobs,
-        &format!("{endpoint}/upload"),
-        bytes::Bytes::new().into(),
-        &requested,
-    )
-    .unwrap_err();
-    operation.finish();
-    assert_eq!(failure.status, Status::InvalidArguments);
-    assert_eq!(captured.join().unwrap().len(), 1);
-}
-
-/// A refused upload created no job, so a later cancel has nothing to address: it would answer 404
-/// and warn that the job may keep running.
+/// A refused upload is never replayed, and created no job, so a later cancel has nothing to
+/// address: it would answer 404 and warn that the job may keep running.
 #[test]
 fn a_refused_upload_leaves_no_job_to_cancel() {
-    for (status, reason) in [(400, "invalid"), (429, "rateLimitExceeded")] {
+    for (code, reason, status) in [
+        (400, "invalid", Status::InvalidArguments),
+        (429, "rateLimitExceeded", Status::IO),
+    ] {
         let (endpoint, server) =
-            capture_requests_until_stopped(vec![(status, error_body(reason, "refused"))]);
-        let runtime = new_runtime().unwrap();
-        let cancellation = Cancellation::new(
-            runtime.clone(),
-            ClientState::for_test_at(ServiceEndpointKind::BigQuery, &endpoint),
-            "statement",
-        );
-        let operation = cancellation.begin();
+            capture_requests_until_stopped(vec![(code, error_body(reason, "refused"))]);
+        let (runtime, cancellation, operation) = cancellable_at(&endpoint);
 
-        submit(
+        let failure = submit(
             &runtime,
             &operation,
             &JobClient::for_test(&endpoint),
             &format!("{endpoint}/upload"),
             bytes::Bytes::new().into(),
-            &reference(Some("EU")),
         )
         .unwrap_err();
+        assert_eq!(failure.status, status);
         OperationCancelHandle(cancellation).try_cancel().unwrap();
 
         assert_eq!(server.stop().len(), 1, "only the upload reached the mock");
@@ -412,8 +342,11 @@ fn completion_reports_written_rows_and_unknown_counts() {
         r#"{"status":{"state":"DONE","errorResult":{"reason":"invalid","message":"CSV row 2 is malformed"}}}"#,
     )
     .unwrap_err();
-    assert_eq!(failure.status, Status::InvalidArguments);
-    assert_message(&failure, &["CSV row 2 is malformed"]);
+    assert_failure(
+        &failure,
+        Status::InvalidArguments,
+        &["CSV row 2 is malformed"],
+    );
 }
 
 /// The dbt-core 2.0 seed end to end: the load job's ID is reported the way a query result reports
@@ -435,14 +368,11 @@ fn a_dbt_seed_reports_its_load_job_as_the_query_id() {
         let start = metadata.find(r#""jobReference":"#)? + r#""jobReference":"#.len();
         let end = start + metadata[start..].find('}')? + 1;
         let reference: serde_json::Value = serde_json::from_str(&metadata[start..end]).ok()?;
-        Some((
-            200,
-            json!({
-                "jobReference": reference,
-                "status": {"state": "DONE"},
-                "statistics": {"load": {"outputRows": "1"}}
-            }),
-        ))
+        Some(ok(json!({
+            "jobReference": reference,
+            "status": {"state": "DONE"},
+            "statistics": {"load": {"outputRows": "1"}}
+        })))
     });
     let (path, _, _) = seed_file("query-id", b"id\n1\n");
     let schema = Schema::new(vec![Field::new("id", DataType::Int64, true)]);

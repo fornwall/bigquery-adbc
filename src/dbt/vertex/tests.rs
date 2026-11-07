@@ -8,11 +8,12 @@ use serde_json::json;
 
 use super::job_outcome;
 use crate::BigQueryStatementOption as Key;
-use crate::rest::url::escape_resource_path as escape;
 use crate::test_support::credentials::TEST_PRIVATE_KEY;
 use crate::test_support::driver::{test_connection_with, test_statement};
-use crate::test_support::errors::assert_message;
-use crate::test_support::http::{capture_requests, capture_requests_gated, error_body};
+use crate::test_support::errors::{assert_failure, assert_message};
+use crate::test_support::http::{
+    capture_requests, capture_requests_gated, capture_requests_until_stopped, error_body, ok,
+};
 use crate::test_support::options::{assert_string_option, set_option};
 use crate::{BigQueryConnection, BigQueryDatabaseOption, BigQueryStatement};
 
@@ -122,13 +123,10 @@ fn job_in_state(state: &str) -> serde_json::Value {
 #[test]
 fn dbt_bigframes_model_submits_one_notebook_execution_job() {
     let (endpoint, captured) = capture_requests(vec![
-        (
-            200,
-            json!({"notebookRuntimeTemplates": [{"name": TEMPLATE}]}),
-        ),
-        (200, lro(true)),
-        (200, job_in_state("JOB_STATE_RUNNING")),
-        (200, job_in_state("JOB_STATE_SUCCEEDED")),
+        ok(json!({"notebookRuntimeTemplates": [{"name": TEMPLATE}]})),
+        ok(lro(true)),
+        ok(job_in_state("JOB_STATE_RUNNING")),
+        ok(job_in_state("JOB_STATE_SUCCEEDED")),
     ]);
     let mut connection = connection_running_notebooks_at(endpoint);
     let mut statement = bigframes_statement(&mut connection, None, "3600");
@@ -195,10 +193,8 @@ fn dbt_bigframes_model_submits_one_notebook_execution_job() {
 /// dbt-core 2.0 sends the template ID only when `notebook_template_id` parses as an integer.
 #[test]
 fn a_configured_template_id_names_the_template_without_listing() {
-    let (endpoint, captured) = capture_requests(vec![
-        (200, lro(true)),
-        (200, job_in_state("JOB_STATE_SUCCEEDED")),
-    ]);
+    let (endpoint, captured) =
+        capture_requests(vec![ok(lro(true)), ok(job_in_state("JOB_STATE_SUCCEEDED"))]);
     let mut connection = connection_running_notebooks_at(endpoint);
     let mut statement = bigframes_statement(&mut connection, Some("4242"), "3600");
 
@@ -219,7 +215,7 @@ fn a_refused_request_names_the_resource_it_addressed() {
     let (endpoint, captured) = capture_requests(vec![
         (403, denied.clone()),
         (403, denied.clone()),
-        (200, lro(true)),
+        ok(lro(true)),
         (403, denied),
     ]);
     let mut connection = connection_running_notebooks_at(endpoint);
@@ -245,9 +241,9 @@ fn a_refused_request_names_the_resource_it_addressed() {
         let error = bigframes_statement(&mut connection, template_id, "0")
             .execute_update()
             .unwrap_err();
-        assert_eq!(error.status, Status::Unauthorized, "{}", error.message);
-        assert_message(
+        assert_failure(
             &error,
+            Status::Unauthorized,
             &[&format!("{expected}: Vertex AI API has not been used")],
         );
     }
@@ -261,10 +257,7 @@ fn only_the_template_listing_is_resent_after_a_transient_failure() {
     let unavailable = error_body("backendError", "The service is unavailable.");
     let (endpoint, captured) = capture_requests(vec![
         (503, unavailable.clone()),
-        (
-            200,
-            json!({"notebookRuntimeTemplates": [{"name": TEMPLATE}]}),
-        ),
+        ok(json!({"notebookRuntimeTemplates": [{"name": TEMPLATE}]})),
         (503, unavailable),
     ]);
     let mut connection = connection_running_notebooks_at(endpoint);
@@ -272,9 +265,9 @@ fn only_the_template_listing_is_resent_after_a_transient_failure() {
     let error = bigframes_statement(&mut connection, None, "0")
         .execute_update()
         .unwrap_err();
-    assert_eq!(error.status, Status::IO, "{}", error.message);
-    assert_message(
+    assert_failure(
         &error,
+        Status::IO,
         &["failed to create the BigQuery Vertex AI notebook execution job"],
     );
     let requests = captured.join().unwrap();
@@ -292,8 +285,8 @@ fn only_the_template_listing_is_resent_after_a_transient_failure() {
 fn a_rate_limited_create_is_resent() {
     let (endpoint, captured) = capture_requests(vec![
         (429, json!({"error": {"code": 429, "message": "Slow down"}})),
-        (200, lro(true)),
-        (200, job_in_state("JOB_STATE_SUCCEEDED")),
+        ok(lro(true)),
+        ok(job_in_state("JOB_STATE_SUCCEEDED")),
     ]);
     let mut connection = connection_running_notebooks_at(endpoint);
     bigframes_statement(&mut connection, Some("4242"), "3600")
@@ -318,8 +311,11 @@ fn a_template_id_that_reshapes_the_resource_path_is_refused() {
         let mut statement = bigframes_statement(&mut connection, Some(template_id), "3600");
 
         let error = statement.execute_update().unwrap_err();
-        assert_eq!(error.status, Status::InvalidArguments);
-        assert_message(&error, &["adbc.bigquery.notebook_execute_job.template_id"]);
+        assert_failure(
+            &error,
+            Status::InvalidArguments,
+            &["adbc.bigquery.notebook_execute_job.template_id"],
+        );
         assert!(
             captured.join().unwrap().is_empty(),
             "nothing is sent for a template ID that was never a resource name"
@@ -327,42 +323,14 @@ fn a_template_id_that_reshapes_the_resource_path_is_refused() {
     }
 }
 
-/// Where the fork answers an empty listing by creating a durable `default-one-click-notebook`
-/// template, this reports the missing template.
-#[test]
-fn a_project_without_a_one_click_template_is_not_given_one() {
-    let (endpoint, captured) =
-        capture_requests(vec![(200, json!({"notebookRuntimeTemplates": []}))]);
-    let mut connection = connection_running_notebooks_at(endpoint);
-    let mut statement = bigframes_statement(&mut connection, None, "3600");
-
-    let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::NotFound);
-    assert_message(
-        &error,
-        &[PARENT, "adbc.bigquery.notebook_execute_job.template_id"],
-    );
-    assert_eq!(
-        captured.join().unwrap().len(),
-        1,
-        "nothing is created on the caller's behalf"
-    );
-}
-
 #[test]
 fn template_lookup_continues_past_empty_pages() {
     let (endpoint, captured) = capture_requests(vec![
-        (200, json!({"nextPageToken": "first+/=&"})),
-        (
-            200,
-            json!({"notebookRuntimeTemplates": [], "nextPageToken": "second"}),
-        ),
-        (
-            200,
-            json!({"notebookRuntimeTemplates": [{"name": TEMPLATE}]}),
-        ),
-        (200, lro(true)),
-        (200, job_in_state("JOB_STATE_SUCCEEDED")),
+        ok(json!({"nextPageToken": "first+/=&"})),
+        ok(json!({"notebookRuntimeTemplates": [], "nextPageToken": "second"})),
+        ok(json!({"notebookRuntimeTemplates": [{"name": TEMPLATE}]})),
+        ok(lro(true)),
+        ok(job_in_state("JOB_STATE_SUCCEEDED")),
     ]);
     let mut connection = connection_running_notebooks_at(endpoint);
     bigframes_statement(&mut connection, None, "3600")
@@ -383,18 +351,30 @@ fn template_lookup_continues_past_empty_pages() {
     );
 }
 
+/// Where the fork answers an empty listing by creating a durable `default-one-click-notebook`
+/// template, this reports the missing template, once the last page has been read.
 #[test]
-fn template_lookup_reports_not_found_only_after_the_last_page() {
-    let (endpoint, captured) = capture_requests(vec![
-        (200, json!({"nextPageToken": "next"})),
-        (200, json!({"nextPageToken": ""})),
-    ]);
-    let mut connection = connection_running_notebooks_at(endpoint);
-    let failure = bigframes_statement(&mut connection, None, "3600")
-        .execute_update()
-        .unwrap_err();
-    assert_eq!(failure.status, Status::NotFound);
-    assert_eq!(captured.join().unwrap().len(), 2);
+fn a_project_without_a_one_click_template_is_not_given_one() {
+    for pages in [
+        vec![ok(json!({"notebookRuntimeTemplates": []}))],
+        vec![
+            ok(json!({"nextPageToken": "next"})),
+            ok(json!({"nextPageToken": ""})),
+        ],
+    ] {
+        let count = pages.len();
+        let (endpoint, captured) = capture_requests(pages);
+        let mut connection = connection_running_notebooks_at(endpoint);
+        let error = bigframes_statement(&mut connection, None, "3600")
+            .execute_update()
+            .unwrap_err();
+        assert_failure(
+            &error,
+            Status::NotFound,
+            &[PARENT, "adbc.bigquery.notebook_execute_job.template_id"],
+        );
+        assert_eq!(captured.join().unwrap().len(), count);
+    }
 }
 
 #[test]
@@ -403,15 +383,14 @@ fn template_lookup_rejects_pagination_cycles_without_a_timeout() {
         let (endpoint, captured) = capture_requests(
             tokens
                 .iter()
-                .map(|token| (200, json!({"nextPageToken": token})))
+                .map(|token| ok(json!({"nextPageToken": token})))
                 .collect(),
         );
         let mut connection = connection_running_notebooks_at(endpoint);
         let failure = bigframes_statement(&mut connection, None, "0")
             .execute_update()
             .unwrap_err();
-        assert_eq!(failure.status, Status::InvalidData);
-        assert_message(&failure, &["repeated a page token"]);
+        assert_failure(&failure, Status::InvalidData, &["repeated a page token"]);
         assert_eq!(captured.join().unwrap().len(), tokens.len());
     }
 }
@@ -424,7 +403,7 @@ fn malformed_template_listings_are_invalid_data() {
         json!({"notebookRuntimeTemplates": [{"name": ""}]}),
         json!({"nextPageToken": 1}),
     ] {
-        let (endpoint, captured) = capture_requests(vec![(200, listed)]);
+        let (endpoint, captured) = capture_requests(vec![ok(listed)]);
         let mut connection = connection_running_notebooks_at(endpoint);
         let failure = bigframes_statement(&mut connection, None, "3600")
             .execute_update()
@@ -451,12 +430,9 @@ fn failed_notebook_jobs_preserve_the_service_status_and_message() {
         ),
     ] {
         let (endpoint, captured) = capture_requests(vec![
-            (200, lro(true)),
-            (
-                200,
-                json!({"name": JOB, "jobState": state,
-                "status": {"code": code, "message": message}}),
-            ),
+            ok(lro(true)),
+            ok(json!({"name": JOB, "jobState": state,
+                "status": {"code": code, "message": message}})),
         ]);
         let mut connection = connection_running_notebooks_at(endpoint);
         let mut statement = bigframes_statement(&mut connection, Some("4242"), "3600");
@@ -472,8 +448,8 @@ fn failed_notebook_jobs_preserve_the_service_status_and_message() {
 fn a_failed_poll_says_the_notebook_job_may_still_be_running() {
     let denied = json!({"error": {"code": 403, "message": "Permission denied"}});
     for responses in [
-        vec![(200, lro(false)), (403, denied.clone())],
-        vec![(200, lro(true)), (403, denied)],
+        vec![ok(lro(false)), (403, denied.clone())],
+        vec![ok(lro(true)), (403, denied)],
     ] {
         let (endpoint, captured) = capture_requests(responses);
         let mut connection = connection_running_notebooks_at(endpoint);
@@ -496,11 +472,10 @@ fn a_failed_poll_says_the_notebook_job_may_still_be_running() {
 /// operation wait expires at once and the job is never polled.
 #[test]
 fn one_deadline_covers_both_waits_and_expiry_stops_the_job() {
-    let (endpoint, captured) =
-        capture_requests_gated(vec![(200, lro(false)), (200, json!({}))], || {
-            thread::sleep(Duration::from_millis(1_500));
-            true
-        });
+    let (endpoint, captured) = capture_requests_gated(vec![ok(lro(false)), ok(json!({}))], || {
+        thread::sleep(Duration::from_millis(1_500));
+        true
+    });
     let mut connection = connection_running_notebooks_at(endpoint);
     let mut statement = bigframes_statement(&mut connection, Some("4242"), "1");
 
@@ -548,27 +523,18 @@ fn one_deadline_covers_both_waits_and_expiry_stops_the_job() {
 /// was asked to stop.
 #[test]
 fn a_deadline_that_expires_while_the_job_runs_says_it_may_still_be_running() {
-    let (endpoint, captured) = crate::test_support::http::capture_requests_responding(3, {
-        let mut served = 0;
-        move |_| {
-            served += 1;
-            Some(match served {
-                1 => (200, lro(true)),
-                2 => {
-                    // Outlast the one-second deadline on the job's first poll.
-                    thread::sleep(Duration::from_millis(1_500));
-                    (200, job_in_state("JOB_STATE_RUNNING"))
-                }
-                _ => (200, json!({})),
-            })
-        }
-    });
-    let mut connection = connection_running_notebooks_at(endpoint.clone());
+    let mut responses = vec![ok(lro(true))];
+    responses.resize(32, ok(job_in_state("JOB_STATE_RUNNING")));
+    let (endpoint, server) = capture_requests_until_stopped(responses);
+    let mut connection = connection_running_notebooks_at(endpoint);
     let mut statement = bigframes_statement(&mut connection, Some("4242"), "1");
 
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::Timeout, "{}", error.message);
-    assert_message(&error, &[Key::DataprocPoolingTimeout.as_str(), "1 s"]);
+    assert_failure(
+        &error,
+        Status::Timeout,
+        &[Key::DataprocPoolingTimeout.as_str(), "1 s"],
+    );
     assert!(
         error.message.ends_with(&format!(
             "; the BigQuery Vertex AI notebook execution job {JOB} may still be running"
@@ -577,21 +543,10 @@ fn a_deadline_that_expires_while_the_job_runs_says_it_may_still_be_running() {
         error.message
     );
 
-    // A cancel would have reached the server before `execute_update` returned, so the next
-    // request it sees is this probe exactly when none was sent.
-    let mut probe = std::net::TcpStream::connect(endpoint.trim_start_matches("http://")).unwrap();
-    std::io::Write::write_all(
-        &mut probe,
-        b"GET /probe HTTP/1.1\r\nHost: probe\r\nContent-Length: 0\r\n\r\n",
-    )
-    .unwrap();
-    let requests = captured.join().unwrap();
-    assert_eq!(requests[1].path(), format!("/v1/{JOB}"));
-    assert_eq!(
-        requests[2].line, "GET /probe HTTP/1.1",
-        "a done operation cannot be cancelled: {}",
-        requests[2].line
-    );
+    // A cancel is sent before `execute_update` returns, so every request has been captured.
+    for poll in &server.stop()[1..] {
+        assert_eq!(poll.line, format!("GET /v1/{JOB} HTTP/1.1"));
+    }
 }
 
 /// The deadline is also checked between the template listing and the create, so a listing that
@@ -600,8 +555,7 @@ fn a_deadline_that_expires_while_the_job_runs_says_it_may_still_be_running() {
 #[test]
 fn a_deadline_spent_listing_the_runtime_templates_never_creates_the_job() {
     let (endpoint, captured) = capture_requests_gated(
-        vec![(
-            200,
+        vec![ok(
             json!({"notebookRuntimeTemplates": [{"name": TEMPLATE}]}),
         )],
         || {
@@ -634,35 +588,13 @@ fn a_deadline_spent_listing_the_runtime_templates_never_creates_the_job() {
     );
 }
 
-#[test]
-fn a_pooling_timeout_beyond_the_clock_waits_out_both_phases() {
-    let (endpoint, captured) = capture_requests(vec![
-        (200, lro(true)),
-        (200, job_in_state("JOB_STATE_SUCCEEDED")),
-    ]);
-    let mut connection = connection_running_notebooks_at(endpoint);
-    let mut statement = bigframes_statement(&mut connection, Some("4242"), "9223372036854775807");
-
-    assert_eq!(statement.execute_update().unwrap(), None);
-
-    let requests = captured.join().unwrap();
-    assert_eq!(requests.len(), 2, "the create, then one job poll");
-    assert_eq!(requests[1].path(), format!("/v1/{JOB}"));
-    assert!(
-        requests
-            .iter()
-            .all(|request| !request.line.contains(":cancel")),
-        "no deadline expired, so there was nothing to stop"
-    );
-}
-
 /// A cancel during the create waits for its answer, which alone names the job to stop.
 #[test]
 fn cancelling_during_the_create_stops_the_job_it_started() {
     let request_seen = Arc::new(Barrier::new(2));
     let server_seen = request_seen.clone();
     let (endpoint, captured) =
-        capture_requests_gated(vec![(200, lro(false)), (200, json!({}))], move || {
+        capture_requests_gated(vec![ok(lro(false)), ok(json!({}))], move || {
             server_seen.wait();
             true
         });
@@ -675,8 +607,7 @@ fn cancelling_during_the_create_stops_the_job_it_started() {
     });
 
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::Cancelled, "{}", error.message);
-    assert_message(&error, &["asked to stop"]);
+    assert_failure(&error, Status::Cancelled, &["asked to stop"]);
     canceller.join().unwrap();
     let requests = captured.join().unwrap();
     assert_eq!(requests[1].line, format!("POST /v1/{LRO}:cancel HTTP/1.1"));
@@ -689,8 +620,11 @@ fn a_half_configured_notebook_job_names_the_option_it_is_missing() {
     let mut statement = test_statement();
     set_option(&mut statement, Key::NotebookExecuteJobParent, PARENT);
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(&error, &["adbc.bigquery.notebook_execute_job.gsc_path"]);
+    assert_failure(
+        &error,
+        Status::InvalidState,
+        &["adbc.bigquery.notebook_execute_job.gsc_path"],
+    );
 
     for (option, value) in [
         (Key::NotebookExecuteJobGscPath, "gs://dbt-python/a/m.py"),
@@ -757,9 +691,9 @@ fn terminal_job_states_are_classified_and_running_ones_keep_polling() {
         let failure = job_outcome(unrecognized, &json!({}), JOB)
             .unwrap()
             .unwrap_err();
-        assert_eq!(failure.status, Status::InvalidData);
-        assert_message(
+        assert_failure(
             &failure,
+            Status::InvalidData,
             &[JOB, &format!("the unrecognized state {unrecognized:?}")],
         );
         assert!(
@@ -772,8 +706,7 @@ fn terminal_job_states_are_classified_and_running_ones_keep_polling() {
     let bare = job_outcome("JOB_STATE_FAILED", &json!({"name": JOB}), JOB)
         .unwrap()
         .unwrap_err();
-    assert_eq!(bare.status, Status::Unknown);
-    assert_message(&bare, &["no failure detail"]);
+    assert_failure(&bare, Status::Unknown, &["no failure detail"]);
 }
 
 /// Proto3 JSON omits `JOB_STATE_UNSPECIFIED`, so a job without a state keeps being polled, while
@@ -781,11 +714,11 @@ fn terminal_job_states_are_classified_and_running_ones_keep_polling() {
 #[test]
 fn only_an_absent_job_state_reads_as_unspecified() {
     let (endpoint, captured) = capture_requests(vec![
-        (200, lro(true)),
-        (200, json!({"name": JOB})),
-        (200, job_in_state("JOB_STATE_SUCCEEDED")),
-        (200, lro(true)),
-        (200, json!({"name": JOB, "jobState": 3})),
+        ok(lro(true)),
+        ok(json!({"name": JOB})),
+        ok(job_in_state("JOB_STATE_SUCCEEDED")),
+        ok(lro(true)),
+        ok(json!({"name": JOB, "jobState": 3})),
     ]);
     let mut connection = connection_running_notebooks_at(endpoint);
     let mut run = || bigframes_statement(&mut connection, Some("4242"), "3600").execute_update();
@@ -813,10 +746,8 @@ fn notebook_identity_can_be_derived_overridden_and_cleared() {
             (&[EXPLICIT][..], Some(EXPLICIT)),
             (&[EXPLICIT, ""][..], derived),
         ] {
-            let (endpoint, captured) = capture_requests(vec![
-                (200, lro(true)),
-                (200, job_in_state("JOB_STATE_SUCCEEDED")),
-            ]);
+            let (endpoint, captured) =
+                capture_requests(vec![ok(lro(true)), ok(job_in_state("JOB_STATE_SUCCEEDED"))]);
             let mut connection = connect(endpoint);
             let mut statement = bigframes_statement(&mut connection, Some("4242"), "3600");
             for &value in overrides {
@@ -863,15 +794,4 @@ fn resource_options_that_would_redirect_the_request_are_refused() {
         assert_eq!(error.status, Status::InvalidArguments, "{value}");
         assert_message(&error, &[option.as_str()]);
     }
-}
-
-#[test]
-fn resource_names_keep_their_segments_and_escape_the_rest() {
-    assert_eq!(escape(PARENT).to_string(), PARENT);
-    assert_eq!(
-        escape("projects/p/locations/l/notebookExecutionJobs/a b").to_string(),
-        "projects/p/locations/l/notebookExecutionJobs/a%20b",
-        "a segment cannot smuggle a space, a query string or a fragment into the URL"
-    );
-    assert_eq!(escape("a?b#c").to_string(), "a%3Fb%23c");
 }

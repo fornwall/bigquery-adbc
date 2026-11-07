@@ -18,7 +18,7 @@ use crate::runtime::new_runtime;
 use crate::test_support::driver::{test_connection_at, unlocated_connection_at};
 use crate::test_support::http::{
     CapturedRequest, capture_requests, capture_requests_responding, capture_requests_until_stopped,
-    error_body,
+    error_body, ok,
 };
 use crate::test_support::options::set_option;
 use crate::{BigQueryConnection, BigQueryStatementOption};
@@ -296,19 +296,15 @@ fn bigquery(
         }
         if request.line.starts_with("POST ") {
             submitted = submitted_reference(request);
-            return Some((
-                200,
+            return Some(ok(
                 json!({"jobReference": submitted, "status": {"state": "RUNNING"}}),
             ));
         }
-        Some((
-            200,
-            json!({
-                "jobReference": submitted,
-                "status": outcomes.next()?,
-                "statistics": {"load": {"outputRows": "1"}, "copy": {"copiedRows": "1"}}
-            }),
-        ))
+        Some(ok(json!({
+            "jobReference": submitted,
+            "status": outcomes.next()?,
+            "statistics": {"load": {"outputRows": "1"}, "copy": {"copiedRows": "1"}}
+        })))
     })
 }
 
@@ -317,7 +313,7 @@ fn done() -> JsonValue {
 }
 
 fn located(location: &str) -> (u16, JsonValue) {
-    (200, json!({"location": location}))
+    ok(json!({"location": location}))
 }
 
 fn csv_file(name: &str) -> PathBuf {
@@ -521,13 +517,11 @@ fn a_query_job_without_a_location_runs_where_bigquery_infers() {
         if submitted.is_null() {
             submitted = submitted_reference(request);
             submitted["location"] = json!("asia-northeast1");
-            return Some((
-                200,
+            return Some(ok(
                 json!({"jobReference": submitted, "status": {"state": "RUNNING"}}),
             ));
         }
-        Some((
-            200,
+        Some(ok(
             json!({"jobComplete": true, "jobReference": submitted, "schema": {"fields": []}}),
         ))
     });
