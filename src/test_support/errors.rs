@@ -6,7 +6,6 @@
 use adbc_core::error::{Error, Status};
 
 /// Asserts `error`'s status, and that its message contains every fragment.
-#[allow(dead_code, reason = "adopted by the test modules that check both")]
 #[track_caller]
 pub(crate) fn assert_failure(error: &Error, status: Status, fragments: &[&str]) {
     assert_eq!(error.status, status, "{}", error.message);
