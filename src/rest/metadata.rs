@@ -163,7 +163,17 @@ pub(crate) enum MetadataError {
 impl MetadataError {
     /// Keep the last request's diagnostics while reporting why the retry was interrupted.
     fn interrupted(self, interruption: Error) -> Self {
-        Self::Failed(interrupted_failure(self.into_error(""), interruption))
+        let mut failure = self.into_error("");
+        failure.message = format!(
+            "{}; last metadata request failed: {}",
+            interruption.message, failure.message
+        );
+        failure.status = interruption.status;
+        failure.sqlstate = interruption.sqlstate;
+        if let Some(details) = interruption.details {
+            failure.details.get_or_insert_default().extend(details);
+        }
+        Self::Failed(failure)
     }
 
     /// Whether the service answered that the named object does not exist.
@@ -210,21 +220,6 @@ impl MetadataError {
             Self::Rejected(status, body) => service_error(context, status, &body),
         }
     }
-}
-
-/// `failure`, the last answer a retry was waiting out, reported under the interruption that ended
-/// the wait, with the diagnostics of both.
-fn interrupted_failure(mut failure: Error, interruption: Error) -> Error {
-    failure.message = format!(
-        "{}; last metadata request failed: {}",
-        interruption.message, failure.message
-    );
-    failure.status = interruption.status;
-    failure.sqlstate = interruption.sqlstate;
-    if let Some(details) = interruption.details {
-        failure.details.get_or_insert_default().extend(details);
-    }
-    failure
 }
 
 type MetadataResult<T> = std::result::Result<T, MetadataError>;
@@ -311,27 +306,10 @@ impl MetadataClient {
         )
     }
 
-    /// The URL of a table mutation whose successful response is ignored.
-    fn table_update_url(&self, table: TableId<'_>) -> String {
-        response_fields(self.table_url(table), ETAG_FIELDS)
-    }
-
-    /// The URL of an access-list mutation whose successful response is ignored.
-    fn dataset_access_update_url(&self, dataset: DatasetId<'_>) -> String {
-        response_fields(self.dataset_url(dataset), ETAG_FIELDS)
-    }
-
     fn table_get_url(&self, table: TableId<'_>, view: TableView) -> String {
         response_fields(
             format!("{}?view={}", self.table_url(table), view.as_str()),
             view.fields(),
-        )
-    }
-
-    fn table_insert_url(&self, table: TableId<'_>) -> String {
-        response_fields(
-            format!("{}/tables", self.dataset_url(table.dataset())),
-            ETAG_FIELDS,
         )
     }
 
@@ -367,18 +345,6 @@ impl MetadataClient {
         )
     }
 
-    fn dataset_get_url(&self, dataset: DatasetId<'_>) -> String {
-        response_fields(self.dataset_url(dataset), DATASET_GET_FIELDS)
-    }
-
-    fn dataset_access_get_url(&self, dataset: DatasetId<'_>) -> String {
-        response_fields(self.dataset_url(dataset), DATASET_ACCESS_FIELDS)
-    }
-
-    fn dataset_location_get_url(&self, dataset: DatasetId<'_>) -> String {
-        response_fields(self.dataset_url(dataset), DATASET_LOCATION_FIELDS)
-    }
-
     /// `datasets.patch` of an access list, guarded by `etag` as an `If-Match` precondition.
     ///
     /// The body replaces the whole list, so the precondition keeps a stale read from dropping
@@ -400,7 +366,7 @@ impl MetadataClient {
                 Status::InvalidData,
             ));
         }
-        let url = self.dataset_access_update_url(dataset);
+        let url = response_fields(self.dataset_url(dataset), ETAG_FIELDS);
         let body = bytes::Bytes::from(body);
         let context = format!("failed to {action}");
         match self
@@ -511,7 +477,8 @@ impl MetadataClient {
         table: TableId<'_>,
         schema: &TableSchema,
     ) -> MetadataResult<()> {
-        let url = self.table_insert_url(table);
+        let tables = format!("{}/tables", self.dataset_url(table.dataset()));
+        let url = response_fields(tables, ETAG_FIELDS);
         let body = encode_json(
             &TableDefinition {
                 table_reference: Some(table),
@@ -568,7 +535,7 @@ impl MetadataClient {
         table: TableId<'_>,
         body: Vec<u8>,
     ) -> MetadataResult<()> {
-        let url = self.table_update_url(table);
+        let url = response_fields(self.table_url(table), ETAG_FIELDS);
         let body = body.into();
         self.send_with_retry(
             operation,
@@ -631,7 +598,7 @@ impl MetadataClient {
         operation: Option<&Operation>,
         dataset: DatasetId<'_>,
     ) -> MetadataResult<String> {
-        let url = self.dataset_get_url(dataset);
+        let url = response_fields(self.dataset_url(dataset), DATASET_GET_FIELDS);
         let body = self.read(operation, &url).await?;
         Document::decode(&body, "BigQuery dataset metadata")
             .and_then(|mut document| document.value::<DatasetReference>("datasetReference"))
@@ -649,7 +616,7 @@ impl MetadataClient {
         operation: Option<&Operation>,
         dataset: DatasetId<'_>,
     ) -> MetadataResult<String> {
-        let url = self.dataset_location_get_url(dataset);
+        let url = response_fields(self.dataset_url(dataset), DATASET_LOCATION_FIELDS);
         let body = self.read(operation, &url).await?;
         let location = Document::decode(&body, "BigQuery dataset metadata")
             .and_then(|mut document| document.value_or_default::<String>("location"))
@@ -669,7 +636,7 @@ impl MetadataClient {
         operation: Option<&Operation>,
         dataset: DatasetId<'_>,
     ) -> MetadataResult<Dataset> {
-        let url = self.dataset_access_get_url(dataset);
+        let url = response_fields(self.dataset_url(dataset), DATASET_ACCESS_FIELDS);
         let body = self.read(operation, &url).await?;
         Dataset::decode(&body).map_err(MetadataError::Failed)
     }

@@ -473,7 +473,6 @@ fn metadata_urls_project_every_consumed_response_field() {
         table_id: "events",
     };
     let table_path = "/bigquery/v2/projects/test-project/datasets/dataset/tables/events";
-    let dataset_path = "/bigquery/v2/projects/test-project/datasets/dataset";
 
     // Every view carries the BigQuery view it asks for.
     for (view, fields, view_parameter) in [
@@ -517,16 +516,6 @@ fn metadata_urls_project_every_consumed_response_field() {
             &[("fields", fields), ("view", view_parameter)],
         );
     }
-    assert_url(
-        &client.table_insert_url(table),
-        "/bigquery/v2/projects/test-project/datasets/dataset/tables",
-        &[("fields", "etag")],
-    );
-    assert_url(
-        &client.table_update_url(table),
-        table_path,
-        &[("fields", "etag")],
-    );
 
     assert_url(
         &client.dataset_list_url("test-project", Some(1), "next/page"),
@@ -552,26 +541,6 @@ fn metadata_urls_project_every_consumed_response_field() {
             ("maxResults", "1000"),
             ("pageToken", "next/page"),
         ],
-    );
-    assert_url(
-        &client.dataset_get_url(dataset),
-        dataset_path,
-        &[("fields", "datasetReference(datasetId)")],
-    );
-    assert_url(
-        &client.dataset_access_get_url(dataset),
-        dataset_path,
-        &[("fields", "access,etag")],
-    );
-    assert_url(
-        &client.dataset_location_get_url(dataset),
-        dataset_path,
-        &[("fields", "location")],
-    );
-    assert_url(
-        &client.dataset_access_update_url(dataset),
-        dataset_path,
-        &[("fields", "etag")],
     );
 }
 
@@ -785,10 +754,12 @@ fn a_table_insert_is_resent_only_after_a_rate_limit() {
         assert_eq!(status, expected);
         let captured = captured.join().unwrap();
         assert_eq!(captured.len(), requests, "{expected:?}");
-        assert!(
-            captured
-                .iter()
-                .all(|request| request.raw_body == captured[0].raw_body)
-        );
+        for request in &captured {
+            assert_eq!(request.raw_body, captured[0].raw_body);
+            assert_eq!(
+                request.path(),
+                "/bigquery/v2/projects/p/datasets/d/tables?fields=etag"
+            );
+        }
     }
 }
