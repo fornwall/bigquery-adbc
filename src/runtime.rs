@@ -122,7 +122,10 @@ impl Drop for DriverRuntime {
         // reader dropped inside a host's runtime, so shut down in the background.
         if let Some(runtime) = self.runtime.take() {
             if self.orphaned() {
-                // Shutting down takes locks that a worker missing from this process may hold.
+                #[expect(
+                    clippy::mem_forget,
+                    reason = "shutting down takes locks a worker missing from this process may hold"
+                )]
                 std::mem::forget(runtime);
             } else {
                 runtime.shutdown_background();
