@@ -2029,36 +2029,43 @@ fn a_cancel_while_the_token_is_minted_confirms_no_job() {
     assert!(cancels <= MAX_ATTEMPTS, "{cancels} jobs.cancel requests");
 }
 
-/// A submission BigQuery refused created no job (a copy from a missing table answers 404 with
-/// none), so the operation's end sends no `jobs.cancel` for it, with or without a location.
+/// A submission BigQuery refused created no job, so the operation's end sends no `jobs.cancel`
+/// for it, with or without a location. A copy from a missing table answers 404 with none, and an
+/// expired `temporary_access_token` reaches the caller through `send`'s 401 remedy.
 #[test]
 fn a_refused_submission_leaves_no_job_to_cancel() {
-    for location in [Some("EU"), None] {
-        let runtime = new_runtime().unwrap();
-        let (cancel_endpoint, cancels) = capture_requests_until_stopped(
-            (0..MAX_ATTEMPTS)
-                .map(|_| (404, error_body("notFound", "Not found: Job")))
-                .collect(),
-        );
-        let (_cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
-        let (endpoint, inserts) = capture_requests(vec![(
-            404,
-            error_body("notFound", "Not found: Table p:d.missing"),
-        )]);
-        let failure = runtime
-            .block_on(JobClient::for_test(&endpoint).insert(
-                Some(&operation),
-                &request("refused", location, false),
-                "copy",
-            ))
-            .unwrap_err();
-        operation.finish();
+    for (code, reason, expected) in [
+        (404, "notFound", Status::NotFound),
+        (401, "authError", Status::Unauthenticated),
+    ] {
+        for location in [Some("EU"), None] {
+            let runtime = new_runtime().unwrap();
+            let (cancel_endpoint, cancels) = capture_requests_until_stopped(
+                (0..MAX_ATTEMPTS)
+                    .map(|_| (404, error_body("notFound", "Not found: Job")))
+                    .collect(),
+            );
+            let (_cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
+            let (endpoint, inserts) = capture_requests(vec![(code, error_body(reason, "refused"))]);
+            let mut client = JobClient::for_test(&endpoint);
+            client.http = client
+                .http
+                .with_unauthenticated_remedy(Some("set a fresh token".to_owned()));
+            let failure = runtime
+                .block_on(client.insert(
+                    Some(&operation),
+                    &request("refused", location, false),
+                    "copy",
+                ))
+                .unwrap_err();
+            operation.finish();
 
-        assert_eq!(failure.status, Status::NotFound, "{location:?}");
-        assert_eq!(inserts.join().unwrap().len(), 1, "{location:?}");
-        // The operation's end sends its cancel in the background at once.
-        thread::sleep(Duration::from_millis(200));
-        assert!(cancels.stop().is_empty(), "{location:?}");
+            assert_eq!(failure.status, expected, "{location:?}");
+            assert_eq!(inserts.join().unwrap().len(), 1, "{location:?}");
+            // The operation's end sends its cancel in the background at once.
+            thread::sleep(Duration::from_millis(200));
+            assert!(cancels.stop().is_empty(), "HTTP {code}, {location:?}");
+        }
     }
 }
 

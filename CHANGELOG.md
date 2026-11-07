@@ -38,6 +38,8 @@ changes.
 - A stalled Storage Read stream no longer blocks its reader forever. After two minutes of silence
   while the reader has room, it resumes at the next unread row, and it fails with `TIMEOUT` once
   its attempts are spent.
+- A job submission refused with HTTP 401 under `temporary_access_token` or `anonymous`
+  authentication no longer sends a `jobs.cancel` for a job that was never created.
 
 ## [0.2.0] - 2026-11-06
 
