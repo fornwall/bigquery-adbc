@@ -304,6 +304,11 @@ the library in that platform's tested wheel, and a `SHA256SUMS` file. Its notes 
 changelog section, so the workflow stops before publishing anything if that section is missing, and
 links in changelog entries must be absolute.
 
+The release also carries each platform's compressed library, which release builds of
+[patched dbt](tools/dbt-build/README.md) download. Those builds hash the published file, so they
+start after the release is created and attach their archives and a `dbt-SHA256SUMS` file about an
+hour later. PyPI does not wait for them.
+
 PyPI never accepts a version twice, so a bad release needs a new version; re-running the workflow
 only finishes an interrupted upload. Publishing uses
 [Trusted Publishing](https://docs.pypi.org/trusted-publishers/) from the `pypi` GitHub environment,
