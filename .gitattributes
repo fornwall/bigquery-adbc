@@ -4,3 +4,5 @@
 # Fuzz seeds and Arrow IPC fixtures are exact bytes, even when they look like text.
 fuzz/corpus/** binary
 *.arrow binary
+# A blank context line in a diff is a single space, which is not trailing whitespace.
+tools/dbt-build/patches/*.patch -whitespace

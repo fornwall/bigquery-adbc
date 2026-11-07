@@ -5,6 +5,12 @@ changes.
 
 ## [Unreleased]
 
+### Added
+
+- A dbt patched to use this driver is built for each release and push to `main`. A release's build
+  needs only its `dbt` binary, which downloads and verifies this driver on first use.
+- Releases include the compressed library that those builds download.
+
 ## [0.3.0] - 2026-11-07
 
 0.2.0 was tagged but never published, because its wheel tests failed, so this release is the

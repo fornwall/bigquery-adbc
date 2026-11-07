@@ -152,7 +152,7 @@ jobs:
         if: matrix.python-version == '3.15'
         run: |
           scripts/run-python-lint.sh
-          shellcheck -x --severity=style scripts/*.sh scripts/lib/*.sh
+          shellcheck -x --severity=style scripts/*.sh scripts/lib/*.sh tools/dbt-build/*.sh
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
 
       - name: Offline Python tests

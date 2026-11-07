@@ -514,6 +514,19 @@ def test_native_archives_carry_manifest_library_and_complete_licenses(
     assert PureWindowsPath(shared[platform_key]).name == filename
 
 
+def test_compressed_library_uses_the_name_dbt_builds_download(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    zstd = pytest.importorskip("compression.zstd")
+    library = tmp_path / "custom-driver-build"
+    library.write_bytes(b"native fixture")
+    monkeypatch.setattr(_build_support.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(package_native, "validate_native_library", lambda path: None)
+    monkeypatch.setattr(package_native, "inspect_native_binary", lambda path: NativeBinaryInfo("elf", "x86_64"))
+    result = package_native.compress_library(REPOSITORY_ROOT, library, tmp_path / "output")
+    version = cargo_version(REPOSITORY_ROOT / "Cargo.toml")
+    assert result.name == f"libadbc_driver_bigquery-{version}-linux-x86_64.so.zst"
+    assert zstd.decompress(result.read_bytes()) == b"native fixture"
+
+
 def test_native_archives_can_take_the_library_from_a_wheel(tmp_path: Path) -> None:
     filename = _build_support.native_library_name()
     wheel = tmp_path / "driver.whl"

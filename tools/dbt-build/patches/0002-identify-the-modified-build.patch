@@ -1,0 +1,83 @@
+Identify the modified build
+
+Changes only what dbt displays: --version, --help, the run banner and `dbt debug`. A separate
+variable carries the text because DBT_VERSION also sets the Jinja dbt_version, which packages
+compare as a version. `distribution` stays dbt-oss, because it classifies the install rather than
+naming it.
+
+diff --git a/crates/dbt-features/src/feature_stack_builder.rs b/crates/dbt-features/src/feature_stack_builder.rs
+index ff7a46d87..7755c5a97 100644
+--- a/crates/dbt-features/src/feature_stack_builder.rs
++++ b/crates/dbt-features/src/feature_stack_builder.rs
+@@ -86,7 +86,7 @@ pub struct FeatureStackBuilder {
+ impl FeatureStackBuilder {
+     pub fn new(tracing: TracingFeature) -> Self {
+         Self {
+-            name: "dbt-oss",
++            name: "dbt",
+             distribution: "dbt-oss",
+             tracing,
+         }
+diff --git a/crates/dbt-main/src/dbt_lib.rs b/crates/dbt-main/src/dbt_lib.rs
+index 7b7aefa61..ce0f70e67 100644
+--- a/crates/dbt-main/src/dbt_lib.rs
++++ b/crates/dbt-main/src/dbt_lib.rs
+@@ -584,9 +584,7 @@ async fn do_execute_fs(
+         let command_name = feature_stack.cli.command_name;
+         emit_info_progress_message(ProgressMessage::new_from_action_and_target(
+             command_name.to_string(),
+-            option_env!("DBT_VERSION")
+-                .unwrap_or(env!("CARGO_PKG_VERSION"))
+-                .to_string(),
++            env!("BIGQUERY_ADBC_DBT_IDENTIFIER").to_string(),
+         ));
+ 
+         return match execute_deps_command(
+@@ -610,9 +608,7 @@ async fn do_execute_fs(
+         let command_name = feature_stack.cli.command_name;
+         emit_info_progress_message(ProgressMessage::new_from_action_and_target(
+             command_name.to_string(),
+-            option_env!("DBT_VERSION")
+-                .unwrap_or(env!("CARGO_PKG_VERSION"))
+-                .to_string(),
++            env!("BIGQUERY_ADBC_DBT_IDENTIFIER").to_string(),
+         ));
+ 
+         return execute_clean_command(eval_arg, &clean_args.files, token).await;
+@@ -749,7 +745,7 @@ fn emit_version_info(eval_arg: &EvalArgs, command_name: &str) -> FsResult<()> {
+     }
+ 
+     // Show version (always shown in release builds, or in debug builds when not from_main)
+-    let current_version = option_env!("DBT_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
++    let current_version = env!("BIGQUERY_ADBC_DBT_IDENTIFIER");
+     emit_info_progress_message(ProgressMessage::new_from_action_and_target(
+         command_name.to_string(),
+         current_version.to_string(),
+diff --git a/crates/dbt-sa-cli/src/main.rs b/crates/dbt-sa-cli/src/main.rs
+index 45c7b80dd..8dff486d3 100644
+--- a/crates/dbt-sa-cli/src/main.rs
++++ b/crates/dbt-sa-cli/src/main.rs
+@@ -9,8 +9,8 @@ use std::process::ExitCode;
+ use std::sync::Arc;
+ 
+ fn main() -> ExitCode {
+-    let version = option_env!("DBT_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"));
+-    let cli_parser = DefaultCliParserFactory.create("dbt-oss", version);
++    let version = env!("BIGQUERY_ADBC_DBT_IDENTIFIER");
++    let cli_parser = DefaultCliParserFactory.create("dbt", version);
+     let cli = dbt_main::prepare_cli_or_exit(&cli_parser);
+ 
+     let mut arg = from_main(&cli);
+diff --git a/crates/dbt-tasks-sa/src/debug.rs b/crates/dbt-tasks-sa/src/debug.rs
+index 892f831f4..6a21b09de 100644
+--- a/crates/dbt-tasks-sa/src/debug.rs
++++ b/crates/dbt-tasks-sa/src/debug.rs
+@@ -135,7 +135,7 @@ pub async fn debug(
+     // dbt version
+     let dbt_version_display = format!(
+         "dbt version: {}",
+-        option_env!("DBT_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
++        env!("BIGQUERY_ADBC_DBT_IDENTIFIER")
+     );
+     emit_info_progress_message(create_progress_msg(ACTION_DEBUGGING, &dbt_version_display));
+ 

@@ -260,6 +260,8 @@ uv run --project python --locked python tools/package_native.py
 This builds the locked release cdylib, checks its exports, and writes a platform-named archive in
 `dist/` (`.tar.gz` on Linux/macOS, `.zip` on Windows). It includes the library, driver manifest,
 `LICENSE`, `NOTICE`, dependency texts, Rust standard-library notices and source inventory.
+
+[`tools/dbt-build`](tools/dbt-build/README.md) builds dbt patched to use this driver.
 `--output-dir` changes the destination. `--library /absolute/path/to/library` or `--wheel path/to/wheel`
 packages an existing library for this platform, using the manifest's expected filename. Like the
 wheel's `BIGQUERY_ADBC_BUILD_LIBRARY` override, these inputs must use this checkout's locked

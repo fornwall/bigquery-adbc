@@ -19,7 +19,7 @@ from _build_support import (
     validate_native_library,
 )
 from _licenses import LICENSE_FILES, validate_bundle
-from _native_wheel import inspect_native_binary
+from _native_wheel import NativeBinaryInfo, inspect_native_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -68,10 +68,8 @@ def library_from_wheel(wheel: Path, directory: Path) -> Path:
     return library
 
 
-def package_library(root: Path, library: Path, output: Path) -> Path:
-    validate_bundle(root)
-    validate_native_library(library)
-    binary = inspect_native_binary(library)
+def release_suffix(root: Path, binary: NativeBinaryInfo) -> str:
+    """Return the version and platform that end the name of each of a library's release assets."""
     platform = {"elf": "linux", "macho": "macos", "pe": "windows"}[binary.format]
     supported = {
         ("linux", "x86_64"),
@@ -82,8 +80,29 @@ def package_library(root: Path, library: Path, output: Path) -> Path:
     }
     if (platform, binary.architecture) not in supported:
         raise RuntimeError(f"No reviewed license bundle for {platform}/{binary.architecture}")
+    return f"{cargo_version(root / 'Cargo.toml')}-{platform}-{binary.architecture}"
+
+
+def compress_library(root: Path, library: Path, output: Path) -> Path:
+    """Write the asset that tools/dbt-build release builds download, in dbt's CDN format."""
+    # In the standard library from Python 3.14, which the release workflow uses.
+    from compression import zstd
+
+    validate_native_library(library)
+    name = Path(native_library_name())
+    release = release_suffix(root, inspect_native_binary(library))
+    output.mkdir(parents=True, exist_ok=True)
+    destination = output / f"{name.stem}-{release}{name.suffix}.zst"
+    destination.write_bytes(zstd.compress(library.read_bytes(), level=19))
+    return destination
+
+
+def package_library(root: Path, library: Path, output: Path) -> Path:
+    validate_bundle(root)
+    validate_native_library(library)
+    binary = inspect_native_binary(library)
     version = cargo_version(root / "Cargo.toml")
-    name = f"bigquery-adbc-{version}-{platform}-{binary.architecture}"
+    name = f"bigquery-adbc-{release_suffix(root, binary)}"
     filename = name + (".zip" if binary.format == "pe" else ".tar.gz")
     files = {native_library_name(): library}
     files.update((path, root / "python" / path) for path in (*LICENSE_FILES, "licenses/manifest.json"))
@@ -112,6 +131,11 @@ def main() -> None:
     source.add_argument("--library", type=Path, help="package a library built from this checkout instead of building")
     source.add_argument("--wheel", type=Path, help="package the library in a wheel built from this checkout")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist")
+    parser.add_argument(
+        "--compressed-library",
+        action="store_true",
+        help="also write the asset that tools/dbt-build release builds download; needs Python 3.14",
+    )
     arguments = parser.parse_args()
     validate_bundle(ROOT)
     with tempfile.TemporaryDirectory(prefix="bigquery-adbc-wheel-") as directory:
@@ -121,6 +145,8 @@ def main() -> None:
             library = arguments.library.resolve()
         else:
             library = build_or_find_library(ROOT)
+        if arguments.compressed_library:
+            print(compress_library(ROOT, library, arguments.output_dir.resolve()))
         print(package_library(ROOT, library, arguments.output_dir.resolve()))
 
 
