@@ -3,7 +3,6 @@
 //! Each [`TableFieldSchema`] becomes an Arrow [`Field`] carrying the GoogleSQL type literal that
 //! the decoder and consumers read, so the converted schema alone describes a result.
 
-use std::borrow::Cow;
 use std::sync::Arc;
 
 use adbc_core::error::{Result, Status};
@@ -26,7 +25,7 @@ pub(crate) fn convert_schema(table_schema: &TableSchema) -> Result<SchemaRef> {
     let fields = table_schema
         .fields
         .iter()
-        .map(|field| convert_field_inner(field, 1))
+        .map(convert_field)
         .collect::<Result<Vec<_>>>()?;
     Ok(Arc::new(Schema::new(fields)))
 }
@@ -161,21 +160,13 @@ fn convert_field_inner(field: &TableFieldSchema, depth: usize) -> Result<Field> 
             .canonical_data_type()
             .expect("Range and Struct, the only composite types, are matched above"),
     };
-    let rich_type = match kind {
-        BigQueryType::Struct | BigQueryType::Range => {
-            let mut literal = String::new();
-            write_type_literal(&mut literal, field, false).expect(
-                "the field and every child were converted, so each has an implemented type",
-            );
-            Cow::Owned(literal)
-        }
-        scalar => Cow::Borrowed(scalar.sql()),
-    };
+    let mut rich_type = String::new();
+    write_type_literal(&mut rich_type, field, false)
+        .expect("the field and every child were converted, so each has an implemented type");
     let mut metadata = field_metadata(field, kind, &rich_type)?;
 
     let data_type = if field.mode == "REPEATED" {
-        let mut item_metadata =
-            Metadata::new().with(BIGQUERY_TYPE_METADATA_KEY, rich_type.as_ref());
+        let mut item_metadata = Metadata::new().with(BIGQUERY_TYPE_METADATA_KEY, &rich_type);
         for key in [ARROW_EXTENSION_NAME_KEY, ARROW_EXTENSION_METADATA_KEY] {
             if let Some(value) = metadata.remove(key) {
                 item_metadata.insert(key.to_owned(), value);

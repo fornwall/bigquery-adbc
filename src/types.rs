@@ -284,9 +284,8 @@ bigquery_types! {
 
 impl BigQueryType {
     /// The canonical Arrow type for a scalar BigQuery type: what a query result decodes into and
-    /// what an inferred query parameter is built from. Decimals default to their full
-    /// `(38, 9)` / `(76, 38)` shape; a result field carrying an explicit precision overrides that
-    /// at the call site. `None` for the composite types, whose Arrow shape is parameterized.
+    /// what an inferred query parameter is built from. `None` for the composite types, whose
+    /// Arrow shape is parameterized.
     pub(crate) fn canonical_data_type(self) -> Option<DataType> {
         Some(match self {
             Self::String | Self::Geography | Self::Json => DataType::Utf8,
