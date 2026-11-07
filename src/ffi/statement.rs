@@ -20,7 +20,7 @@ use super::guard::{byte_slice, catch, missing_argument, required_output, require
 use super::handle::{Exported, finish, install, published_progress};
 use super::import::{BoundStreamReader, check_schema, import_struct, take_stream};
 use super::options::{ffi_handle, get_option_double, new_slot, slot_of, with_handle, with_state};
-use super::stream::{export_stream, write_schema};
+use super::stream::{export_reader, write_schema};
 use crate::error::invalid_argument;
 use crate::query::ExecutionProgress;
 use crate::statement::BigQueryStatement;
@@ -295,7 +295,7 @@ pub(super) unsafe extern "C" fn statement_execute_query(
                 return Ok(());
             }
             let (reader, affected) = state.execute_with_rows_affected()?;
-            export_stream(statement, reader, out)?;
+            std::ptr::write_unaligned(out, export_reader(reader));
             write_rows_affected(rows_affected, affected);
             Ok(())
         })

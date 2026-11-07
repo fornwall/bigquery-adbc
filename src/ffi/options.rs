@@ -13,12 +13,13 @@ use adbc_core::options::{OptionConnection, OptionDatabase, OptionValue};
 use arrow_array::RecordBatchReader;
 use arrow_array::ffi_stream::FFI_ArrowArrayStream;
 
-use super::abi::{AdbcDriver, AdbcError, AdbcStatusCode};
+use super::abi::{AdbcError, AdbcStatusCode};
 use super::guard::{
     byte_slice, missing_argument, required_output, required_str, write_bytes, write_out,
     write_string,
 };
 use super::handle::{Exported, Staged, check_empty, dispatch, finish, install, with_locked};
+use super::stream::export_reader;
 use crate::connection::{connection_option_kind, connection_set_refusal};
 use crate::driver::database_option_kind;
 use crate::error::{not_found, option_get_refusal, option_set_refusal};
@@ -31,8 +32,7 @@ use crate::{BigQueryConnectionOption, BigQueryDatabaseOption};
 /// # Safety
 /// `slot` must return the address of this handle's `private_data` field without reading it or
 /// borrowing the whole handle: other calls may write that field under the slot lock. Its driver
-/// allocation must use exactly `State`. `driver` must read only `private_driver`, without
-/// accessing `private_data`. `Default` must initialize both fields to null.
+/// allocation must use exactly `State`. `Default` must initialize it to null.
 pub(super) unsafe trait FfiHandle: Default {
     /// What lives behind `private_data`.
     type State: OptionTarget + Send;
@@ -46,14 +46,6 @@ pub(super) unsafe trait FfiHandle: Default {
     /// # Safety
     /// `handle` must point to a live handle struct.
     unsafe fn slot(handle: *mut Self) -> *mut *mut c_void;
-
-    /// The driver vtable the caller's handle carries, which the driver manager populates and
-    /// routes `AdbcErrorGetDetail*` back through.
-    ///
-    /// # Safety
-    /// `handle` must point to a live, aligned handle struct whose `private_driver` field is
-    /// initialized and is not being mutated during this call.
-    unsafe fn driver(handle: *mut Self) -> *const AdbcDriver;
 }
 
 /// How options reach the state behind a handle. A [`Staged`] object buffers sets until `Init` and
@@ -201,13 +193,6 @@ macro_rules! ffi_handle {
                 // SAFETY: The caller supplies a non-null pointer to a live handle struct.
                 unsafe { &raw mut (*handle).private_data }
             }
-
-            unsafe fn driver(handle: *mut Self) -> *const $crate::ffi::abi::AdbcDriver {
-                // SAFETY: The caller supplies a live, aligned handle with an initialized,
-                // immutable private_driver. Only that field is read; private_data stays with
-                // the slot lock in `handle`.
-                unsafe { (&raw const (*handle).private_driver).read() }
-            }
         }
     };
 }
@@ -227,23 +212,6 @@ pub(super) unsafe fn slot_of<H: FfiHandle>(handle: *mut H) -> *mut *mut c_void {
     }
     // SAFETY: The caller keeps the non-null ABI struct live.
     unsafe { H::slot(handle) }
-}
-
-/// The driver vtable behind a caller-supplied handle, or null when the caller set none.
-///
-/// Exported streams carry it so the driver manager can reach the details of the `AdbcError` that
-/// `AdbcErrorFromArrayStream` returns. Directly linked callers leave it null and call the driver's
-/// `ErrorGetDetail*` themselves.
-///
-/// # Safety
-/// The [shared FFI safety contracts](super) apply.
-/// `handle` must be null or point to a valid ABI struct.
-pub(super) unsafe fn driver_of<H: FfiHandle>(handle: *mut H) -> *const AdbcDriver {
-    if handle.is_null() {
-        return std::ptr::null();
-    }
-    // SAFETY: The caller keeps the non-null ABI struct live; the pointer is only stored.
-    unsafe { H::driver(handle) }
 }
 
 /// The slot of a handle that `New` was handed, which must not be null (see [`slot_of`]).
@@ -298,9 +266,7 @@ where
     unsafe {
         with_state(handle, error, |state| {
             required_output(out, "out")?;
-            let reader = f(state)?;
-            // `out` is non-null, so `export_stream` never takes its null-`out` arm here.
-            super::stream::export_stream(handle, reader, out)
+            write_out(out, export_reader(f(state)?), "out")
         })
     }
 }

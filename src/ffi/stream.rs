@@ -14,31 +14,10 @@ use arrow_schema::{ArrowError, Schema};
 
 use libc::{EACCES, ECANCELED, EEXIST, EINVAL, EIO, ENOENT, ENOMEM, ENOSYS, ENOTSUP, ETIMEDOUT};
 
-use super::abi::{ADBC_ERROR_INIT, ADBC_STATUS_OK, AdbcDriver, AdbcError, AdbcStatusCode};
+use super::abi::{ADBC_ERROR_INIT, ADBC_STATUS_OK, AdbcError, AdbcStatusCode};
 use super::error::export_error;
 use super::guard::{panic_message, sanitized_cstring};
 use crate::error::{chain, driver_defect};
-
-/// Hand a driver-produced reader to the caller as an Arrow C stream.
-///
-/// The stream carries the handle's `private_driver` for [`error_from_array_stream`]; see
-/// [`super::options::driver_of`].
-///
-/// # Safety
-/// `handle` must be null or point to a valid ABI struct, and `out` must be null or point to a
-/// writable `FFI_ArrowArrayStream`.
-pub(super) unsafe fn export_stream<H: super::options::FfiHandle>(
-    handle: *mut H,
-    reader: Box<dyn RecordBatchReader + Send>,
-    out: *mut FFI_ArrowArrayStream,
-) -> adbc_core::error::Result<()> {
-    // SAFETY: The caller supplies a live handle; only its vtable pointer is read, never
-    // dereferenced here.
-    let stream = export_reader(reader, unsafe { super::options::driver_of(handle) });
-    // On a null `out` the stream was never handed over, so it is dropped here, not leaked.
-    // SAFETY: The caller grants writable stream output storage; ownership moves to it on success.
-    unsafe { super::guard::write_out(out, stream, "out") }
-}
 
 /// Move a driver-produced schema into the caller's out parameter.
 ///
@@ -100,18 +79,13 @@ impl Drop for PrivateData {
     }
 }
 
-pub(super) fn export_reader(
-    reader: Box<dyn RecordBatchReader + Send>,
-    private_driver: *const AdbcDriver,
-) -> FFI_ArrowArrayStream {
+/// Hand a driver-produced reader over as an Arrow C stream.
+pub(super) fn export_reader(reader: Box<dyn RecordBatchReader + Send>) -> FFI_ArrowArrayStream {
     let private_data = Box::new(PrivateData {
         magic: STREAM_MAGIC,
         reader,
         last_error: None,
-        exported_error: AdbcError {
-            private_driver,
-            ..ADBC_ERROR_INIT
-        },
+        exported_error: ADBC_ERROR_INIT,
         panicked: false,
     });
     // SAFETY: each callback reads `private_data` as the `PrivateData` boxed here, which `release`

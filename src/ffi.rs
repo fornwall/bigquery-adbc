@@ -37,11 +37,10 @@
 //!
 //! Handle `private_data` is null or installed by this driver's matching `New` entry point, and only
 //! the driver accesses that field while calls are in flight. The handle struct stays allocated
-//! for every call on it, and its initialized `private_driver` field is not mutated during those
-//! calls. Calls on one object may overlap, `Release` included: [`handle`] orders them, and a call
-//! that loses a race with `Release` reports `INVALID_STATE`. Arrow inputs retain their producer's
-//! allocation, callback and lifetime contracts even when their shape or values are checked here;
-//! non-null pointers alone never establish readable buffer capacity.
+//! for every call on it. Calls on one object may overlap, `Release` included: [`handle`] orders
+//! them, and a call that loses a race with `Release` reports `INVALID_STATE`. Arrow inputs retain
+//! their producer's allocation, callback and lifetime contracts even when their shape or values
+//! are checked here; non-null pointers alone never establish readable buffer capacity.
 
 mod abi;
 mod connection;

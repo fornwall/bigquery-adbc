@@ -14,13 +14,8 @@ use crate::ffi::abi::{
 use crate::ffi::error::{error_get_detail, error_get_detail_count};
 use crate::ffi::test_support::{c_string, null};
 
-/// A stream with no `private_driver`, as a directly linked consumer produces.
-fn exported(reader: Box<dyn RecordBatchReader + Send>) -> FFI_ArrowArrayStream {
-    export_reader(reader, null())
-}
-
 fn error_stream(error: ArrowError) -> FFI_ArrowArrayStream {
-    exported(Box::new(RecordBatchIterator::new(
+    export_reader(Box::new(RecordBatchIterator::new(
         std::iter::once(Err(error)),
         Arc::new(Schema::empty()),
     )))
@@ -31,7 +26,7 @@ fn one_row_stream() -> FFI_ArrowArrayStream {
         RecordBatch::try_from_iter([("value", Arc::new(Int64Array::from(vec![7])) as ArrayRef)])
             .unwrap();
     let schema = batch.schema();
-    exported(Box::new(RecordBatchIterator::new(
+    export_reader(Box::new(RecordBatchIterator::new(
         std::iter::once(Ok(batch)),
         schema,
     )))
@@ -305,7 +300,7 @@ fn an_error_from_the_stream_survives_a_caller_releasing_it() {
 
 #[test]
 fn error_from_array_stream_reports_ok_when_nothing_failed() {
-    let mut stream = exported(Box::new(RecordBatchIterator::new(
+    let mut stream = export_reader(Box::new(RecordBatchIterator::new(
         std::iter::empty(),
         Arc::new(Schema::empty()),
     )));
@@ -352,7 +347,7 @@ fn error_from_array_stream_rejects_foreign_and_null_streams() {
 
 #[test]
 fn contains_reader_panics_in_get_next() {
-    let mut stream = exported(Box::new(PanickingReader {
+    let mut stream = export_reader(Box::new(PanickingReader {
         schema: Arc::new(Schema::empty()),
         panic_in_schema: false,
     }));
@@ -367,7 +362,7 @@ fn contains_reader_panics_in_get_next() {
 #[test]
 fn contains_reader_panics_in_get_schema() {
     let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, false)]));
-    let mut stream = exported(Box::new(PanickingReader {
+    let mut stream = export_reader(Box::new(PanickingReader {
         schema,
         panic_in_schema: true,
     }));
@@ -406,32 +401,13 @@ fn contains_reader_panics_in_release() {
         }
     }
 
-    let mut stream = exported(Box::new(DropPanic(PanickingReader {
+    let mut stream = export_reader(Box::new(DropPanic(PanickingReader {
         schema: Arc::new(Schema::empty()),
         panic_in_schema: false,
     })));
     release(&mut stream);
     assert!(stream.release().is_none());
     assert!(stream.private_data().is_null());
-}
-
-/// `AdbcErrorFromArrayStream` returns an `AdbcError` in driver-owned storage, so only the driver
-/// can set its `private_driver`, through which the driver manager reaches the error's details.
-#[test]
-fn a_stream_error_carries_the_handles_driver_vtable() {
-    let vtable = 0x5eed_usize as *const AdbcDriver;
-    let mut stream = export_reader(
-        Box::new(RecordBatchIterator::new(
-            std::iter::once(Err(ArrowError::MemoryError("no room".to_owned()))),
-            Arc::new(Schema::empty()),
-        )),
-        vtable,
-    );
-    assert_eq!(next(&mut stream), ENOMEM);
-    let (_, exported) = error_from(&mut stream);
-    // SAFETY: The returned error is initialized storage owned by the still-live stream.
-    assert_eq!(unsafe { (*exported).private_driver }, vtable);
-    release(&mut stream);
 }
 
 /// A nonconforming host may release a stream twice, or call callback pointers it copied before
@@ -490,7 +466,7 @@ fn a_successful_read_clears_the_previous_failure() {
     let schema = batch.schema();
     let mut failure = Error::with_message_and_status("the read failed", Status::InvalidData);
     failure.sqlstate = SQLSTATE;
-    let mut stream = exported(Box::new(RecordBatchIterator::new(
+    let mut stream = export_reader(Box::new(RecordBatchIterator::new(
         [Err(ArrowError::ExternalError(Box::new(failure))), Ok(batch)],
         schema,
     )));
