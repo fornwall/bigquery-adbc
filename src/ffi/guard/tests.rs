@@ -36,23 +36,24 @@ fn passes_through_ordinary_results() {
     assert_eq!(failure.unwrap_err().status, Status::NotFound);
 }
 
+/// `write_string` into `buffer`, advertising `length` bytes of it, returning the size reported.
+fn string_into(value: &str, buffer: &mut [c_char], length: usize) -> Result<usize> {
+    assert!(length <= buffer.len());
+    let mut length = length;
+    // SAFETY: The buffer holds at least the advertised bytes and is disjoint from the live length
+    // and input.
+    unsafe { write_string(value, buffer.as_mut_ptr(), &raw mut length) }.map(|()| length)
+}
+
 #[test]
 fn write_string_and_bytes_report_the_required_size_without_writing() {
     let mut buffer = [0_i8; 2];
-    let mut length = buffer.len();
-    // SAFETY: The local buffer has the advertised capacity, disjoint from the live length and
-    // input.
-    unsafe { write_string("hello", buffer.as_mut_ptr(), &raw mut length) }.unwrap();
     // "hello" plus NUL; nothing written because the buffer is too small.
-    assert_eq!(length, 6);
+    assert_eq!(string_into("hello", &mut buffer, 2).unwrap(), 6);
     assert_eq!(buffer, [0, 0]);
 
     let mut buffer = [0_i8; 6];
-    let mut length = buffer.len();
-    // SAFETY: The local buffer has the advertised capacity, disjoint from the live length and
-    // input.
-    unsafe { write_string("hello", buffer.as_mut_ptr(), &raw mut length) }.unwrap();
-    assert_eq!(length, 6);
+    assert_eq!(string_into("hello", &mut buffer, 6).unwrap(), 6);
     assert_eq!(
         // SAFETY: The successful write fit its local buffer and included the trailing NUL.
         unsafe { CStr::from_ptr(buffer.as_ptr()) }.to_str().unwrap(),
@@ -74,10 +75,7 @@ fn write_string_preserves_utf8_and_terminates_empty_values() {
     let sentinel: c_char = 120;
     for value in ["", "smörgås"] {
         let mut buffer = [sentinel; 16];
-        let mut length = value.len() + 1;
-        // SAFETY: The local buffer has the advertised capacity, disjoint from the live length
-        // and input.
-        unsafe { write_string(value, buffer.as_mut_ptr(), &raw mut length) }.unwrap();
+        let length = string_into(value, &mut buffer, value.len() + 1).unwrap();
         assert_eq!(length, value.len() + 1);
         assert_eq!(
             // SAFETY: The successful write fit its local buffer and included the trailing NUL.
@@ -88,14 +86,9 @@ fn write_string_preserves_utf8_and_terminates_empty_values() {
     }
 
     let mut buffer = [sentinel; 16];
-    let mut length = buffer.len();
-    // SAFETY: The local buffer has the advertised capacity, disjoint from the live length and
-    // input.
-    let error =
-        unsafe { write_string("left\0right", buffer.as_mut_ptr(), &raw mut length) }.unwrap_err();
+    let error = string_into("left\0right", &mut buffer, 16).unwrap_err();
     assert_eq!(error.status, Status::Internal);
     assert!(error.message.contains("byte 4"), "{}", error.message);
-    assert_eq!(length, buffer.len());
     assert_eq!(buffer, [sentinel; 16]);
 }
 
@@ -103,30 +96,27 @@ fn write_string_preserves_utf8_and_terminates_empty_values() {
 /// claims room is refused. A null buffer of length zero is a legal size probe.
 #[test]
 fn a_null_buffer_is_a_size_probe_only_when_it_says_it_holds_nothing() {
+    let null_buffer = std::ptr::null_mut();
     let mut length = 64;
     // SAFETY: Null destinations are handled explicitly; length is a live, exclusively writable
     // local.
-    let error =
-        unsafe { write_string("hello", std::ptr::null_mut(), &raw mut length) }.unwrap_err();
+    let error = unsafe { write_string("hello", null_buffer, &raw mut length) }.unwrap_err();
     assert_eq!(error.status, Status::InvalidArguments);
     assert!(error.message.contains("64"), "{}", error.message);
     assert_eq!(length, 64, "a rejected call reports no size");
 
     let mut length = 0;
-    // SAFETY: Null destinations are handled explicitly; length is a live, exclusively writable
-    // local.
-    unsafe { write_string("hello", std::ptr::null_mut(), &raw mut length) }.unwrap();
+    // SAFETY: As above.
+    unsafe { write_string("hello", null_buffer, &raw mut length) }.unwrap();
     assert_eq!(length, 6);
 
     let mut length = 0;
-    // SAFETY: Null destinations are handled explicitly; length is a live, exclusively writable
-    // local.
-    unsafe { write_bytes(b"abc", std::ptr::null_mut(), &raw mut length) }.unwrap();
+    // SAFETY: As above.
+    unsafe { write_bytes(b"abc", null_buffer.cast(), &raw mut length) }.unwrap();
     assert_eq!(length, 3);
     assert!(
-        // SAFETY: Null destinations are handled explicitly; length is a live, exclusively
-        // writable local.
-        unsafe { write_bytes(b"", std::ptr::null_mut(), &raw mut length) }.is_err(),
+        // SAFETY: As above.
+        unsafe { write_bytes(b"", null_buffer.cast(), &raw mut length) }.is_err(),
         "the length is now 3, so the null buffer claims room it does not have"
     );
 }

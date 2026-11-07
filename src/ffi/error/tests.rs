@@ -10,6 +10,10 @@ fn export(out: &mut AdbcError, error: Error) {
     unsafe { export_error(out, error) };
 }
 
+fn io_error(message: &str) -> Error {
+    Error::with_message_and_status(message, Status::IO)
+}
+
 /// The details `error_get_detail_count` and `error_get_detail` report, copied out.
 fn details_of(error: &AdbcError) -> Vec<(String, Vec<u8>)> {
     // SAFETY: Test callers pass an error this driver populated or left empty, whose allocation
@@ -56,7 +60,7 @@ fn release_v100(error: &mut AdbcError) {
 #[test]
 fn exports_a_message_and_releases_idempotently() {
     let mut out = ADBC_ERROR_INIT;
-    export(&mut out, Error::with_message_and_status("boom", Status::IO));
+    export(&mut out, io_error("boom"));
     assert_eq!(error_message(&out).as_deref(), Some("boom"));
     assert_eq!(out.vendor_code, ADBC_ERROR_VENDOR_CODE_PRIVATE_DATA);
 
@@ -75,14 +79,8 @@ fn exports_a_message_and_releases_idempotently() {
 #[test]
 fn reusing_an_out_parameter_releases_the_previous_error() {
     let mut out = ADBC_ERROR_INIT;
-    export(
-        &mut out,
-        Error::with_message_and_status("first", Status::IO),
-    );
-    export(
-        &mut out,
-        Error::with_message_and_status("second", Status::Internal),
-    );
+    export(&mut out, io_error("first"));
+    export(&mut out, io_error("second"));
     assert_eq!(error_message(&out).as_deref(), Some("second"));
     release_error(&mut out);
 }
@@ -117,10 +115,7 @@ fn a_1_0_0_caller_is_not_relabelled_by_a_sentinel_valued_vendor_code() {
     export(&mut out, error);
     assert_ne!(out.vendor_code, ADBC_ERROR_VENDOR_CODE_PRIVATE_DATA);
 
-    export(
-        &mut out,
-        Error::with_message_and_status("second", Status::Internal),
-    );
+    export(&mut out, io_error("second"));
     assert_eq!(error_message(&out).as_deref(), Some("second"));
     assert_eq!(
         (out.private_data, out.private_driver),
@@ -203,10 +198,7 @@ fn the_detail_getters_ignore_private_data_on_a_1_0_0_error() {
 fn null_out_parameters_are_tolerated() {
     // SAFETY: Export and both detail getters explicitly accept a null error.
     unsafe {
-        export_error(
-            null(),
-            Error::with_message_and_status("dropped", Status::IO),
-        );
+        export_error(null(), io_error("dropped"));
         assert_eq!(error_get_detail_count(null()), 0);
         assert!(error_get_detail(null(), 0).key.is_null());
     }
@@ -215,10 +207,7 @@ fn null_out_parameters_are_tolerated() {
 #[test]
 fn a_message_with_an_interior_nul_is_still_reported() {
     let mut out = ADBC_ERROR_INIT;
-    export(
-        &mut out,
-        Error::with_message_and_status("before\0after", Status::IO),
-    );
+    export(&mut out, io_error("before\0after"));
     assert_eq!(error_message(&out).as_deref(), Some("before?after"));
     release_error(&mut out);
 }
@@ -228,10 +217,7 @@ fn a_message_with_an_interior_nul_is_still_reported() {
 #[test]
 fn a_detail_free_error_still_marks_itself_initialized() {
     let mut out = ADBC_ERROR_INIT;
-    export(
-        &mut out,
-        Error::with_message_and_status("plain", Status::IO),
-    );
+    export(&mut out, io_error("plain"));
     assert!(!out.private_data.is_null());
     assert!(details_of(&out).is_empty());
     release_error(&mut out);
@@ -257,7 +243,7 @@ fn a_foreign_release_cannot_take_private_driver_with_it() {
         private_driver: sentinel_driver,
         ..ADBC_ERROR_INIT
     };
-    export(&mut out, Error::with_message_and_status("boom", Status::IO));
+    export(&mut out, io_error("boom"));
     assert_eq!(out.private_driver, sentinel_driver);
     assert_eq!(out.vendor_code, ADBC_ERROR_VENDOR_CODE_PRIVATE_DATA);
     release_error(&mut out);

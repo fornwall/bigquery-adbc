@@ -659,7 +659,7 @@ fn a_connection_validating_its_catalog_leaves_the_database_available() {
     );
     reader.join().unwrap();
     assert_eq!(opening.join().unwrap(), ADBC_STATUS_OK);
-    let requests = requests.join().unwrap();
+    let requests = requests.served(1);
     assert!(
         requests[0].path().contains("/datasets"),
         "{}",

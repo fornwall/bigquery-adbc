@@ -15,8 +15,9 @@ use adbc_core::{Connection, Database, Driver, Optionable, Statement};
 use adbc_driver_manager::ManagedDriver;
 use arrow_array::Int64Array;
 use arrow_schema::DataType;
+use serde_json::json;
 
-use crate::test_support::http::job_reference;
+use crate::test_support::http::{capture_requests, completed_job, error_body};
 
 use super::abi::{AdbcError, AdbcStatusCode};
 
@@ -44,7 +45,7 @@ fn anonymous_database() -> impl Database {
 fn anonymous_database_at(endpoint: &str) -> impl Database {
     load_driver()
         .new_database_with_opts([
-            (OptionDatabase::Uri, "bigquery:///example-project".into()),
+            (OptionDatabase::Uri, "bigquery:///fixture-project".into()),
             (
                 crate::BigQueryDatabaseOption::AuthenticationType.into(),
                 crate::BigQueryAuthenticationType::Anonymous.into(),
@@ -61,11 +62,9 @@ fn anonymous_database_at(endpoint: &str) -> impl Database {
 /// local to that connection, and switch back to pattern matching when disabled after Init.
 #[test]
 fn exported_get_objects_accepts_disable_wildcards_before_and_after_init() {
-    let (endpoint, requests) = crate::test_support::http::capture_requests(vec![(
+    let (endpoint, requests) = capture_requests(vec![(
         400,
-        serde_json::json!({"error": {"errors": [{
-            "reason": "invalid", "message": "Invalid project ID supplied"
-        }]}}),
+        error_body("invalid", "Invalid project ID supplied"),
     )]);
     let database = anonymous_database_at(&endpoint);
     let key = crate::BigQueryConnectionOption::GetObjectsDisableWildcards;
@@ -91,10 +90,8 @@ fn exported_get_objects_accepts_disable_wildcards_before_and_after_init() {
             .unwrap();
         assert_eq!(batch.num_rows(), expected_rows);
     }
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 1);
     assert!(
-        requests[0]
+        requests.served(1)[0]
             .path()
             .starts_with("/bigquery/v2/projects/%25/datasets?")
     );
@@ -104,11 +101,9 @@ fn exported_get_objects_accepts_disable_wildcards_before_and_after_init() {
 /// still has fields and metadata, both before and after EOF.
 #[test]
 fn exported_empty_rest_result_preserves_schema_through_eof() {
-    let (endpoint, requests) = crate::test_support::http::capture_requests(vec![(
-        200,
-        serde_json::json!({
-            "jobComplete": true,
-            "jobReference": job_reference("example-project", "empty-query"),
+    let (endpoint, requests) = capture_requests(vec![completed_job(
+        "empty-query",
+        json!({
             "statementType": "SELECT",
             "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
             "totalRows": "0"
@@ -133,28 +128,21 @@ fn exported_empty_rest_result_preserves_schema_through_eof() {
     assert!(reader.next().is_none());
     assert!(reader.next().is_none());
     assert_eq!(reader.schema(), schema);
-    assert_eq!(requests.join().unwrap().len(), 1);
+    requests.served(1);
 }
 
 /// A setup error must cross the ADBC boundary as an error, with no usable result published.
 /// Reusing the same statement also checks that failed setup leaves execution state usable.
 #[test]
 fn exported_rest_schema_failure_is_reported_and_statement_recovers() {
-    let (endpoint, requests) = crate::test_support::http::capture_requests(vec![
-        (
-            200,
-            serde_json::json!({
-                "jobComplete": true,
-                "jobReference": job_reference("example-project", "schema-failure"),
-                "statementType": "SELECT",
-                "totalRows": "0"
-            }),
+    let (endpoint, requests) = capture_requests(vec![
+        completed_job(
+            "schema-failure",
+            json!({"statementType": "SELECT", "totalRows": "0"}),
         ),
-        (
-            200,
-            serde_json::json!({
-                "jobComplete": true,
-                "jobReference": job_reference("example-project", "schema-recovered"),
+        completed_job(
+            "schema-recovered",
+            json!({
                 "statementType": "SELECT",
                 "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
                 "rows": [{"f": [{"v": "42"}]}],
@@ -186,18 +174,16 @@ fn exported_rest_schema_failure_is_reported_and_statement_recovers() {
         &[42]
     );
     assert!(reader.next().is_none());
-    assert_eq!(requests.join().unwrap().len(), 2);
+    requests.served(2);
 }
 
 /// A valid schema does not make a failed first conversion a successful empty result. Check this
 /// through the manager so the producer error must survive the Arrow C Stream callbacks too.
 #[test]
 fn exported_rest_first_batch_failure_is_not_eof() {
-    let (endpoint, requests) = crate::test_support::http::capture_requests(vec![(
-        200,
-        serde_json::json!({
-            "jobComplete": true,
-            "jobReference": job_reference("example-project", "bad-row-query"),
+    let (endpoint, requests) = capture_requests(vec![completed_job(
+        "bad-row-query",
+        json!({
             "statementType": "SELECT",
             "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
             "rows": [{"f": [{"v": "not-an-integer"}]}],
@@ -218,45 +204,18 @@ fn exported_rest_first_batch_failure_is_not_eof() {
     assert_eq!(reader.schema(), schema);
     assert_eq!(schema.metadata()["BIGQUERY:query_id"], "bad-row-query");
     assert!(reader.next().is_none());
-    assert_eq!(requests.join().unwrap().len(), 1);
+    requests.served(1);
 }
 
-/// Per-option behavior is tested natively. Here, one string option per object plus the
-/// statement's integer option cover each value type crossing the C boundary.
+/// Per-option behavior is tested natively. Here, one database option crosses the C boundary; the
+/// statement's string and integer options cross it below.
 #[test]
 fn exported_driver_database_options_round_trip() {
-    let database = anonymous_database();
     assert_eq!(
-        database
+        anonymous_database()
             .get_option_string(crate::BigQueryDatabaseOption::Endpoint.into())
             .unwrap(),
         "http://127.0.0.1:1"
-    );
-
-    let mut statement = database.new_connection().unwrap().new_statement().unwrap();
-    statement
-        .set_option(
-            crate::BigQueryStatementOption::MaximumBytesBilled.into(),
-            OptionValue::Int(1_000_000),
-        )
-        .unwrap();
-    statement
-        .set_option(
-            crate::BigQueryStatementOption::Priority.into(),
-            crate::BigQueryQueryPriority::Batch.into(),
-        )
-        .unwrap();
-    assert_eq!(
-        statement
-            .get_option_int(crate::BigQueryStatementOption::MaximumBytesBilled.into())
-            .unwrap(),
-        1_000_000
-    );
-    assert_eq!(
-        statement
-            .get_option_string(crate::BigQueryStatementOption::Priority.into())
-            .unwrap(),
-        crate::BigQueryQueryPriority::Batch.as_str()
     );
 }
 

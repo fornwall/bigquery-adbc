@@ -7,10 +7,7 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, RecordBatchIterator};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 
 use super::*;
-use crate::ffi::abi::{
-    ADBC_STATUS_CANCELLED, ADBC_STATUS_INTERNAL, ADBC_STATUS_INVALID_DATA, ADBC_STATUS_IO,
-    ADBC_STATUS_NOT_IMPLEMENTED, ADBC_STATUS_UNKNOWN,
-};
+use crate::ffi::abi::{ADBC_STATUS_CANCELLED, ADBC_STATUS_INVALID_DATA, ADBC_STATUS_IO};
 use crate::ffi::error::{error_get_detail, error_get_detail_count};
 use crate::ffi::test_support::{c_string, null};
 
@@ -21,10 +18,13 @@ fn error_stream(error: ArrowError) -> FFI_ArrowArrayStream {
     )))
 }
 
+fn one_row_batch() -> RecordBatch {
+    RecordBatch::try_from_iter([("value", Arc::new(Int64Array::from(vec![7])) as ArrayRef)])
+        .unwrap()
+}
+
 fn one_row_stream() -> FFI_ArrowArrayStream {
-    let batch =
-        RecordBatch::try_from_iter([("value", Arc::new(Int64Array::from(vec![7])) as ArrayRef)])
-            .unwrap();
+    let batch = one_row_batch();
     let schema = batch.schema();
     export_reader(Box::new(RecordBatchIterator::new(
         std::iter::once(Ok(batch)),
@@ -38,6 +38,14 @@ fn next(stream: &mut FFI_ArrowArrayStream) -> c_int {
     // SAFETY: The callback belongs to this live stream and receives an empty, writable array
     // destination, which owns whatever the call returns.
     unsafe { stream.get_next().unwrap()(stream, &raw mut out) }
+}
+
+/// Call `get_schema` on one of this module's live streams, releasing any schema it returns.
+fn schema_of(stream: &mut FFI_ArrowArrayStream) -> c_int {
+    let mut out = FFI_ArrowSchema::empty();
+    // SAFETY: The callback belongs to this live stream and receives an empty, writable schema
+    // destination, which owns whatever the call returns.
+    unsafe { stream.get_schema().unwrap()(stream, &raw mut out) }
 }
 
 /// What `get_last_error` reports for one of this module's live streams.
@@ -90,9 +98,7 @@ impl RecordBatchReader for PanickingReader {
 
 #[test]
 fn exports_an_ordinary_reader() {
-    let batch =
-        RecordBatch::try_from_iter([("value", Arc::new(Int64Array::from(vec![7])) as ArrayRef)])
-            .unwrap();
+    let batch = one_row_batch();
     let mut stream = one_row_stream();
     // SAFETY: The stream is a valid Arrow export. `from_raw` moves its ownership into the reader
     // and clears the source, which remains allocated throughout the move.
@@ -144,54 +150,35 @@ fn exports_adbc_statuses_as_errno() {
 #[test]
 fn exports_plain_arrow_errors_by_what_they_say_failed() {
     let io = || std::io::Error::other("connection reset");
+    let x = || "x".to_owned();
     for (error, errno, status) in [
         (
-            ArrowError::NotYetImplemented("x".into()),
+            ArrowError::NotYetImplemented(x()),
             ENOSYS,
-            ADBC_STATUS_NOT_IMPLEMENTED,
+            Status::NotImplemented,
         ),
-        (
-            ArrowError::MemoryError("x".into()),
-            ENOMEM,
-            ADBC_STATUS_INTERNAL,
-        ),
-        (ArrowError::IoError("x".into(), io()), EIO, ADBC_STATUS_IO),
-        (
-            ArrowError::ParseError("x".into()),
-            EIO,
-            ADBC_STATUS_INVALID_DATA,
-        ),
-        (
-            ArrowError::CastError("x".into()),
-            EIO,
-            ADBC_STATUS_INVALID_DATA,
-        ),
-        (
-            ArrowError::IpcError("x".into()),
-            EIO,
-            ADBC_STATUS_INVALID_DATA,
-        ),
-        (
-            ArrowError::OffsetOverflowError(1),
-            EIO,
-            ADBC_STATUS_INVALID_DATA,
-        ),
+        (ArrowError::MemoryError(x()), ENOMEM, Status::Internal),
+        (ArrowError::IoError(x(), io()), EIO, Status::IO),
+        (ArrowError::ParseError(x()), EIO, Status::InvalidData),
+        (ArrowError::CastError(x()), EIO, Status::InvalidData),
+        (ArrowError::IpcError(x()), EIO, Status::InvalidData),
+        (ArrowError::OffsetOverflowError(1), EIO, Status::InvalidData),
         // Variants the driver raises for unrelated failures say too little to be specific.
-        (
-            ArrowError::ComputeError("x".into()),
-            EIO,
-            ADBC_STATUS_UNKNOWN,
-        ),
+        (ArrowError::ComputeError(x()), EIO, Status::Unknown),
         (
             ArrowError::ExternalError(Box::new(io())),
             EIO,
-            ADBC_STATUS_UNKNOWN,
+            Status::Unknown,
         ),
     ] {
         let label = format!("{error:?}");
         let mut stream = error_stream(error);
         assert_eq!(next(&mut stream), errno, "{label}");
-        assert_eq!(error_from(&mut stream).0, status, "{label}");
+        assert_eq!(
+            error_from(&mut stream).0,
+            AdbcStatusCode::from(status),
+            "{label}"
+        );
         release(&mut stream);
     }
 }
@@ -366,13 +353,7 @@ fn contains_reader_panics_in_get_schema() {
         schema,
         panic_in_schema: true,
     }));
-    let mut out = FFI_ArrowSchema::empty();
-    assert_eq!(
-        // SAFETY: The callback belongs to this live stream and receives an empty, writable schema
-        // destination.
-        unsafe { stream.get_schema().unwrap()(&raw mut stream, &raw mut out) },
-        EINVAL
-    );
+    assert_eq!(schema_of(&mut stream), EINVAL);
     let message = last_error(&mut stream).unwrap();
     assert!(message.contains("schema failed"), "{message}");
 }
@@ -460,9 +441,7 @@ fn a_successful_read_clears_the_previous_failure() {
     // "22000", data exception, in the ASCII spelling `Error::sqlstate` takes.
     const SQLSTATE: [c_char; 5] = [0x32, 0x32, 0x30, 0x30, 0x30];
 
-    let batch =
-        RecordBatch::try_from_iter([("value", Arc::new(Int64Array::from(vec![7])) as ArrayRef)])
-            .unwrap();
+    let batch = one_row_batch();
     let schema = batch.schema();
     let mut failure = Error::with_message_and_status("the read failed", Status::InvalidData);
     failure.sqlstate = SQLSTATE;
@@ -489,14 +468,7 @@ fn a_successful_read_clears_the_previous_failure() {
     );
     assert!(last_error(&mut stream).is_some());
 
-    let mut array = FFI_ArrowArray::empty();
-    assert_eq!(
-        // SAFETY: The callback belongs to this live stream and receives an empty, writable array
-        // destination.
-        unsafe { stream.get_next().unwrap()(&raw mut stream, &raw mut array) },
-        0
-    );
-    assert!(array.release().is_some(), "the read returned the batch");
+    assert_eq!(next(&mut stream), 0, "the read returns the batch");
     assert!(last_error(&mut stream).is_none());
 
     let (status, exported) = error_from(&mut stream);
@@ -520,14 +492,7 @@ fn reading_the_schema_after_a_failed_read_keeps_the_failure() {
     let mut stream = error_stream(ArrowError::ExternalError(Box::new(error)));
     assert_eq!(next(&mut stream), ECANCELED);
 
-    let mut schema = FFI_ArrowSchema::empty();
-    assert_eq!(
-        // SAFETY: The callback belongs to this live stream and receives an empty, writable schema
-        // destination.
-        unsafe { stream.get_schema().unwrap()(&raw mut stream, &raw mut schema) },
-        0,
-        "the schema is still readable after a failed read"
-    );
+    assert_eq!(schema_of(&mut stream), 0, "the schema stays readable");
 
     let message = last_error(&mut stream).expect("the read failure was cleared by get_schema");
     assert!(message.contains("the query was cancelled"), "{message}");

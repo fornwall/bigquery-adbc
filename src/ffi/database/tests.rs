@@ -4,7 +4,9 @@ use crate::ffi::abi::{
     ADBC_STATUS_NOT_IMPLEMENTED, ADBC_STATUS_OK,
 };
 use crate::ffi::options::{get_option_int, new_handle, release_handle, set_option, set_option_int};
-use crate::ffi::test_support::{allocated, call, get, initialized_database, null, release, set};
+use crate::ffi::test_support::{
+    allocated, assert_refused, call, get, initialized_database, null, release, set,
+};
 
 fn init(database: &mut AdbcDatabase) -> AdbcStatusCode {
     // SAFETY: The handle is exclusively borrowed; the error output is optional.
@@ -32,12 +34,15 @@ fn a_uri_value_decoding_to_a_nul_fails_init() {
 fn a_second_new_on_a_populated_handle_is_refused() {
     let mut database: AdbcDatabase = allocated();
     let first = database.private_data;
-    let (status, message) = call(|error| {
+    let refusal = call(|error| {
         // SAFETY: The handle is a writable local; new_handle checks the already-populated slot.
         unsafe { new_handle(&raw mut database, error) }
     });
-    assert_eq!(status, ADBC_STATUS_INVALID_STATE);
-    assert!(message.unwrap().contains("already holds a driver object"));
+    assert_refused(
+        refusal,
+        ADBC_STATUS_INVALID_STATE,
+        "already holds a driver object",
+    );
     assert_eq!(database.private_data, first);
     release(&mut database);
 }

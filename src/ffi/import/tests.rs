@@ -5,7 +5,7 @@ use arrow_schema::Field;
 
 use super::*;
 use crate::ffi::test_support::{edit_stream, nested_struct_array, null};
-use crate::test_support::errors::assert_message;
+use crate::test_support::errors::{assert_failure, assert_message};
 
 fn node(length: i64, buffers: &[*const c_void], children: &[*const RawArray]) -> RawArray {
     RawArray {
@@ -29,6 +29,24 @@ unsafe fn shape_of(root: &RawArray, column: DataType) -> std::result::Result<(),
     // SAFETY: RawArray mirrors the C layout; root and its caller-provided backing allocations
     // remain live for the check, which only borrows and never invokes the null release callback.
     unsafe { check_shape(&*std::ptr::from_ref(root).cast::<FFI_ArrowArray>(), &fields) }
+}
+
+/// `column` as the only column of a struct.
+///
+/// # Safety
+/// `column` must satisfy [`check_node`]'s allocation contract for `data_type`.
+unsafe fn column_shape(column: &RawArray, data_type: DataType) -> std::result::Result<(), String> {
+    let validity = [std::ptr::null::<c_void>()];
+    let columns = [std::ptr::from_ref(column)];
+    // SAFETY: The root's pointer arrays are locals, and the caller vouches for its column.
+    unsafe { shape_of(&node(1, &validity, &columns), data_type) }
+}
+
+/// Take `stream` as a bound stream would, and validate it into a reader.
+fn bound_reader(stream: &mut FFI_ArrowArrayStream) -> Result<BoundStreamReader> {
+    // SAFETY: Test streams retain their producer ownership and valid callback outputs, whose
+    // declared shape the reader checks before using a batch.
+    unsafe { BoundStreamReader::new(take_stream(stream).unwrap()) }
 }
 
 #[test]
@@ -79,7 +97,6 @@ fn negative_imported_buffer_sizes_are_rejected_before_arrow_uses_them() {
     let offsets32 = [0_i32, -1];
     let offsets64 = [0_i64, -1];
     let view_lengths = [0_i64, -1];
-    let validity = [std::ptr::null::<c_void>()];
     for (data_type, sizes) in [
         (DataType::Utf8, offsets32.as_ptr().cast::<c_void>()),
         (DataType::Binary, offsets32.as_ptr().cast()),
@@ -100,9 +117,6 @@ fn negative_imported_buffer_sizes_are_rejected_before_arrow_uses_them() {
         } else {
             vec![std::ptr::null(), sizes, std::ptr::null()]
         };
-        let column = node(1, &buffers, &[]);
-        let columns = [&raw const column];
-        let root = node(1, &validity, &columns);
         let reason = if views {
             "data buffer 1 has negative length -1"
         } else {
@@ -111,7 +125,7 @@ fn negative_imported_buffer_sizes_are_rejected_before_arrow_uses_them() {
         assert_eq!(
             // SAFETY: Local descriptor/pointer arrays and correctly typed offset/length buffers
             // remain live; invalid values do not affect the capacity needed by this check.
-            unsafe { shape_of(&root, data_type.clone()) },
+            unsafe { column_shape(&node(1, &buffers, &[]), data_type.clone()) },
             Err(format!(
                 "column \"c\" is invalid: the {data_type} array's {reason}"
             ))
@@ -229,7 +243,6 @@ fn misaligned_pointers_arrow_would_read_through_are_refused() {
     let data = [0_u128; 4];
     let aligned = data.as_ptr().cast::<c_void>();
     let misaligned = data.as_ptr().cast::<u8>().wrapping_add(1).cast::<c_void>();
-    let validity = [std::ptr::null::<c_void>()];
     let offsets = [std::ptr::null(), misaligned, aligned];
     let views = [std::ptr::null(), aligned, aligned, misaligned];
     for (data_type, buffers, index, alignment) in [
@@ -250,23 +263,23 @@ fn misaligned_pointers_arrow_would_read_through_are_refused() {
         (DataType::Utf8View, views.as_slice(), 3, align_of::<i64>()),
         (DataType::BinaryView, views.as_slice(), 3, align_of::<i64>()),
     ] {
-        let column = node(1, buffers, &[]);
-        let columns = [&raw const column];
-        let root = node(1, &validity, &columns);
         let expected = format!(
             "column \"c\" is invalid: the {data_type} array's buffer {index} is not aligned to {alignment} bytes"
         );
-        // SAFETY: Descriptor/pointer arrays remain live; misaligned buffers are rejected before
-        // being dereferenced, so the check never reads their deliberately invalid layout.
-        assert_eq!(unsafe { shape_of(&root, data_type.clone()) }, Err(expected));
+        assert_eq!(
+            // SAFETY: Descriptor/pointer arrays remain live; misaligned buffers are rejected
+            // before being dereferenced, so the check never reads their invalid layout.
+            unsafe { column_shape(&node(1, buffers, &[]), data_type.clone()) },
+            Err(expected)
+        );
 
         // Empty, unsliced strings do not dereference their offsets; views with no data
         // buffers do not dereference their lengths buffer.
-        let column = node(0, &offsets, &[]);
-        let columns = [&raw const column];
-        let root = node(0, &validity, &columns);
-        // SAFETY: The live descriptors are empty, so the check reads no offsets or view lengths.
-        assert_eq!(unsafe { shape_of(&root, data_type) }, Ok(()));
+        assert_eq!(
+            // SAFETY: The live descriptors are empty, so the check reads no offsets or lengths.
+            unsafe { column_shape(&node(0, &offsets, &[]), data_type) },
+            Ok(())
+        );
     }
 }
 
@@ -294,42 +307,33 @@ fn null_pointers_arrow_would_read_through_are_refused() {
     );
 
     let missing_offsets = [std::ptr::null(), std::ptr::null(), present];
-    let column = node(1, &missing_offsets, &[]);
-    let columns = [&raw const column];
-    let root = node(1, &validity, &columns);
     assert_eq!(
         // SAFETY: Local descriptors and pointer arrays remain live; null offsets are rejected
         // before reading any string data.
-        unsafe { shape_of(&root, DataType::Utf8) }.unwrap_err(),
+        unsafe { column_shape(&node(1, &missing_offsets, &[]), DataType::Utf8) }.unwrap_err(),
         r#"column "c" is invalid: the Utf8 array's buffer 1 is a null pointer"#
     );
     // An empty string column at offset zero is never read, so its offsets may be absent.
     let absent = [std::ptr::null(); 3];
-    let column = node(0, &absent, &[]);
-    let columns = [&raw const column];
-    let root = node(0, &validity, &columns);
-    // SAFETY: The live empty descriptors require no offsets or string data reads.
-    assert_eq!(unsafe { shape_of(&root, DataType::Utf8) }, Ok(()));
+    assert_eq!(
+        // SAFETY: The live empty descriptors require no offsets or string data reads.
+        unsafe { column_shape(&node(0, &absent, &[]), DataType::Utf8) },
+        Ok(())
+    );
 
     let values = [std::ptr::null(), present];
-    let column = node(-1, &values, &[]);
-    let columns = [&raw const column];
-    let root = node(1, &validity, &columns);
     // SAFETY: All descriptors/pointer arrays are live; negative lengths are rejected before data.
-    let failure = unsafe { shape_of(&root, DataType::Int64) }.unwrap_err();
+    let failure = unsafe { column_shape(&node(-1, &values, &[]), DataType::Int64) }.unwrap_err();
     assert!(
         failure.contains("length -1 and offset 0; neither may be negative"),
         "{failure}"
     );
 
     // A leaf type has no children, so a producer claiming some disagrees with its schema.
-    let column = node(1, &values, &no_child);
-    let columns = [&raw const column];
-    let root = node(1, &validity, &columns);
     assert_eq!(
         // SAFETY: All descriptors/pointer arrays are live; Int64 shape checks read no value data,
         // and the unexpected child count is rejected before traversing children.
-        unsafe { shape_of(&root, DataType::Int64) }.unwrap_err(),
+        unsafe { column_shape(&node(1, &values, &no_child), DataType::Int64) }.unwrap_err(),
         r#"column "c" is invalid: the Int64 array has 1 children, but its type has 0"#
     );
 }
@@ -532,9 +536,7 @@ fn a_bound_stream_at_the_nesting_limit_imports_its_batches() {
         std::iter::once(Ok(batch.clone())),
         schema,
     )));
-    // SAFETY: Arrow's own export is a live stream whose batches match its schema.
-    let mut reader =
-        unsafe { BoundStreamReader::new(take_stream(&raw mut stream).unwrap()) }.unwrap();
+    let mut reader = bound_reader(&mut stream).unwrap();
     assert_eq!(reader.next().unwrap().unwrap(), batch);
     assert!(reader.next().is_none());
 }
@@ -619,12 +621,8 @@ fn bound_stream_schema_failures_preserve_diagnostics_and_release_ownership() {
             });
         }
         assert_eq!(Arc::strong_count(&lifetime), 2);
-        // SAFETY: The live stream owns its producer data and release callback; take_stream moves
-        // them and clears the source before the reader validates the replacement schema callback.
-        let failure =
-            unsafe { BoundStreamReader::new(take_stream(&raw mut stream).unwrap()) }.unwrap_err();
-        assert_eq!(failure.status, Status::InvalidArguments);
-        assert_message(&failure, &[expected]);
+        let failure = bound_reader(&mut stream).unwrap_err();
+        assert_failure(&failure, Status::InvalidArguments, &[expected]);
         if expected != "released schema" {
             assert_message(&failure, &[&libc::EIO.to_string()]);
         }
@@ -663,10 +661,7 @@ fn imported_stream_batches_preserve_schema_rows_and_buffers_after_release() {
             ],
             schema.clone(),
         )));
-        // SAFETY: This valid producer stream is exclusively borrowed; take_stream moves ownership
-        // and clears the source before the reader takes it.
-        let mut reader =
-            unsafe { BoundStreamReader::new(take_stream(&raw mut stream).unwrap()) }.unwrap();
+        let mut reader = bound_reader(&mut stream).unwrap();
         assert!(stream.release().is_none());
         assert_eq!(reader.schema(), schema);
         assert_eq!(reader.next().unwrap().unwrap().num_rows(), 0);
@@ -719,10 +714,7 @@ fn imported_streams_reject_null_rows_and_mismatched_column_counts() {
         // SAFETY: The replacement exports a valid owned array into the reader's output; the
         // original private data and release callback remain paired.
         unsafe { edit_stream(&mut stream, |parts| parts.get_next = Some(null_row)) };
-        // SAFETY: The stream retains its producer ownership and valid callback output allocations;
-        // the reader checks the declared shape and null rows before using batches.
-        let mut reader =
-            unsafe { BoundStreamReader::new(take_stream(&raw mut stream).unwrap()) }.unwrap();
+        let mut reader = bound_reader(&mut stream).unwrap();
         let failure = reader.next().unwrap().unwrap_err();
         assert!(failure.to_string().contains(expected), "{failure}");
         assert!(reader.next().is_none());

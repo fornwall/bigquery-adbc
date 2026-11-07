@@ -167,16 +167,15 @@ fn rejects_a_null_statement_handle() {
 fn a_second_new_on_a_populated_handle_is_refused() {
     let mut handle = live_handle();
     let first = handle.private_data;
-    let (status, message) = call(|error| {
+    let refusal = call(|error| {
         // SAFETY: The populated handle is writable; the null connection is checked if
         // initialization reaches it.
         unsafe { statement_new(null(), &raw mut handle, error) }
     });
-    assert_eq!(status, ADBC_STATUS_INVALID_STATE);
-    let message = message.unwrap();
-    assert!(
-        message.contains("already holds a driver object"),
-        "{message}"
+    assert_refused(
+        refusal,
+        ADBC_STATUS_INVALID_STATE,
+        "already holds a driver object",
     );
     assert_eq!(handle.private_data, first);
     release(&mut handle);
