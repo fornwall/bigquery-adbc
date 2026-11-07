@@ -19,7 +19,9 @@ use crate::rest::model::{TableFieldSchema, TableSchema};
 use crate::rest::request::{Request, RequestBody, multipart_related, multipart_related_file};
 use crate::runtime::{SharedRuntime, new_runtime};
 use crate::test_support::errors::assert_message;
-use crate::test_support::http::{capture_requests, capture_requests_gated};
+use crate::test_support::http::{
+    capture_requests, capture_requests_gated, capture_requests_until_stopped, error_body,
+};
 use crate::{BigQueryCreateDisposition, BigQueryWriteDisposition};
 
 fn destination() -> QualifiedTableName {
@@ -372,6 +374,36 @@ fn missing_location_and_nonretryable_errors_never_replay_the_upload() {
     operation.finish();
     assert_eq!(failure.status, Status::InvalidArguments);
     assert_eq!(captured.join().unwrap().len(), 1);
+}
+
+/// A refused upload created no job, so a later cancel has nothing to address: it would answer 404
+/// and warn that the job may keep running.
+#[test]
+fn a_refused_upload_leaves_no_job_to_cancel() {
+    for (status, reason) in [(400, "invalid"), (429, "rateLimitExceeded")] {
+        let (endpoint, server) =
+            capture_requests_until_stopped(vec![(status, error_body(reason, "refused"))]);
+        let runtime = new_runtime().unwrap();
+        let cancellation = Cancellation::new(
+            runtime.clone(),
+            ClientState::for_test_at(ServiceEndpointKind::BigQuery, &endpoint),
+            "statement",
+        );
+        let operation = cancellation.begin();
+
+        submit(
+            &runtime,
+            &operation,
+            &JobClient::for_test(&endpoint),
+            &format!("{endpoint}/upload"),
+            bytes::Bytes::new().into(),
+            &reference(Some("EU")),
+        )
+        .unwrap_err();
+        OperationCancelHandle(cancellation).try_cancel().unwrap();
+
+        assert_eq!(server.stop().len(), 1, "only the upload reached the mock");
+    }
 }
 
 /// A load reports the rows it wrote, or ADBC's unknown count when BigQuery reports none. The

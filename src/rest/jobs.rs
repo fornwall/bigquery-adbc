@@ -897,7 +897,7 @@ fn confirm_submission(operation: Option<&Operation>, reference: &JobReference) -
 /// BigQuery refused it outright: a 4xx other than 409 (the job exists) and 408 (the request may
 /// have been read whole). A 5xx is ambiguous. `start` spans the submission's attempts, so a later
 /// attempt that fails before reaching BigQuery errs towards the job existing.
-fn may_have_created(
+pub(crate) fn may_have_created(
     start: &RequestStart,
     response: &Result<(reqwest::StatusCode, bytes::Bytes)>,
 ) -> bool {
@@ -912,7 +912,11 @@ fn may_have_created(
 /// Ends a stopped submission's provisional identity: confirmed when the job may exist, and
 /// otherwise recorded as finished, so neither a cancel's retry nor the operation's end sends a
 /// `jobs.cancel` that could only answer 404.
-fn settle_submission(operation: Option<&Operation>, reference: &JobReference, may_exist: bool) {
+pub(crate) fn settle_submission(
+    operation: Option<&Operation>,
+    reference: &JobReference,
+    may_exist: bool,
+) {
     if let Some(operation) = operation {
         let _ = if may_exist {
             operation.register_job(reference)

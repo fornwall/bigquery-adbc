@@ -323,7 +323,7 @@ impl<'a> Request<'a> {
 
     /// Attaches the marker used when a caller must distinguish an unstarted request from an
     /// ambiguous in-flight one after cancellation.
-    pub(super) fn with_start_signal(mut self, start: &RequestStart) -> Self {
+    pub(crate) fn with_start_signal(mut self, start: &RequestStart) -> Self {
         self.start = Some(start.clone());
         self
     }

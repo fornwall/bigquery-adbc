@@ -14,11 +14,11 @@ use crate::cancellation::Operation;
 use crate::error::job_name;
 use crate::query::{ExecutionContext, QualifiedTableName, StatementQueryOptions};
 use crate::rest::client::RestClient;
-use crate::rest::jobs::{JobClient, JobReference, JobRequest};
+use crate::rest::jobs::{JobClient, JobReference, JobRequest, may_have_created, settle_submission};
 use crate::rest::metadata::TableId;
 use crate::rest::model::TableSchema;
 use crate::rest::rejection::service_error;
-use crate::rest::request::{Request, multipart_related_file, send};
+use crate::rest::request::{Request, RequestStart, multipart_related_file, send};
 use crate::rest::url::escape_url_component;
 
 /// The job's name in error messages.
@@ -84,8 +84,8 @@ pub(crate) fn execute_csv_load(
 /// Sends the one-shot media `jobs.insert` and waits for the load it submitted.
 ///
 /// The media upload is never replayed, so the load requires a regional job identity up front, and
-/// an ambiguous outcome (a transport failure, a retryable status, or a 409) is reconciled by
-/// fetching that job.
+/// an outcome that may have created the job (a transport failure, a 5xx, or a 409) is reconciled
+/// by fetching it.
 async fn submit_csv_load(
     operation: &Operation,
     credentials: &google_cloud_auth::credentials::Credentials,
@@ -99,36 +99,26 @@ async fn submit_csv_load(
     // Register before the upload so cancellation can address the job if the response is lost or
     // the caller cancels mid-upload.
     operation.register_provisional_job(requested)?;
-    let result = send(Some(operation), credentials, upload, upload_request).await;
-    let ambiguous = match result {
+    let start = RequestStart::default();
+    let upload_request = upload_request.with_start_signal(&start);
+    let answer = send(Some(operation), credentials, upload, upload_request).await;
+    let may_exist = may_have_created(&start, &answer);
+    let failure = match answer {
         Ok((status, body)) if status.is_success() => {
             operation.register_job(requested)?;
             return wait_for_submitted(jobs, operation, requested, &body, WHAT).await;
         }
-        Ok((status, body)) => {
-            let failure = service_error(&format!("failed to {context}"), status, &body);
-            if status != reqwest::StatusCode::CONFLICT
-                && !matches!(failure.status, Status::IO | Status::Timeout)
-            {
-                return Err(failure);
-            }
-            failure
-        }
-        Err(failure) if matches!(failure.status, Status::IO | Status::Timeout) => failure,
-        Err(failure) => {
-            if failure.status == Status::Cancelled {
-                // The upload may have reached BigQuery. Confirming the identity allows a second
-                // best-effort cancel if the first raced the job's visibility.
-                let _ = operation.register_job(requested);
-            }
-            return Err(failure);
-        }
+        Ok((status, body)) => service_error(&format!("failed to {context}"), status, &body),
+        Err(failure) => failure,
     };
-    // Confirm before the recovery GET so cancellation during reconciliation still gets its
-    // post-confirm visibility retry.
-    operation.register_job(requested)?;
+    // Either the job cannot exist and no cancel should address it, or a cancel that raced its
+    // visibility gets its post-confirm retry, during the recovery GET too.
+    settle_submission(Some(operation), requested, may_exist);
+    if !may_exist || failure.status == Status::Cancelled {
+        return Err(failure);
+    }
     let recovered = jobs
-        .reconcile_submission(Some(operation), requested, WHAT, ambiguous)
+        .reconcile_submission(Some(operation), requested, WHAT, failure)
         .await?;
     wait_for_submitted(jobs, operation, requested, &recovered, WHAT).await
 }
