@@ -195,7 +195,13 @@ pub(crate) fn execute_ingest(
         // leaves intact), so a replace that fails while uploading keeps the old rows. From here
         // the ingest runs to its commit uncancellable: a cancel interrupting a TRUNCATE that had
         // landed would leave the table empty with the new rows uncommitted.
-        truncate_table(&context, table, None)?;
+        truncate_table(&context, table, None).map_err(|mut failure| {
+            failure.message = format!(
+                "{}; none of this ingest's rows were committed",
+                failure.message
+            );
+            failure
+        })?;
     }
     context
         .runtime
@@ -223,6 +229,11 @@ fn recreated(mut failure: adbc_core::error::Error, table: TableId<'_>) -> adbc_c
     );
     failure
 }
+
+/// How long BigQuery may take over ingest DDL nothing can cancel, counted from the job's creation.
+/// Generous, as a job can queue behind a busy reservation. BigQuery stops the job rather than the
+/// driver abandoning it, so no `TRUNCATE` stays queued to land after a rerun's commit.
+const UNCANCELLABLE_DDL_TIMEOUT_MS: i64 = 600_000;
 
 /// Table action derived from read-only metadata and schema comparison.
 /// Create-only execution skips this lookup and lets the insert check existence.
@@ -471,7 +482,8 @@ fn recreate_table(
 
 /// Runs ingest DDL with only the configured location. User query options such as
 /// destination tables, batch priority and session creation do not apply to these statements.
-/// `verb` and `done` say what the statement does to its target's rows.
+/// `verb` and `done` say what the statement does to its target's rows. With no `operation` to
+/// cancel it, the statement carries [`UNCANCELLABLE_DDL_TIMEOUT_MS`].
 ///
 /// A statement that was sent and then cancelled or left unanswered cannot say the target is
 /// untouched: BigQuery can finish a statement it was asked to cancel, or whose answer was lost.
@@ -504,6 +516,11 @@ fn run_ingest_ddl(
             operation,
         },
         statement,
+        if operation.is_some() {
+            0
+        } else {
+            UNCANCELLABLE_DDL_TIMEOUT_MS
+        },
     )
     .map_err(|source| {
         let mut failure = labelled(source);

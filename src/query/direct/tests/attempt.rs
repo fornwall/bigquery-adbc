@@ -593,6 +593,7 @@ fn a_job_the_job_timeout_stopped_is_a_timeout_naming_the_option() {
             "test",
         )
         .unwrap_err();
+        let failure = explain_job_timeout(failure, 2000);
         assert_eq!(captured.join().unwrap().len(), 1, "{message}");
         assert_eq!(failure.status, expected, "{message}");
         assert!(

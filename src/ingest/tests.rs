@@ -623,6 +623,50 @@ mod replace_statements {
         );
     }
 
+    /// The `TRUNCATE` before a `replace`'s commit runs outside cancellation, so only BigQuery can
+    /// end it: queued behind a busy reservation it would otherwise hold the statement forever. It
+    /// carries a job timeout of the driver's own, which no option named in the failure can change,
+    /// and the failure says the new rows went uncommitted.
+    #[test]
+    fn a_truncate_bigquery_stops_leaves_the_replace_uncommitted() {
+        use arrow_array::RecordBatchIterator;
+
+        use crate::test_support::errors::{assert_failure, assert_message_omits};
+        use crate::test_support::http::{error_body, ok};
+
+        let matching = json!({
+            "tableReference": {
+                "projectId": "project", "datasetId": "dataset", "tableId": "events",
+            },
+            "type": "TABLE",
+            "schema": {"fields": [{"name": "id", "type": "INTEGER", "mode": "REQUIRED"}]},
+        });
+        let stopped = "Job execution was cancelled: Job timed out after 600 sec";
+        let (outcome, requests, storage) = ingest_against_mocks(
+            vec![ok(matching), (499, error_body("stopped", stopped))],
+            MockPlan::default(),
+            IngestMode::Replace,
+            Box::new(RecordBatchIterator::new(
+                [Ok(one_id_batch())],
+                one_id_batch().schema(),
+            )),
+        );
+        let failure = outcome.unwrap_err();
+        assert_failure(
+            &failure,
+            Status::Timeout,
+            &[
+                "failed to empty BigQuery ingest target project.dataset.events",
+                "BigQuery may still have emptied project.dataset.events",
+                "none of this ingest's rows were committed",
+            ],
+        );
+        assert_message_omits(&failure, &["bigquery.query.job_timeout"]);
+        assert_eq!(requests[1].sql(), "TRUNCATE TABLE `project.dataset.events`");
+        assert_eq!(requests[1].body["jobTimeoutMs"], json!("600000"));
+        assert_eq!(storage.finalized(), (Some(1), false));
+    }
+
     /// An ingest whose bound schema cannot be spelled as DDL is refused before anything mutates.
     #[test]
     fn a_replace_with_no_columns_is_refused_before_the_target_changes() {

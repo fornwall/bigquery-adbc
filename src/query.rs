@@ -195,12 +195,14 @@ pub(crate) fn read_query_partition(
 }
 
 /// Runs a statement the driver issues itself (session control, ingest DDL) for its effect.
+/// A nonzero `job_timeout_ms` has BigQuery stop the job at that age.
 pub(crate) fn execute_driver_statement(
     runtime: &SharedRuntime,
     state: &ClientState,
     billing_project_id: Option<&ProjectIdentifier>,
     context: QueryContext<'_>,
     sql: &str,
+    job_timeout_ms: i64,
 ) -> Result<()> {
     direct::complete_context_query(
         runtime,
@@ -208,7 +210,10 @@ pub(crate) fn execute_driver_statement(
         billing_project_id,
         context,
         sql,
-        &StatementQueryOptions::default(),
+        &StatementQueryOptions {
+            job_timeout_ms,
+            ..StatementQueryOptions::default()
+        },
         "BigQuery query execution failed",
     )?;
     Ok(())

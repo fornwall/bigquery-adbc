@@ -134,6 +134,7 @@ fn complete_in_session(
         );
     }
     let runtime = &context.execution.runtime;
+    let job_timeout_ms = plan.job_timeout_ms;
     runtime.block_on(async {
         let complete = complete_query_with_progress(
             runtime,
@@ -144,7 +145,8 @@ fn complete_in_session(
             context.progress,
             what,
         )
-        .await?;
+        .await
+        .map_err(|failure| explain_job_timeout(failure, job_timeout_ms))?;
         // A statement carries a session only inside the driver's transaction. When the caller's
         // SQL ends that transaction, the next statement must begin a new one.
         if let Some(session_id) = context.session_id
@@ -211,7 +213,6 @@ pub(super) async fn complete_query_with_progress(
         progress.begin_job();
     }
     let decoder = QueryResponseDecoder::new(runtime, result_mode);
-    let job_timeout_ms = plan.job_timeout_ms;
     for reissues in 0..=MAX_JOB_REISSUES {
         let failure = match Box::pin(execute_once(
             &client, &decoder, &plan, operation, progress, context,
@@ -236,13 +237,13 @@ pub(super) async fn complete_query_with_progress(
                 job_error(context, terminal.job.as_ref(), &terminal.errors)
             }
         };
-        return Err(explain_job_timeout(failure, job_timeout_ms));
+        return Err(failure);
     }
     unreachable!("the bounded query reissue loop returns on its final attempt")
 }
 
-/// Adds the option name to BigQuery's "Job timed out" error for a job stopped at its
-/// `jobTimeoutMs`.
+/// Adds the option name to BigQuery's "Job timed out" error for a caller's statement stopped at
+/// its `jobTimeoutMs`. A driver statement's timeout is the driver's own, which no option changes.
 fn explain_job_timeout(mut failure: Error, job_timeout_ms: i64) -> Error {
     if job_timeout_ms > 0
         && failure.status == Status::Timeout
