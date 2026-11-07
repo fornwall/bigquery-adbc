@@ -2,6 +2,7 @@
 //! that records which of the database's credentials the failure belongs to.
 
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use google_cloud_auth::credentials::{CacheableResource, Credentials, CredentialsProvider};
@@ -33,12 +34,20 @@ pub(crate) fn redacted_credentials(
     credentials: Credentials,
     layer: CredentialLayer,
 ) -> Credentials {
-    Credentials::from(RedactedTokenExchangeCredentials { credentials, layer })
+    Credentials::from(RedactedTokenExchangeCredentials {
+        credentials,
+        layer,
+        stalled: AtomicBool::new(false),
+    })
 }
 
 struct RedactedTokenExchangeCredentials {
     credentials: Credentials,
     layer: CredentialLayer,
+    /// Whether the last request timed out. Retries would only rejoin the same blocked refresh, up
+    /// to ten times over for a poll and its verification, so until one succeeds they look once
+    /// for a token instead of waiting.
+    stalled: AtomicBool,
 }
 
 impl fmt::Debug for RedactedTokenExchangeCredentials {
@@ -56,7 +65,14 @@ impl CredentialsProvider for RedactedTokenExchangeCredentials {
         &self,
         extensions: Extensions,
     ) -> Result<CacheableResource<HeaderMap>, CredentialsError> {
-        match tokio::time::timeout(TOKEN_TIMEOUT, self.credentials.headers(extensions)).await {
+        let limit = if self.stalled.load(Ordering::Relaxed) {
+            Duration::ZERO
+        } else {
+            TOKEN_TIMEOUT
+        };
+        let headers = tokio::time::timeout(limit, self.credentials.headers(extensions)).await;
+        self.stalled.store(headers.is_err(), Ordering::Relaxed);
+        match headers {
             Ok(headers) => headers.map_err(|source| redact(source, self.layer)),
             Err(_) => Err(CredentialsError::from_source(
                 true,
@@ -177,6 +193,8 @@ fn iam_refusal(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use google_cloud_gax::error::Error as GoogleError;
 
     use super::*;
@@ -241,16 +259,22 @@ mod tests {
     /// Upstream's OAuth, STS and metadata clients have no timeout, so a token service that accepts
     /// a connection and then stalls must fail the request rather than hang it. The failure is an
     /// outage even under ADC, whose remedy for a missing credential would not apply.
+    ///
+    /// One stall costs one timeout: a retry rejoins the same blocked refresh, so it must not wait
+    /// again, yet it must still find a token that has arrived. A success re-arms the full wait.
     #[test]
-    fn a_stalled_token_service_fails_as_an_outage() {
+    fn a_stalled_token_service_fails_as_an_outage_and_costs_one_timeout() {
         #[derive(Debug)]
-        struct Stalled;
+        struct Stalled(Arc<AtomicBool>);
 
         impl CredentialsProvider for Stalled {
             async fn headers(
                 &self,
                 _: Extensions,
             ) -> Result<CacheableResource<HeaderMap>, CredentialsError> {
+                if self.0.load(Ordering::Relaxed) {
+                    return Ok(CacheableResource::NotModified);
+                }
                 std::future::pending().await
             }
 
@@ -259,8 +283,9 @@ mod tests {
             }
         }
 
+        let recovered = Arc::new(AtomicBool::new(false));
         let credentials = redacted_credentials(
-            Credentials::from(Stalled),
+            Credentials::from(Stalled(recovered.clone())),
             CredentialLayer::Authentication(BigQueryAuthenticationType::Default),
         );
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -269,12 +294,30 @@ mod tests {
             .build()
             .unwrap();
         runtime.block_on(async {
+            let start = tokio::time::Instant::now();
             let source = credentials.headers(Extensions::new()).await.unwrap_err();
+            let timed_out = start.elapsed();
+            assert!(timed_out >= TOKEN_TIMEOUT, "{timed_out:?}");
             assert!(source.is_transient());
             let failure =
                 crate::error::google_error("query failed", GoogleError::authentication(source));
             assert_eq!(failure.status, adbc_core::error::Status::IO);
             assert!(failure.message.contains("timed out"), "{}", failure.message);
+
+            for _ in 0..9 {
+                let retry = credentials.headers(Extensions::new()).await.unwrap_err();
+                assert!(retry.is_transient());
+            }
+            assert_eq!(start.elapsed(), timed_out);
+
+            recovered.store(true, Ordering::Relaxed);
+            credentials.headers(Extensions::new()).await.unwrap();
+            assert_eq!(start.elapsed(), timed_out);
+
+            recovered.store(false, Ordering::Relaxed);
+            credentials.headers(Extensions::new()).await.unwrap_err();
+            assert!(start.elapsed() >= timed_out + TOKEN_TIMEOUT);
+
             assert_eq!(credentials.universe_domain().await, None);
         });
     }

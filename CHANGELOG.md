@@ -60,6 +60,9 @@ changes.
 - A bulk ingest no longer hangs on a connection that dies silently: an append unanswered for five
   minutes is replayed on a new connection, and a stream call unanswered for a minute fails with
   `TIMEOUT`.
+- A token service that accepts a connection and never answers fails the request with `IO` after
+  about two minutes instead of hanging it. Retries and later requests then fail within seconds until
+  a token arrives. This covers the OAuth, STS and metadata-server exchanges.
 - A database opened in a `fork` child works instead of hanging forever on a runtime whose worker
   threads did not survive the fork. Using a handle inherited from the parent returns an error, and
   releasing one leaves the parent's BigQuery session open.

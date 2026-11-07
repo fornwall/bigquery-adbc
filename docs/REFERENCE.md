@@ -397,6 +397,7 @@ that field for its layout sentinel. Credential failures do not forward structure
 | Credentials that cannot mint an access token | `UNAUTHENTICATED`, with a remedy for the configured credential |
 | A token service answering with a temporary failure, such as HTTP 503 | `IO`, retried like other transient failures |
 | A transient token-exchange failure for explicit credentials or impersonation, including a network failure | `IO`; a missing ambient ADC metadata server still returns `UNAUTHENTICATED` with setup advice |
+| A token service that accepts a connection and never answers, for any credential that mints tokens | `IO` after about two minutes; retries and later requests fail within seconds until a token arrives |
 
 `invalidQuery` and `accessDenied` set SQLSTATE `42000` (syntax error or access rule violation);
 other failures leave SQLSTATE unset.

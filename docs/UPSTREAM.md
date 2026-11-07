@@ -372,9 +372,10 @@ observed.
 
 The pinned auth library's user OAuth refresh, STS exchange and metadata-server requests each use a
 default `reqwest::Client`, with no credential-builder option to set a deadline. A token service that
-accepts a connection and never answers would hang every waiting request. The driver bounds each
-caller's wait at two minutes (`src/config/redaction.rs`), but the library's background refresh stays
-blocked until the connection dies, so requests keep failing until then even if the service recovers.
+accepts a connection and never answers would hang every waiting request. The driver bounds the wait
+at two minutes (`src/config/redaction.rs`). The library's background refresh stays blocked until the
+connection dies, so the driver's retries could not help; they and later requests look once for a
+token and fail at once with `IO`, even if the service has recovered, until that connection ends.
 
 ## UP-102: gRPC server streams have no deadline or keepalive
 
