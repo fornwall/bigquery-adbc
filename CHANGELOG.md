@@ -5,97 +5,107 @@ changes.
 
 ## [Unreleased]
 
-### Fixed
+0.2.0 was tagged but never published, because its wheel tests failed, so this release is the
+first to carry its changes too.
 
-- A statement that returns no rows, such as DML or `COMMIT`, now succeeds once `jobs.get` reports
-  its job finished without an error, even if reading its results keeps failing. It used to fail with
-  `IO` after the outage window, inviting a rerun of work that had committed.
-- A query result page repeating an earlier page token now returns `INVALID_DATA` rather than `IO`:
-  reading it again gets the same answer, so it is a malformed response, not a transient failure.
-- A transient `CreateReadSession` failure is retried for up to a minute instead of failing a query
-  that already finished.
+### Added
+
+- The `bigquery.job.verdict` error detail says what a failure proves about its job: `failed` when
+  the job reported its own failure, `not_created` when the submission never created one.
+
+### Changed
+
+- A query result or metadata listing whose page token repeats returns `INVALID_DATA` rather than
+  `IO`: reading it again gets the same answer, so it is a malformed response, not a transient
+  failure.
 - A job stopped by `bigquery.query.max_bytes_billed` now returns `INVALID_ARGUMENT` instead of
   `UNKNOWN`, as the same reason already did on a rejected REST answer.
-- `CreateReadSession` fails with `TIMEOUT` after two minutes instead of blocking forever on an
-  endpoint that stalls during the TLS handshake.
 - A REST rejection with reason `timeout` now returns `TIMEOUT` and one with `resourceInUse` returns
   `INVALID_STATE`, as both do on a failed job, instead of `INVALID_ARGUMENT`. A job's timeout read
   through a rejected `jobs.query` or `jobs.getQueryResults` answer now reads as a timeout.
-- A python-model job can no longer outlive a cancel that arrives while its submission is in flight:
-  the submission finishes, and the job its answer names is asked to stop. A transient failure of
-  that remote cancel is resent instead of leaving the job running.
-- Python-model waits tolerate more glitches: Cloud Storage uploads are resent after a transient
-  failure, a Dataproc submission or poll whose 2xx answer cannot be read is repeated, a rate-limited
-  Vertex AI create is resent, and a notebook job with no reported state keeps being polled.
-- A short outage no longer fails a python model while its job keeps running. Dataproc and Vertex AI
-  polls outlast ten minutes of consecutive transient failures, as a BigQuery job wait does, instead
-  of stopping after five.
-- A python-model submission that ends without a verdict, such as a Vertex AI create whose answer
-  was lost, says the job may have started.
-- `grant_access_to` backs off between lost `If-Match` races and allows 16 rounds rather than 3, so
-  dbt threads granting on one dataset no longer fail with `INVALID_STATE`.
-- A refused CSV seed upload no longer sends a `jobs.cancel` for a job that does not exist, nor warns
-  that it may keep running.
-- A line comment now ends at a carriage return as well as a newline, as in GoogleSQL. A statement
-  after a `\r`-terminated comment was refused as comment-only text.
-- A connection the external-account identity provider dropped before answering is treated as
-  transient. It previously ended credential refresh for good, failing every later query once the
-  cached token expired.
-- A second `AdbcErrorFromArrayStream` call on a stream no longer frees the message and detail
-  pointers the first one returned.
+
+### Fixed
+
 - A network outage or a run of 5xx responses no longer fails a query, table copy or CSV load after a
   few seconds and cancels its healthy job. Waiting for a job now outlasts ten minutes of consecutive
   retryable failures, and for as long as `jobs.get` reports the job unfinished. If the wait does give
   up, the error says the job's outcome is unknown.
-- A stalled Storage Read stream no longer blocks its reader forever. After two minutes without a
-  complete response while the reader has room, it resumes at the next unread row, and each
-  consecutive failure doubles that limit so a large response on a slow link still lands. Once its
-  attempts are spent it fails with `TIMEOUT`, after about 10 minutes on a dead connection and up to
-  62 on a stream that opens and then stays silent.
+- A statement that returns no rows, such as DML or `COMMIT`, now succeeds once `jobs.get` reports
+  its job finished without an error, even if reading its results keeps failing. It used to fail with
+  `IO` after the outage window, inviting a rerun of work that had committed.
 - A `jobs.query` submission whose retries end without a verdict now reads `failed to submit` and
   says BigQuery may still have run the statement. It read as a rejection, inviting a resubmission
   that could apply DML twice.
-- REST retries leave an HTTP/2 connection whose peer keeps its socket open but stops answering,
-  such as a wedged proxy. They used to reuse it until every attempt had timed out.
+- A `jobs.query` refused on a retry now says the statement may still have run, instead of reading
+  as a rejection: a `COMMIT` in SQL that took effect on a lost attempt no longer looks invalid.
 - A job submission refused with HTTP 401 under `temporary_access_token` or `anonymous`
   authentication no longer sends a `jobs.cancel` for a job that was never created.
-- A `replace` whose `TRUNCATE` or `CREATE OR REPLACE TABLE` gets no answer says the old rows may be
-  gone, as a cancelled one already did, rather than implying they stand.
-- The `TRUNCATE` before a `replace` commits carries a ten-minute job timeout, since nothing can
-  cancel it: one queued behind a busy reservation held the statement forever, even after a Cancel
-  reported success.
-- A bulk ingest no longer hangs on a connection that dies silently: an append unanswered for five
-  minutes is replayed on a new connection, and a stream call unanswered for a minute fails with
-  `TIMEOUT`.
-- A token service that accepts a connection and never answers fails a request with `IO` after about
-  two minutes instead of hanging it. Retries and later requests then fail within seconds until a
-  token arrives, and a wait for a running job outlasts it like any other outage. This covers the
-  OAuth, STS and metadata-server exchanges.
-- A cancel takes effect while a Storage client is being built, instead of waiting for a stalled
-  metadata-server lookup.
-- A database opened in a `fork` child works instead of hanging forever on a runtime whose worker
-  threads did not survive the fork. Using a handle or result stream inherited from the parent
-  returns `INVALID_STATE`, and releasing one leaves the parent's BigQuery session open.
 - A `BEGIN`, `COMMIT` or `ROLLBACK` whose answer is lost now reports what BigQuery did. BigQuery does
   not deduplicate these by request ID, so a retry ran them again: a commit that took effect failed
   as a lost transaction, and a transaction that began left every later statement failing. They now
   run as named jobs, and a retry reads the first job's verdict.
-- Ending a BigQuery session no longer blocks without limit: the caller waits at most ten seconds,
-  which bounds commit, rollback, autocommit changes and connection release. An error now says when
-  the session could not be ended or that could not be confirmed, instead of claiming it was.
 - A `BEGIN`, `COMMIT` or `ROLLBACK` now counts as refused only on proof: the job's own failure, or a
   submission BigQuery refused or never received. Anything else, such as an unreadable answer or a
   failed job lookup, is an unknown outcome that returns `IO` and ends the session, instead of
   keeping a possibly committed transaction open. The new `bigquery.job.verdict` error detail shows
   which it was.
-- After a statement fails with "No active transaction found", the next one begins a new transaction
-  instead of autocommitting in the session.
-- A `jobs.query` refused on a retry now says the statement may still have run, instead of reading
-  as a rejection: a `COMMIT` in SQL that took effect on a lost attempt no longer looks invalid.
 - A transaction control statement whose answers were all lost is now looked for in the default
   dataset's location, so recovery no longer needs `bigquery.jobs.list` there.
-- A metadata listing whose page token repeats now returns `INVALID_DATA` instead of `IO`, which
-  reads as a transient failure.
+- Ending a BigQuery session no longer blocks without limit: the caller waits at most ten seconds,
+  which bounds commit, rollback, autocommit changes and connection release. An error now says when
+  the session could not be ended or that could not be confirmed, instead of claiming it was.
+- After a statement fails with "No active transaction found", the next one begins a new transaction
+  instead of autocommitting in the session.
+- A token service that accepts a connection and never answers fails a request with `IO` after about
+  two minutes instead of hanging it. Retries and later requests then fail within seconds until a
+  token arrives, and a wait for a running job outlasts it like any other outage. This covers the
+  OAuth, STS and metadata-server exchanges.
+- REST retries leave an HTTP/2 connection whose peer keeps its socket open but stops answering,
+  such as a wedged proxy. They used to reuse it until every attempt had timed out.
+- A cancel takes effect while a Storage client is being built, instead of waiting for a stalled
+  metadata-server lookup.
+- A connection the external-account identity provider dropped before answering is treated as
+  transient. It previously ended credential refresh for good, failing every later query once the
+  cached token expired.
+- A database opened in a `fork` child works instead of hanging forever on a runtime whose worker
+  threads did not survive the fork. Using a handle or result stream inherited from the parent
+  returns `INVALID_STATE`, and releasing one leaves the parent's BigQuery session open.
+- A stalled Storage Read stream no longer blocks its reader forever. After two minutes without a
+  complete response while the reader has room, it resumes at the next unread row, and each
+  consecutive failure doubles that limit so a large response on a slow link still lands. Once its
+  attempts are spent it fails with `TIMEOUT`, after about 10 minutes on a dead connection and up to
+  62 on a stream that opens and then stays silent.
+- A transient `CreateReadSession` failure is retried for up to a minute instead of failing a query
+  that already finished.
+- `CreateReadSession` fails with `TIMEOUT` after two minutes instead of blocking forever on an
+  endpoint that stalls during the TLS handshake.
+- A bulk ingest no longer hangs on a connection that dies silently: an append unanswered for five
+  minutes is replayed on a new connection, and a stream call unanswered for a minute fails with
+  `TIMEOUT`.
+- The `TRUNCATE` before a `replace` commits carries a ten-minute job timeout, since nothing can
+  cancel it: one queued behind a busy reservation held the statement forever, even after a Cancel
+  reported success.
+- A `replace` whose `TRUNCATE` or `CREATE OR REPLACE TABLE` gets no answer says the old rows may be
+  gone, as a cancelled one already did, rather than implying they stand.
+- A short outage no longer fails a python model while its job keeps running. Dataproc and Vertex AI
+  polls outlast ten minutes of consecutive transient failures, as a BigQuery job wait does, instead
+  of stopping after five.
+- A python-model job can no longer outlive a cancel that arrives while its submission is in flight:
+  the submission finishes, and the job its answer names is asked to stop. A transient failure of
+  that remote cancel is resent instead of leaving the job running.
+- A python-model submission that ends without a verdict, such as a Vertex AI create whose answer
+  was lost, says the job may have started.
+- Python-model waits tolerate more glitches: Cloud Storage uploads are resent after a transient
+  failure, a Dataproc submission or poll whose 2xx answer cannot be read is repeated, a rate-limited
+  Vertex AI create is resent, and a notebook job with no reported state keeps being polled.
+- `grant_access_to` backs off between lost `If-Match` races and allows 16 rounds rather than 3, so
+  dbt threads granting on one dataset no longer fail with `INVALID_STATE`.
+- A refused CSV seed upload no longer sends a `jobs.cancel` for a job that does not exist, nor warns
+  that it may keep running.
+- A second `AdbcErrorFromArrayStream` call on a stream no longer frees the message and detail
+  pointers the first one returned.
+- A line comment now ends at a carriage return as well as a newline, as in GoogleSQL. A statement
+  after a `\r`-terminated comment was refused as comment-only text.
 
 ## [0.2.0] - 2026-11-06
 
