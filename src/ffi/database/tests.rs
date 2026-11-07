@@ -247,6 +247,7 @@ fn a_typo_before_init_is_reported_at_the_call_that_made_it() {
 /// Pre-`Init` recognition must agree with an initialized database for standard, vendor and
 /// unknown keys; the live setter supplies the expected answer.
 #[test]
+#[cfg_attr(miri, ignore = "compares classifiers; unknown keys are slow in Miri")]
 fn recognition_matches_the_live_database_across_init() {
     let mut live = initialized_database();
     let keys = [

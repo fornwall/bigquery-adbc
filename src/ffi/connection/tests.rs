@@ -454,6 +454,7 @@ fn cancel_does_not_wait_for_the_connection_dispatch_turn() {
 /// Before `Init`, the live connection classifier decides the result for standard, vendor and
 /// unknown keys, and unknown keys fail at `SetOption`, not at `Init`.
 #[test]
+#[cfg_attr(miri, ignore = "compares classifiers; unknown keys are slow in Miri")]
 fn pre_init_recognition_uses_the_live_connection_classifier() {
     let mut connection = pending();
     let keys = [

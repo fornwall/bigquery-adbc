@@ -456,9 +456,11 @@ const NESTING_KINDS: usize = 10;
 /// The check at the C boundary and the one execution applies must draw the same line, or a schema
 /// passes Bind and fails later, or an accepted one crashes the recursion the first was to bound.
 /// Compare them on the exported form of every nesting type, alone and mixed, across the limit.
+/// Miri runs only the mixed chain, which still exports every type and crosses the limit.
 #[test]
 fn the_bind_time_nesting_check_agrees_with_validate_schema_nesting() {
     for kinds in (0..NESTING_KINDS)
+        .filter(|_| !cfg!(miri))
         .map(|kind| vec![kind])
         .chain([(0..NESTING_KINDS).collect()])
     {

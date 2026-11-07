@@ -116,6 +116,10 @@ flag also hides leaked allocations, so an FFI change that could leak needs a Rus
 the release, as the bind tests assert that refused inputs are consumed. Run other tests under Miri
 only as filtered suites, because socket mocks and the Tokio reactor can hang.
 
+A hosted runner can be nearly four times slower than usual, so keep the Miri suite far below the job
+timeout. A test whose cost adds no memory coverage shrinks under `cfg!(miri)` or is ignored there;
+the native suite still runs it in full.
+
 ## Live tests
 
 Live tests are ignored by default. They create cloud resources and run billable queries using

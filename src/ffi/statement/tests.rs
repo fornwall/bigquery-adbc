@@ -920,8 +920,9 @@ fn a_bind_or_bind_stream_is_accepted_at_the_nesting_limit_and_refused_one_past_i
 }
 
 /// Far past what any recursive walk survives on a test thread's stack. Without the depth check
-/// this aborts the test process, as it would the host, instead of failing an assertion.
-const STACK_OVERFLOWING_DEPTH: usize = 100_000;
+/// this aborts the test process, as it would the host, instead of failing an assertion. Miri only
+/// needs a chain past the limit: building and freeing the full depth dominates its run time.
+const STACK_OVERFLOWING_DEPTH: usize = if cfg!(miri) { 1_000 } else { 100_000 };
 
 #[test]
 fn a_bind_nested_deep_enough_to_overflow_the_stack_is_refused_and_released() {
