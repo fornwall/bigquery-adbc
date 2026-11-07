@@ -352,8 +352,8 @@ recovering their job reference. If retries end without supplying one, the driver
 remote work. BigQuery may ignore a `requestId` on read-only queries, so resending a submission
 does not guarantee recovery of the original execution. It also ignores one on `BEGIN`, `COMMIT` and
 `ROLLBACK TRANSACTION`, so the driver submits its own with `jobs.insert`. One written in SQL still
-uses `jobs.query`: if its answer is lost, the retry fails with "No active transaction found" even
-though the first attempt may have taken effect.
+uses `jobs.query`: if its answer is lost, the retry fails with "No active transaction found" and
+says the statement may still have run, as any definitive answer to a retry does.
 
 `jobs.insert` uses a driver-chosen job ID that stays the same across submission retries. If an
 answer is lost and no location was configured, recovery first tries the location named by a

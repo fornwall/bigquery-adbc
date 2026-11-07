@@ -1065,7 +1065,14 @@ fn a_statement_told_no_transaction_is_active_makes_the_next_one_begin_again() {
     set_option(&mut connection, OptionConnection::AutoCommit, false);
     execute(&mut connection, "INSERT dataset.table VALUES (42)").unwrap();
     let failure = execute(&mut connection, "COMMIT TRANSACTION").unwrap_err();
-    assert_message(&failure, &["No active transaction found"]);
+    assert_message(
+        &failure,
+        &[
+            "No active transaction found",
+            "BigQuery may still have run this statement",
+        ],
+    );
+    assert_message_omits(&failure, &["BigQuery rejected the query"]);
     execute(&mut connection, "INSERT dataset.table VALUES (43)").unwrap();
     drop(connection);
     assert_sql_after_preamble(

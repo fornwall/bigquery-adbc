@@ -1138,6 +1138,31 @@ fn an_exhausted_jobs_query_that_may_have_run_says_so() {
     }
 }
 
+/// A definitive answer to a replay is about the replay, not the attempt that lost its answer, so
+/// it is no verdict on the statement. BigQuery refusing the first attempt still is.
+#[test]
+fn a_definitive_answer_to_a_replay_says_the_statement_may_have_run() {
+    let (answer, requests) = jobs_query(
+        "p",
+        vec![
+            (503, error_body("backendError", "the answer was lost")),
+            (
+                400,
+                error_body("invalidQuery", "No active transaction found"),
+            ),
+        ],
+    );
+    assert_eq!(requests.len(), 2);
+    let failure = answer.unwrap_err();
+    assert_eq!(failure.status, Status::InvalidArguments);
+    assert_eq!(
+        failure.message,
+        "failed to submit the BigQuery jobs.query request: invalidQuery: No active transaction \
+         found (HTTP 400); BigQuery may still have run this statement; check before running it \
+         again"
+    );
+}
+
 /// An error document reads as a rejection, not a failure to submit. The `{reason}:` spelling dbt
 /// matches on survives either way.
 #[test]

@@ -571,6 +571,15 @@ impl JobClient {
         // query.
         let send_context = "submit the BigQuery jobs.query request";
         let error_context = "BigQuery rejected the query";
+        // A caller that resubmits uses a new request ID, so it would run the statement again if an
+        // attempt that got no verdict ran it. An answer to a replay is about the replay alone.
+        let warn_it_may_have_run = |failure: &mut adbc_core::error::Error| {
+            relead(failure, error_context, &format!("failed to {send_context}"));
+            append_remedy(
+                failure,
+                "BigQuery may still have run this statement; check before running it again",
+            );
+        };
         let mut replayed_too_large = false;
         let mut may_exist = false;
         for attempt in 1..=MAX_ATTEMPTS {
@@ -603,20 +612,14 @@ impl JobClient {
                 // A stopped query (at its job timeout, for example) was accepted, not rejected.
                 if failure_reason(&failure) == Some("stopped") {
                     relead(&mut failure, error_context, "BigQuery stopped the query");
+                } else if attempt > 1 && may_exist {
+                    warn_it_may_have_run(&mut failure);
                 }
                 return Err(failure);
             }
             if attempt == MAX_ATTEMPTS {
-                // A caller that resubmits uses a new request ID, so it would run the statement
-                // again if an attempt that got no verdict ran it.
                 if may_exist {
-                    let lead = format!("failed to {send_context}");
-                    relead(&mut failure, error_context, &lead);
-                    append_remedy(
-                        &mut failure,
-                        "BigQuery may still have run this statement; check before running it \
-                         again",
-                    );
+                    warn_it_may_have_run(&mut failure);
                 }
                 return Err(failure);
             }
