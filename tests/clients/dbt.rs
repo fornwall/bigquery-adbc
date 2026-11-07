@@ -1,6 +1,6 @@
-//! dbt 2.0 against the driver, through the real dbt binary.
+//! dbt 2.0 against the driver, through the dbt that `tools/dbt-build` builds.
 //!
-//! The suite is `integration/dbt/`, and `run.py` stages the driver and judges the results itself.
+//! The suite is `integration/dbt/`, and `run.py` builds dbt and judges the results itself.
 
 use std::process::Command;
 
@@ -11,7 +11,7 @@ use crate::support::{REPOSITORY_ROOT, interrupted, progress, run_checked};
 /// inspection, and its next run starts by dropping them. Ctrl-C therefore needs no deferring and
 /// goes straight to `run.py`, which stops at once.
 #[test]
-#[ignore = "runs dbt against BigQuery; needs uv, dbt 2.0 and Application Default Credentials"]
+#[ignore = "builds dbt and runs it against BigQuery; needs uv, protoc and Application Default Credentials"]
 fn suite_passes_against_bigquery() {
     project();
     assert!(!interrupted(), "interrupted before dbt");

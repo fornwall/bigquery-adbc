@@ -10,7 +10,8 @@ import shlex
 import shutil
 import subprocess
 import sys
-from collections.abc import Sequence
+import tarfile
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -26,7 +27,10 @@ from config import require_project
 
 PROJECT_DIR = Path(__file__).resolve().parent
 REPO_DIR = PROJECT_DIR.parent.parent
-SUPPORTED_DBT_VERSION = "dbt 2.0.11"
+DBT_BUILD_SCRIPT = REPO_DIR / "tools" / "dbt-build" / "build.sh"
+# The driver version in `dbt --version`, which tools/dbt-build/build.sh checks in full.
+DBT_IDENTIFIER = re.compile(r"dbt \(modified with bigquery-adbc (?P<driver>\S+)\) \S+ \S+")
+LIBRARY_NAME = "libadbc_driver_bigquery.so"
 # The authorized view reads from a second dataset, removed by drop_integration_schema.
 AUTHORIZED_SOURCE_SUFFIX = "_authorized_source"
 # Only adbc.bigquery.table.update_description writes this text; no DDL in the project sets it.
@@ -269,11 +273,14 @@ def assert_adapter_response_contract(
     response: object,
     *,
     expected_code: str,
-    expected_rows_affected: int,
+    expected_rows_affected: int | None,
     expected_project: str,
     expected_location: str,
 ) -> None:
-    """Assert the user-visible BigQuery fields dbt writes to run_results.json."""
+    """Assert the user-visible BigQuery fields dbt writes to run_results.json.
+
+    `expected_rows_affected` is None for a statement dbt reports no count for, such as a script.
+    """
 
     if not isinstance(response, dict):
         raise RuntimeError(f"adapter_response is not an object: {response!r}")
@@ -297,7 +304,7 @@ def assert_adapter_response_contract(
             f"{response.get('message')!r} / {response.get('_message')!r}"
         )
     processed = r"(?:0|[0-9]+(?:\.[0-9]+)? (?:Bytes|KiB|MiB|GiB|TiB|PiB))"
-    if expected_rows_affected == 0:
+    if not expected_rows_affected:
         expected_message = rf"{re.escape(expected_code)} \({processed} processed\)"
     else:
         expected_message = (
@@ -340,7 +347,7 @@ def assert_run_result_adapter_response(
     *,
     unique_id: str,
     expected_code: str,
-    expected_rows_affected: int,
+    expected_rows_affected: int | None,
     expected_project: str,
     expected_location: str,
 ) -> None:
@@ -492,14 +499,12 @@ def assert_canonical_incremental_adapter_response(
         raise RuntimeError(f"canonical adapter_response is not an object: {response!r}")
     expected_keys = {
         "_message",
-        "bytes_processed",
         "code",
         "job_id",
         "location",
         "message",
         "project_id",
         "query_id",
-        "rows_affected",
     }
     if response.keys() != expected_keys:
         raise RuntimeError(
@@ -508,12 +513,10 @@ def assert_canonical_incremental_adapter_response(
         )
     expected_values = {
         "_message": "SUCCESS (0.0 rows)",
-        "bytes_processed": 0,
         "code": "SUCCESS",
         "location": expected_location,
         "message": "SUCCESS (0.0 rows)",
         "project_id": expected_project,
-        "rows_affected": 0,
     }
     for key, expected in expected_values.items():
         if response.get(key) != expected or isinstance(response.get(key), bool):
@@ -697,24 +700,66 @@ def assert_incremental_job_options(
     )
 
 
-def stage_local_driver(cache_home: Path) -> tuple[Path, str, str]:
-    LOG.section("Build the local ADBC driver")
-    LOG.command(list(local_driver.BUILD_COMMAND))
-    artifact = local_driver.stage(cache_home)
-    os.environ["DBT_ADBC_BIGQUERY_USE_FOUNDRY"] = "1"
-    LOG.note(f"staged {artifact[0]}")
-    return artifact
+def build_dbt(output_dir: Path) -> Path:
+    LOG.section("Build dbt with this repository's driver")
+    command = [str(DBT_BUILD_SCRIPT), "--output-dir", str(output_dir)]
+    LOG.command(command)
+    stdout = subprocess.run(command, check=True, text=True, stdout=subprocess.PIPE).stdout
+    return Path(stdout.splitlines()[-1])
 
 
-def assert_local_driver_resolution(log_dir: Path, version: str) -> None:
-    marker = f"BigQuery driver resolved: bigquery_foundry {version}"
-    log = (log_dir / "dbt.log").read_text()
-    if marker not in log:
-        raise RuntimeError(
-            f"dbt did not resolve the staged Foundry driver {version}; "
-            "set DBT_FOUNDRY_DRIVER_VERSION for this dbt build"
+def install_dbt(archive: Path, directory: Path) -> Path:
+    """Unpack a tools/dbt-build archive, so the suite runs what the archive ships."""
+    shutil.rmtree(directory, ignore_errors=True)
+    directory.mkdir(parents=True)
+    with tarfile.open(archive) as source:
+        source.extractall(directory, filter="data")
+    (install,) = directory.iterdir()
+    return install
+
+
+def install_canonical_dbt(install: Path, directory: Path) -> Path:
+    """Copy dbt away from its library, which it would otherwise prefer to dbt's own driver."""
+    shutil.rmtree(directory, ignore_errors=True)
+    directory.mkdir(parents=True)
+    shutil.copy2(install / "dbt", directory / "dbt")
+    return directory
+
+
+def on_path(directory: Path, env: Mapping[str, str]) -> str:
+    return f"{directory}{os.pathsep}{env['PATH']}"
+
+
+@dataclass(frozen=True)
+class BuiltDriver:
+    """Where a dbt build gets this repository's driver, and what proves a run used it."""
+
+    library: Path
+    resolution: str
+    downloaded: bool
+
+
+def built_driver(install: Path, cache_home: Path, driver_version: str) -> BuiltDriver:
+    """Non-release builds load the library in the archive; release builds download theirs."""
+    library = install / "lib" / "dbt" / LIBRARY_NAME
+    if library.is_file():
+        return BuiltDriver(
+            library, "BigQuery driver resolved: installed adbc_driver_bigquery", downloaded=False
         )
-    LOG.note(f"dbt resolved the staged Foundry driver {version}")
+    return BuiltDriver(
+        local_driver.release_cache_path(cache_home, driver_version),
+        f"BigQuery driver resolved: bigquery_adbc {driver_version}",
+        downloaded=True,
+    )
+
+
+def assert_local_driver_resolution(log_dir: Path, driver: BuiltDriver) -> None:
+    if driver.resolution not in (log_dir / "dbt.log").read_text():
+        raise RuntimeError(f"dbt did not report {driver.resolution!r}")
+    if not driver.library.is_file():
+        raise RuntimeError(f"dbt did not leave its driver at {driver.library}")
+    source = "downloaded" if driver.downloaded else "loaded"
+    LOG.note(f"dbt {source} the driver at {driver.library}")
 
 
 @dataclass(frozen=True)
@@ -1077,7 +1122,8 @@ def assert_expected_run_operation_state(state: dict) -> None:
 def assert_run_operation_parity(
     *,
     cache_home: Path,
-    staged_driver: tuple[Path, str, str],
+    staged_driver: BuiltDriver,
+    canonical_dbt: Path,
     target_dir: Path,
     log_dir: Path,
 ) -> None:
@@ -1100,10 +1146,10 @@ def assert_run_operation_parity(
         env = os.environ.copy()
         env["DBT_BIGQUERY_SCHEMA"] = dataset
         if mode == "upstream":
-            env.pop("DBT_ADBC_BIGQUERY_USE_FOUNDRY", None)
+            env["BIGQUERY_ADBC_USE_DBT_DRIVER"] = "1"
+            env["PATH"] = on_path(canonical_dbt, env)
             env["XDG_CACHE_HOME"] = str((PROJECT_DIR / ".cache" / "upstream").resolve())
         else:
-            env["DBT_ADBC_BIGQUERY_USE_FOUNDRY"] = "1"
             env["XDG_CACHE_HOME"] = str(cache_home)
 
         mode_target = (target_dir / "run-operation" / mode).resolve()
@@ -1131,7 +1177,7 @@ def assert_run_operation_parity(
             LOG.note(f"captured {len(normalized)} deterministic dbt output events")
 
         if mode == "local":
-            assert_local_driver_resolution(mode_log, staged_driver[2])
+            assert_local_driver_resolution(mode_log, staged_driver)
         outputs[mode] = tuple(normalized_outputs)
         states[mode] = run_operation_state(client, project, dataset)
         assert_expected_run_operation_state(states[mode])
@@ -1806,7 +1852,7 @@ def assert_materialized_view_refresh(
         run_results_path,
         unique_id=REFRESHED_VIEW_UNIQUE_ID,
         expected_code="SCRIPT",
-        expected_rows_affected=0,
+        expected_rows_affected=None,
         expected_project=project,
         expected_location=location,
     )
@@ -2187,7 +2233,7 @@ def _validate_integration_schema(schema: str) -> None:
         raise RuntimeError(f"refusing unsafe integration schema name: {schema}")
 
 
-def compare_drivers(*, keep_datasets: bool) -> int:
+def compare_drivers(*, keep_datasets: bool, dbt_archive: Path | None) -> int:
     """Run the complete project twice and compare its stable observable results."""
 
     project = require_project()
@@ -2217,6 +2263,9 @@ def compare_drivers(*, keep_datasets: bool) -> int:
             f"refusing to reuse existing comparison dataset {project}.{dataset}"
         )
 
+    # Both runs must use one build, and only the first would otherwise pay for it.
+    archive = dbt_archive or build_dbt(PROJECT_DIR / ".cache" / "dbt-build")
+
     LOG.section("Run the complete dbt project with both BigQuery ADBC drivers")
     failures = []
     for mode in ("upstream", "local"):
@@ -2227,7 +2276,13 @@ def compare_drivers(*, keep_datasets: bool) -> int:
         env["DBT_ADBC_CACHE_DIR"] = str(
             (PROJECT_DIR / ".cache" / "compare" / mode).resolve()
         )
-        command = [sys.executable, str(Path(__file__).resolve()), "--keep-datasets"]
+        command = [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--keep-datasets",
+            "--dbt-archive",
+            str(archive),
+        ]
         if mode == "upstream":
             command.append("--upstream-adbc")
         LOG.command(command)
@@ -2281,6 +2336,12 @@ def parse_args() -> argparse.Namespace:
         help="run the complete project with both drivers and compare their results",
     )
     parser.add_argument(
+        "--dbt-archive",
+        type=Path,
+        help="run this tools/dbt-build archive instead of building one; "
+        "a release archive downloads its driver",
+    )
+    parser.add_argument(
         "--keep-datasets",
         action="store_true",
         help="retain successful integration datasets for inspection",
@@ -2292,25 +2353,17 @@ def main() -> int:
     args = parse_args()
     project = require_project()
     if args.compare:
-        return compare_drivers(keep_datasets=args.keep_datasets)
+        return compare_drivers(keep_datasets=args.keep_datasets, dbt_archive=args.dbt_archive)
     mode = "upstream" if args.upstream_adbc else "local"
 
-    if shutil.which("dbt") is None:
-        raise RuntimeError("dbt is not on PATH")
+    archive = (args.dbt_archive or build_dbt(PROJECT_DIR / ".cache" / "dbt-build")).resolve()
+    install = install_dbt(archive, PROJECT_DIR / ".cache" / "dbt" / mode)
     dbt_version = subprocess.run(
-        ["dbt", "--version"], check=True, text=True, capture_output=True
+        [install / "dbt", "--version"], check=True, text=True, capture_output=True
     ).stdout.strip()
-    if not dbt_version.startswith("dbt 2."):
-        raise RuntimeError(f"dbt 2.0 is required; found: {dbt_version}")
-    if (
-        not args.upstream_adbc
-        and dbt_version != SUPPORTED_DBT_VERSION
-        and "DBT_FOUNDRY_DRIVER_VERSION" not in os.environ
-    ):
-        raise RuntimeError(
-            f"local driver staging is pinned to {SUPPORTED_DBT_VERSION}; found {dbt_version}. "
-            "Set DBT_FOUNDRY_DRIVER_VERSION to this dbt build's Foundry driver version."
-        )
+    identifier = DBT_IDENTIFIER.fullmatch(dbt_version)
+    if identifier is None:
+        raise RuntimeError(f"a tools/dbt-build archive is required; found: {dbt_version}")
 
     os.environ.setdefault("DBT_BIGQUERY_LOCATION", "US")
     os.environ.setdefault("DBT_BIGQUERY_SCHEMA", f"bigquery_adbc_integration_{mode}")
@@ -2340,12 +2393,26 @@ def main() -> int:
     LOG.note(dbt_version)
     LOG.note(f"project={project} dataset={schema} location={location}")
 
-    staged_driver: tuple[Path, str, str] | None = None
+    built = built_driver(install, cache_home, identifier["driver"])
+    canonical_dbt = None
+    if not built.downloaded:
+        canonical_dbt = install_canonical_dbt(install, PROJECT_DIR / ".cache" / "dbt" / "canonical")
+    staged_driver: BuiltDriver | None = None
     if args.upstream_adbc:
-        os.environ.pop("DBT_ADBC_BIGQUERY_USE_FOUNDRY", None)
+        if canonical_dbt is None:
+            raise RuntimeError("a release build cannot load dbt's canonical driver")
+        os.environ["BIGQUERY_ADBC_USE_DBT_DRIVER"] = "1"
+        os.environ["PATH"] = on_path(canonical_dbt, os.environ)
         LOG.note("using dbt-core 2.0's canonical BigQuery ADBC driver")
     else:
-        staged_driver = stage_local_driver(cache_home)
+        staged_driver = built
+        os.environ["PATH"] = on_path(install, os.environ)
+        if built.downloaded:
+            # Only this file: the cache directory can be the caller's. It reappearing is what
+            # proves the download, so it must not survive from an earlier run.
+            built.library.unlink(missing_ok=True)
+            LOG.note(f"release build: dbt must download {built.library.name}")
+    expected_hash = None
 
     client = bigquery.Client(project=project, location=location)
     coverage_baseline = read_artifact(PROJECT_DIR / "coverage.json")
@@ -2387,7 +2454,8 @@ def main() -> int:
     try:
         run_phase("Check credentials and connection", "debug", "--connection")
         if staged_driver is not None:
-            assert_local_driver_resolution(log_dir, staged_driver[2])
+            assert_local_driver_resolution(log_dir, staged_driver)
+            expected_hash = local_driver.sha256(staged_driver.library)
         run_phase(
             "Start from an empty integration dataset",
             "run-operation",
@@ -2453,13 +2521,13 @@ def main() -> int:
                 target_dir / "run_results.json",
                 unique_id="model.bigquery_adbc_integration.exotic_dynamic_overwrite",
                 expected_code="SCRIPT",
-                expected_rows_affected=0,
+                expected_rows_affected=None,
                 expected_project=project,
                 expected_location=location,
             )
             LOG.note(
                 "dbt surfaced the dynamic insert-overwrite SCRIPT statement type, "
-                "its job statistics and its zero script-level row count"
+                "its job statistics and that a script reports no row count"
             )
             assert_incremental_job_options(
                 client,
@@ -2569,12 +2637,9 @@ def main() -> int:
         capture_show_results(target_dir=target_dir, log_dir=log_dir)
 
         if staged_driver is not None:
-            driver_path, expected_hash, _ = staged_driver
-            if local_driver.sha256(driver_path) != expected_hash:
-                raise RuntimeError(
-                    "dbt replaced the staged local driver with a downloaded driver"
-                )
-            LOG.note("verified that the staged local driver artifact remained intact")
+            if local_driver.sha256(staged_driver.library) != expected_hash:
+                raise RuntimeError(f"dbt replaced its driver at {staged_driver.library}")
+            LOG.note("verified that the driver file remained intact")
 
             LOG.section("Upload and submit a python model through write_gcs and Dataproc")
             assert_python_model(target_dir=target_dir, log_dir=log_dir)
@@ -2599,20 +2664,21 @@ def main() -> int:
             ),
         )
 
-        if staged_driver is not None:
+        # A release build cannot load dbt's canonical driver, so a non-release run covers this.
+        if staged_driver is not None and canonical_dbt is not None:
             LOG.section(
                 "Compare dbt run-operation --sql across canonical and local drivers"
             )
             assert_run_operation_parity(
                 cache_home=cache_home,
                 staged_driver=staged_driver,
+                canonical_dbt=canonical_dbt,
                 target_dir=target_dir,
                 log_dir=log_dir,
             )
-            driver_path, expected_hash, _ = staged_driver
-            if local_driver.sha256(driver_path) != expected_hash:
+            if local_driver.sha256(staged_driver.library) != expected_hash:
                 raise RuntimeError(
-                    "dbt replaced the staged local driver during run-operation parity"
+                    f"dbt replaced its driver at {staged_driver.library} during parity"
                 )
 
         if args.keep_datasets:

@@ -1,4 +1,4 @@
-"""Build and stage the local driver in dbt's Foundry cache."""
+"""Build the local driver, and locate it in dbt's driver cache."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def version() -> str:
     return os.environ.get("DBT_FOUNDRY_DRIVER_VERSION", "0.21.0.dev+dbt0.1.11")
 
 
-def cache_path(cache_home: Path) -> Path:
+def cache_directory(cache_home: Path) -> Path:
     machine = platform.machine().lower()
     platforms = {
         ("linux", "x86_64"): "x86_64-manylinux_2_17-linux-gnu",
@@ -43,8 +43,16 @@ def cache_path(cache_home: Path) -> Path:
         raise RuntimeError(
             f"unsupported local-driver platform: {sys.platform} {machine}"
         ) from error
-    filename = f"libadbc_driver_bigquery_foundry-{version()}.so"
-    return cache_home / "com.getdbt" / "adbc" / cache_platform / filename
+    return cache_home / "com.getdbt" / "adbc" / cache_platform
+
+
+def cache_path(cache_home: Path) -> Path:
+    return cache_directory(cache_home) / f"libadbc_driver_bigquery_foundry-{version()}.so"
+
+
+def release_cache_path(cache_home: Path, release: str) -> Path:
+    """Where a release build of tools/dbt-build caches the driver it downloads."""
+    return cache_directory(cache_home) / f"libadbc_driver_bigquery_adbc-{release}.so"
 
 
 def sha256(path: Path) -> str:

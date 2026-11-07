@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,14 +14,22 @@ from typing import ClassVar
 from unittest import mock
 
 from run import (
+    DBT_IDENTIFIER,
     EPHEMERAL_UNIQUE_ID,
+    LIBRARY_NAME,
     READ_PATH_EVENTS,
+    assert_adapter_response_contract,
+    assert_canonical_incremental_adapter_response,
+    assert_local_driver_resolution,
     assert_nodes_ran,
     assert_python_model_submission,
+    built_driver,
     checked_phase_command,
     dbt_command,
     driver_warnings,
     failing_dbt_command,
+    install_canonical_dbt,
+    install_dbt,
 )
 
 import benchmark
@@ -42,6 +51,138 @@ class DriverDiagnosticsTest(unittest.TestCase):
         for event, line in zip(READ_PATH_EVENTS, paths, strict=True):
             with self.subTest(line=line):
                 self.assertIsNotNone(event.search(line))
+
+
+class AdapterResponseRowCountTest(unittest.TestCase):
+    @staticmethod
+    def check(response: dict[str, object], *, code: str, rows: int | None) -> None:
+        assert_adapter_response_contract(
+            {
+                "_message": response["message"],
+                "bytes_billed": 0,
+                "bytes_processed": 0,
+                "job_id": "job",
+                "location": "US",
+                "project_id": "project",
+                "query_id": "job",
+                "slot_ms": 0,
+                "code": code,
+                **response,
+            },
+            expected_code=code,
+            expected_rows_affected=rows,
+            expected_project="project",
+            expected_location="US",
+        )
+
+    def test_a_script_reports_no_count(self) -> None:
+        self.check({"message": "SCRIPT (0 processed)"}, code="SCRIPT", rows=None)
+
+    def test_a_count_where_none_is_expected_fails(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "rows_affected is 0, expected None"):
+            self.check({"message": "SCRIPT (0 processed)", "rows_affected": 0}, code="SCRIPT", rows=None)
+
+    def test_dml_without_its_count_fails(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "rows_affected is None, expected 5"):
+            self.check({"message": "MERGE (5.0 rows, 0 processed)"}, code="MERGE", rows=5)
+
+    def test_dml_with_its_count_passes(self) -> None:
+        self.check({"message": "MERGE (5.0 rows, 0 processed)", "rows_affected": 5}, code="MERGE", rows=5)
+
+
+class CanonicalIncrementalResponseTest(unittest.TestCase):
+    RESPONSE: ClassVar[dict[str, object]] = {
+        "_message": "SUCCESS (0.0 rows)",
+        "code": "SUCCESS",
+        "job_id": "job",
+        "location": "US",
+        "message": "SUCCESS (0.0 rows)",
+        "project_id": "project",
+        "query_id": "job",
+    }
+
+    @staticmethod
+    def check(response: dict[str, object]) -> None:
+        assert_canonical_incremental_adapter_response(
+            response, expected_project="project", expected_location="US"
+        )
+
+    def test_the_known_incomplete_response_passes(self) -> None:
+        self.check(self.RESPONSE)
+
+    def test_a_driver_that_gains_a_count_is_noticed(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "fields changed"):
+            self.check({**self.RESPONSE, "rows_affected": 5})
+
+
+class BuiltDbtTest(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.cache = self.root / "cache"
+
+    def archive(self, *, library: bool) -> Path:
+        package = self.root / "package" / "dbt-bigquery-adbc-1.2.3-linux-x86_64"
+        (package / "lib" / "dbt").mkdir(parents=True)
+        (package / "dbt").write_text("dbt")
+        if library:
+            (package / "lib" / "dbt" / LIBRARY_NAME).write_text("driver")
+        archive = self.root / "dbt.tar.gz"
+        with tarfile.open(archive, "w:gz") as output:
+            output.add(package, arcname=package.name)
+        return archive
+
+    def install(self, *, library: bool) -> Path:
+        return install_dbt(self.archive(library=library), self.root / "install")
+
+    def test_identifier_names_the_driver_of_releases_and_commits(self) -> None:
+        for driver in ("0.3.0", "0.3.0-2-g5f7f5be", "0.3.0-2-g5f7f5be-dirty"):
+            with self.subTest(driver=driver):
+                reported = f"dbt (modified with bigquery-adbc {driver}) 327f526973 2026-11-07"
+                match = DBT_IDENTIFIER.fullmatch(reported)
+                assert match is not None
+                self.assertEqual(match["driver"], driver)
+
+    def test_stock_dbt_is_not_a_built_dbt(self) -> None:
+        self.assertIsNone(DBT_IDENTIFIER.fullmatch("dbt 2.0.11"))
+
+    def test_archive_with_its_library_loads_that_library(self) -> None:
+        install = self.install(library=True)
+        driver = built_driver(install, self.cache, "1.2.3-1-gabc")
+        self.assertFalse(driver.downloaded)
+        self.assertEqual(driver.library, install / "lib" / "dbt" / LIBRARY_NAME)
+
+    def test_release_archive_downloads_into_the_cache(self) -> None:
+        driver = built_driver(self.install(library=False), self.cache, "1.2.3")
+        self.assertTrue(driver.downloaded)
+        self.assertTrue(driver.library.is_relative_to(self.cache))
+        self.assertEqual(driver.library.name, "libadbc_driver_bigquery_adbc-1.2.3.so")
+        self.assertEqual(driver.resolution, "BigQuery driver resolved: bigquery_adbc 1.2.3")
+
+    def test_canonical_dbt_is_kept_away_from_the_library(self) -> None:
+        install = self.install(library=True)
+        canonical = install_canonical_dbt(install, self.root / "canonical")
+        self.assertEqual([path.name for path in canonical.iterdir()], ["dbt"])
+
+    def test_a_run_that_used_another_driver_fails(self) -> None:
+        driver = built_driver(self.install(library=True), self.cache, "1.2.3-1-gabc")
+        (self.root / "dbt.log").write_text("BigQuery driver resolved: bigquery 0.21.0\n")
+        with self.assertRaisesRegex(RuntimeError, "did not report"):
+            assert_local_driver_resolution(self.root, driver)
+
+    def test_a_release_run_that_downloaded_nothing_fails(self) -> None:
+        driver = built_driver(self.install(library=False), self.cache, "1.2.3")
+        (self.root / "dbt.log").write_text(f"{driver.resolution}\n")
+        with self.assertRaisesRegex(RuntimeError, "did not leave its driver"):
+            assert_local_driver_resolution(self.root, driver)
+
+    def test_a_release_run_with_the_downloaded_library_passes(self) -> None:
+        driver = built_driver(self.install(library=False), self.cache, "1.2.3")
+        (self.root / "dbt.log").write_text(f"{driver.resolution}\n")
+        driver.library.parent.mkdir(parents=True)
+        driver.library.write_text("driver")
+        assert_local_driver_resolution(self.root, driver)
 
 
 class BenchmarkDriverSelectionTest(unittest.TestCase):
