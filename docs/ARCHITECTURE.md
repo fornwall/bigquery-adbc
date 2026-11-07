@@ -24,7 +24,8 @@ The Rust library implements the `adbc_core` driver, database, connection and sta
 
 `src/runtime.rs` bridges blocking ADBC calls to asynchronous Google clients. Each Rust driver owns
 a Tokio runtime shared by its handles and readers. The C ABI keeps one driver for the process;
-releasing its handles does not stop the runtime, so the shared library must remain loaded.
+releasing its handles does not stop the runtime, so the shared library must remain loaded. A
+`fork` child loses the runtime's workers, so each database it opens gets a new runtime.
 
 ## Running a query
 

@@ -22,11 +22,20 @@ pub(crate) type DetachedTask = Pin<Box<dyn Future<Output = ()> + Send>>;
 #[derive(Debug)]
 pub(crate) struct DriverRuntime {
     runtime: Option<Runtime>,
+    /// The process that started the workers. See [`Self::orphaned`].
+    process: u32,
     result_conversion_permits: Arc<Semaphore>,
     result_conversion_concurrency: usize,
 }
 
 impl DriverRuntime {
+    /// Whether this process is a `fork` child of the one that built the runtime. `fork` copies
+    /// only the calling thread, so no worker is left to drive I/O or timers, and whatever the
+    /// child blocks on would never finish.
+    pub(crate) fn orphaned(&self) -> bool {
+        self.process != std::process::id()
+    }
+
     pub(crate) fn result_conversion_permits(&self) -> Arc<Semaphore> {
         self.result_conversion_permits.clone()
     }
@@ -56,6 +65,11 @@ impl DriverRuntime {
     }
 
     fn block_on_erased(&self, future: Pin<&mut dyn Future<Output = ()>>) {
+        assert!(
+            !self.orphaned(),
+            "this BigQuery handle was inherited across fork and cannot be used; open a new \
+             database in this process"
+        );
         let runtime: &Runtime = self;
         block_in_place(|| runtime.block_on(future));
     }
@@ -107,7 +121,12 @@ impl Drop for DriverRuntime {
         // panics in an async context. The last owner can be any driver object, including a result
         // reader dropped inside a host's runtime, so shut down in the background.
         if let Some(runtime) = self.runtime.take() {
-            runtime.shutdown_background();
+            if self.orphaned() {
+                // Shutting down takes locks that a worker missing from this process may hold.
+                std::mem::forget(runtime);
+            } else {
+                runtime.shutdown_background();
+            }
         }
     }
 }
@@ -159,6 +178,7 @@ fn build_runtime(result_conversion_concurrency: usize) -> Result<SharedRuntime> 
         .map(|runtime| {
             Arc::new(DriverRuntime {
                 runtime: Some(runtime),
+                process: std::process::id(),
                 result_conversion_permits: Arc::new(Semaphore::new(result_conversion_concurrency)),
                 result_conversion_concurrency,
             })
@@ -171,6 +191,15 @@ fn build_runtime(result_conversion_concurrency: usize) -> Result<SharedRuntime> 
         })
 }
 
+/// A runtime as a `fork` child sees it. Tests cannot fork under the threaded harness, and no
+/// process has ID 0.
+#[cfg(test)]
+pub(crate) fn orphaned_runtime() -> SharedRuntime {
+    let mut runtime = new_runtime().unwrap();
+    Arc::get_mut(&mut runtime).unwrap().process = 0;
+    runtime
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
@@ -180,7 +209,7 @@ mod tests {
 
     use super::{
         MAX_WORKER_THREADS, MIN_WORKER_THREADS, new_runtime,
-        new_runtime_with_result_conversion_concurrency, worker_threads,
+        new_runtime_with_result_conversion_concurrency, orphaned_runtime, worker_threads,
     };
 
     /// The worker count follows the host and stays inside the clamp on any machine, including a
@@ -284,6 +313,23 @@ mod tests {
         let entered = runtime.block_on(async { 3 });
 
         assert_eq!((direct, spawned, entered), (1, 2, 3));
+    }
+
+    /// Blocking would hang forever, so an inherited handle panics, which the C ABI reports as an
+    /// error. Dropping the last owner must not reach for the missing workers either.
+    #[test]
+    fn a_forked_child_cannot_block_on_an_inherited_runtime() {
+        let runtime = orphaned_runtime();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime.block_on(async {});
+        }))
+        .unwrap_err();
+        assert!(
+            panic
+                .downcast_ref::<&str>()
+                .is_some_and(|message| message.contains("inherited across fork"))
+        );
+        drop(runtime);
     }
 
     #[test]

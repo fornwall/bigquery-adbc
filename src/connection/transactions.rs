@@ -103,6 +103,10 @@ impl Drop for BigQueryConnection {
     /// the driver as an rlib). As in `Cancellation::try_cancel`, it runs inline on a host thread
     /// and on the driver's blocking pool otherwise, so drop never panics or blocks a worker.
     fn drop(&mut self) {
+        // A `fork` child inherits the session but does not own it: the parent may still use it.
+        if self.context.runtime.orphaned() {
+            return;
+        }
         let Some(release) = self.transaction.release() else {
             return;
         };

@@ -40,20 +40,29 @@ impl BigQueryDriver {
             runtime: new_runtime()?,
         })
     }
+
+    /// The runtime for a new database. A `fork` child inherits the C ABI's process-wide driver
+    /// without the runtime's workers, so each database it opens starts a runtime of its own.
+    fn runtime(&mut self) -> Result<SharedRuntime> {
+        if self.runtime.orphaned() {
+            self.runtime = new_runtime()?;
+        }
+        Ok(self.runtime.clone())
+    }
 }
 
 impl Driver for BigQueryDriver {
     type DatabaseType = BigQueryDatabase;
 
     fn new_database(&mut self) -> Result<Self::DatabaseType> {
-        Ok(BigQueryDatabase::new(self.runtime.clone()))
+        Ok(BigQueryDatabase::new(self.runtime()?))
     }
 
     fn new_database_with_opts(
         &mut self,
         opts: impl IntoIterator<Item = (OptionDatabase, OptionValue)>,
     ) -> Result<Self::DatabaseType> {
-        let mut database = BigQueryDatabase::new(self.runtime.clone());
+        let mut database = BigQueryDatabase::new(self.runtime()?);
         // The URI goes first so explicit options override it whatever their order; of several
         // URIs the last wins, as repeated set_option calls would.
         let mut uri = None;

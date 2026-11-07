@@ -94,6 +94,16 @@ fn releasing_a_connection_aborts_an_idle_session_without_a_rollback() {
     assert_transaction_cleanup(requests, "COMMIT TRANSACTION");
 }
 
+/// A `fork` child inherits the connection but not the session, which the parent may still be
+/// using, so a release there issues nothing.
+#[test]
+fn releasing_a_connection_in_a_forked_child_leaves_the_session_to_the_parent() {
+    let (mut connection, requests) = connection_with_open_transaction_then(Vec::new());
+    connection.context.runtime = crate::runtime::orphaned_runtime();
+    drop(connection);
+    assert_eq!(requests.join().unwrap().len(), 3);
+}
+
 /// An autocommit connection opened no session, so releasing it must issue nothing at all.
 #[test]
 fn releasing_an_autocommit_connection_issues_no_cleanup() {
