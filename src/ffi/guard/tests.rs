@@ -30,12 +30,10 @@ fn sanitized_cstring_replaces_interior_nuls_instead_of_truncating() {
 
 #[test]
 fn passes_through_ordinary_results() {
-    assert_eq!(catch(|| Ok(7)).unwrap().unwrap(), 7);
-    let inner =
-        catch(|| -> Result<()> { Err(Error::with_message_and_status("nope", Status::NotFound)) })
-            .unwrap()
-            .unwrap_err();
-    assert_eq!(inner.status, Status::NotFound);
+    assert_eq!(catch(|| Ok(7)).unwrap(), 7);
+    let failure =
+        catch(|| -> Result<()> { Err(Error::with_message_and_status("nope", Status::NotFound)) });
+    assert_eq!(failure.unwrap_err().status, Status::NotFound);
 }
 
 #[test]

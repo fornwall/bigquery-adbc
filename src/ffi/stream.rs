@@ -17,7 +17,7 @@ use libc::{EACCES, ECANCELED, EEXIST, EINVAL, EIO, ENOENT, ENOMEM, ENOSYS, ENOTS
 use super::abi::{ADBC_ERROR_INIT, ADBC_STATUS_OK, AdbcError, AdbcStatusCode};
 use super::error::export_error;
 use super::guard::{panic_message, sanitized_cstring};
-use crate::error::{chain, driver_defect};
+use crate::error::{chain, driver_defect, invalid_argument};
 
 /// Move a driver-produced schema into the caller's out parameter.
 ///
@@ -31,10 +31,9 @@ pub(super) unsafe fn write_schema(
     schema: &Schema,
 ) -> adbc_core::error::Result<()> {
     let exported = FFI_ArrowSchema::try_from(schema).map_err(|failure| {
-        Error::with_message_and_status(
-            format!("failed to export the schema over the C data interface: {failure}"),
-            Status::Internal,
-        )
+        driver_defect(format_args!(
+            "failed to export the schema over the C data interface: {failure}"
+        ))
     })?;
     // SAFETY: The caller grants writable schema output storage; ownership moves to it on success.
     unsafe { super::guard::write_out(out, exported, "schema") }
@@ -326,11 +325,8 @@ impl PrivateData {
         });
     }
 
-    fn fail(&mut self, message: impl Into<String>) -> c_int {
-        self.set_error(Error::with_message_and_status(
-            message.into(),
-            Status::InvalidArguments,
-        ));
+    fn fail(&mut self, message: &str) -> c_int {
+        self.set_error(invalid_argument(message));
         EINVAL
     }
 

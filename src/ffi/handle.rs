@@ -9,7 +9,7 @@
 //! use separate fields so they remain available during execution.
 
 use std::ffi::c_void;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 
 use adbc_core::CancelHandle;
 use adbc_core::error::{Error, Result, Status};
@@ -18,7 +18,7 @@ use adbc_core::options::OptionValue;
 use super::abi::{ADBC_STATUS_OK, AdbcError, AdbcStatusCode};
 use super::error::export_error;
 use super::guard::{catch, missing_argument};
-use crate::error::{driver_defect, invalid_state};
+use crate::error::invalid_state;
 use crate::query::ExecutionProgress;
 
 /// Buffer `New`/`SetOption` options until `Init` passes them to the driver's constructor.
@@ -49,13 +49,10 @@ impl<K, S> Staged<K, S> {
     pub(crate) fn pending(&mut self, kind: &str) -> Result<&mut Vec<(K, OptionValue)>> {
         match self {
             Self::Pending(options) => Ok(options),
-            Self::Ready(_) => Err(Error::with_message_and_status(
-                format!(
-                    "{kind} is already initialized; call Init only once, since options set \
-                     after it take effect immediately"
-                ),
-                Status::InvalidState,
-            )),
+            Self::Ready(_) => Err(invalid_state(format!(
+                "{kind} is already initialized; call Init only once, since options set after it \
+                 take effect immediately"
+            ))),
         }
     }
 }
@@ -63,8 +60,8 @@ impl<K, S> Staged<K, S> {
 /// Shared handle storage. Access uses `&Self` and interior mutability because ADBC permits
 /// concurrent cancellation and option getters; a reference to the whole struct must not be mutable.
 pub(crate) struct Exported<S> {
-    /// Installed during initialization; accessible while execution holds the state lock.
-    cancel: Mutex<Option<Box<dyn CancelHandle>>>,
+    /// Set once, by construction or `Init`; accessible while execution holds the state lock.
+    cancel: OnceLock<Box<dyn CancelHandle>>,
     /// Statement progress, readable during execution. Databases and connections publish none.
     progress: Option<Arc<ExecutionProgress>>,
     /// The driver object. Calls serialize on this lock; [`cancel`] and [`published_progress`]
@@ -86,18 +83,10 @@ impl<S> Exported<S> {
         progress: Option<Arc<ExecutionProgress>>,
     ) -> Self {
         Self {
-            cancel: Mutex::new(cancel),
+            cancel: cancel.map_or_else(OnceLock::new, OnceLock::from),
             progress,
             state: Mutex::new(state),
         }
-    }
-
-    /// Take the state lock, refusing a poisoned object.
-    ///
-    /// A panic in a dispatched call or a construction-time borrow poisons every object whose
-    /// state lock the call held.
-    fn lock_state(&self, kind: &str) -> Result<MutexGuard<'_, S>> {
-        self.state.lock().map_err(|_| poisoned(kind))
     }
 }
 
@@ -105,13 +94,10 @@ impl<S> Exported<S> {
 #[cold]
 #[inline(never)]
 fn uninitialized(kind: &str) -> Error {
-    Error::with_message_and_status(
-        format!(
-            "{kind} is uninitialized or already released; create it with its New function, \
-             call its Init if it has one, and do not use it after Release"
-        ),
-        Status::InvalidState,
-    )
+    invalid_state(format!(
+        "{kind} is uninitialized or already released; create it with its New function, call its \
+         Init if it has one, and do not use it after Release"
+    ))
 }
 
 #[cold]
@@ -220,12 +206,13 @@ pub(crate) unsafe fn dispatch<S, F>(
 where
     F: FnOnce(&mut S) -> Result<()>,
 {
-    // Erase the callback before the shared body runs; see [`dispatch_erased`].
+    // Erase the callback before the shared body runs; see [`dispatch_erased`]. That body takes
+    // it as `FnOnce`, so the empty arm is unreachable.
     let mut once = Some(f);
     // SAFETY: slot and error keep the caller's provenance and lifetime; the closure is synchronous.
     unsafe {
         dispatch_erased(slot, kind, error, &mut |state| {
-            once.take().map_or_else(redispatched, |f| f(state))
+            once.take().map_or(Ok(()), |f| f(state))
         })
     }
 }
@@ -245,16 +232,7 @@ unsafe fn dispatch_erased<S>(
     // SAFETY: the caller supplies the slot's contract for this call.
     let outcome = catch(|| unsafe { with_locked(slot, kind, f) });
     // SAFETY: the caller supplies a valid optional error output for this call.
-    unsafe { finish(outcome.unwrap_or_else(Err), error) }
-}
-
-/// Report a broken at-most-once dispatch invariant without panicking.
-#[cold]
-#[inline(never)]
-fn redispatched() -> Result<()> {
-    Err(driver_defect(format_args!(
-        "the BigQuery driver dispatched one call twice"
-    )))
+    unsafe { finish(outcome, error) }
 }
 
 /// Run `f` on the locked state behind a handle's slot. Entry points also use it for a second
@@ -270,7 +248,9 @@ pub(crate) unsafe fn with_locked<S, R>(
 ) -> Result<R> {
     // SAFETY: the caller supplies the slot's contract.
     let exported = unsafe { acquire::<S>(slot, kind) }?;
-    let mut state = exported.lock_state(kind)?;
+    // A panic in a dispatched call or a construction-time borrow poisons every object whose state
+    // lock the call held.
+    let mut state = exported.state.lock().map_err(|_| poisoned(kind))?;
     f(&mut state)
 }
 
@@ -287,17 +267,13 @@ pub(crate) unsafe fn cancel<S>(
     let outcome = catch(|| {
         // SAFETY: the caller supplies the slot's contract.
         let exported = unsafe { acquire::<S>(slot, kind) }?;
-        let handle = exported
-            .cancel
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        match handle.as_ref() {
+        match exported.cancel.get() {
             Some(handle) => handle.try_cancel(),
             None => Err(uninitialized(kind)),
         }
     });
     // SAFETY: the caller supplies a valid optional error output for this call.
-    unsafe { finish(outcome.unwrap_or_else(Err), error) }
+    unsafe { finish(outcome, error) }
 }
 
 /// Read atomic progress without taking the state lock, including after a panic.
@@ -329,10 +305,8 @@ pub(crate) unsafe fn install_cancel_handle<S>(
 ) -> Result<()> {
     // SAFETY: the caller supplies the slot's contract.
     let exported = unsafe { acquire::<S>(slot, kind) }?;
-    *exported
-        .cancel
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner) = Some(handle);
+    // `Init` succeeds at most once, so the cell is empty.
+    drop(exported.cancel.set(handle));
     Ok(())
 }
 
@@ -348,29 +322,28 @@ pub(crate) unsafe fn release<S>(
     kind: &'static str,
     error: *mut AdbcError,
 ) -> AdbcStatusCode {
-    let taken = {
-        let _writing = SLOTS.write().unwrap_or_else(PoisonError::into_inner);
-        // SAFETY: The caller supplies a live field or null, and the write lock excludes other
-        // accesses.
-        unsafe { slot.as_mut() }.map(|object| std::mem::replace(object, std::ptr::null_mut()))
-    };
-    let taken = match taken {
-        Some(taken) if !taken.is_null() => taken,
-        // SAFETY: the caller supplies a valid optional error output for this call.
-        Some(_) => return unsafe { finish(Err(uninitialized(kind)), error) },
-        // SAFETY: as above.
-        None => return unsafe { finish(Err(missing_argument(kind)), error) },
-    };
     // Dropping driver state can run arbitrary code (closing clients, joining tasks), so it is
     // contained like any other call.
     let outcome = catch(|| {
+        let taken = {
+            let _writing = SLOTS.write().unwrap_or_else(PoisonError::into_inner);
+            // SAFETY: The caller supplies a live field or null, and the write lock excludes other
+            // accesses.
+            let Some(object) = (unsafe { slot.as_mut() }) else {
+                return Err(missing_argument(kind));
+            };
+            std::mem::replace(object, std::ptr::null_mut())
+        };
+        if taken.is_null() {
+            return Err(uninitialized(kind));
+        }
         // SAFETY: taken is the handle's Arc::into_raw reference for S, which emptying the slot
         // transferred to this call exactly once.
         drop(unsafe { Arc::from_raw(taken.cast_const().cast::<Exported<S>>()) });
         Ok(())
     });
     // SAFETY: the caller supplies a valid optional error output for this call.
-    unsafe { finish(outcome.unwrap_or_else(Err), error) }
+    unsafe { finish(outcome, error) }
 }
 
 /// Convert a driver result into a status code, exporting the error when there is one.

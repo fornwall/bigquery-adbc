@@ -85,7 +85,7 @@ pub(super) unsafe extern "C" fn statement_new(
         unsafe { install(slot, KIND, exported) }
     });
     // SAFETY: the caller provides initialized, exclusively writable error storage or null.
-    unsafe { finish(created.unwrap_or_else(Err), error) }
+    unsafe { finish(created, error) }
 }
 
 /// Read progress without taking the state lock held during execution. Other double-valued
@@ -114,8 +114,7 @@ pub(super) unsafe extern "C" fn statement_get_option_double(
         // SAFETY: The caller grants exclusive scalar output storage; write_out rejects null.
         unsafe { write_out(value, found, "value") }?;
         Ok(true)
-    })
-    .unwrap_or_else(Err);
+    });
     match answered {
         Ok(true) => ADBC_STATUS_OK,
         // SAFETY: The caller supplies a live handle/key and disjoint writable scalar/error outputs.

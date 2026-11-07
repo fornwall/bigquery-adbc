@@ -54,17 +54,12 @@ impl BoundStreamReader {
     /// reader's lifetime. In particular, every batch's physical buffers must match the stream's
     /// declared schema; owning the callback table alone cannot establish this relationship.
     pub(super) unsafe fn new(mut stream: FFI_ArrowArrayStream) -> Result<Self> {
-        let get_schema = stream
-            .get_schema()
-            .ok_or_else(|| invalid_argument("stream is missing its get_schema callback"))?;
-        if stream.get_next().is_none() {
-            return Err(invalid_argument("stream is missing its get_next callback"));
-        }
-        if stream.get_last_error().is_none() {
-            return Err(invalid_argument(
-                "stream is missing its get_last_error callback",
-            ));
-        }
+        let missing = |name| invalid_argument(format!("stream is missing its {name} callback"));
+        let get_schema = stream.get_schema().ok_or_else(|| missing("get_schema"))?;
+        stream.get_next().ok_or_else(|| missing("get_next"))?;
+        stream
+            .get_last_error()
+            .ok_or_else(|| missing("get_last_error"))?;
         let mut schema = FFI_ArrowSchema::empty();
         // SAFETY: `stream` is a live Arrow C stream, and the callback came from its own table.
         let code = unsafe { get_schema(&raw mut stream, &raw mut schema) };
@@ -643,20 +638,18 @@ fn element_bits(data_type: &DataType) -> usize {
 }
 
 fn stream_error(stream: &mut FFI_ArrowArrayStream, callback: &str, code: c_int) -> String {
-    // The callback is checked at bind time, but keep error reporting tolerant of its absence.
-    let detail = match stream.get_last_error() {
-        None => "producer supplied no error description".into(),
-        Some(get_last_error) => {
-            // SAFETY: stream owns the live producer callback; exclusive access serializes calls.
-            let message = unsafe { get_last_error(stream) };
-            if message.is_null() {
-                "producer supplied no error description".into()
-            } else {
-                // SAFETY: a valid stream returns a NUL-terminated message retained until its next
-                // callback; no callback occurs while this borrowed message is formatted.
-                unsafe { CStr::from_ptr(message) }.to_string_lossy()
-            }
-        }
+    // SAFETY: stream owns the live producer callback; exclusive access serializes calls.
+    let message = stream
+        .get_last_error()
+        .map_or(std::ptr::null(), |get_last_error| unsafe {
+            get_last_error(stream)
+        });
+    let detail = if message.is_null() {
+        "producer supplied no error description".into()
+    } else {
+        // SAFETY: a valid stream returns a NUL-terminated message retained until its next
+        // callback; no callback occurs while this borrowed message is formatted.
+        unsafe { CStr::from_ptr(message) }.to_string_lossy()
     };
     format!("bound Arrow C stream {callback} failed with error code {code}: {detail}")
 }

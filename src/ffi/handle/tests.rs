@@ -126,8 +126,8 @@ impl CancelHandle for BlockingCancel {
     }
 }
 
-/// `Cancel` holds its own reference, so a `Release` that lands mid-cancel cannot free the mutex
-/// the cancel has locked.
+/// `Cancel` holds its own reference, so a `Release` that lands mid-cancel cannot free the handle
+/// it is running.
 #[test]
 fn a_release_during_a_cancel_does_not_free_the_object_under_it() {
     let (entered_sender, entered_receiver) = channel::<()>();
@@ -143,7 +143,7 @@ fn a_release_during_a_cancel_does_not_free_the_object_under_it() {
     let address = exposed(&mut slot);
     // SAFETY: The parent keeps the boxed slot alive until this thread joins.
     let canceller = std::thread::spawn(move || unsafe { cancel::<u32>(at(address), "s", null()) });
-    // The cancel is now inside `try_cancel`, holding the object's cancel mutex.
+    // The cancel is now inside `try_cancel`.
     entered_receiver.recv().expect("test channel");
     assert_eq!(release_slot(&mut slot), ADBC_STATUS_OK);
     assert!(slot.is_null());

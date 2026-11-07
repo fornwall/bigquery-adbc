@@ -61,13 +61,13 @@ mod tests;
 
 use std::ffi::{c_int, c_void};
 
-use adbc_core::error::{Error, Status};
-
 use abi::{
     ADBC_DRIVER_1_0_0_SIZE, ADBC_STATUS_OK, ADBC_VERSION_1_0_0, ADBC_VERSION_1_1_0, AdbcDriver,
     AdbcError, AdbcStatusCode,
 };
 use handle::finish;
+
+use crate::error::{invalid_state, not_implemented};
 
 /// Build the vtable. A `None` slot reads as "not implemented" under the ABI. The generic
 /// [`options`] entry points take their handle type from the slot's signature.
@@ -161,15 +161,7 @@ unsafe extern "C" fn release_driver(
     let release = unsafe { &mut (*driver).release };
     if release.take().is_none() {
         // SAFETY: the caller provides initialized, exclusively writable error storage or null.
-        return unsafe {
-            finish(
-                Err(Error::with_message_and_status(
-                    "driver is already released",
-                    Status::InvalidState,
-                )),
-                error,
-            )
-        };
+        return unsafe { finish(Err(invalid_state("driver is already released")), error) };
     }
     ADBC_STATUS_OK
 }
@@ -213,13 +205,10 @@ unsafe fn init(version: c_int, driver: *mut c_void, error: *mut AdbcError) -> Ad
             // SAFETY: the caller provides initialized, exclusively writable error storage or null.
             return unsafe {
                 finish(
-                    Err(Error::with_message_and_status(
-                        format!(
-                            "unsupported ADBC version {version}; this driver implements \
+                    Err(not_implemented(format!(
+                        "unsupported ADBC version {version}; this driver implements \
                          {ADBC_VERSION_1_0_0} and {ADBC_VERSION_1_1_0}"
-                        ),
-                        Status::NotImplemented,
-                    )),
+                    ))),
                     error,
                 )
             };

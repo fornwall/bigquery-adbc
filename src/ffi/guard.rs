@@ -10,20 +10,18 @@ use adbc_core::error::{Error, Result};
 use crate::error::{driver_defect, invalid_argument};
 
 /// Run `f`, converting a panic into an `Internal` error rather than letting it cross the ABI.
-pub(crate) fn catch<T>(f: impl FnOnce() -> Result<T>) -> std::result::Result<Result<T>, Error> {
-    std::panic::catch_unwind(AssertUnwindSafe(f)).map_err(caught_panic)
+pub(crate) fn catch<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
+    std::panic::catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|cause| Err(caught_panic(cause)))
 }
 
 // Out of line so every `catch` instantiation shares one copy, including the payload drop.
 #[cold]
 #[inline(never)]
 fn caught_panic(cause: Box<dyn Any + Send>) -> Error {
-    let failure = driver_defect(format_args!(
+    driver_defect(format_args!(
         "uncaught panic in the BigQuery driver: {}",
         panic_message(cause.as_ref())
-    ));
-    drop(cause);
-    failure
+    ))
 }
 
 /// Extract a string panic payload for entry-point and Arrow stream errors.

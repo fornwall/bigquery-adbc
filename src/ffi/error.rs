@@ -16,29 +16,6 @@ use super::guard::sanitized_cstring;
 type ErrorDetails = Vec<(CString, Vec<u8>)>;
 
 /// # Safety
-/// `error` must be a pointer this driver previously wrote a 1.1.0 error into.
-// Guard-exempt: freeing a `CString` and a details box cannot panic; the rest is pointer writes.
-unsafe extern "C" fn release_error(error: *mut AdbcError) {
-    // SAFETY: our callback receives exclusive access to the full 1.1.0 struct we populated.
-    let Some(error) = (unsafe { error.as_mut() }) else {
-        return;
-    };
-    if !error.message.is_null() {
-        // SAFETY: export_error stored CString::into_raw here; clearing it prevents a second free.
-        drop(unsafe { CString::from_raw(error.message) });
-        error.message = std::ptr::null_mut();
-    }
-    if !error.private_data.is_null() {
-        // SAFETY: export_error allocated this ErrorDetails box; this callback owns its only
-        // release.
-        drop(unsafe { Box::from_raw(error.private_data.cast::<ErrorDetails>()) });
-        error.private_data = std::ptr::null_mut();
-    }
-    // Clearing this makes the callback idempotent, which the header requires.
-    error.release = None;
-}
-
-/// # Safety
 /// `error` must be a pointer this driver previously wrote a 1.0.0 error into.
 // Guard-exempt: freeing a `CString` cannot panic; the rest is pointer writes.
 unsafe extern "C" fn release_error_v100(error: *mut AdbcErrorV100) {
@@ -47,11 +24,29 @@ unsafe extern "C" fn release_error_v100(error: *mut AdbcErrorV100) {
         return;
     };
     if !error.message.is_null() {
-        // SAFETY: export_error stored CString::into_raw here and this callback consumes it once.
+        // SAFETY: export_error stored CString::into_raw here; clearing it prevents a second free.
         drop(unsafe { CString::from_raw(error.message) });
         error.message = std::ptr::null_mut();
     }
+    // Clearing this makes the callback idempotent, which the header requires.
     error.release = None;
+}
+
+/// # Safety
+/// `error` must be a pointer this driver previously wrote a 1.1.0 error into.
+// Guard-exempt: freeing a `CString` and a details box cannot panic; the rest is pointer writes.
+unsafe extern "C" fn release_error(error: *mut AdbcError) {
+    // SAFETY: A 1.1.0 error starts with the 1.0.0 prefix this driver wrote.
+    unsafe { release_error_v100(error.cast()) };
+    // SAFETY: our callback receives exclusive access to the full 1.1.0 struct we populated.
+    let Some(error) = (unsafe { error.as_mut() }) else {
+        return;
+    };
+    if !error.private_data.is_null() {
+        // SAFETY: export_error allocated this ErrorDetails box; clearing it prevents a second free.
+        drop(unsafe { Box::from_raw(error.private_data.cast::<ErrorDetails>()) });
+        error.private_data = std::ptr::null_mut();
+    }
 }
 
 /// Write `error` into the caller's out parameter, respecting whichever ABI revision it allocated.
@@ -137,15 +132,12 @@ unsafe fn details<'a>(error: *const AdbcError) -> Option<&'a ErrorDetails> {
         return None;
     }
     // SAFETY: error is non-null and vendor_code belongs to both revisions' allocated prefixes.
-    if unsafe { std::ptr::read_unaligned(&raw const (*error).vendor_code) }
-        != ADBC_ERROR_VENDOR_CODE_PRIVATE_DATA
-    {
+    if unsafe { (*error).vendor_code } != ADBC_ERROR_VENDOR_CODE_PRIVATE_DATA {
         return None;
     }
-    // SAFETY: the sentinel guarantees a full 1.1.0 allocation, including private_data.
-    let private_data = unsafe { std::ptr::read_unaligned(&raw const (*error).private_data) };
-    // SAFETY: our error export stores an ErrorDetails box here; the caller keeps it alive for 'a.
-    unsafe { private_data.cast::<ErrorDetails>().as_ref() }
+    // SAFETY: the sentinel guarantees a full 1.1.0 allocation, including private_data, where our
+    // error export stores an ErrorDetails box. The caller keeps it alive for 'a.
+    unsafe { (*error).private_data.cast::<ErrorDetails>().as_ref() }
 }
 
 /// # Safety
@@ -169,25 +161,20 @@ pub(crate) unsafe extern "C" fn error_get_detail(
     error: *const AdbcError,
     index: c_int,
 ) -> AdbcErrorDetail {
-    let empty = AdbcErrorDetail {
-        key: std::ptr::null(),
-        value: std::ptr::null(),
-        value_length: 0,
-    };
     // SAFETY: the caller supplies our initialized/released error and keeps its storage live.
-    let Some(details) = (unsafe { details(error) }) else {
-        return empty;
-    };
-    let Ok(index) = usize::try_from(index) else {
-        return empty;
-    };
-    let Some((key, value)) = details.get(index) else {
-        return empty;
-    };
-    AdbcErrorDetail {
-        key: key.as_ptr(),
-        value: value.as_ptr(),
-        value_length: value.len(),
+    let detail =
+        unsafe { details(error) }.and_then(|details| details.get(usize::try_from(index).ok()?));
+    match detail {
+        Some((key, value)) => AdbcErrorDetail {
+            key: key.as_ptr(),
+            value: value.as_ptr(),
+            value_length: value.len(),
+        },
+        None => AdbcErrorDetail {
+            key: std::ptr::null(),
+            value: std::ptr::null(),
+            value_length: 0,
+        },
     }
 }
 
