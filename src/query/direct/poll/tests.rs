@@ -197,14 +197,7 @@ fn only_a_done_job_with_an_error_result_may_turn_a_rejection_into_a_rerun() {
 /// A failed verification is not evidence: the rejection stands and the query is not rerun.
 #[test]
 fn a_rejection_whose_job_cannot_be_fetched_reports_the_rejection() {
-    let unavailable = std::iter::repeat_n(
-        (
-            503,
-            json!({"error": {"code": 503, "message": "unavailable", "status": "UNAVAILABLE"}}),
-        ),
-        READS,
-    )
-    .collect::<Vec<_>>();
+    let unavailable = std::iter::repeat_n(unavailable(), READS).collect::<Vec<_>>();
     // A 200 that is not a job resource establishes nothing, like a failed fetch.
     let undecodable = vec![ok(json!([]))];
 
@@ -256,7 +249,7 @@ fn failed_round() -> Vec<(u16, serde_json::Value)> {
     vec![unavailable(); 2 * READS]
 }
 
-/// A cancellable operation on `job`, on a mock that also answers its cancellation.
+/// A cancellable operation on the fixture job, whose cancellation reaches `endpoint`.
 fn tracked_job(runtime: &SharedRuntime, endpoint: &str) -> (Arc<Cancellation>, Operation) {
     let cancellation = Cancellation::new(
         runtime.clone(),
@@ -429,14 +422,8 @@ fn a_transient_failure_of_the_verification_fetch_does_not_fail_a_successful_quer
             "totalRows": "1",
             "errors": [{"reason": "stopped", "message": "a warning, not a failure"}]
         })),
-        (
-            503,
-            json!({"error": {"code": 503, "message": "unavailable", "status": "UNAVAILABLE"}}),
-        ),
-        ok(json!({
-            "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
-            "status": {"state": "DONE"}
-        })),
+        unavailable(),
+        job_in("DONE"),
     ]);
 
     let page = match outcome {
