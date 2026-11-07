@@ -40,6 +40,9 @@ changes.
 - A stalled Storage Read stream no longer blocks its reader forever. After two minutes of silence
   while the reader has room, it resumes at the next unread row, and it fails with `TIMEOUT` once
   its attempts are spent.
+- A `jobs.query` submission whose retries end without a verdict now reads `failed to submit` and
+  says BigQuery may still have run the statement. It read as a rejection, inviting a resubmission
+  that could apply DML twice.
 - A job submission refused with HTTP 401 under `temporary_access_token` or `anonymous`
   authentication no longer sends a `jobs.cancel` for a job that was never created.
 

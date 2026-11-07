@@ -371,8 +371,10 @@ is released. An unpolled stream observes cancellation on its next read.
 
 Error messages say which step failed: `BigQuery rejected the query` for a submission BigQuery
 refused, `BigQuery stopped the query` for one it stopped while answering the submission (such as
-at the job timeout), and `failed to submit` for one that got no response. A job that fails after
-it was accepted is named as `<project>:<location>.<id>`, and its message ends with the job's console
+at the job timeout), and `failed to submit` for one that got no verdict. When the retries of a
+`jobs.query` submission end that way, the message adds that BigQuery may still have run the
+statement; a new submission would be a new execution, so check first. A job that fails after it
+was accepted is named as `<project>:<location>.<id>`, and its message ends with the job's console
 link. BigQuery's errors follow as `<reason>: <message>`. `AdbcErrorGetDetail` exposes these keys
 when available:
 

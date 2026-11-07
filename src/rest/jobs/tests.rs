@@ -1193,6 +1193,63 @@ fn a_jobs_query_whose_row_is_too_large_is_replayed_once_to_name_its_job() {
     assert_eq!(failure.status, Status::InvalidArguments);
 }
 
+/// A statement whose every attempt ended without a verdict may have run, and a caller that sends
+/// it again under a new request ID would run it twice, so the failure says so. BigQuery's answer to
+/// a last attempt says nothing about an earlier one that lost its answer, and only attempts that
+/// BigQuery refused throughout leave a rejection.
+#[test]
+fn an_exhausted_jobs_query_that_may_have_run_says_so() {
+    const SUBMIT: &str = "failed to submit the BigQuery jobs.query request: ";
+    const MAY_HAVE_RUN: &str =
+        "; BigQuery may still have run this statement; check before running it again";
+    let unavailable = Some((503, error_body("backendError", "the answer was lost")));
+    let limited = Some((429, error_body("rateLimitExceeded", "slow down")));
+    let mut answered_last = vec![unavailable.clone(); MAX_ATTEMPTS - 1];
+    answered_last.push(limited.clone());
+    for (answers, lead, reported, suffix) in [
+        (
+            vec![unavailable; MAX_ATTEMPTS],
+            SUBMIT,
+            "backendError: the answer was lost (HTTP 503)",
+            MAY_HAVE_RUN,
+        ),
+        (vec![None; MAX_ATTEMPTS], SUBMIT, "", MAY_HAVE_RUN),
+        (
+            answered_last,
+            SUBMIT,
+            "rateLimitExceeded: slow down (HTTP 429)",
+            MAY_HAVE_RUN,
+        ),
+        (
+            vec![limited; MAX_ATTEMPTS],
+            "BigQuery rejected the query: ",
+            "rateLimitExceeded: slow down (HTTP 429)",
+            "",
+        ),
+    ] {
+        let mut answers = answers.into_iter();
+        let (endpoint, captured) =
+            capture_requests_responding(MAX_ATTEMPTS, move |_| answers.next().unwrap());
+        let (runtime, jobs) = client(&endpoint);
+        let failure = runtime
+            .block_on(jobs.query(
+                None,
+                "p",
+                bytes::Bytes::from_static(b"{}"),
+                &crate::rest::request::RequestStart::default(),
+            ))
+            .unwrap_err();
+        assert_eq!(captured.join().unwrap().len(), MAX_ATTEMPTS);
+        assert_eq!(failure.status, Status::IO, "{}", failure.message);
+        assert!(failure.message.starts_with(lead), "{}", failure.message);
+        assert!(
+            failure.message.ends_with(&format!("{reported}{suffix}")),
+            "{}",
+            failure.message
+        );
+    }
+}
+
 /// An error document reads as a rejection, not a failure to submit. The `{reason}:` spelling dbt
 /// matches on survives either way.
 #[test]

@@ -379,7 +379,7 @@ lets the submission finish in the background, then requests cancellation where i
 search in G48 puts the job.
 A failed explicit cancel returns `UNKNOWN` within 30 seconds, and a failed background cancel is a
 `warn` diagnostic. A `jobs.query` submission whose retries ended without a job reference cannot be
-cancelled.
+cancelled, and its error says the statement may still have run.
 
 ### G52. Canonical statement progress reports response-boundary work without extra polling
 

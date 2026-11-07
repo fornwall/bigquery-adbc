@@ -631,12 +631,24 @@ impl JobClient {
                 may_exist = true;
                 continue;
             }
-            if class == RetryClass::Final || attempt == MAX_ATTEMPTS {
+            if class == RetryClass::Final {
                 // A stopped query (at its job timeout, for example) was accepted, not rejected.
-                if failure_reason(&failure) == Some("stopped")
-                    && let Some(rest) = failure.message.strip_prefix(error_context)
-                {
-                    failure.message = format!("BigQuery stopped the query{rest}");
+                if failure_reason(&failure) == Some("stopped") {
+                    relead(&mut failure, error_context, "BigQuery stopped the query");
+                }
+                return Err(failure);
+            }
+            if attempt == MAX_ATTEMPTS {
+                // A caller that resubmits uses a new request ID, so it would run the statement
+                // again if an attempt that got no verdict ran it.
+                if may_exist {
+                    let lead = format!("failed to {send_context}");
+                    relead(&mut failure, error_context, &lead);
+                    append_remedy(
+                        &mut failure,
+                        "BigQuery may still have run this statement; check before running it \
+                         again",
+                    );
                 }
                 return Err(failure);
             }
@@ -690,9 +702,9 @@ impl JobClient {
         // completion read rejected with a job-only reason reports the job's failure.
         if matches!(read, QueryResultsRead::Completion)
             && failure_reason(&failure).is_some_and(|reason| JOB_VERDICT_REASONS.contains(&reason))
-            && let Some(rest) = failure.message.strip_prefix(error_context.as_str())
         {
-            failure.message = format!("BigQuery query job {} failed{rest}", job_name(reference));
+            let lead = format!("BigQuery query job {} failed", job_name(reference));
+            relead(&mut failure, &error_context, &lead);
         }
         Err(failure)
     }
@@ -932,6 +944,13 @@ impl std::fmt::Debug for JobClient {
             .debug_struct("JobClient")
             .field("projects", &self.projects)
             .finish_non_exhaustive()
+    }
+}
+
+/// Replaces the `from` that leads a rejection's message; a transport failure's has none.
+fn relead(failure: &mut adbc_core::error::Error, from: &str, to: &str) {
+    if failure.message.starts_with(from) {
+        failure.message.replace_range(..from.len(), to);
     }
 }
 
