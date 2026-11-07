@@ -2,6 +2,7 @@
 //! that records which of the database's credentials the failure belongs to.
 
 use std::fmt;
+use std::time::Duration;
 
 use google_cloud_auth::credentials::{CacheableResource, Credentials, CredentialsProvider};
 use google_cloud_gax::error::CredentialsError;
@@ -12,6 +13,11 @@ use crate::BigQueryAuthenticationType;
 use crate::error::{CredentialFailure, CredentialLayer, TokenServiceFailure};
 
 use super::external_account::IdentityProviderError;
+
+/// Bounds one token mint. Upstream's OAuth, STS and metadata clients set no timeout, so a token
+/// service that accepts a connection and stalls would otherwise hang every request (UP-101). It
+/// exceeds the retry budgets of those exchanges, so a failing one still reports its own cause.
+const TOKEN_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Wraps `credentials` so a failed token exchange reports only what is safe to report.
 ///
@@ -50,14 +56,23 @@ impl CredentialsProvider for RedactedTokenExchangeCredentials {
         &self,
         extensions: Extensions,
     ) -> Result<CacheableResource<HeaderMap>, CredentialsError> {
-        self.credentials
-            .headers(extensions)
-            .await
-            .map_err(|source| redact(source, self.layer))
+        match tokio::time::timeout(TOKEN_TIMEOUT, self.credentials.headers(extensions)).await {
+            Ok(headers) => headers.map_err(|source| redact(source, self.layer)),
+            Err(_) => Err(CredentialsError::from_source(
+                true,
+                CredentialFailure::new(self.layer, Some("the token request timed out".into()))
+                    .noting_unavailability(Some(TokenServiceFailure::Exchange)),
+            )),
+        }
     }
 
+    /// Only a metadata-server credential asks the network here. Like upstream's own failed
+    /// lookup, a stalled one reports no universe, which clients read as the default.
     async fn universe_domain(&self) -> Option<String> {
-        self.credentials.universe_domain().await
+        tokio::time::timeout(TOKEN_TIMEOUT, self.credentials.universe_domain())
+            .await
+            .ok()
+            .flatten()
     }
 }
 
@@ -220,6 +235,47 @@ mod tests {
                 expected == Status::Unauthenticated
             );
         }
+    }
+
+    /// Upstream's OAuth, STS and metadata clients have no timeout, so a token service that accepts
+    /// a connection and then stalls must fail the request rather than hang it. The failure is an
+    /// outage even under ADC, whose remedy for a missing credential would not apply.
+    #[test]
+    fn a_stalled_token_service_fails_as_an_outage() {
+        #[derive(Debug)]
+        struct Stalled;
+
+        impl CredentialsProvider for Stalled {
+            async fn headers(
+                &self,
+                _: Extensions,
+            ) -> Result<CacheableResource<HeaderMap>, CredentialsError> {
+                std::future::pending().await
+            }
+
+            async fn universe_domain(&self) -> Option<String> {
+                std::future::pending().await
+            }
+        }
+
+        let credentials = redacted_credentials(
+            Credentials::from(Stalled),
+            CredentialLayer::Authentication(BigQueryAuthenticationType::Default),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .start_paused(true)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let source = credentials.headers(Extensions::new()).await.unwrap_err();
+            assert!(source.is_transient());
+            let failure =
+                crate::error::google_error("query failed", GoogleError::authentication(source));
+            assert_eq!(failure.status, adbc_core::error::Status::IO);
+            assert!(failure.message.contains("timed out"), "{}", failure.message);
+            assert_eq!(credentials.universe_domain().await, None);
+        });
     }
 
     /// The OAuth refresh reports `invalid_rapt` only in the body `redact` drops, so the flag must

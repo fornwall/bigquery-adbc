@@ -59,6 +59,7 @@ cannot show whether the service is fixed. Unmerged fixes are under
 | UP-95 | `adbc_ingest` keeps an earlier call's catalog and schema | ADBC Python driver manager | Local finding; documented workaround | None |
 | UP-96 | Arrow appends refuse flexible column names | BigQuery Storage Write | Service status unknown; driver refuses up front | None |
 | [UP-100](#up-100-sdk-token-exchanges-follow-redirects) | Token exchanges follow redirects | `google-cloud-auth` | Local finding; no SDK policy option | None |
+| [UP-101](#up-101-sdk-token-exchanges-have-no-timeout) | Token exchanges have no timeout | `google-cloud-auth` | Local finding; driver bounds the caller's wait | None |
 
 ## Git snapshot candidates
 
@@ -363,3 +364,11 @@ token. The driver's initial endpoint allowlist therefore does not constrain ever
 these credentials. The SDK should disable redirects for token requests; the custom identity
 provider in `src/config/external_account.rs` already does. No live Google redirect has been
 observed.
+
+## UP-101: SDK token exchanges have no timeout
+
+The pinned auth library's user OAuth refresh, STS exchange and metadata-server requests each use a
+default `reqwest::Client`, with no credential-builder option to set a deadline. A token service that
+accepts a connection and never answers would hang every waiting request. The driver bounds each
+caller's wait at two minutes (`src/config/redaction.rs`), but the library's background refresh stays
+blocked until the connection dies, so requests keep failing until then even if the service recovers.

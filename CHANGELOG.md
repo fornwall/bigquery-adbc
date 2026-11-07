@@ -27,6 +27,8 @@ changes.
 - A connection the external-account identity provider dropped before answering is treated as
   transient. It previously ended credential refresh for good, failing every later query once the
   cached token expired.
+- A token service that accepts a connection and never answers fails the request with `IO` after two
+  minutes instead of hanging it. This covers the OAuth, STS and metadata-server exchanges.
 
 ## [0.2.0] - 2026-11-06
 
