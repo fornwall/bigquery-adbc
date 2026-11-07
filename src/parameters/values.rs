@@ -26,7 +26,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 
 use crate::error::{driver_defect, error, not_implemented};
 use crate::rest::model::{QueryParameterType, QueryParameterValue, RangeValue};
-use crate::types::decimal::decimal_value_digit_budget;
+use crate::types::decimal::spans_full_physical_domain;
 use crate::types::temporal::{
     IntervalOutOfRange, MICROSECONDS_PER_DAY, MILLISECONDS_PER_DAY, NANOSECONDS_PER_DAY,
     check_interval_micros, check_interval_months_days, civil_from_days,
@@ -68,10 +68,9 @@ pub(super) fn parameter_value(
             // `value_offset_at` multiplies unchecked; an offset the platform cannot address is
             // refused rather than wrapped.
             let start = row.checked_mul(length).ok_or_else(|| {
-                error(
-                    format!("{at} is an Arrow FixedSizeList whose offset is too large to address"),
-                    Status::InvalidData,
-                )
+                invalid_value(format!(
+                    "{at} is an Arrow FixedSizeList whose offset is too large to address"
+                ))
             })?;
             let end = list_slice_end(at, start, length, "FixedSizeList")?;
             list_value(at, parameter_type, list.values().as_ref(), start, end)
@@ -235,27 +234,18 @@ fn decimal_value<T: DecimalType>(
     array: &PrimitiveArray<T>,
     row: usize,
 ) -> Result<String> {
-    let digit_budget =
-        decimal_value_digit_budget(T::MAX_PRECISION, array.precision(), array.scale());
-    if digit_budget > array.precision() {
-        // `value_as_string` clamps the unscaled digits to the array's declared precision, so it
-        // would spell a 77-digit BIGNUMERIC incorrectly. The shared budget preserves the value.
-        return Ok(T::format_decimal(
-            array.value(row),
-            digit_budget,
-            array.scale(),
-        ));
+    if !spans_full_physical_domain(T::MAX_PRECISION, array.precision(), array.scale()) {
+        // Arrow's precision error includes the value. Report only the declared constraint.
+        T::validate_decimal_precision(array.value(row), array.precision(), array.scale()).map_err(
+            |_| {
+                invalid_value(format!(
+                    "{at} is an Arrow {} outside its declared precision {}",
+                    T::PREFIX,
+                    array.precision()
+                ))
+            },
+        )?;
     }
-    // Arrow's precision error includes the value. Report only the declared constraint.
-    T::validate_decimal_precision(array.value(row), array.precision(), array.scale()).map_err(
-        |_| {
-            invalid_value(format!(
-                "{at} is an Arrow {} outside its declared precision {}",
-                T::PREFIX,
-                array.precision()
-            ))
-        },
-    )?;
     Ok(array.value_as_string(row))
 }
 
@@ -266,10 +256,9 @@ fn dictionary_value<K: ArrowDictionaryKeyType>(
     row: usize,
 ) -> Result<QueryParameterValue> {
     let key = array.key(row).ok_or_else(|| {
-        error(
-            format!("{at} is a non-null Arrow dictionary value with a null key"),
-            Status::InvalidData,
-        )
+        invalid_value(format!(
+            "{at} is a non-null Arrow dictionary value with a null key"
+        ))
     })?;
     parameter_value(at, parameter_type, array.values().as_ref(), key)
 }
@@ -282,13 +271,10 @@ fn list_value(
     end: usize,
 ) -> Result<QueryParameterValue> {
     if start > end || end > values.len() {
-        return Err(error(
-            format!(
-                "{at} spans {start}..{end}, outside its child array of length {}",
-                values.len()
-            ),
-            Status::InvalidData,
-        ));
+        return Err(invalid_value(format!(
+            "{at} spans {start}..{end}, outside its child array of length {}",
+            values.len()
+        )));
     }
     if start == end {
         // BigQuery treats empty `arrayValues` and `structValues` collections as absent, which
@@ -307,10 +293,9 @@ fn list_value(
         let value = parameter_value(&element, element_type, values, position)?;
         // Checked on the converted value, so a dictionary entry pointing at NULL is caught too.
         if value == QueryParameterValue::default() {
-            return Err(error(
-                format!("{element} is NULL; a BigQuery array cannot contain NULL"),
-                Status::InvalidData,
-            ));
+            return Err(invalid_value(format!(
+                "{element} is NULL; a BigQuery array cannot contain NULL"
+            )));
         }
         array_values.push(value);
     }
@@ -420,10 +405,9 @@ fn list_view_value<O: OffsetSizeTrait + std::fmt::Display + TryInto<usize>>(
 
 fn list_slice_end(at: &ValueAt<'_>, start: usize, length: usize, kind: &str) -> Result<usize> {
     start.checked_add(length).ok_or_else(|| {
-        error(
-            format!("{at} is an Arrow {kind} whose offset range is too large to address"),
-            Status::InvalidData,
-        )
+        invalid_value(format!(
+            "{at} is an Arrow {kind} whose offset range is too large to address"
+        ))
     })
 }
 
@@ -433,10 +417,9 @@ fn offset_to_usize<O: Copy + std::fmt::Display + TryInto<usize>>(
     kind: &str,
 ) -> Result<usize> {
     offset.try_into().map_err(|_| {
-        error(
-            format!("{at} is an Arrow {kind} with an invalid offset {offset}"),
-            Status::InvalidData,
-        )
+        invalid_value(format!(
+            "{at} is an Arrow {kind} with an invalid offset {offset}"
+        ))
     })
 }
 

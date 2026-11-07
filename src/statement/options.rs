@@ -68,15 +68,7 @@ impl Optionable for BigQueryStatement {
                 Ok(())
             }
             OptionStatement::TargetCatalog => {
-                let value = string_value(key.as_ref(), value)?;
-                self.ingest.target_catalog = if value.is_empty() {
-                    None
-                } else {
-                    Some(ProjectIdentifier::try_new_from(
-                        "the adbc.ingest.target_catalog option",
-                        value,
-                    )?)
-                };
+                self.ingest.target_catalog = project_value(key.as_ref(), value)?;
                 Ok(())
             }
             OptionStatement::TargetDbSchema => {
@@ -87,29 +79,18 @@ impl Optionable for BigQueryStatement {
                 self.ingest.target_db_schema = (!value.is_empty()).then_some(value);
                 Ok(())
             }
-            OptionStatement::Temporary => {
-                if boolean_value(key.as_ref(), value)? {
-                    Err(not_implemented(format!(
-                        "BigQuery option {} cannot be enabled: temporary tables are not \
-                         implemented for BigQuery bulk ingest; ingest into a named table instead",
-                        key.as_ref()
-                    )))
-                } else {
-                    Ok(())
-                }
-            }
-            // The spec default "false" is what the statement already does.
-            OptionStatement::Incremental => {
-                if boolean_value(key.as_ref(), value)? {
-                    Err(not_implemented(format!(
-                        "BigQuery option {} cannot be enabled; AdbcStatementExecutePartitions \
-                         returns all partitions together once the query completes",
-                        key.as_ref()
-                    )))
-                } else {
-                    Ok(())
-                }
-            }
+            OptionStatement::Temporary => refuse_enabling(
+                key.as_ref(),
+                value,
+                "temporary tables are not implemented for BigQuery bulk ingest; ingest into a \
+                 named table instead",
+            ),
+            OptionStatement::Incremental => refuse_enabling(
+                key.as_ref(),
+                value,
+                "AdbcStatementExecutePartitions returns all partitions together once the query \
+                 completes",
+            ),
             _ => Err(option_set_refusal("statement", key.as_ref())),
         }
     }
@@ -214,8 +195,8 @@ impl BigQueryStatement {
                     self.query_defaults().table_option(key.as_ref(), &value)?;
             }
             BigQueryStatementOption::DefaultProjectId => {
-                let value = string_value(key.as_ref(), value)?;
-                if value.is_empty()
+                let project = project_value(key.as_ref(), value)?;
+                if project.is_none()
                     && self.query_options.default_dataset_id.is_some()
                     && self.context.current_catalog.is_none()
                     && self.context.billing_project_id.is_none()
@@ -230,14 +211,7 @@ impl BigQueryStatement {
                         BigQueryStatementOption::DefaultDatasetId.as_str(),
                     )));
                 }
-                self.query_options.default_project_id = if value.is_empty() {
-                    None
-                } else {
-                    Some(ProjectIdentifier::try_new_from(
-                        &format!("the {} option", key.as_ref()),
-                        value,
-                    )?)
-                };
+                self.query_options.default_project_id = project;
             }
             BigQueryStatementOption::DefaultDatasetId => {
                 let value = string_value(key.as_ref(), value)?;
@@ -395,6 +369,24 @@ impl BigQueryStatement {
         };
         Ok(Some(value))
     }
+}
+
+/// A project option's value, which the empty string clears.
+fn project_value(key: &str, value: OptionValue) -> Result<Option<ProjectIdentifier>> {
+    let value = string_value(key, value)?;
+    (!value.is_empty())
+        .then(|| ProjectIdentifier::try_new_from(&format!("the {key} option"), value))
+        .transpose()
+}
+
+/// A boolean option whose spec default `false` is all the statement does, and is a no-op.
+fn refuse_enabling(key: &str, value: OptionValue, reason: &str) -> Result<()> {
+    if boolean_value(key, value)? {
+        return Err(not_implemented(format!(
+            "BigQuery option {key} cannot be enabled: {reason}"
+        )));
+    }
+    Ok(())
 }
 
 /// An integer query option whose override zero clears and whose negative values mean nothing.
