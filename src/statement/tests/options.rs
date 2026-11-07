@@ -38,30 +38,6 @@ fn reservation_round_trips_clears_and_rejects_wrong_types_and_legacy_alias() {
     assert_string_option(&statement, legacy, None);
 }
 
-/// `bigquery.query.unordered_read` is plain result-path state: off by default, validated as
-/// an ADBC boolean string, and read back through the key that set it.
-#[test]
-fn unordered_read_round_trips_and_rejects_invalid_values() {
-    let mut connection = test_connection();
-    let mut statement = connection.new_statement().unwrap();
-    let key = BqOption::UnorderedRead;
-
-    assert_eq!(
-        option_string(&statement, key),
-        ADBC_OPTION_VALUE_DISABLED,
-        "results are ordered unless the caller opts out"
-    );
-
-    set_option(&mut statement, key, ADBC_OPTION_VALUE_ENABLED.to_owned());
-    assert_eq!(option_string(&statement, key), ADBC_OPTION_VALUE_ENABLED);
-
-    let error = set_option_error(&mut statement, key, "fast");
-    assert_message(&error, &["bigquery.query.unordered_read"]);
-
-    let error = set_option_error(&mut statement, key, OptionValue::Int(1));
-    assert_message(&error, &["requires a string value"]);
-}
-
 /// The dbt option reports configuration even when automatic fallback has cached a refusal.
 #[test]
 fn storage_api_disabled_client_round_trips_without_changing_a_recorded_refusal() {
@@ -467,6 +443,8 @@ fn statement_options_report_their_defaults_and_clear_back_to_them() {
 
     for (option, default) in [
         (BqOption::DisableQueryCache, Some("false")),
+        // Results are ordered unless the caller opts out.
+        (BqOption::UnorderedRead, Some("false")),
         (
             BqOption::Priority,
             Some(BigQueryQueryPriority::Interactive.as_str()),
@@ -542,11 +520,13 @@ fn statement_options_report_their_defaults_and_clear_back_to_them() {
 #[test]
 fn statement_options_reject_invalid_values() {
     let mut statement = test_statement();
-    let rows: [(BqOption, OptionValue); 17] = [
+    let rows: [(BqOption, OptionValue); 19] = [
         (BqOption::MaximumBytesBilled, OptionValue::Int(-1)),
         (BqOption::JobTimeout, OptionValue::Int(-1)),
         (BqOption::Priority, "batch_mode".into()),
         (BqOption::DisableQueryCache, OptionValue::Int(1)),
+        (BqOption::UnorderedRead, "fast".into()),
+        (BqOption::UnorderedRead, OptionValue::Int(1)),
         (BqOption::CreateSession, OptionValue::Int(1)),
         (BqOption::DryRun, OptionValue::Int(1)),
         (BqOption::CreateDisposition, "CREATE_SOMETIMES".into()),
