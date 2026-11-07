@@ -3,6 +3,7 @@
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::channel;
 
 use adbc_core::CancelHandle;
 use adbc_core::error::Result;
@@ -13,6 +14,7 @@ use arrow_schema::Field;
 
 use super::abi::{ADBC_ERROR_INIT, ADBC_STATUS_OK, AdbcDatabase, AdbcError, AdbcStatusCode};
 use super::database::database_init;
+use super::handle::dispatch;
 use super::options::{FfiHandle, get_option, new_handle, release_handle, set_option};
 
 /// Run the driver's release callback on an out parameter, when one was set.
@@ -75,6 +77,18 @@ pub(super) fn call(
     let message = error_message(&error);
     release_error(&mut error);
     (status, message)
+}
+
+/// Assert that a [`call`] failed with `status` and a message containing `fragment`.
+#[track_caller]
+pub(super) fn assert_refused(
+    (actual, message): (AdbcStatusCode, Option<String>),
+    status: AdbcStatusCode,
+    fragment: &str,
+) {
+    assert_eq!(actual, status, "{message:?}");
+    let message = message.expect("the refusal must say why");
+    assert!(message.contains(fragment), "{message}");
 }
 
 /// `Adbc*SetOption` with a string value.
@@ -146,6 +160,30 @@ pub(super) unsafe fn c_string(ptr: *const c_char) -> Option<String> {
             .to_string_lossy()
             .into_owned(),
     )
+}
+
+/// Hold the dispatch turn of the object in `slot` on a worker, like a blocked `ExecuteQuery`,
+/// until the returned closure is called, which also joins the worker. The caller keeps the slot
+/// alive until then.
+pub(super) fn hold_the_dispatch_turn<S: 'static>(slot: *const *mut c_void) -> impl FnOnce() {
+    let (hold_sender, hold_receiver) = channel::<()>();
+    let (started_sender, started_receiver) = channel::<()>();
+    let address = slot.expose_provenance();
+    // SAFETY: The address is a slot installed with an `S`, which the caller keeps alive until the
+    // returned closure joins this worker.
+    let worker = std::thread::spawn(move || unsafe {
+        let slot = std::ptr::with_exposed_provenance(address);
+        dispatch::<S, _>(slot, "object", null(), |_| {
+            started_sender.send(()).expect("test channel");
+            hold_receiver.recv().expect("test channel");
+            Ok(())
+        })
+    });
+    started_receiver.recv().unwrap();
+    move || {
+        hold_sender.send(()).unwrap();
+        assert_eq!(worker.join().unwrap(), ADBC_STATUS_OK);
+    }
 }
 
 /// A cancel handle that records whether the export layer reached it.

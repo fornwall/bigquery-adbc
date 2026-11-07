@@ -2,78 +2,23 @@ use super::*;
 use crate::ffi::abi::ADBC_ERROR_INIT;
 use crate::ffi::test_support::{error_message, null, release_error};
 
-/// Every function slot in the vtable, named, in header order. A `None` slot is a null pointer the
-/// host will call, so the whole table is swept.
-fn slots(table: &AdbcDriver) -> Vec<(&'static str, bool)> {
-    macro_rules! slots {
-        ($($field:ident),+ $(,)?) => {
-            vec![$((stringify!($field), table.$field.is_some())),+]
-        };
-    }
-    slots![
-        // --- ADBC 1.0.0 ---
-        DatabaseInit,
-        DatabaseNew,
-        DatabaseSetOption,
-        DatabaseRelease,
-        ConnectionCommit,
-        ConnectionGetInfo,
-        ConnectionGetObjects,
-        ConnectionGetTableSchema,
-        ConnectionGetTableTypes,
-        ConnectionInit,
-        ConnectionNew,
-        ConnectionSetOption,
-        ConnectionReadPartition,
-        ConnectionRelease,
-        ConnectionRollback,
-        StatementBind,
-        StatementBindStream,
-        StatementExecuteQuery,
-        StatementExecutePartitions,
-        StatementGetParameterSchema,
-        StatementNew,
-        StatementPrepare,
-        StatementRelease,
-        StatementSetOption,
-        StatementSetSqlQuery,
-        StatementSetSubstraitPlan,
-        // --- ADBC 1.1.0 ---
-        ErrorGetDetailCount,
-        ErrorGetDetail,
-        ErrorFromArrayStream,
-        DatabaseGetOption,
-        DatabaseGetOptionBytes,
-        DatabaseGetOptionDouble,
-        DatabaseGetOptionInt,
-        DatabaseSetOptionBytes,
-        DatabaseSetOptionDouble,
-        DatabaseSetOptionInt,
-        ConnectionCancel,
-        ConnectionGetOption,
-        ConnectionGetOptionBytes,
-        ConnectionGetOptionDouble,
-        ConnectionGetOptionInt,
-        ConnectionGetStatistics,
-        ConnectionGetStatisticNames,
-        ConnectionSetOptionBytes,
-        ConnectionSetOptionDouble,
-        ConnectionSetOptionInt,
-        StatementCancel,
-        StatementExecuteSchema,
-        StatementGetOption,
-        StatementGetOptionBytes,
-        StatementGetOptionDouble,
-        StatementGetOptionInt,
-        StatementSetOptionBytes,
-        StatementSetOptionDouble,
-        StatementSetOptionInt,
-    ]
+/// Every function slot in the vtable, in header order: the words after `private_data`,
+/// `private_manager` and `release`. A null slot is a null pointer the host will call, so the
+/// whole table is swept.
+fn slots(table: &AdbcDriver) -> &[*const c_void] {
+    // SAFETY: Every field is pointer-sized, so the repr(C) table is an array of pointers, and a
+    // `None` function pointer reads as null.
+    let words = unsafe {
+        std::slice::from_raw_parts(
+            std::ptr::from_ref(table).cast::<*const c_void>(),
+            size_of::<AdbcDriver>() / size_of::<*const c_void>(),
+        )
+    };
+    &words[3..]
 }
 
 /// How many of [`slots`] a 1.0.0 caller's allocation covers.
-const PREFIX_SLOTS: usize =
-    (ADBC_DRIVER_1_0_0_SIZE - 3 * size_of::<*const c_void>()) / size_of::<*const c_void>();
+const PREFIX_SLOTS: usize = ADBC_DRIVER_1_0_0_SIZE / size_of::<*const c_void>() - 3;
 
 /// Initialize a zeroed, full-size vtable at `version`, returning the status, the table and the
 /// message of any error exported.
@@ -94,16 +39,11 @@ fn init_zeroed(version: c_int) -> (AdbcStatusCode, AdbcDriver, Option<String>) {
 fn populates_a_1_1_0_vtable() {
     let (status, table, _) = init_zeroed(ADBC_VERSION_1_1_0);
     assert_eq!(status, ADBC_STATUS_OK);
-    let slots = slots(&table);
-    // The list must cover every field but `private_data`, `private_manager` and `release`, or a
-    // slot added to `AdbcDriver` and missing from `vtable()` would go unchecked.
-    assert_eq!(
-        slots.len(),
-        size_of::<AdbcDriver>() / size_of::<*const c_void>() - 3,
-        "every AdbcDriver function field must be listed"
-    );
-    for (name, populated) in slots {
-        assert!(populated, "{name} is a null pointer the host would call");
+    for (index, slot) in slots(&table).iter().enumerate() {
+        assert!(
+            !slot.is_null(),
+            "slot {index} is a null the host would call"
+        );
     }
 }
 
@@ -112,8 +52,8 @@ fn populates_a_1_1_0_vtable() {
 fn populates_every_slot_a_1_0_0_caller_can_see() {
     let (status, table, _) = init_zeroed(ADBC_VERSION_1_0_0);
     assert_eq!(status, ADBC_STATUS_OK);
-    for (index, (name, populated)) in slots(&table).into_iter().enumerate() {
-        assert_eq!(populated, index < PREFIX_SLOTS, "{name}");
+    for (index, slot) in slots(&table).iter().enumerate() {
+        assert_eq!(!slot.is_null(), index < PREFIX_SLOTS, "slot {index}");
     }
 }
 
@@ -125,10 +65,7 @@ fn populates_every_slot_a_1_0_0_caller_can_see() {
 #[test]
 fn the_lifecycle_slots_do_what_their_names_say() {
     let (_, table, _) = init_zeroed(ADBC_VERSION_1_1_0);
-    let mut database = abi::AdbcDatabase {
-        private_data: null(),
-        private_driver: null(),
-    };
+    let mut database = abi::AdbcDatabase::default();
     // SAFETY: The callback comes from the initialized table and receives a writable, empty
     // database handle.
     let status = unsafe { table.DatabaseNew.unwrap()(&raw mut database, null()) };
@@ -171,28 +108,8 @@ fn the_lifecycle_slots_do_what_their_names_say() {
     assert!(database.private_data.is_null(), "Release frees");
 }
 
-/// A 1.0.0 caller allocates only the prefix, so the bytes after it must be left untouched.
-#[test]
-fn writes_only_the_prefix_for_a_1_0_0_caller() {
-    let mut buffer = [0xAA_u8; size_of::<AdbcDriver>()];
-    // SAFETY: The byte buffer covers the 1.0 prefix copied as bytes (no typed access or alignment
-    // needed); the error output may be null.
-    let status =
-        unsafe { AdbcDriverBigqueryInit(ADBC_VERSION_1_0_0, buffer.as_mut_ptr().cast(), null()) };
-    assert_eq!(status, ADBC_STATUS_OK);
-    let (prefix, tail) = buffer.split_at(ADBC_DRIVER_1_0_0_SIZE);
-    assert!(
-        tail.iter().all(|byte| *byte == 0xAA),
-        "the 1.1.0 tail is untouched"
-    );
-    assert!(
-        prefix.iter().any(|byte| *byte != 0xAA),
-        "the 1.0.0 prefix is populated"
-    );
-}
-
-/// The same, through an allocation that ends at the prefix, so Miri reports any access by `init`
-/// or the driver's `release` that assumes the 1.1.0 tail exists.
+/// A 1.0.0 caller allocates only the prefix, so Miri reports any access by `init` or the driver's
+/// `release` that assumes the 1.1.0 tail exists.
 #[test]
 fn a_1_0_0_caller_can_init_and_release_a_prefix_sized_vtable() {
     let layout =

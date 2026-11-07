@@ -7,7 +7,7 @@ use super::super::abi::{
     ADBC_STATUS_INVALID_ARGUMENT, ADBC_STATUS_INVALID_STATE, ADBC_STATUS_NOT_FOUND,
     ADBC_STATUS_NOT_IMPLEMENTED, ADBC_STATUS_OK,
 };
-use super::super::handle::{dispatch, with_locked};
+use super::super::handle::with_locked;
 use super::super::options::with_handle;
 use super::*;
 use crate::ffi::abi::AdbcStatement;
@@ -16,7 +16,8 @@ use crate::ffi::options::{
     set_option, set_option_bytes, set_option_double, set_option_int,
 };
 use crate::ffi::test_support::{
-    allocated, call, database_at, get, initialized_database, null, release, set, zeroed_handle,
+    allocated, assert_refused, call, database_at, get, hold_the_dispatch_turn,
+    initialized_database, null, release, set, zeroed_handle,
 };
 use crate::test_support::http::capture_requests_gated;
 
@@ -118,17 +119,6 @@ fn a_failed_init_keeps_the_buffered_options_for_a_retry() {
 
     release(&mut connection);
     release(&mut database);
-}
-
-#[test]
-fn releasing_twice_reports_invalid_state_rather_than_double_freeing() {
-    let mut connection = pending();
-    release(&mut connection);
-    assert!(connection.private_data.is_null());
-    // SAFETY: The handle structure remains allocated; release checks the null slot left by the
-    // first release.
-    let status = unsafe { release_handle(&raw mut connection, null()) };
-    assert_eq!(status, ADBC_STATUS_INVALID_STATE);
 }
 
 #[test]
@@ -320,46 +310,33 @@ fn metadata_outputs_are_checked_before_initialization_or_network_work() {
     let table = c"orders".as_ptr();
     // SAFETY: Each call gets the live connection and a writable error; optional filters may be
     // null, and the null output is rejected.
-    let refusals = unsafe {
+    let stream_refusals = unsafe {
         [
-            (
-                "out",
-                call(|e| connection_get_info(c, null(), 0, null(), e)),
-            ),
-            (
-                "out",
-                call(|e| {
-                    connection_get_objects(c, 0, null(), null(), null(), null(), null(), null(), e)
-                }),
-            ),
-            (
-                "schema",
-                call(|e| connection_get_table_schema(c, null(), null(), table, null(), e)),
-            ),
-            ("out", call(|e| connection_get_table_types(c, null(), e))),
-            (
-                "out",
-                call(|e| connection_get_statistics(c, null(), null(), null(), 1, null(), e)),
-            ),
-            (
-                "out",
-                call(|e| connection_get_statistic_names(c, null(), e)),
-            ),
-            (
-                "out",
-                call(|e| connection_read_partition(c, null(), 0, null(), e)),
-            ),
+            call(|e| connection_get_info(c, null(), 0, null(), e)),
+            call(|e| {
+                connection_get_objects(c, 0, null(), null(), null(), null(), null(), null(), e)
+            }),
+            call(|e| connection_get_table_types(c, null(), e)),
+            call(|e| connection_get_statistics(c, null(), null(), null(), 1, null(), e)),
+            call(|e| connection_get_statistic_names(c, null(), e)),
+            call(|e| connection_read_partition(c, null(), 0, null(), e)),
         ]
     };
-    for (output, refusal) in refusals {
-        assert_eq!(
+    for refusal in stream_refusals {
+        assert_refused(
             refusal,
-            (
-                ADBC_STATUS_INVALID_ARGUMENT,
-                Some(format!("{output} must not be null"))
-            )
+            ADBC_STATUS_INVALID_ARGUMENT,
+            "out must not be null",
         );
     }
+    // SAFETY: As above.
+    let refusal =
+        call(|e| unsafe { connection_get_table_schema(c, null(), null(), table, null(), e) });
+    assert_refused(
+        refusal,
+        ADBC_STATUS_INVALID_ARGUMENT,
+        "schema must not be null",
+    );
     // The rejected calls preserve the connection's pre-init state and option buffer.
     assert!(buffered(&connection).is_empty());
     release(&mut connection);
@@ -465,33 +442,12 @@ fn a_second_handle_must_be_initialized_and_live() {
 #[test]
 fn cancel_does_not_wait_for_the_connection_dispatch_turn() {
     let mut connection = pending();
-    let (hold_sender, hold_receiver) = std::sync::mpsc::channel::<()>();
-    let (started_sender, started_receiver) = std::sync::mpsc::channel::<()>();
-
-    let address = (&raw const connection.private_data).expose_provenance();
-    // SAFETY: The address is the connection's slot, which the parent keeps alive until this worker
-    // joins.
-    let worker = std::thread::spawn(move || unsafe {
-        dispatch::<State, _>(
-            std::ptr::with_exposed_provenance(address),
-            KIND,
-            null(),
-            |_| {
-                started_sender.send(()).expect("test channel");
-                hold_receiver.recv().expect("test channel");
-                Ok(())
-            },
-        )
-    });
-    started_receiver.recv().unwrap();
-
+    let release_turn = hold_the_dispatch_turn::<State>(&raw const connection.private_data);
     // SAFETY: The connection remains live throughout the worker; cancel uses its separate
     // synchronized state.
     let status = unsafe { connection_cancel(&raw mut connection, null()) };
     assert_eq!(status, ADBC_STATUS_INVALID_STATE);
-
-    hold_sender.send(()).unwrap();
-    assert_eq!(worker.join().unwrap(), ADBC_STATUS_OK);
+    release_turn();
     release(&mut connection);
 }
 
@@ -580,77 +536,29 @@ fn every_entry_point_refuses_a_released_handle() {
     // their stated lengths, or nulls the entry points reject.
     let statuses = unsafe {
         [
-            ("init", connection_init(c, &raw mut database, null())),
-            ("commit", connection_commit(c, null())),
-            ("rollback", connection_rollback(c, null())),
-            ("cancel", connection_cancel(c, null())),
-            (
-                "get_info",
-                connection_get_info(c, null(), 0, null(), null()),
-            ),
-            (
-                "get_objects",
-                connection_get_objects(
-                    c,
-                    0,
-                    null(),
-                    null(),
-                    null(),
-                    null(),
-                    null(),
-                    null(),
-                    null(),
-                ),
-            ),
-            (
-                "get_table_schema",
-                connection_get_table_schema(c, null(), null(), name, null(), null()),
-            ),
-            (
-                "get_table_types",
-                connection_get_table_types(c, null(), null()),
-            ),
-            (
-                "get_statistics",
-                connection_get_statistics(c, null(), null(), null(), 0, null(), null()),
-            ),
-            (
-                "get_statistic_names",
-                connection_get_statistic_names(c, null(), null()),
-            ),
-            (
-                "read_partition",
-                connection_read_partition(c, b"x".as_ptr(), 1, null(), null()),
-            ),
-            ("set_option", set_option(c, name, name, null())),
-            ("set_option_int", set_option_int(c, name, 1, null())),
-            ("set_option_double", set_option_double(c, name, 1.0, null())),
-            (
-                "set_option_bytes",
-                set_option_bytes(c, name, b"x".as_ptr(), 1, null()),
-            ),
-            (
-                "get_option",
-                get_option(c, name, null(), &raw mut length, null()),
-            ),
-            (
-                "get_option_bytes",
-                get_option_bytes(c, name, null(), &raw mut length, null()),
-            ),
-            (
-                "get_option_int",
-                get_option_int(c, name, &raw mut integer, null()),
-            ),
-            (
-                "get_option_double",
-                get_option_double(c, name, &raw mut double, null()),
-            ),
-            ("release", release_handle(c, null())),
+            connection_init(c, &raw mut database, null()),
+            connection_commit(c, null()),
+            connection_rollback(c, null()),
+            connection_cancel(c, null()),
+            connection_get_info(c, null(), 0, null(), null()),
+            connection_get_objects(c, 0, null(), null(), null(), null(), null(), null(), null()),
+            connection_get_table_schema(c, null(), null(), name, null(), null()),
+            connection_get_table_types(c, null(), null()),
+            connection_get_statistics(c, null(), null(), null(), 0, null(), null()),
+            connection_get_statistic_names(c, null(), null()),
+            connection_read_partition(c, b"x".as_ptr(), 1, null(), null()),
+            set_option(c, name, name, null()),
+            set_option_int(c, name, 1, null()),
+            set_option_double(c, name, 1.0, null()),
+            set_option_bytes(c, name, b"x".as_ptr(), 1, null()),
+            get_option(c, name, null(), &raw mut length, null()),
+            get_option_bytes(c, name, null(), &raw mut length, null()),
+            get_option_int(c, name, &raw mut integer, null()),
+            get_option_double(c, name, &raw mut double, null()),
+            release_handle(c, null()),
         ]
     };
-    for (label, status) in statuses {
-        assert_eq!(status, ADBC_STATUS_INVALID_STATE, "{label}");
-    }
+    assert_eq!(statuses, [ADBC_STATUS_INVALID_STATE; 20]);
 }
 
 /// `AdbcStatementNew` borrows the connection without dispatch, so it has its own state check.
@@ -658,16 +566,14 @@ fn every_entry_point_refuses_a_released_handle() {
 fn creating_a_statement_needs_an_initialized_connection() {
     let mut connection = pending();
     let mut statement: AdbcStatement = zeroed_handle();
-    let (status, message) = call(|error| {
+    let refusal = call(|error| {
         // SAFETY: The connection, empty statement destination, and error are live writable
         // locals.
         unsafe {
             crate::ffi::statement::statement_new(&raw mut connection, &raw mut statement, error)
         }
     });
-    assert_eq!(status, ADBC_STATUS_INVALID_STATE);
-    let message = message.expect("the refusal must say why");
-    assert!(message.contains("connection"), "{message}");
+    assert_refused(refusal, ADBC_STATUS_INVALID_STATE, "connection");
     assert!(statement.private_data.is_null(), "nothing was allocated");
     release(&mut connection);
 }
@@ -678,13 +584,11 @@ fn creating_a_statement_needs_an_initialized_connection() {
 fn init_against_an_allocated_but_uninitialized_database_is_refused() {
     let mut connection = pending();
     let mut database: AdbcDatabase = allocated();
-    let (status, message) = call(|error| {
+    let refusal = call(|error| {
         // SAFETY: Both handles own live driver allocations; the error destination is writable.
         unsafe { connection_init(&raw mut connection, &raw mut database, error) }
     });
-    assert_eq!(status, ADBC_STATUS_INVALID_STATE);
-    let message = message.expect("the refusal must say why");
-    assert!(message.contains("database"), "{message}");
+    assert_refused(refusal, ADBC_STATUS_INVALID_STATE, "database");
 
     // The connection kept its pre-init state (`buffered` panics on a ready one), so it can retry
     // once the database is initialized.

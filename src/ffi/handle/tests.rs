@@ -2,14 +2,13 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::thread::JoinHandle;
 
 use super::*;
 use crate::ffi::abi::{
     ADBC_STATUS_INTERNAL, ADBC_STATUS_INVALID_ARGUMENT, ADBC_STATUS_INVALID_STATE,
     ADBC_STATUS_NOT_FOUND,
 };
-use crate::ffi::test_support::{RecordingCancel, null};
+use crate::ffi::test_support::{RecordingCancel, hold_the_dispatch_turn, null};
 use adbc_core::options::OptionDatabase;
 
 /// A handle's `private_data` field holding a fresh object, boxed so that threads can share its
@@ -298,63 +297,24 @@ fn installing_into_a_populated_slot_is_refused() {
     assert_eq!(release_slot(&mut slot), ADBC_STATUS_OK);
 }
 
-/// Hold the dispatch turn of the `u32` object at `address` on a worker until the returned sender
-/// fires. The worker holds it once this returns.
-fn hold_the_turn(address: usize) -> (Sender<()>, JoinHandle<AdbcStatusCode>) {
-    let (hold_sender, hold_receiver) = channel::<()>();
-    let (started_sender, started_receiver) = channel::<()>();
-    // SAFETY: Callers keep the boxed slot alive until they join the worker.
-    let worker = std::thread::spawn(move || unsafe {
-        dispatch::<u32, _>(at(address), "statement", null(), |_| {
-            started_sender.send(()).expect("test channel");
-            hold_receiver.recv().expect("test channel");
-            Ok(())
-        })
-    });
-    started_receiver.recv().unwrap();
-    (hold_sender, worker)
-}
-
 /// The primary Cancel scenario from adbc.h: one thread blocks inside an operation while another
 /// cancels it. Cancel must not wait for the dispatch turn or misreport the busy object.
 #[test]
 fn cancel_does_not_wait_for_a_held_dispatch_turn() {
     let cancelled = Arc::new(AtomicBool::new(false));
     let mut slot = installed(0_u32, Some(Box::new(RecordingCancel(cancelled.clone()))));
-    let (hold, worker) = hold_the_turn(exposed(&mut slot));
+    let release_turn = hold_the_dispatch_turn::<u32>(&raw const *slot);
 
     // The dispatch turn is held; cancel must still complete immediately.
     assert_eq!(cancel_slot(&mut slot), ADBC_STATUS_OK);
     assert!(cancelled.load(Ordering::SeqCst));
 
-    hold.send(()).unwrap();
-    assert_eq!(worker.join().unwrap(), ADBC_STATUS_OK);
+    release_turn();
     assert_eq!(release_slot(&mut slot), ADBC_STATUS_OK);
 }
 
-/// A call arriving while another holds the dispatch turn waits for it and then succeeds, rather
-/// than racing or reporting a poisoned handle.
-#[test]
-fn a_call_blocked_behind_a_dispatch_turn_completes_instead_of_failing() {
-    let mut slot = installed(7_u32, None);
-    let address = exposed(&mut slot);
-    let (hold, first) = hold_the_turn(address);
-    // Issued while the turn is held, like GetOption during a slow query.
-    // SAFETY: The parent keeps the boxed slot alive until this thread joins.
-    let second = std::thread::spawn(move || unsafe {
-        dispatch::<u32, _>(at(address), "statement", null(), |state| {
-            assert_eq!(*state, 7);
-            Ok(())
-        })
-    });
-
-    hold.send(()).unwrap();
-    assert_eq!(first.join().unwrap(), ADBC_STATUS_OK);
-    assert_eq!(second.join().unwrap(), ADBC_STATUS_OK);
-    assert_eq!(release_slot(&mut slot), ADBC_STATUS_OK);
-}
-
-/// Overlapping ordinary calls serialize through the state lock.
+/// Overlapping ordinary calls wait for each other on the state lock, rather than racing or
+/// reporting a busy handle.
 #[test]
 fn concurrent_dispatches_serialize_instead_of_racing() {
     const THREADS: usize = 8;

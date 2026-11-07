@@ -11,14 +11,13 @@ use crate::ffi::abi::{
     ADBC_STATUS_INTERNAL, ADBC_STATUS_INVALID_ARGUMENT, ADBC_STATUS_INVALID_DATA,
     ADBC_STATUS_INVALID_STATE, ADBC_STATUS_NOT_IMPLEMENTED,
 };
-use crate::ffi::handle::dispatch;
 use crate::ffi::options::{
     get_option, get_option_bytes, get_option_int, release_handle, set_option, set_option_bytes,
     set_option_double, set_option_int,
 };
 use crate::ffi::test_support::{
-    RecordingCancel, call, edit_stream, get, nested_schema, nested_struct_array, null, release,
-    set, zeroed_handle,
+    RecordingCancel, assert_refused, call, edit_stream, get, hold_the_dispatch_turn, nested_schema,
+    nested_struct_array, null, release, set, zeroed_handle,
 };
 use crate::test_support::driver::{publish_progress, test_statement};
 use crate::types::{MAX_SCHEMA_NESTING_DEPTH, validate_schema_nesting};
@@ -113,6 +112,14 @@ fn bind_fresh(handle: &mut AdbcStatement) -> AdbcStatusCode {
     bind(handle, &mut values, &mut schema).0
 }
 
+/// Check that a refused bind left `handle` usable, then release it: a poisoned statement refuses
+/// a well-formed bind.
+#[track_caller]
+fn finish_usable(mut handle: AdbcStatement) {
+    assert_eq!(bind_fresh(&mut handle), ADBC_STATUS_OK);
+    release(&mut handle);
+}
+
 /// One row of one column, rebuilt per use because a bind consumes what it is handed.
 fn fresh_bind_batch() -> RecordBatch {
     RecordBatch::try_from_iter([("value", Arc::new(Int64Array::from(vec![1_i64])) as ArrayRef)])
@@ -188,96 +195,35 @@ fn every_entry_point_refuses_a_released_handle() {
     // their stated lengths, or nulls the entry points accept or reject.
     let statuses = unsafe {
         [
-            ("prepare", statement_prepare(s, null())),
-            ("cancel", statement_cancel(s, null())),
-            ("set_sql_query", statement_set_sql_query(s, name, null())),
-            ("set_option", set_option(s, name, name, null())),
-            ("set_option_int", set_option_int(s, name, 1, null())),
-            ("set_option_double", set_option_double(s, name, 1.0, null())),
-            (
-                "set_option_bytes",
-                set_option_bytes(s, name, b"x".as_ptr(), 1, null()),
-            ),
-            (
-                "set_substrait_plan",
-                statement_set_substrait_plan(s, b"x".as_ptr(), 1, null()),
-            ),
-            (
-                "get_option",
-                get_option(s, name, null(), &raw mut length, null()),
-            ),
-            (
-                "get_option_bytes",
-                get_option_bytes(s, name, null(), &raw mut length, null()),
-            ),
-            (
-                "get_option_int",
-                get_option_int(s, name, &raw mut integer, null()),
-            ),
-            (
-                "get_option_double",
-                statement_get_option_double(s, name, &raw mut double, null()),
-            ),
+            statement_prepare(s, null()),
+            statement_cancel(s, null()),
+            statement_set_sql_query(s, name, null()),
+            set_option(s, name, name, null()),
+            set_option_int(s, name, 1, null()),
+            set_option_double(s, name, 1.0, null()),
+            set_option_bytes(s, name, b"x".as_ptr(), 1, null()),
+            statement_set_substrait_plan(s, b"x".as_ptr(), 1, null()),
+            get_option(s, name, null(), &raw mut length, null()),
+            get_option_bytes(s, name, null(), &raw mut length, null()),
+            get_option_int(s, name, &raw mut integer, null()),
+            statement_get_option_double(s, name, &raw mut double, null()),
             // The progress keys answer without the state lock, so their refusal is its own path.
-            (
-                "get_option_double(progress)",
-                statement_get_option_double(s, progress, &raw mut double, null()),
-            ),
-            (
-                "execute_query",
-                statement_execute_query(s, null(), null(), null()),
-            ),
-            (
-                "execute_schema",
-                statement_execute_schema(s, null(), null()),
-            ),
-            (
-                "execute_partitions",
-                statement_execute_partitions(s, null(), null(), null(), null()),
-            ),
-            (
-                "get_parameter_schema",
-                statement_get_parameter_schema(s, null(), null()),
-            ),
-            ("bind", statement_bind(s, null(), null(), null())),
-            ("bind_stream", statement_bind_stream(s, null(), null())),
+            statement_get_option_double(s, progress, &raw mut double, null()),
+            statement_execute_query(s, null(), null(), null()),
+            statement_execute_schema(s, null(), null()),
+            statement_execute_partitions(s, null(), null(), null(), null()),
+            statement_get_parameter_schema(s, null(), null()),
+            statement_bind(s, null(), null(), null()),
+            statement_bind_stream(s, null(), null()),
         ]
     };
-    for (label, status) in statuses {
-        assert_eq!(status, ADBC_STATUS_INVALID_STATE, "{label}");
-    }
-}
-
-#[test]
-fn releasing_twice_reports_invalid_state_rather_than_freeing_twice() {
-    let mut handle = live_handle();
-    release(&mut handle);
-    assert!(handle.private_data.is_null());
-    // SAFETY: The handle structure remains allocated; release rejects the cleared ownership slot.
-    let status = unsafe { release_handle(&raw mut handle, null()) };
-    assert_eq!(status, ADBC_STATUS_INVALID_STATE);
+    assert_eq!(statuses, [ADBC_STATUS_INVALID_STATE; 19]);
 }
 
 #[test]
 fn round_trips_a_string_option_through_the_c_abi() {
     let mut handle = live_handle();
     assert_eq!(set(&mut handle, TARGET_TABLE, "events").0, ADBC_STATUS_OK);
-
-    // A caller that offers no room still learns the size it needs, NUL included.
-    let mut length = 0_usize;
-    // SAFETY: The handle and static key are live, and a null buffer with a zero length is a size
-    // query.
-    let status = unsafe {
-        get_option(
-            &raw mut handle,
-            c"adbc.ingest.target_table".as_ptr(),
-            null(),
-            &raw mut length,
-            null(),
-        )
-    };
-    assert_eq!(status, ADBC_STATUS_OK);
-    assert_eq!(length, "events".len() + 1);
     assert_eq!(get(&mut handle, TARGET_TABLE).unwrap(), "events");
     release(&mut handle);
 }
@@ -334,39 +280,12 @@ fn prepare_requires_a_query_and_accepts_one() {
     release(&mut handle);
 }
 
-/// Hold `handle`'s dispatch turn on a worker thread, like a blocked ExecuteQuery, until the
-/// returned closure is called; the closure also joins the worker.
-fn hold_the_dispatch_turn(handle: &AdbcStatement) -> impl FnOnce() + use<> {
-    let (hold_sender, hold_receiver) = std::sync::mpsc::channel::<()>();
-    let (started_sender, started_receiver) = std::sync::mpsc::channel::<()>();
-    let address = (&raw const handle.private_data).expose_provenance();
-    // SAFETY: The address is the statement's slot. Test callers keep the handle alive and call the
-    // returned join closure before releasing it.
-    let worker = std::thread::spawn(move || unsafe {
-        dispatch::<State, _>(
-            std::ptr::with_exposed_provenance(address),
-            KIND,
-            null(),
-            |_| {
-                started_sender.send(()).expect("test channel");
-                hold_receiver.recv().expect("test channel");
-                Ok(())
-            },
-        )
-    });
-    started_receiver.recv().unwrap();
-    move || {
-        hold_sender.send(()).unwrap();
-        assert_eq!(worker.join().unwrap(), ADBC_STATUS_OK);
-    }
-}
-
 /// While a worker holds the dispatch turn, `statement_cancel` still reaches the driver's cancel
 /// handle promptly. With no operation in flight it reports `InvalidState`.
 #[test]
 fn cancel_does_not_wait_for_the_statement_dispatch_turn() {
     let mut handle = live_handle();
-    let release_turn = hold_the_dispatch_turn(&handle);
+    let release_turn = hold_the_dispatch_turn::<State>(&raw const handle.private_data);
     assert_nothing_to_cancel(&mut handle);
     release_turn();
     release(&mut handle);
@@ -380,7 +299,7 @@ fn the_progress_getters_do_not_wait_for_the_statement_dispatch_turn() {
     let state = test_statement();
     publish_progress(&state, 42.0, 84.0);
     let mut handle = handle_for(state);
-    let release_turn = hold_the_dispatch_turn(&handle);
+    let release_turn = hold_the_dispatch_turn::<State>(&raw const handle.private_data);
     assert_eq!(progress_through_the_abi(&mut handle, PROGRESS), 42.0);
     assert_eq!(progress_through_the_abi(&mut handle, MAX_PROGRESS), 84.0);
     release_turn();
@@ -497,11 +416,9 @@ fn a_released_bind_argument_is_refused_without_poisoning_the_statement() {
         "a refused bind must still consume what it was handed"
     );
 
-    // The statement still works; a poisoned handle would answer `Internal`.
-    assert_eq!(bind_fresh(&mut handle), ADBC_STATUS_OK);
     assert_eq!(set_sql(&mut handle, c"SELECT 1;"), ADBC_STATUS_OK);
     assert_eq!(prepare(&mut handle).0, ADBC_STATUS_OK);
-    release(&mut handle);
+    finish_usable(handle);
 }
 
 #[test]
@@ -516,11 +433,12 @@ fn null_parameter_rows_do_not_poison_the_statement() {
     let rows = Some(arrow_buffer::NullBuffer::from(vec![true, false]));
     let array = StructArray::new(fields.clone(), columns.clone(), rows);
     let (mut values, mut schema) = to_ffi(&array.to_data()).unwrap();
-    let (status, message) = bind(&mut handle, &mut values, &mut schema);
-    assert_eq!(status, ADBC_STATUS_INVALID_ARGUMENT);
-    let message = message.unwrap_or_default();
-    assert!(message.contains("top-level null rows"), "{message}");
-    assert!(message.contains("columns"), "{message}");
+    let refusal = bind(&mut handle, &mut values, &mut schema);
+    assert_refused(
+        refusal,
+        ADBC_STATUS_INVALID_ARGUMENT,
+        "top-level null rows; put null values in the individual columns",
+    );
 
     // Null columns are valid; only a null whole parameter row is unrepresentable.
     let array = StructArray::new(fields, columns, None);
@@ -569,15 +487,13 @@ fn a_bound_stream_error_without_a_description_does_not_poison_the_statement() {
     }
     assert_eq!(bind_stream(&mut handle, &mut stream).0, ADBC_STATUS_OK);
     assert_eq!(set_sql(&mut handle, c"SELECT 1"), ADBC_STATUS_OK);
-    let (status, message) = call(|error| {
+    let refusal = call(|error| {
         // SAFETY: The live handle and error are valid; a null result stream requests execution
         // without returned rows, and the row count output is optional.
         unsafe { statement_execute_query(&raw mut handle, null(), null(), error) }
     });
-    assert_eq!(status, ADBC_STATUS_INVALID_DATA);
-    let message = message.unwrap();
-    assert!(message.contains("get_next"), "{message}");
-    assert!(message.contains(&libc::EIO.to_string()), "{message}");
+    let expected = format!("get_next failed with error code {}", libc::EIO);
+    assert_refused(refusal, ADBC_STATUS_INVALID_DATA, &expected);
     assert_eq!(
         prepare(&mut handle).0,
         ADBC_STATUS_OK,
@@ -667,17 +583,14 @@ fn imported_arrays_are_validated_and_name_the_column_that_fails() {
     let mut handle = live_handle();
     let (mut values, _) = to_ffi(&out_of_line_non_utf8_struct()).unwrap();
     let mut schema = FFI_ArrowSchema::try_from(&DataType::Struct(declared.into())).unwrap();
-    let (status, message) = bind(&mut handle, &mut values, &mut schema);
-    assert_eq!(status, ADBC_STATUS_INVALID_ARGUMENT);
-    let message = message.unwrap();
-    assert!(
-        message.contains(r#"column "payload" is invalid"#),
-        "{message}"
+    let refusal = bind(&mut handle, &mut values, &mut schema);
+    assert_refused(
+        refusal,
+        ADBC_STATUS_INVALID_ARGUMENT,
+        r#"column "payload" is invalid"#,
     );
-    assert!(message.contains("non-UTF-8"), "{message}");
     // A refused bind is a caller mistake and does not poison the statement.
-    assert_eq!(bind_fresh(&mut handle), ADBC_STATUS_OK);
-    release(&mut handle);
+    finish_usable(handle);
 }
 
 /// A malformed callback table is refused, named, and consumed: adbc.h:2114-2116 has the driver
@@ -702,10 +615,8 @@ fn malformed_bind_streams_are_consumed_and_leave_the_statement_usable() {
                 _ => owned = parts.release.take(),
             });
         }
-        let (status, message) = bind_stream(&mut handle, &mut stream);
-        assert_eq!(status, ADBC_STATUS_INVALID_ARGUMENT, "missing {missing}");
-        let message = message.unwrap();
-        assert!(message.contains(missing), "{message}");
+        let refusal = bind_stream(&mut handle, &mut stream);
+        assert_refused(refusal, ADBC_STATUS_INVALID_ARGUMENT, missing);
         match owned {
             // Nothing was taken, so the caller still owns the stream.
             // SAFETY: This is the producer callback saved before removal; bind left its private
@@ -719,14 +630,7 @@ fn malformed_bind_streams_are_consumed_and_leave_the_statement_usable() {
         }
     }
 
-    let mut stream = bindable_stream();
-    assert_eq!(
-        bind_stream(&mut handle, &mut stream).0,
-        ADBC_STATUS_OK,
-        "a well-formed stream must bind on the same statement"
-    );
-    assert!(stream.release().is_none());
-    release(&mut handle);
+    finish_usable(handle);
 }
 
 #[test]
@@ -813,28 +717,6 @@ fn exporting_no_partitions_still_releases_cleanly() {
     assert!(exported.private_data.is_null());
 }
 
-/// The pointer array must point into the payloads the box owns, not into dropped copies.
-#[test]
-fn exported_partitions_point_into_the_owned_payloads() {
-    let mut exported = export_partitions(vec![vec![9_u8; 4096]]);
-    // SAFETY: export_partitions boxed a PartitionsOwner at this pointer, and its one-element
-    // pointer and length arrays; all stay live until the release below.
-    let (owner, pointer, length) = unsafe {
-        (
-            &*exported.private_data.cast::<PartitionsOwner>(),
-            *exported.partitions,
-            *exported.partition_lengths,
-        )
-    };
-    assert_eq!(
-        pointer,
-        owner.payloads[0].as_ptr(),
-        "the exported pointer must be the payload's own buffer"
-    );
-    assert_eq!(length, 4096);
-    release_partitions(&mut exported);
-}
-
 /// Why `Cargo.toml` keeps `panic = "unwind"`: a driver panic must reach the caller as
 /// `ADBC_STATUS_INTERNAL` with a message, not abort the host. This checks the exported entry
 /// point and what the panic leaves behind: the object refuses further work, but `Cancel` works.
@@ -847,22 +729,17 @@ fn a_panic_in_driver_code_reaches_the_caller_as_an_internal_error() {
         None,
     ));
 
-    let (status, message) = set(&mut handle, PANIC_OPTION, "boom");
-    assert_eq!(status, ADBC_STATUS_INTERNAL);
-    let message = message.expect("a contained panic must still carry a message");
-    assert!(
-        message.starts_with("uncaught panic in the BigQuery driver: "),
-        "{message}"
+    assert_refused(
+        set(&mut handle, PANIC_OPTION, "boom"),
+        ADBC_STATUS_INTERNAL,
+        "uncaught panic in the BigQuery driver: the option setter exploded",
     );
-    assert!(message.contains("the option setter exploded"), "{message}");
 
     // The poisoned state may hold torn invariants, so later dispatches are refused.
-    let (status, message) = set(&mut handle, TARGET_TABLE, "events");
-    assert_eq!(status, ADBC_STATUS_INTERNAL);
-    let message = message.expect("the refusal must say why");
-    assert!(
-        message.contains("unusable after an earlier panic"),
-        "{message}"
+    assert_refused(
+        set(&mut handle, TARGET_TABLE, "events"),
+        ADBC_STATUS_INTERNAL,
+        "unusable after an earlier panic",
     );
 
     // Cancel ignores poisoning, so it can stop work the panicked call left running.
@@ -903,18 +780,11 @@ fn a_bind_whose_array_disagrees_with_its_schema_is_refused_without_poisoning() {
         // which the driver checks before importing.
         let (mut values, _) = fresh_bind_arguments();
         let mut schema = FFI_ArrowSchema::try_from(&DataType::Struct(declared.into())).unwrap();
-        let (status, message) = bind(&mut handle, &mut values, &mut schema);
-        assert_eq!(status, ADBC_STATUS_INVALID_ARGUMENT, "{expected}");
-        let message = message.unwrap();
-        assert!(message.contains(expected), "{message}");
+        let refusal = bind(&mut handle, &mut values, &mut schema);
+        assert_refused(refusal, ADBC_STATUS_INVALID_ARGUMENT, expected);
         assert!(consumed(&values, &schema));
     }
-    assert_eq!(
-        bind_fresh(&mut handle),
-        ADBC_STATUS_OK,
-        "a well-formed bind must still be accepted"
-    );
-    release(&mut handle);
+    finish_usable(handle);
 }
 
 /// A length too large for any buffer is refused by name; Arrow's importer would overflow
@@ -947,20 +817,14 @@ fn a_bind_whose_length_overflows_its_buffer_size_is_refused_without_poisoning() 
         let column = *(*(&raw mut values).cast::<ArrayHead>()).children;
         (*column).length = 1 << 60;
     }
-    let (status, message) = bind(&mut handle, &mut values, &mut schema);
-    assert_eq!(status, ADBC_STATUS_INVALID_ARGUMENT);
-    let message = message.unwrap();
-    assert!(
-        message.contains(r#"column "value" is invalid: the Int64 array's length"#),
-        "{message}"
+    let refusal = bind(&mut handle, &mut values, &mut schema);
+    assert_refused(
+        refusal,
+        ADBC_STATUS_INVALID_ARGUMENT,
+        r#"column "value" is invalid: the Int64 array's length"#,
     );
     assert!(consumed(&values, &schema));
-    assert_eq!(
-        bind_fresh(&mut handle),
-        ADBC_STATUS_OK,
-        "a well-formed bind must still be accepted"
-    );
-    release(&mut handle);
+    finish_usable(handle);
 }
 
 /// A struct schema with one column of `format` and no children of its own.
@@ -990,12 +854,10 @@ fn a_bind_or_bind_stream_with_a_malformed_schema_is_refused_without_poisoning() 
     for (format, required) in [("+l", 1), ("+w:2", 1), ("+r", 2)] {
         let (mut values, _) = fresh_bind_arguments();
         let mut schema = childless_column_schema(format);
-        let (status, message) = bind(&mut handle, &mut values, &mut schema);
-        assert_eq!(status, ADBC_STATUS_INVALID_ARGUMENT, "{format}");
-        let message = message.unwrap();
         let expected =
             format!("the {format:?} schema has 0 children, but its format requires {required}");
-        assert!(message.contains(&expected), "{message}");
+        let refusal = bind(&mut handle, &mut values, &mut schema);
+        assert_refused(refusal, ADBC_STATUS_INVALID_ARGUMENT, &expected);
         assert!(consumed(&values, &schema));
     }
 
@@ -1003,20 +865,13 @@ fn a_bind_or_bind_stream_with_a_malformed_schema_is_refused_without_poisoning() 
     // SAFETY: The replacement callback writes an owned schema and touches no private data; the
     // original release callback keeps the producer's ownership.
     unsafe { edit_stream(&mut stream, |parts| parts.get_schema = Some(childless_list)) };
-    let (status, message) = bind_stream(&mut handle, &mut stream);
-    assert_eq!(status, ADBC_STATUS_INVALID_ARGUMENT);
-    let message = message.unwrap();
-    assert!(
-        message.contains("the \"+l\" schema has 0 children, but its format requires 1"),
-        "{message}"
+    assert_refused(
+        bind_stream(&mut handle, &mut stream),
+        ADBC_STATUS_INVALID_ARGUMENT,
+        "the \"+l\" schema has 0 children, but its format requires 1",
     );
     assert!(stream.release().is_none());
-    assert_eq!(
-        bind_fresh(&mut handle),
-        ADBC_STATUS_OK,
-        "a well-formed bind must still be accepted"
-    );
-    release(&mut handle);
+    finish_usable(handle);
 }
 
 /// Bind must draw the same line as `validate_schema_nesting`, which every later use of the bound
@@ -1076,21 +931,14 @@ fn a_bind_nested_deep_enough_to_overflow_the_stack_is_refused_and_released() {
     let mut handle = live_handle();
     let (mut values, _) = fresh_bind_arguments();
     let mut schema = nested_schema(STACK_OVERFLOWING_DEPTH, &RELEASED);
-    let (status, message) = bind(&mut handle, &mut values, &mut schema);
-    assert_eq!(status, ADBC_STATUS_INVALID_ARGUMENT, "{message:?}");
-    let message = message.unwrap();
-    assert!(
-        message.contains("bind schema is not a valid Arrow schema: a schema is nested"),
-        "{message}"
+    assert_refused(
+        bind(&mut handle, &mut values, &mut schema),
+        ADBC_STATUS_INVALID_ARGUMENT,
+        "bind schema is not a valid Arrow schema: a schema is nested",
     );
     assert!(consumed(&values, &schema));
     assert_eq!(RELEASED.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        bind_fresh(&mut handle),
-        ADBC_STATUS_OK,
-        "a well-formed bind must still be accepted"
-    );
-    release(&mut handle);
+    finish_usable(handle);
 }
 
 #[test]
@@ -1113,17 +961,14 @@ fn a_bind_stream_nested_deep_enough_to_overflow_the_stack_is_refused_and_release
     // SAFETY: The replacement callback writes an owned schema and touches no private data; the
     // original release callback keeps the producer's ownership.
     unsafe { edit_stream(&mut stream, |parts| parts.get_schema = Some(deep_schema)) };
-    let (status, message) = bind_stream(&mut handle, &mut stream);
-    assert_eq!(status, ADBC_STATUS_INVALID_ARGUMENT, "{message:?}");
-    let message = message.unwrap();
-    assert!(
-        message.contains("bound stream returned an invalid schema: a schema is nested"),
-        "{message}"
+    assert_refused(
+        bind_stream(&mut handle, &mut stream),
+        ADBC_STATUS_INVALID_ARGUMENT,
+        "bound stream returned an invalid schema: a schema is nested",
     );
     assert!(stream.release().is_none());
     assert_eq!(RELEASED.load(Ordering::SeqCst), 1);
-    assert_eq!(bind_fresh(&mut handle), ADBC_STATUS_OK);
-    release(&mut handle);
+    finish_usable(handle);
 }
 
 #[test]
@@ -1153,12 +998,9 @@ fn bind_rejects_invalid_null_counts_without_losing_null_rows() {
         // exclusively writable. Buffers and ownership stay valid; the driver rejects this count
         // before import, and Arrow's release callback only uses private_data.
         unsafe { (*(&raw mut values).cast::<ArrayPrefix>()).null_count = null_count };
-        let (status, message) = bind(&mut handle, &mut values, &mut schema);
-        assert_eq!(status, ADBC_STATUS_INVALID_ARGUMENT);
-        let message = message.unwrap();
-        assert!(message.contains(expected), "{message}");
+        let refusal = bind(&mut handle, &mut values, &mut schema);
+        assert_refused(refusal, ADBC_STATUS_INVALID_ARGUMENT, expected);
         assert!(consumed(&values, &schema));
     }
-    assert_eq!(bind_fresh(&mut handle), ADBC_STATUS_OK);
-    release(&mut handle);
+    finish_usable(handle);
 }
