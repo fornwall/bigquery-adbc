@@ -282,7 +282,8 @@ waits for it. `submission_method` (model config, else profile, else `serverless`
 The `pooling_timeout`, `gsc_path` and `gsc_bucket` spellings are dbt's. `pooling_timeout` is the
 client-side deadline for submission, polling and retries; unset or `0` means no deadline.
 Retry delays are clamped to the remaining time, and no new request starts after expiry. An
-in-flight request may still finish after the deadline.
+in-flight request may still finish after the deadline. Polls outlast ten minutes of consecutive
+transient failures, as a BigQuery job wait does.
 
 - A missing required key is `INVALID_STATE` naming it. The result's `BIGQUERY:query_id` names the
   Dataproc batch, cluster job or notebook job.

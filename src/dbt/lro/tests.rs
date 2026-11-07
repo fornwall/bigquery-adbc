@@ -246,6 +246,26 @@ fn a_poll_absorbs_every_transient_failure_but_the_last_of_its_budget() {
     );
 }
 
+/// An outage shorter than the limit does not end the wait, however many polls it fails: the work
+/// goes on, and a failed wait would leave it running with nothing watching it.
+#[test]
+fn a_poll_outlasts_an_outage_within_its_limit() {
+    let runtime = crate::runtime::new_runtime().unwrap();
+    let outage = usize::try_from(MAX_ATTEMPTS).unwrap() + 2;
+    let mut responses = vec![(500, serde_json::json!({"error": {"message": "down"}})); outage];
+    responses.push(ok(serde_json::json!({"done": true})));
+    let (endpoint, captured) = crate::test_support::http::capture_requests(responses);
+    let (_cancellation, operation) = poller_operation(&runtime);
+    let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
+    let mut poller = test_poller(&operation, &credentials, endpoint.clone());
+    poller.outage = Duration::from_secs(60);
+
+    runtime
+        .block_on(poller.poll(&format!("{endpoint}/v1/operations/1"), "poll it"))
+        .unwrap();
+    assert_eq!(captured.join().unwrap().len(), outage + 1);
+}
+
 /// A rate-limited poll uses the shared quota backoff, bounded by `pooling_timeout`.
 ///
 /// Create the 20 ms budget inside the task so runtime startup cannot exhaust it before the first

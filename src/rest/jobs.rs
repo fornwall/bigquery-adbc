@@ -95,7 +95,7 @@ const JOB_SEARCH_CLOCK_SKEW: Duration = Duration::from_secs(300);
 /// seconds, far less than a network blip, and ending the wait cancels the job. Go waits until its
 /// context ends; this bound keeps a network that never returns from blocking, forever, a caller
 /// that has no way to cancel. Tests give up at once unless they set their own limit.
-const JOB_WAIT_OUTAGE: Duration = if cfg!(test) {
+pub(crate) const JOB_WAIT_OUTAGE: Duration = if cfg!(test) {
     Duration::ZERO
 } else {
     Duration::from_secs(600)

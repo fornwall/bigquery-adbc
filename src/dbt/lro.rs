@@ -13,6 +13,7 @@ use crate::cancellation::Operation;
 use crate::diag::diag;
 use crate::error::{error, record_json_status_details, record_rpc_code, rpc_code_status};
 use crate::rest::client::RestClient;
+use crate::rest::jobs::JOB_WAIT_OUTAGE;
 use crate::rest::json::decode_json;
 use crate::rest::request::{Request, send};
 use crate::rest::retry::{MAX_ATTEMPTS, RetryClass, RetryDelays, classify};
@@ -85,6 +86,8 @@ pub(super) struct LroPoller<'a> {
     seconds: i64,
     /// The submitted resource, once the submission response names it.
     name: Option<String>,
+    /// How long [`Self::poll`] outlasts consecutive failures. See [`JOB_WAIT_OUTAGE`].
+    outage: Duration,
 }
 
 /// Backoff, deadline, and the names a long-running operation's messages use.
@@ -118,6 +121,7 @@ impl<'a> LroPoller<'a> {
             what: budget.what,
             seconds: budget.seconds,
             name: None,
+            outage: JOB_WAIT_OUTAGE,
         }
     }
 
@@ -286,6 +290,7 @@ impl<'a> LroPoller<'a> {
     pub(super) async fn poll(&mut self, url: &str, context: &str) -> Result<JsonValue> {
         let mut transient = 0_u32;
         let mut quota = Duration::ZERO;
+        let started = Instant::now();
         loop {
             if !self.backoff.pause(self.operation, quota).await? {
                 return Err(self.timeout());
@@ -296,7 +301,8 @@ impl<'a> LroPoller<'a> {
                 Err(rejected) => rejected,
             };
             transient += 1;
-            if class == RetryClass::Final || transient >= MAX_ATTEMPTS {
+            let spent = transient >= MAX_ATTEMPTS && started.elapsed() >= self.outage;
+            if class == RetryClass::Final || spent {
                 return Err(self.left_running(failure));
             }
             quota = match class {
