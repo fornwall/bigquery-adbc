@@ -447,3 +447,20 @@ fn a_nonpositive_prefetch_concurrency_names_the_option_and_what_it_accepts() {
         );
     }
 }
+
+/// No worker survives a `fork` to feed or close the channel, so a reader inherited with a running
+/// producer must refuse rather than wait forever.
+#[test]
+fn a_reader_inherited_across_fork_fails_instead_of_waiting_for_its_producer() {
+    let schema = Arc::new(arrow_schema::Schema::empty());
+    let runtime = crate::runtime::orphaned_runtime();
+    let mut reader = super::spawn_result_reader(runtime, schema, None, |sink| async move {
+        let _sink = sink;
+        std::future::pending::<Result<(), ArrowError>>().await
+    });
+    let failure = reader.next().unwrap().unwrap_err();
+    assert!(
+        failure.to_string().contains("inherited across fork"),
+        "{failure}"
+    );
+}

@@ -14,6 +14,10 @@ use crate::error::error;
 
 pub(crate) type SharedRuntime = Arc<DriverRuntime>;
 
+/// Why a handle inherited across `fork` cannot be used. See [`DriverRuntime::orphaned`].
+pub(crate) const INHERITED_ACROSS_FORK: &str = "this BigQuery handle was inherited across fork \
+     and cannot be used; open a new database in this process";
+
 /// A boxed spawned task with no output. Tokio instantiates its task harness per future type and
 /// scheduler flavor, so boxing lets the driver's detached tasks share the instantiation the HTTP
 /// stack already links.
@@ -65,11 +69,7 @@ impl DriverRuntime {
     }
 
     fn block_on_erased(&self, future: Pin<&mut dyn Future<Output = ()>>) {
-        assert!(
-            !self.orphaned(),
-            "this BigQuery handle was inherited across fork and cannot be used; open a new \
-             database in this process"
-        );
+        assert!(!self.orphaned(), "{INHERITED_ACROSS_FORK}");
         let runtime: &Runtime = self;
         block_in_place(|| runtime.block_on(future));
     }
@@ -327,10 +327,9 @@ mod tests {
             runtime.block_on(async {});
         }))
         .unwrap_err();
-        assert!(
-            panic
-                .downcast_ref::<&str>()
-                .is_some_and(|message| message.contains("inherited across fork"))
+        assert_eq!(
+            panic.downcast_ref::<String>().map(String::as_str),
+            Some(super::INHERITED_ACROSS_FORK)
         );
         drop(runtime);
     }

@@ -55,8 +55,9 @@ failure behavior of each ingest mode.
   serialize on the handle's state mutex.
 - The shared library must stay loaded for the life of the process, because `AdbcDriver.release`
   does not join the runtime's worker threads.
-- Handles do not survive `fork`, because the runtime's worker threads do not. A child must open its
-  own database; using an inherited handle returns `INTERNAL`.
+- Handles and result streams do not survive `fork`, because the runtime's worker threads do not. A
+  child must open its own database. Using an inherited one returns an error, but blocks forever if
+  another thread was inside a call on it when the process forked, since that call's lock stays held.
 - FFI imports trust the producer's memory. The C Data Interface carries no allocation lengths, so
   the driver cannot check buffer capacity, and even `validate_full` can read out of bounds if
   producer-supplied offsets overstate an allocation.
