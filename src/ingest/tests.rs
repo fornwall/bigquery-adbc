@@ -19,7 +19,7 @@ use tokio::sync::Notify;
 use super::schema::normalize_schema;
 use super::{FirstBatch, parse_ingest_method, write_batches};
 use crate::BigQueryBulkIngestMethod;
-use crate::cancellation::{Cancellation, OperationCancelHandle};
+use crate::cancellation::{Cancellation, Operation, OperationCancelHandle};
 use crate::clients::ClientState;
 use crate::config::{DatabaseConfig, ServiceEndpointKind};
 use crate::error::{DETAIL_HTTP_STATUS, DETAIL_REASON};
@@ -30,8 +30,9 @@ use crate::ingest::{
 };
 use crate::rest::metadata::TableId;
 use crate::rest::model::TableSchema;
-use crate::runtime::SharedRuntime;
+use crate::runtime::{SharedRuntime, new_runtime};
 use crate::test_support::arrow::{bigquery_typed, range_bounds};
+use crate::test_support::cancellation::operation;
 use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
 use crate::test_support::grpc::{ABORTED, INVALID_ARGUMENT, MockPlan, StorageMock, UNAVAILABLE};
 use crate::test_support::http::{
@@ -56,48 +57,99 @@ pub(super) fn plan_and_prepare(
     prepare_table(context, &client, table, mode, schema, plan)
 }
 
-/// Runs `run` against a mock BigQuery serving `responses`, and hands back what it captured.
-fn against_bigquery<T>(
-    responses: Vec<(u16, JsonValue)>,
-    run: impl FnOnce(&IngestContext<'_>) -> T,
-) -> (T, Vec<CapturedRequest>) {
-    let (endpoint, captured) = capture_requests(responses);
-    let runtime = crate::runtime::new_runtime().unwrap();
-    let clients = ClientState::for_test_at(ServiceEndpointKind::BigQuery, &endpoint);
-    let cancellation = Cancellation::new(runtime.clone(), clients.clone(), "statement");
-    let operation = cancellation.begin();
-    let billing_project = ProjectIdentifier::try_new("billing-project").unwrap();
-
-    let outcome = run(&IngestContext {
-        runtime: &runtime,
-        state: &clients,
-        billing_project_id: Some(&billing_project),
-        current_catalog: Some(&billing_project),
-        current_schema: None,
-        location: Some("EU"),
-        operation: &operation,
-    });
-    operation.finish();
-    (outcome, captured.join().unwrap())
-}
-
 const TARGET: TableId<'static> = TableId {
     project_id: "project",
     dataset_id: "dataset",
     table_id: "events",
 };
 
+const MODES: [IngestMode; 4] = [
+    IngestMode::Create,
+    IngestMode::Append,
+    IngestMode::CreateAppend,
+    IngestMode::Replace,
+];
+
+/// Options naming [`TARGET`] for an ingest in `mode`.
+fn target_options(mode: IngestMode) -> IngestOptions {
+    IngestOptions {
+        mode,
+        target_catalog: Some(ProjectIdentifier::try_new(TARGET.project_id).unwrap()),
+        target_db_schema: Some(TARGET.dataset_id.to_owned()),
+        target_table: Some(TARGET.table_id.to_owned()),
+    }
+}
+
+/// Runs `run` in an ingest context over `clients`, billed to `billing-project`.
+fn in_context<T>(
+    runtime: &SharedRuntime,
+    clients: &Arc<ClientState>,
+    operation: &Operation,
+    run: impl FnOnce(&IngestContext<'_>) -> T,
+) -> T {
+    let billing_project = ProjectIdentifier::try_new("billing-project").unwrap();
+    run(&IngestContext {
+        runtime,
+        state: clients,
+        billing_project_id: Some(&billing_project),
+        current_catalog: Some(&billing_project),
+        current_schema: None,
+        location: Some("EU"),
+        operation,
+    })
+}
+
+/// Runs `run` against the mock BigQuery at `endpoint`.
+fn at_bigquery<T>(endpoint: &str, run: impl FnOnce(&IngestContext<'_>) -> T) -> T {
+    let runtime = new_runtime().unwrap();
+    let clients = ClientState::for_test_at(ServiceEndpointKind::BigQuery, endpoint);
+    let (_cancellation, operation) = operation(&runtime, clients.clone());
+    let outcome = in_context(&runtime, &clients, &operation, run);
+    operation.finish();
+    outcome
+}
+
+/// Runs `run` against a mock BigQuery serving `responses`, and hands back what it captured.
+fn against_bigquery<T>(
+    responses: Vec<(u16, JsonValue)>,
+    run: impl FnOnce(&IngestContext<'_>) -> T,
+) -> (T, Vec<CapturedRequest>) {
+    let (endpoint, captured) = capture_requests(responses);
+    let outcome = at_bigquery(&endpoint, run);
+    (outcome, captured.join().unwrap())
+}
+
+/// The `tables.get` answer for [`TARGET`] with columns `fields`.
+fn table(fields: &JsonValue) -> JsonValue {
+    json!({
+        "tableReference": {"projectId": "project", "datasetId": "dataset", "tableId": "events"},
+        "type": "TABLE",
+        "schema": {"fields": fields},
+    })
+}
+
+/// The `tables.get` answer for a target that does not exist.
+fn missing_table() -> (u16, JsonValue) {
+    let body = json!({"error": {"code": 404, "message": "Not found: Table"}});
+    (404, body)
+}
+
 /// One finished, empty `jobs.query` answer, which is what BigQuery returns for DDL.
 fn ddl_answer() -> (u16, JsonValue) {
-    (
-        200,
-        json!({
-            "jobComplete": true,
-            "jobReference": {"projectId": "billing-project", "jobId": "job-1"},
-            "totalRows": "0",
-            "schema": {"fields": []}
-        }),
-    )
+    ok(json!({
+        "jobComplete": true,
+        "jobReference": {"projectId": "billing-project", "jobId": "job-1"},
+        "totalRows": "0",
+        "schema": {"fields": []}
+    }))
+}
+
+/// The HTTP method of each captured request.
+fn methods(requests: &[CapturedRequest]) -> Vec<&str> {
+    requests
+        .iter()
+        .map(|request| request.line.split(' ').next().unwrap())
+        .collect()
 }
 
 /// Every statement query option that must not leak onto an ingest's own DDL job.
@@ -132,12 +184,8 @@ fn ingest_truncate_carries_only_the_location() {
     });
     outcome.unwrap();
 
-    let body = requests.into_iter().next().unwrap().body;
-    assert_eq!(
-        body.get("query").and_then(JsonValue::as_str),
-        Some("TRUNCATE TABLE `project.dataset.events`")
-    );
-    assert_carries_only_the_location(&body);
+    assert_eq!(requests[0].sql(), "TRUNCATE TABLE `project.dataset.events`");
+    assert_carries_only_the_location(&requests[0].body);
 }
 
 /// Runs one whole ingest of what `reader` yields into [`TARGET`] in `mode`, against a
@@ -154,7 +202,7 @@ fn ingest_against_mocks(
     StorageMock,
 ) {
     let (endpoint, server) = capture_requests_until_stopped(responses);
-    let runtime = crate::runtime::new_runtime().unwrap();
+    let runtime = new_runtime().unwrap();
     let storage = StorageMock::start(&runtime, plan);
     let mut config = DatabaseConfig {
         authentication_type: crate::BigQueryAuthenticationType::Anonymous,
@@ -168,29 +216,18 @@ fn ingest_against_mocks(
         Some(Arc::from(storage.endpoint())),
     );
     let clients = ClientState::new(&config);
-    let cancellation = Cancellation::new(runtime.clone(), clients.clone(), "statement");
-    let operation = cancellation.begin();
-    let billing_project = ProjectIdentifier::try_new("billing-project").unwrap();
-    let project = ProjectIdentifier::try_new(TARGET.project_id).unwrap();
-    let outcome = execute_ingest(
-        IngestContext {
-            runtime: &runtime,
-            state: &clients,
-            billing_project_id: Some(&billing_project),
-            current_catalog: Some(&project),
-            current_schema: Some(TARGET.dataset_id),
-            location: None,
-            operation: &operation,
-        },
-        &IngestOptions {
-            mode,
-            target_table: Some(TARGET.table_id.to_owned()),
-            ..IngestOptions::default()
-        },
-        reader,
-    );
+    let (_cancellation, operation) = operation(&runtime, clients.clone());
+    let outcome = in_context(&runtime, &clients, &operation, |context| {
+        execute_ingest(*context, &target_options(mode), reader)
+    });
     operation.finish();
     (outcome, server.stop(), storage)
+}
+
+/// A reader that yields `batch`.
+fn reading(batch: RecordBatch) -> Box<dyn RecordBatchReader + Send> {
+    let schema = batch.schema();
+    Box::new(RecordBatchIterator::new([Ok(batch)], schema))
 }
 
 /// One batch holding `id` 1.
@@ -217,7 +254,7 @@ fn a_failed_create_retains_the_table_and_reports_how_to_retry() {
     // The source fails after the first batch was written. A DROP job would receive a valid
     // answer too, so the request count detects accidental cleanup.
     let (outcome, requests, storage) = ingest_against_mocks(
-        vec![(200, json!({})), ddl_answer()],
+        vec![ok(json!({})), ddl_answer()],
         MockPlan::default(),
         IngestMode::Create,
         fails_after_first_batch(),
@@ -243,13 +280,7 @@ fn a_failed_create_retains_the_table_and_reports_how_to_retry() {
 /// that, while uploading or at the commit, has to say the old table and its rows are gone.
 #[test]
 fn a_replace_that_fails_after_recreating_the_target_says_its_old_rows_are_gone() {
-    let differing = json!({
-        "tableReference": {
-            "projectId": "project", "datasetId": "dataset", "tableId": "events",
-        },
-        "type": "TABLE",
-        "schema": {"fields": [{"name": "other", "type": "STRING", "mode": "NULLABLE"}]},
-    });
+    let differing = table(&json!([{"name": "other", "type": "STRING", "mode": "NULLABLE"}]));
     let refused_commit = MockPlan {
         commit_errors: Some(vec![
             StorageError::new()
@@ -267,16 +298,13 @@ fn a_replace_that_fails_after_recreating_the_target_says_its_old_rows_are_gone()
         ),
         (
             refused_commit,
-            Box::new(RecordBatchIterator::new(
-                [Ok(one_id_batch())],
-                one_id_batch().schema(),
-            )) as Box<dyn RecordBatchReader + Send>,
+            reading(one_id_batch()),
             Status::InvalidState,
             "stream not finalized",
         ),
     ] {
         let (outcome, requests, _storage) = ingest_against_mocks(
-            vec![(200, differing.clone()), ddl_answer()],
+            vec![ok(differing.clone()), ddl_answer()],
             plan,
             IngestMode::Replace,
             reader,
@@ -291,15 +319,7 @@ fn a_replace_that_fails_after_recreating_the_target_says_its_old_rows_are_gone()
                 "rows are gone",
             ],
         );
-        assert!(
-            requests[1]
-                .body
-                .get("query")
-                .and_then(JsonValue::as_str)
-                .is_some_and(|query| query.starts_with("CREATE OR REPLACE TABLE")),
-            "{:?}",
-            requests[1].body
-        );
+        assert!(requests[1].sql().starts_with("CREATE OR REPLACE TABLE"));
     }
 }
 
@@ -309,13 +329,7 @@ fn a_replace_that_fails_after_recreating_the_target_says_its_old_rows_are_gone()
 /// leaves no room for rows. The staged answers would let a premature mutation through.
 #[test]
 fn data_too_large_to_append_is_refused_before_the_target_changes() {
-    let differing = json!({
-        "tableReference": {
-            "projectId": "project", "datasetId": "dataset", "tableId": "events",
-        },
-        "type": "TABLE",
-        "schema": {"fields": [{"name": "other", "type": "STRING", "mode": "NULLABLE"}]},
-    });
+    let differing = table(&json!([{"name": "other", "type": "STRING", "mode": "NULLABLE"}]));
     let oversized_row = {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Utf8, false)]));
         let large = "x".repeat(10_000_000);
@@ -384,26 +398,16 @@ fn data_too_large_to_append_is_refused_before_the_target_changes() {
         (invalid_range, Status::InvalidData, "lower bound"),
     ] {
         for (mode, responses) in [
-            (IngestMode::Create, vec![(200, json!({}))]),
+            (IngestMode::Create, vec![ok(json!({}))]),
             (
                 IngestMode::Replace,
-                vec![(200, differing.clone()), ddl_answer()],
+                vec![ok(differing.clone()), ddl_answer()],
             ),
         ] {
-            let schema = batch.schema();
-            let reader = RecordBatchIterator::new([Ok(batch.clone())], schema);
             let (outcome, requests, storage) =
-                ingest_against_mocks(responses, MockPlan::default(), mode, Box::new(reader));
-            let failure = outcome.unwrap_err();
-            assert_failure(&failure, status, &[cause]);
-            assert!(
-                requests.is_empty(),
-                "{mode:?} sent {:?}",
-                requests
-                    .iter()
-                    .map(|request| &request.line)
-                    .collect::<Vec<_>>()
-            );
+                ingest_against_mocks(responses, MockPlan::default(), mode, reading(batch.clone()));
+            assert_failure(&outcome.unwrap_err(), status, &[cause]);
+            assert_eq!(methods(&requests), [""; 0], "{mode:?}");
             assert_eq!(storage.write_streams(), (0, 0), "{mode:?}");
         }
     }
@@ -416,45 +420,21 @@ fn data_too_large_to_append_is_refused_before_the_target_changes() {
 /// for changed columns.
 #[test]
 fn replacing_a_mismatched_table_never_deletes_it_first() {
-    let existing = json!({
-        "tableReference": {
-            "projectId": "project", "datasetId": "dataset", "tableId": "events",
-        },
-        "schema": {"fields": [{"name": "id", "type": "STRING", "mode": "NULLABLE"}]},
-    });
+    let existing = table(&json!([{"name": "id", "type": "STRING", "mode": "NULLABLE"}]));
     let bound = table_schema([
         field_mode("id", "INTEGER", "REQUIRED"),
         field_mode("name", "STRING", "NULLABLE"),
     ]);
-    let (outcome, requests) = against_bigquery(vec![(200, existing), ddl_answer()], |context| {
+    let (outcome, requests) = against_bigquery(vec![ok(existing), ddl_answer()], |context| {
         plan_and_prepare(context, TARGET, IngestMode::Replace, &bound)
     });
     outcome.unwrap();
 
-    assert_eq!(
-        requests.len(),
-        2,
-        "the schema read and one atomic replace, and nothing else: {:?}",
-        requests
-            .iter()
-            .map(|request| &request.line)
-            .collect::<Vec<_>>()
-    );
-    assert!(requests[0].line.starts_with("GET "), "{}", requests[0].line);
-    for request in &requests {
-        assert!(
-            !request.line.starts_with("DELETE "),
-            "the target was deleted before it was recreated: {}",
-            request.line
-        );
-    }
+    assert_eq!(methods(&requests), ["GET", "POST"]);
     let body = &requests[1].body;
     assert_eq!(
-        body.get("query").and_then(JsonValue::as_str),
-        Some(
-            "CREATE OR REPLACE TABLE `project.dataset.events` \
-                 (`id` INT64 NOT NULL, `name` STRING)"
-        )
+        requests[1].sql(),
+        "CREATE OR REPLACE TABLE `project.dataset.events` (`id` INT64 NOT NULL, `name` STRING)"
     );
     assert_carries_only_the_location(body);
 }
@@ -462,15 +442,10 @@ fn replacing_a_mismatched_table_never_deletes_it_first() {
 /// A refused replace names the target, and leaves it standing.
 #[test]
 fn a_refused_replace_names_the_target_it_could_not_replace() {
-    let existing = json!({
-        "tableReference": {
-            "projectId": "project", "datasetId": "dataset", "tableId": "events",
-        },
-        "schema": {"fields": [{"name": "id", "type": "STRING", "mode": "NULLABLE"}]},
-    });
+    let existing = table(&json!([{"name": "id", "type": "STRING", "mode": "NULLABLE"}]));
     let bound = table_schema([field_mode("id", "INTEGER", "REQUIRED")]);
     let refusal = json!({"error": {"code": 403, "message": "Permission denied on table"}});
-    let (outcome, _requests) = against_bigquery(vec![(200, existing), (403, refusal)], |context| {
+    let (outcome, _requests) = against_bigquery(vec![ok(existing), (403, refusal)], |context| {
         plan_and_prepare(context, TARGET, IngestMode::Replace, &bound)
     });
     let failure = outcome.unwrap_err();
@@ -524,27 +499,15 @@ fn a_replace_cancelled_once_its_statement_was_sent_warns_that_the_old_rows_may_b
             } else {
                 capture_requests(Vec::new())
             };
-            let runtime = crate::runtime::new_runtime().unwrap();
+            let runtime = new_runtime().unwrap();
             let clients = ClientState::for_test_at(ServiceEndpointKind::BigQuery, &endpoint);
-            let cancellation = Cancellation::new(runtime.clone(), clients.clone(), "statement");
-            let operation = cancellation.begin();
+            let (cancellation, operation) = operation(&runtime, clients.clone());
             if sent {
                 *cancellation_slot.lock().unwrap() = Some(cancellation);
             } else {
                 OperationCancelHandle(cancellation).try_cancel().unwrap();
             }
-            let billing_project = ProjectIdentifier::try_new("billing-project").unwrap();
-            let context = IngestContext {
-                runtime: &runtime,
-                state: &clients,
-                billing_project_id: Some(&billing_project),
-                current_catalog: None,
-                current_schema: None,
-                location: None,
-                operation: &operation,
-            };
-
-            let failure = statement(&context).unwrap_err();
+            let failure = in_context(&runtime, &clients, &operation, statement).unwrap_err();
             operation.finish();
             let requests = captured.join().unwrap();
             assert_eq!(requests.len(), usize::from(sent), "{label}");
@@ -565,26 +528,8 @@ fn a_replace_cancelled_once_its_statement_was_sent_warns_that_the_old_rows_may_b
 #[test]
 fn a_truncate_without_an_answer_warns_that_the_old_rows_may_be_gone() {
     let (endpoint, captured) = capture_requests_gated(vec![ddl_answer()], || false);
-    let runtime = crate::runtime::new_runtime().unwrap();
-    let clients = ClientState::for_test_at(ServiceEndpointKind::BigQuery, &endpoint);
-    let cancellation = Cancellation::new(runtime.clone(), clients.clone(), "statement");
-    let operation = cancellation.begin();
-    let billing_project = ProjectIdentifier::try_new("billing-project").unwrap();
-    let failure = truncate_table(
-        &IngestContext {
-            runtime: &runtime,
-            state: &clients,
-            billing_project_id: Some(&billing_project),
-            current_catalog: None,
-            current_schema: None,
-            location: None,
-            operation: &operation,
-        },
-        TARGET,
-        None,
-    )
-    .unwrap_err();
-    operation.finish();
+    let failure =
+        at_bigquery(&endpoint, |context| truncate_table(context, TARGET, None)).unwrap_err();
     captured.join().unwrap();
     assert_failure(
         &failure,
@@ -603,22 +548,13 @@ fn a_truncate_without_an_answer_warns_that_the_old_rows_may_be_gone() {
 /// and the failure says the new rows went uncommitted.
 #[test]
 fn a_truncate_bigquery_stops_leaves_the_replace_uncommitted() {
-    let matching = json!({
-        "tableReference": {
-            "projectId": "project", "datasetId": "dataset", "tableId": "events",
-        },
-        "type": "TABLE",
-        "schema": {"fields": [{"name": "id", "type": "INTEGER", "mode": "REQUIRED"}]},
-    });
+    let matching = table(&json!([{"name": "id", "type": "INTEGER", "mode": "REQUIRED"}]));
     let stopped = "Job execution was cancelled: Job timed out after 600 sec";
     let (outcome, requests, storage) = ingest_against_mocks(
         vec![ok(matching), (499, error_body("stopped", stopped))],
         MockPlan::default(),
         IngestMode::Replace,
-        Box::new(RecordBatchIterator::new(
-            [Ok(one_id_batch())],
-            one_id_batch().schema(),
-        )),
+        reading(one_id_batch()),
     );
     let failure = outcome.unwrap_err();
     assert_failure(
@@ -639,13 +575,8 @@ fn a_truncate_bigquery_stops_leaves_the_replace_uncommitted() {
 /// An ingest whose bound schema cannot be spelled as DDL is refused before anything mutates.
 #[test]
 fn a_replace_with_no_columns_is_refused_before_the_target_changes() {
-    let existing = json!({
-        "tableReference": {
-            "projectId": "project", "datasetId": "dataset", "tableId": "events",
-        },
-        "schema": {"fields": [{"name": "id", "type": "STRING", "mode": "NULLABLE"}]},
-    });
-    let (outcome, requests) = against_bigquery(vec![(200, existing)], |context| {
+    let existing = table(&json!([{"name": "id", "type": "STRING", "mode": "NULLABLE"}]));
+    let (outcome, requests) = against_bigquery(vec![ok(existing)], |context| {
         plan_and_prepare(
             context,
             TARGET,
@@ -663,41 +594,27 @@ fn a_replace_with_no_columns_is_refused_before_the_target_changes() {
 #[test]
 fn an_ingest_with_no_columns_is_refused_before_any_request() {
     let schema = Arc::new(Schema::empty());
-    for mode in [
-        IngestMode::Create,
-        IngestMode::Append,
-        IngestMode::CreateAppend,
-        IngestMode::Replace,
-    ] {
-        let options = IngestOptions {
-            mode,
-            target_db_schema: Some(TARGET.dataset_id.to_owned()),
-            target_table: Some(TARGET.table_id.to_owned()),
-            ..IngestOptions::default()
-        };
+    for mode in MODES {
+        let options = target_options(mode);
         let batch = RecordBatch::try_new_with_options(
             schema.clone(),
             Vec::new(),
             &RecordBatchOptions::new().with_row_count(Some(2)),
         )
         .unwrap();
-        let (outcome, requests) = against_bigquery(Vec::new(), |context| {
-            execute_ingest(
-                *context,
-                &options,
-                Box::new(RecordBatchIterator::new([Ok(batch)], schema.clone())),
-            )
+        let (executed, _) = against_bigquery(Vec::new(), |context| {
+            execute_ingest(*context, &options, reading(batch)).map(|_| ())
         });
-        let failure = outcome.unwrap_err();
-        assert_failure(&failure, Status::InvalidArguments, &["no fields"]);
-        assert!(requests.is_empty(), "{mode:?}");
-
-        let (outcome, requests) = against_bigquery(Vec::new(), |context| {
+        let (validated, _) = against_bigquery(Vec::new(), |context| {
             validate_ingest(*context, &options, &schema)
         });
-        let failure = outcome.unwrap_err();
-        assert_failure(&failure, Status::InvalidArguments, &["no fields"]);
-        assert!(requests.is_empty(), "{mode:?}");
+        for outcome in [executed, validated] {
+            assert_failure(
+                &outcome.unwrap_err(),
+                Status::InvalidArguments,
+                &["no fields"],
+            );
+        }
     }
 }
 
@@ -752,76 +669,42 @@ fn an_array_of_timestamps_is_refused_before_any_request() {
         let name = path.split('.').next().unwrap();
         Arc::new(Schema::new(vec![Field::new(name, data_type, true)]))
     };
-    // Answers a request the driver should never send, so a regression is caught by the
-    // capture rather than hidden in a connection failure.
-    let missing = json!({"error": {"code": 404, "message": "Not found: Table"}});
-    let run = |run: &dyn Fn(&IngestContext<'_>) -> adbc_core::error::Result<()>| {
-        let (endpoint, server) = capture_requests_until_stopped(vec![(404, missing.clone())]);
-        let runtime = crate::runtime::new_runtime().unwrap();
-        let clients = ClientState::for_test_at(ServiceEndpointKind::BigQuery, &endpoint);
-        let cancellation = Cancellation::new(runtime.clone(), clients.clone(), "statement");
-        let operation = cancellation.begin();
-        let billing_project = ProjectIdentifier::try_new("billing-project").unwrap();
-        let outcome = run(&IngestContext {
-            runtime: &runtime,
-            state: &clients,
-            billing_project_id: Some(&billing_project),
-            current_catalog: Some(&billing_project),
-            current_schema: None,
-            location: None,
-            operation: &operation,
-        });
-        operation.finish();
-        (outcome, server.stop())
-    };
-    let options = |mode| IngestOptions {
-        mode,
-        target_db_schema: Some(TARGET.dataset_id.to_owned()),
-        target_table: Some(TARGET.table_id.to_owned()),
-        ..IngestOptions::default()
-    };
-
     for (path, data_type) in refused {
         let schema = column(path, data_type);
-        for mode in [
-            IngestMode::Create,
-            IngestMode::Append,
-            IngestMode::CreateAppend,
-            IngestMode::Replace,
-        ] {
-            let options = options(mode);
-            let (outcome, requests) = run(&|context| {
-                let batch = RecordBatch::try_new(
-                    schema.clone(),
-                    vec![new_empty_array(schema.field(0).data_type())],
-                )
-                .unwrap();
-                let reader = RecordBatchIterator::new([Ok(batch)], schema.clone());
-                execute_ingest(*context, &options, Box::new(reader)).map(|_| ())
+        for mode in MODES {
+            let options = target_options(mode);
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![new_empty_array(schema.field(0).data_type())],
+            )
+            .unwrap();
+            let (executed, _) = against_bigquery(Vec::new(), |context| {
+                execute_ingest(*context, &options, reading(batch)).map(|_| ())
             });
-            let (dry_run, dry_run_requests) =
-                run(&|context| validate_ingest(*context, &options, &schema));
-            for (failure, requests) in [(outcome, requests), (dry_run, dry_run_requests)] {
-                let failure = failure.unwrap_err();
+            let (validated, _) = against_bigquery(Vec::new(), |context| {
+                validate_ingest(*context, &options, &schema)
+            });
+            for outcome in [executed, validated] {
+                let failure = outcome.unwrap_err();
                 assert_eq!(failure.status, Status::NotImplemented, "{path} {mode:?}");
                 assert_eq!(
                     failure.message,
                     format!(
-                        "ingest field {path:?} is ARRAY<TIMESTAMP>, which BigQuery Storage \
-                             Write cannot append; ingest it as ARRAY<STRUCT<ts TIMESTAMP>> into \
-                             a staging table and convert it with SQL"
+                        "ingest field {path:?} is ARRAY<TIMESTAMP>, which BigQuery Storage Write \
+                         cannot append; ingest it as ARRAY<STRUCT<ts TIMESTAMP>> into a staging \
+                         table and convert it with SQL"
                     )
                 );
-                let sent = requests.iter().map(|request| &request.line);
-                assert_eq!(sent.collect::<Vec<_>>(), [""; 0], "{path} {mode:?}");
             }
         }
     }
 
     for data_type in accepted {
         let schema = column("values", data_type);
-        let options = options(IngestMode::Create);
-        let (outcome, requests) = run(&|context| validate_ingest(*context, &options, &schema));
+        let options = target_options(IngestMode::Create);
+        let (outcome, requests) = against_bigquery(vec![missing_table()], |context| {
+            validate_ingest(*context, &options, &schema)
+        });
         outcome.unwrap_or_else(|failure| panic!("{}: {failure}", schema.field(0)));
         assert_eq!(requests.len(), 1, "only the table lookup was sent");
     }
@@ -832,15 +715,8 @@ fn an_array_of_timestamps_is_refused_before_any_request() {
 /// they would have had the read seen it.
 #[test]
 fn a_target_created_concurrently_is_planned_again() {
-    let missing = json!({"error": {"code": 404, "message": "Not found: Table"}});
     let conflict = json!({"error": {"code": 409, "message": "Already Exists: Table"}});
-    let existing = json!({
-        "tableReference": {
-            "projectId": "project", "datasetId": "dataset", "tableId": "events",
-        },
-        "type": "TABLE",
-        "schema": {"fields": [{"name": "id", "type": "INTEGER", "mode": "REQUIRED"}]},
-    });
+    let existing = table(&json!([{"name": "id", "type": "INTEGER", "mode": "REQUIRED"}]));
     let bound = table_schema([field_mode("id", "INTEGER", "REQUIRED")]);
     for (mode, expected) in [
         (IngestMode::CreateAppend, TablePlan::Reuse),
@@ -848,18 +724,14 @@ fn a_target_created_concurrently_is_planned_again() {
     ] {
         let (outcome, requests) = against_bigquery(
             vec![
-                (404, missing.clone()),
+                missing_table(),
                 (409, conflict.clone()),
-                (200, existing.clone()),
+                ok(existing.clone()),
             ],
             |context| plan_and_prepare(context, TARGET, mode, &bound),
         );
         assert_eq!(outcome.unwrap(), expected, "{mode:?}");
-        let lines = requests
-            .iter()
-            .map(|request| request.line.split(' ').next().unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(lines, ["GET", "POST", "GET"], "{mode:?}");
+        assert_eq!(methods(&requests), ["GET", "POST", "GET"], "{mode:?}");
     }
 }
 
@@ -867,37 +739,24 @@ fn a_target_created_concurrently_is_planned_again() {
 /// that name with NULLs, reading the table once, both to type the column and to plan.
 #[test]
 fn an_all_null_column_is_appended_as_the_tables_column() {
-    let existing = json!({
-        "tableReference": {
-            "projectId": "project", "datasetId": "dataset", "tableId": "events",
-        },
-        "type": "TABLE",
-        "schema": {"fields": [
-            {"name": "id", "type": "INTEGER", "mode": "REQUIRED"},
-            {"name": "note", "type": "STRING", "mode": "NULLABLE"},
-        ]},
-    });
+    let existing = table(&json!([
+        {"name": "id", "type": "INTEGER", "mode": "REQUIRED"},
+        {"name": "note", "type": "STRING", "mode": "NULLABLE"},
+    ]));
     let batch = RecordBatch::try_from_iter([
         ("id", Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef),
         ("note", Arc::new(NullArray::new(2)) as ArrayRef),
     ])
     .unwrap();
-    let schema = batch.schema();
     let (outcome, requests, storage) = ingest_against_mocks(
-        vec![(200, existing)],
+        vec![ok(existing)],
         MockPlan::default(),
         IngestMode::Append,
-        Box::new(RecordBatchIterator::new([Ok(batch)], schema)),
+        reading(batch),
     );
     assert_eq!(outcome.unwrap(), 2);
     assert_eq!(storage.written_rows(), 2);
-    assert_eq!(
-        requests
-            .iter()
-            .map(|request| request.line.split(' ').next().unwrap())
-            .collect::<Vec<_>>(),
-        ["GET"]
-    );
+    assert_eq!(methods(&requests), ["GET"]);
 }
 
 /// An all-null column the table cannot type is reported as adbc.h asks for an append: the
@@ -905,14 +764,7 @@ fn an_all_null_column_is_appended_as_the_tables_column() {
 /// schema mismatch, not as an untypable `Null`. A dry run reports the same.
 #[test]
 fn an_all_null_column_without_a_column_to_fill_reports_the_target() {
-    let missing = json!({"error": {"code": 404, "message": "Not found: Table"}});
-    let lacking = json!({
-        "tableReference": {
-            "projectId": "project", "datasetId": "dataset", "tableId": "events",
-        },
-        "type": "TABLE",
-        "schema": {"fields": [{"name": "id", "type": "INTEGER", "mode": "NULLABLE"}]},
-    });
+    let lacking = table(&json!([{"name": "id", "type": "INTEGER", "mode": "NULLABLE"}]));
     let batch = RecordBatch::try_from_iter([
         ("id", Arc::new(Int64Array::from(vec![1])) as ArrayRef),
         ("extra", Arc::new(NullArray::new(1)) as ArrayRef),
@@ -920,35 +772,27 @@ fn an_all_null_column_without_a_column_to_fill_reports_the_target() {
     .unwrap();
     for (target, status, message) in [
         (
-            (404, missing),
+            missing_table(),
             Status::NotFound,
             "BigQuery ingest target project.dataset.events does not exist",
         ),
         (
-            (200, lacking),
+            ok(lacking),
             Status::AlreadyExists,
             "bound column \"extra\" is not in the table",
         ),
     ] {
-        let schema = batch.schema();
-        let reader = RecordBatchIterator::new([Ok(batch.clone())], schema.clone());
         let (outcome, _, _) = ingest_against_mocks(
             vec![target.clone()],
             MockPlan::default(),
             IngestMode::Append,
-            Box::new(reader),
+            reading(batch.clone()),
         );
-        let failure = outcome.unwrap_err();
-        assert_failure(&failure, status, &[message]);
+        assert_failure(&outcome.unwrap_err(), status, &[message]);
 
-        let options = IngestOptions {
-            mode: IngestMode::Append,
-            target_db_schema: Some(TARGET.dataset_id.to_owned()),
-            target_table: Some(TARGET.table_id.to_owned()),
-            ..IngestOptions::default()
-        };
+        let options = target_options(IngestMode::Append);
         let (outcome, _) = against_bigquery(vec![target], |context| {
-            validate_ingest(*context, &options, &schema)
+            validate_ingest(*context, &options, &batch.schema())
         });
         assert_eq!(outcome.unwrap_err().status, status, "dry run");
     }
@@ -958,13 +802,7 @@ fn an_all_null_column_without_a_column_to_fill_reports_the_target() {
 /// before the bound stream is read: the reader here fails if it is ever asked for a batch.
 #[test]
 fn an_append_into_a_mismatched_table_reads_no_rows() {
-    let existing = json!({
-        "tableReference": {
-            "projectId": "project", "datasetId": "dataset", "tableId": "events",
-        },
-        "type": "TABLE",
-        "schema": {"fields": [{"name": "other", "type": "STRING", "mode": "NULLABLE"}]},
-    });
+    let existing = table(&json!([{"name": "other", "type": "STRING", "mode": "NULLABLE"}]));
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let reader = RecordBatchIterator::new(
         [Err(ArrowError::ComputeError(
@@ -973,7 +811,7 @@ fn an_append_into_a_mismatched_table_reads_no_rows() {
         schema,
     );
     let (outcome, _, storage) = ingest_against_mocks(
-        vec![(200, existing)],
+        vec![ok(existing)],
         MockPlan::default(),
         IngestMode::Append,
         Box::new(reader),
@@ -1071,6 +909,7 @@ const TABLE: &str = "projects/project/datasets/dataset/tables/events";
 /// the failed append.
 const BATCHES: i64 = 5;
 const ROWS_PER_BATCH: i64 = 2;
+const TOTAL: i64 = BATCHES * ROWS_PER_BATCH;
 
 fn ingest_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -1098,15 +937,24 @@ fn ingest_batches(schema: &SchemaRef) -> Vec<RecordBatch> {
         .collect()
 }
 
-/// Runs one whole ingest transport against `mock`, from stream creation to commit.
-fn ingest(
-    runtime: &SharedRuntime,
-    mock: &StorageMock,
-    schema: &SchemaRef,
-) -> adbc_core::error::Result<i64> {
-    let batches = ingest_batches(schema);
+/// Runs one whole ingest transport of [`ingest_batches`], from stream creation to commit, against
+/// a mock following `plan`.
+fn ingest(plan: MockPlan) -> (adbc_core::error::Result<i64>, StorageMock) {
+    let runtime = new_runtime().unwrap();
+    let mock = StorageMock::start(&runtime, plan);
+    let schema = ingest_schema();
+    let batches = ingest_batches(&schema);
     let reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema.clone());
-    ingest_from(runtime, mock, schema, Box::new(reader))
+    (
+        ingest_from(&runtime, &mock, &schema, Box::new(reader)),
+        mock,
+    )
+}
+
+/// How many appends `mock` received at `offset`.
+fn sends_at(mock: &StorageMock, offset: i64) -> usize {
+    let offsets = mock.append_offsets();
+    offsets.iter().filter(|&&sent| sent == offset).count()
 }
 
 /// Like [`ingest`], with the batches `reader` yields.
@@ -1117,8 +965,7 @@ fn ingest_from(
     mut reader: Box<dyn RecordBatchReader + Send>,
 ) -> adbc_core::error::Result<i64> {
     let clients = ClientState::for_test_at(ServiceEndpointKind::Storage, mock.endpoint());
-    let cancellation = Cancellation::new(runtime.clone(), clients.clone(), "statement");
-    let operation = cancellation.begin();
+    let (_cancellation, operation) = operation(runtime, clients.clone());
     let client = clients.write_client(runtime).unwrap();
     let normalized_schema = Arc::new(normalize_schema(schema).unwrap());
     // `write_batches` takes the first batch already checked, because the real path checks
@@ -1137,7 +984,7 @@ fn ingest_from(
 
 #[test]
 fn the_first_ingest_batch_is_released_before_reading_more_input() {
-    let runtime = crate::runtime::new_runtime().unwrap();
+    let runtime = new_runtime().unwrap();
     let schema = ingest_schema();
     let mock = StorageMock::start(&runtime, MockPlan::default());
     let array = Arc::new(Int64Array::from(vec![1; 1024 * 1024]).slice(0, 2));
@@ -1168,159 +1015,87 @@ fn the_first_ingest_batch_is_released_before_reading_more_input() {
     );
 
     let rows = ingest_from(&runtime, &mock, &schema, Box::new(reader)).unwrap();
-    let total = (BATCHES + 1) * ROWS_PER_BATCH;
-    assert_eq!(rows, total);
-    assert_eq!(mock.finalized(), (Some(total), true));
+    assert_eq!(rows, TOTAL + ROWS_PER_BATCH);
+    assert_eq!(mock.finalized(), (Some(rows), true));
 }
 
-/// A torn `AppendRows` stream reattaches to the same stream and finalizes the right row
-/// count.
+/// A torn `AppendRows` stream reattaches to the same stream and finalizes the right row count.
 ///
-/// The mock writes the third append, then ends the call without acknowledging it. Recovery
-/// must reattach to the same pending stream, replay the unacknowledged append and its queued
-/// successors at their original offsets, and absorb the `ALREADY_EXISTS` for the landed one.
-/// The mock's row count at finalize catches any double write.
+/// The mock writes the third append, then ends the call without acknowledging it. Recovery must
+/// replay it and its queued successors at their original offsets, and absorb the `ALREADY_EXISTS`
+/// for the landed one. The mock's row count at finalize catches any double write.
 #[test]
 fn a_torn_append_stream_reattaches_and_finalizes_the_appended_rows() {
-    let runtime = crate::runtime::new_runtime().unwrap();
-    let schema = ingest_schema();
-    let mock = StorageMock::start(
-        &runtime,
-        MockPlan {
-            tear_append_after: Some(3),
-            ..MockPlan::default()
-        },
-    );
-
-    let rows = ingest(&runtime, &mock, &schema).unwrap();
-    let total = BATCHES * ROWS_PER_BATCH;
-    assert_eq!(rows, total);
-    assert_eq!(mock.written_rows(), total, "the replay wrote rows twice");
-    assert_eq!(mock.finalized(), (Some(total), true));
+    let (outcome, mock) = ingest(MockPlan {
+        tear_append_after: Some(3),
+        ..MockPlan::default()
+    });
+    assert_eq!(outcome.unwrap(), TOTAL);
+    assert_eq!(mock.written_rows(), TOTAL, "the replay wrote rows twice");
+    assert_eq!(mock.finalized(), (Some(TOTAL), true));
     assert_eq!(
         mock.write_streams(),
         (1, 1),
         "recovery must reattach to the one pending stream, not create another"
     );
-    // The first call carries offsets 0, 2 and 4; the third is written but never acknowledged,
-    // so the replay resends it and the successors queued behind it at the same offsets.
     assert_eq!(mock.append_offsets(), vec![0, 2, 4, 4, 6, 8]);
-    // The replay of the landed append is behind the stream's cursor, so it is answered
-    // ALREADY_EXISTS, which the ingest absorbed.
     assert_eq!(mock.already_exists_offsets(), vec![2 * ROWS_PER_BATCH]);
 }
 
-/// A rejected append is reported, not the rejections its queued successors then earn.
+/// A rejected append is reported, not the `OUT_OF_RANGE` its queued successors then earn.
 ///
-/// The mock refuses the append at offset 2, which leaves the appends queued behind it past the
-/// stream's cursor, so each is answered `OUT_OF_RANGE`. `AppendPipeline::complete_oldest`
-/// drops those successors, so the later drain in `append_all` cannot report one in place of
-/// the refusal.
-///
-/// The pipeline depth is not set here, so the test first asserts that the mock did answer a
-/// successor `OUT_OF_RANGE`; otherwise it would pass for a driver with nothing to drop. The
-/// mock holds the refusal until a successor arrives (see `MockPlan::reject_at`), so that
-/// record is complete when the driver returns.
+/// The test first asserts that a successor was answered `OUT_OF_RANGE`, or it would pass for a
+/// driver with nothing to drop. The mock holds the refusal until a successor arrives (see
+/// `MockPlan::reject_at`), so that record is complete when the driver returns.
 #[test]
 fn a_rejected_append_is_reported_rather_than_its_successors_rejections() {
-    let runtime = crate::runtime::new_runtime().unwrap();
-    let schema = ingest_schema();
-    let mock = StorageMock::start(
-        &runtime,
-        MockPlan {
-            reject_at: Some((ROWS_PER_BATCH, INVALID_ARGUMENT)),
-            ..MockPlan::default()
-        },
-    );
-
-    let failure = ingest(&runtime, &mock, &schema).unwrap_err();
-
-    // The refused append reached the service, and at least one append queued behind it was
-    // answered `OUT_OF_RANGE`, so there was a competing failure.
-    let offsets = mock.append_offsets();
-    assert!(
-        offsets.contains(&ROWS_PER_BATCH),
-        "the refused append was never sent: {offsets:?}"
-    );
+    let (outcome, mock) = ingest(MockPlan {
+        reject_at: Some((ROWS_PER_BATCH, INVALID_ARGUMENT)),
+        ..MockPlan::default()
+    });
     let rejected_successors = mock.out_of_range_offsets();
-    assert!(
-        !rejected_successors.is_empty(),
-        "no append was queued behind the refused one, so nothing competed with it: {offsets:?}"
-    );
+    assert!(!rejected_successors.is_empty());
     assert!(
         rejected_successors
             .iter()
             .all(|offset| *offset > ROWS_PER_BATCH),
-        "an append at or before the refused offset was answered OUT_OF_RANGE: \
-             {rejected_successors:?}"
+        "{rejected_successors:?}"
     );
 
-    // What is reported is the refusal itself: its status, its target and its own code.
-    assert_failure(&failure, Status::InvalidArguments, &[TABLE]);
-    assert!(
-        failure.message.contains("INVALID_ARGUMENT"),
-        "the refused append was reported as {}",
-        failure.message
+    let failure = outcome.unwrap_err();
+    assert_failure(
+        &failure,
+        Status::InvalidArguments,
+        &[TABLE, "INVALID_ARGUMENT"],
     );
     // The RPC error itself, without upstream's `AppendError` wrapper prose.
-    assert_message_omits(&failure, &["the operation failed"]);
-    assert!(
-        !failure.message.contains("OUT_OF_RANGE"),
-        "a queued successor's rejection was reported instead: {}",
-        failure.message
-    );
+    assert_message_omits(&failure, &["the operation failed", "OUT_OF_RANGE"]);
 }
 
 /// An append refused with a transient status is replayed at its own offset, together with
 /// the successors the refusal pushed past the stream's cursor, and every row lands once.
 #[test]
 fn a_transiently_refused_append_is_replayed_exactly_once() {
-    let runtime = crate::runtime::new_runtime().unwrap();
-    let mock = StorageMock::start(
-        &runtime,
-        MockPlan {
-            reject_at: Some((ROWS_PER_BATCH, ABORTED)),
-            ..MockPlan::default()
-        },
-    );
-
-    let total = BATCHES * ROWS_PER_BATCH;
-    assert_eq!(ingest(&runtime, &mock, &ingest_schema()).unwrap(), total);
-    assert_eq!(mock.written_rows(), total, "the replay wrote rows twice");
-    assert_eq!(mock.finalized(), (Some(total), true));
+    let (outcome, mock) = ingest(MockPlan {
+        reject_at: Some((ROWS_PER_BATCH, ABORTED)),
+        ..MockPlan::default()
+    });
+    assert_eq!(outcome.unwrap(), TOTAL);
+    assert_eq!(mock.written_rows(), TOTAL, "the replay wrote rows twice");
+    assert_eq!(mock.finalized(), (Some(TOTAL), true));
     assert_eq!(mock.write_streams(), (1, 1));
-    let offsets = mock.append_offsets();
-    assert_eq!(
-        offsets
-            .iter()
-            .filter(|&&offset| offset == ROWS_PER_BATCH)
-            .count(),
-        2,
-        "the refused append was not replayed exactly once: {offsets:?}"
-    );
+    assert_eq!(sends_at(&mock, ROWS_PER_BATCH), 2);
 }
 
 #[test]
 fn initial_and_pipelined_appends_stop_after_three_retries() {
-    let runtime = crate::runtime::new_runtime().unwrap();
     for offset in [0, ROWS_PER_BATCH] {
-        let mock = StorageMock::start(
-            &runtime,
-            MockPlan {
-                repeat_append_refusal: Some((offset, UNAVAILABLE)),
-                ..MockPlan::default()
-            },
-        );
-        let failure = ingest(&runtime, &mock, &ingest_schema()).unwrap_err();
-        assert_eq!(failure.status, Status::IO);
-        assert_eq!(
-            mock.append_offsets()
-                .iter()
-                .filter(|&&sent| sent == offset)
-                .count(),
-            4,
-            "one initial append and three retries at offset {offset}"
-        );
+        let (outcome, mock) = ingest(MockPlan {
+            repeat_append_refusal: Some((offset, UNAVAILABLE)),
+            ..MockPlan::default()
+        });
+        assert_eq!(outcome.unwrap_err().status, Status::IO);
+        assert_eq!(sends_at(&mock, offset), 4, "at offset {offset}");
         assert_eq!(mock.write_streams(), (1, 3));
         assert_eq!(mock.finalized(), (Some(offset), false));
     }
@@ -1330,18 +1105,11 @@ fn initial_and_pipelined_appends_stop_after_three_retries() {
 /// would turn the signal of drifted offset accounting into a silently short ingest.
 #[test]
 fn already_exists_on_a_first_send_is_reported() {
-    let runtime = crate::runtime::new_runtime().unwrap();
-    let schema = ingest_schema();
-    let mock = StorageMock::start(
-        &runtime,
-        MockPlan {
-            already_exists_at: Some(ROWS_PER_BATCH),
-            ..MockPlan::default()
-        },
-    );
-
-    let failure = ingest(&runtime, &mock, &schema).unwrap_err();
-    assert_failure(&failure, Status::AlreadyExists, &[TABLE]);
+    let (outcome, mock) = ingest(MockPlan {
+        already_exists_at: Some(ROWS_PER_BATCH),
+        ..MockPlan::default()
+    });
+    assert_failure(&outcome.unwrap_err(), Status::AlreadyExists, &[TABLE]);
     // The abandoned stream is finalized best-effort, and nothing is committed.
     let (finalized, committed) = mock.finalized();
     assert!(finalized.is_some(), "the abandoned stream was left open");
@@ -1350,7 +1118,7 @@ fn already_exists_on_a_first_send_is_reported() {
 
 #[test]
 fn a_reader_failure_does_not_wait_for_a_stalled_append() {
-    let runtime = crate::runtime::new_runtime().unwrap();
+    let runtime = new_runtime().unwrap();
     let schema = ingest_schema();
     let gate = Arc::new((Notify::new(), Notify::new()));
     let mock = StorageMock::start(
@@ -1401,32 +1169,23 @@ fn a_reader_failure_does_not_wait_for_a_stalled_append() {
 
 #[test]
 fn failed_finalize_attempts_cleanup_and_preserves_the_original_error() {
-    let runtime = crate::runtime::new_runtime().unwrap();
     for cleanup_fails in [false, true] {
         let mut finalize_refusals = vec![INVALID_ARGUMENT];
         if cleanup_fails {
             finalize_refusals.push(UNAVAILABLE);
         }
-        let mock = StorageMock::start(
-            &runtime,
-            MockPlan {
-                finalize_refusals,
-                ..MockPlan::default()
-            },
-        );
-
-        let failure = ingest(&runtime, &mock, &ingest_schema()).unwrap_err();
+        let (outcome, mock) = ingest(MockPlan {
+            finalize_refusals,
+            ..MockPlan::default()
+        });
         assert_failure(
-            &failure,
+            &outcome.unwrap_err(),
             Status::InvalidArguments,
             &["failed to finalize", TABLE],
         );
         assert_eq!(mock.finalize_calls(), 2);
-        assert_eq!(mock.written_rows(), BATCHES * ROWS_PER_BATCH);
-        assert_eq!(
-            mock.finalized(),
-            ((!cleanup_fails).then_some(BATCHES * ROWS_PER_BATCH), false)
-        );
+        assert_eq!(mock.written_rows(), TOTAL);
+        assert_eq!(mock.finalized(), ((!cleanup_fails).then_some(TOTAL), false));
     }
 }
 
@@ -1436,7 +1195,7 @@ fn failed_finalize_attempts_cleanup_and_preserves_the_original_error() {
 fn the_first_append_is_small_and_later_ones_fill_their_requests() {
     const ROWS: i64 = 300_000;
 
-    let runtime = crate::runtime::new_runtime().unwrap();
+    let runtime = new_runtime().unwrap();
     let schema = ingest_schema();
     let mock = StorageMock::start(&runtime, MockPlan::default());
     // About 22 bytes a row, so 6.6 MB in all.
@@ -1450,10 +1209,8 @@ fn the_first_append_is_small_and_later_ones_fill_their_requests() {
         ],
     )
     .unwrap();
-    let reader = RecordBatchIterator::new([Ok(batch)], schema.clone());
-
     assert_eq!(
-        ingest_from(&runtime, &mock, &schema, Box::new(reader)).unwrap(),
+        ingest_from(&runtime, &mock, &schema, reading(batch)).unwrap(),
         ROWS
     );
     let offsets = mock.append_offsets();
@@ -1467,23 +1224,18 @@ fn the_first_append_is_small_and_later_ones_fill_their_requests() {
 
 #[test]
 fn rejected_rows_keep_the_input_offset_and_are_never_replayed() {
-    let runtime = crate::runtime::new_runtime().unwrap();
-    let mock = StorageMock::start(
-        &runtime,
-        MockPlan {
-            reject_at: Some((ROWS_PER_BATCH, INVALID_ARGUMENT)),
-            rejected_rows: vec![
-                RowError::new()
-                    .set_index(1)
-                    .set_code(RowErrorCode::FieldsError)
-                    .set_message("invalid timestamp"),
-            ],
-            ..MockPlan::default()
-        },
-    );
-    let failure = ingest(&runtime, &mock, &ingest_schema()).unwrap_err();
+    let (outcome, mock) = ingest(MockPlan {
+        reject_at: Some((ROWS_PER_BATCH, INVALID_ARGUMENT)),
+        rejected_rows: vec![
+            RowError::new()
+                .set_index(1)
+                .set_code(RowErrorCode::FieldsError)
+                .set_message("invalid timestamp"),
+        ],
+        ..MockPlan::default()
+    });
     assert_failure(
-        &failure,
+        &outcome.unwrap_err(),
         Status::InvalidData,
         &["input row 3", "FIELDS_ERROR", "invalid timestamp"],
     );
@@ -1493,7 +1245,6 @@ fn rejected_rows_keep_the_input_offset_and_are_never_replayed() {
 
 #[test]
 fn commit_refusals_and_missing_commit_time_remain_distinct() {
-    let runtime = crate::runtime::new_runtime().unwrap();
     for (errors, status, message) in [
         (
             vec![
@@ -1510,35 +1261,26 @@ fn commit_refusals_and_missing_commit_time_remain_distinct() {
             "whether its 10 rows were committed is unknown",
         ),
     ] {
-        let mock = StorageMock::start(
-            &runtime,
-            MockPlan {
-                commit_errors: Some(errors),
-                ..MockPlan::default()
-            },
-        );
-        let failure = ingest(&runtime, &mock, &ingest_schema()).unwrap_err();
-        assert_failure(&failure, status, &[message]);
+        let (outcome, mock) = ingest(MockPlan {
+            commit_errors: Some(errors),
+            ..MockPlan::default()
+        });
+        assert_failure(&outcome.unwrap_err(), status, &[message]);
         assert!(!mock.finalized().1);
     }
 }
 
 #[test]
 fn a_lost_commit_response_is_retried_without_duplicating_rows() {
-    let runtime = crate::runtime::new_runtime().unwrap();
-    let mock = StorageMock::start(
-        &runtime,
-        MockPlan {
-            lose_commit_response: true,
-            commit_errors: Some(vec![
-                StorageError::new().set_code(StorageErrorCode::StreamAlreadyCommitted),
-            ]),
-            ..MockPlan::default()
-        },
-    );
-    let total = BATCHES * ROWS_PER_BATCH;
-    assert_eq!(ingest(&runtime, &mock, &ingest_schema()).unwrap(), total);
-    assert_eq!(mock.written_rows(), total);
-    assert_eq!(mock.finalized(), (Some(total), true));
+    let (outcome, mock) = ingest(MockPlan {
+        lose_commit_response: true,
+        commit_errors: Some(vec![
+            StorageError::new().set_code(StorageErrorCode::StreamAlreadyCommitted),
+        ]),
+        ..MockPlan::default()
+    });
+    assert_eq!(outcome.unwrap(), TOTAL);
+    assert_eq!(mock.written_rows(), TOTAL);
+    assert_eq!(mock.finalized(), (Some(TOTAL), true));
     assert_eq!(mock.append_offsets(), vec![0, 2, 4, 6, 8]);
 }
