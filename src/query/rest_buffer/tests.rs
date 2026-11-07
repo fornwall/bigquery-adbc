@@ -17,7 +17,7 @@ use crate::test_support::http::{
     write_response,
 };
 
-fn row(value: impl ToString) -> RestRow {
+fn row(value: usize) -> RestRow {
     RestRow::new(vec![RestValue::String(value.to_string())])
 }
 
@@ -52,7 +52,7 @@ fn delivers_resident_rows_while_the_next_page_is_waiting() {
                 Some(JobReference::new("project", Some("EU"), "job".to_owned())),
                 None,
                 QueryPage {
-                    rows: (0..row_count).map(|index| row(index)).collect(),
+                    rows: (0..row_count).map(row).collect(),
                     page_token: Some("next".to_owned()),
                     encoded_len: 0,
                 },
