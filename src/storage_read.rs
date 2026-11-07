@@ -304,6 +304,9 @@ async fn create_read_session(
         .set_parent(format!("projects/{}", job_reference.project_id))
         .set_read_session(session)
         .set_max_stream_count(max_streams)
+        // The SDK retries only idempotent calls. A repeated create at worst abandons a session,
+        // which expires unbilled, and a lost one would fail a query that already finished.
+        .with_idempotency(true)
         .with_user_agent(clients.user_agent())
         .send();
     let response = gate(operation.as_ref(), request).await?;

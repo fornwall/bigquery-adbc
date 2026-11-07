@@ -5,6 +5,11 @@ changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- A transient `CreateReadSession` failure is retried for up to a minute instead of failing a query
+  that already finished.
+
 ## [0.2.0] - 2026-11-06
 
 ### Added

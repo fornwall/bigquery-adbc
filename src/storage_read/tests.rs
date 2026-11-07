@@ -592,7 +592,7 @@ mod mock_reads {
     #[test]
     fn an_invalid_argument_session_refusal_reads_over_rest_without_disabling_storage_read() {
         let fixture = Fixture::new();
-        let mock = fixture.mock(|plan| plan.session_refusal = Some(INVALID_ARGUMENT));
+        let mock = fixture.mock(|plan| plan.session_refusals = vec![INVALID_ARGUMENT]);
         let clients = clients(&mock);
         let result = reader(
             &fixture.runtime,
@@ -610,6 +610,16 @@ mod mock_reads {
         assert_eq!(fallback_status(result), Status::InvalidArguments);
         assert!(!clients.storage_read_disabled("project"));
         assert!(mock.read_offsets().is_empty());
+    }
+
+    /// The query has already finished, so one lost `CreateReadSession` must not fail it. The SDK
+    /// retries only calls marked idempotent, and the generated call is not.
+    #[test]
+    fn an_unavailable_session_create_is_retried() {
+        let fixture = Fixture::new();
+        let mock = fixture.mock(|plan| plan.session_refusals = vec![UNAVAILABLE]);
+        assert_eq!(fixture.read(&mock).unwrap(), fixture.batches);
+        assert_eq!(mock.session_user_agents().len(), 2);
     }
 
     /// A resumed stream preserves every row, including across statistics-only responses.

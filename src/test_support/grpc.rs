@@ -61,8 +61,8 @@ fn read_stream_name(index: usize) -> String {
 pub(crate) struct MockPlan {
     /// The serialized Arrow IPC schema message the read session declares.
     pub(crate) read_schema: Vec<u8>,
-    /// Refuse every `CreateReadSession` with this gRPC status instead of granting a session.
-    pub(crate) session_refusal: Option<u32>,
+    /// Status of each `CreateReadSession` call; later calls grant the session.
+    pub(crate) session_refusals: Vec<u32>,
     /// One `ReadRowsResponse` per entry: the row count it reports, and the serialized Arrow IPC
     /// record batch message it carries. An empty payload is a response carrying no batch at all,
     /// which the driver must still count rows for.
@@ -333,9 +333,10 @@ async fn serve_call(
 
     let status = match method.as_str() {
         "CreateReadSession" => {
+            let call = lock(&state).session_user_agents.len() - 1;
             unary(&mut body, &mut sender, |request| {
-                match plan.session_refusal {
-                    Some(status) => Err(status),
+                match plan.session_refusals.get(call) {
+                    Some(&status) => Err(status),
                     None => Ok(create_read_session(&plan, &request)),
                 }
             })
