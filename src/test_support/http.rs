@@ -69,6 +69,14 @@ impl CapturedRequest {
             .expect("captured BigQuery request has SQL")
     }
 
+    /// The `connectionProperties` a `jobs.query` or `jobs.insert` request carries.
+    pub(crate) fn connection_properties(&self) -> &JsonValue {
+        match &self.body["connectionProperties"] {
+            JsonValue::Null => &self.body["configuration"]["query"]["connectionProperties"],
+            properties => properties,
+        }
+    }
+
     /// The trimmed value of a request header, matched case-insensitively.
     pub(crate) fn header(&self, name: &str) -> Option<&str> {
         self.headers.lines().find_map(|line| {
@@ -220,8 +228,16 @@ pub(crate) fn capture_requests_gated(
     responses: Vec<(u16, JsonValue)>,
     respond: impl FnOnce() -> bool + Send + 'static,
 ) -> (String, CapturedServer) {
+    serve_gated(false, responses, respond)
+}
+
+fn serve_gated(
+    jobs: bool,
+    responses: Vec<(u16, JsonValue)>,
+    respond: impl FnOnce() -> bool + Send + 'static,
+) -> (String, CapturedServer) {
     let mut respond = Some(respond);
-    let (endpoint, handle) = serve(responses.len(), None, move |index, _| {
+    let (endpoint, handle) = serve(responses.len(), None, jobs, move |index, _| {
         if let Some(respond) = respond.take()
             && !respond()
         {
@@ -232,13 +248,75 @@ pub(crate) fn capture_requests_gated(
     (endpoint, CapturedServer(handle))
 }
 
+/// Like [`capture_requests`], for a connection's statements, whose session control runs as jobs.
+///
+/// Each statement takes the next staged answer whichever route it arrives on: [`job_answer`] turns
+/// one for a `jobs.insert` into the job BigQuery would name. Polls of a finished job are answered
+/// here and neither captured nor staged, so the captured requests are the statements.
+pub(crate) fn capture_statements(responses: Vec<(u16, JsonValue)>) -> (String, CapturedServer) {
+    capture_statements_gated(responses, || true)
+}
+
+/// [`capture_requests_gated`] for [`capture_statements`].
+pub(crate) fn capture_statements_gated(
+    responses: Vec<(u16, JsonValue)>,
+    respond: impl FnOnce() -> bool + Send + 'static,
+) -> (String, CapturedServer) {
+    serve_gated(true, responses, respond)
+}
+
+/// [`capture_requests_responding`] for [`capture_statements`].
+pub(crate) fn capture_statements_responding(
+    count: usize,
+    mut respond: impl FnMut(&CapturedRequest) -> Option<(u16, JsonValue)> + Send + 'static,
+) -> (String, CapturedServer) {
+    let (endpoint, handle) = serve(count, None, true, move |_, request| {
+        ControlFlow::Continue(respond(request))
+    });
+    (endpoint, CapturedServer(handle))
+}
+
+/// What BigQuery answers a real `jobs.insert` with, given the answer staged for its statement: a
+/// 200 is the finished job, and a statement it refuses is a finished job with an `errorResult`. A
+/// 409, a 5xx, a dry run and any other request keep the staged answer.
+fn job_answer(request: &CapturedRequest, status: u16, answer: JsonValue) -> (u16, JsonValue) {
+    let mut reference = request.body["jobReference"].clone();
+    if reference.is_null()
+        || request.body["configuration"]["dryRun"] == true
+        || status == 409
+        || status >= 500
+    {
+        return (status, answer);
+    }
+    if reference["location"].is_null() {
+        reference["location"] = json!("EU");
+    }
+    let mut job = json!({"jobReference": reference, "status": {"state": "DONE"}});
+    if status != 200 {
+        let error = &answer["error"];
+        job["status"]["errorResult"] = error["errors"]
+            .get(0)
+            .cloned()
+            .unwrap_or_else(|| json!({"reason": "invalid", "message": error["message"]}));
+    }
+    (200, job)
+}
+
+/// Whether the driver polls the results of the job `response` names next. A dry run has none.
+fn names_a_finished_job(request: &CapturedRequest, status: u16, response: &JsonValue) -> bool {
+    status == 200
+        && response["status"]["state"] == "DONE"
+        && response["status"]["errorResult"].is_null()
+        && request.body["configuration"]["dryRun"] != true
+}
+
 /// Derives each of `count` responses from its request, for example to echo a generated job ID.
 /// Returning `None` closes that connection without answering, simulating a lost response.
 pub(crate) fn capture_requests_responding(
     count: usize,
     mut respond: impl FnMut(&CapturedRequest) -> Option<(u16, JsonValue)> + Send + 'static,
 ) -> (String, CapturedServer) {
-    let (endpoint, handle) = serve(count, None, move |_, request| {
+    let (endpoint, handle) = serve(count, None, false, move |_, request| {
         ControlFlow::Continue(respond(request))
     });
     (endpoint, CapturedServer(handle))
@@ -266,7 +344,7 @@ pub(crate) fn capture_requests_until_stopped(
     responses: Vec<(u16, JsonValue)>,
 ) -> (String, StoppableServer) {
     let (stop, stopped) = mpsc::channel();
-    let (endpoint, handle) = serve(responses.len(), Some(stopped), move |index, _| {
+    let (endpoint, handle) = serve(responses.len(), Some(stopped), false, move |index, _| {
         ControlFlow::Continue(Some(responses[index].clone()))
     });
     (endpoint, StoppableServer { stop, handle })
@@ -346,10 +424,11 @@ pub(crate) fn loopback_listener() -> TcpListener {
 /// `respond` sees each request with its index and either answers it (`Some`), closes its
 /// connection unanswered (`None`), or ends the server (`Break`, before the request is answered).
 /// Without a `stop` signal the server panics once [`ACCEPT_TIMEOUT`] passes with requests still
-/// owed; with one, the signal ends the wait instead.
+/// owed; with one, the signal ends the wait instead. `jobs` selects [`capture_statements`].
 fn serve(
     count: usize,
     stop: Option<mpsc::Receiver<()>>,
+    jobs: bool,
     mut respond: impl FnMut(usize, &CapturedRequest) -> ControlFlow<(), Option<(u16, JsonValue)>>
     + Send
     + 'static,
@@ -359,23 +438,34 @@ fn serve(
         // Retire the port even after a panic, so stray requests cannot reach another test.
         let served = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut requests = Vec::with_capacity(count);
+            let mut poll_owed = false;
             // Unused connections from reqwest's pool must not consume staged responses.
-            while requests.len() < count {
+            while requests.len() < count || poll_owed {
                 let Some(mut stream) = accept(&listener, stop.as_ref()) else {
                     break;
                 };
                 let Some(request) = read_captured_request(&mut stream) else {
                     continue;
                 };
-                let reply = respond(requests.len(), &request);
-                requests.push(request);
-                match reply {
-                    ControlFlow::Break(()) => break,
-                    ControlFlow::Continue(Some((status, response))) => {
-                        write_response(&mut stream, status, &response);
-                    }
-                    ControlFlow::Continue(None) => {}
+                if jobs && request.line.starts_with("GET") && request.path().contains("/queries/") {
+                    poll_owed = false;
+                    write_response(&mut stream, 200, &json!({"jobComplete": true}));
+                    continue;
                 }
+                let reply = respond(requests.len(), &request);
+                if let ControlFlow::Continue(Some((status, response))) = reply {
+                    let (status, response) = if jobs {
+                        job_answer(&request, status, response)
+                    } else {
+                        (status, response)
+                    };
+                    poll_owed = jobs && names_a_finished_job(&request, status, &response);
+                    write_response(&mut stream, status, &response);
+                } else if reply.is_break() {
+                    requests.push(request);
+                    break;
+                }
+                requests.push(request);
             }
             requests
         }));

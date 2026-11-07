@@ -5,7 +5,7 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
 use super::*;
 use crate::BigQueryConnection;
-use crate::test_support::http::capture_requests_gated;
+use crate::test_support::http::{capture_statements, capture_statements_gated};
 
 const INSERT: &str = "INSERT dataset.table VALUES (42)";
 
@@ -43,12 +43,12 @@ fn statement_in_session(endpoint: &str, session: &str) -> BigQueryStatement {
 }
 
 /// Serves `responses`, reporting the first request and then holding its answer until released.
-fn capture_requests_held(
+fn capture_statements_held(
     responses: Vec<(u16, serde_json::Value)>,
 ) -> (String, CapturedServer, Receiver<()>, SyncSender<()>) {
     let (request_seen, wait_for_request) = sync_channel(0);
     let (release_response, response_released) = sync_channel(0);
-    let (endpoint, requests) = capture_requests_gated(responses, move || {
+    let (endpoint, requests) = capture_statements_gated(responses, move || {
         request_seen.send(()).unwrap();
         response_released.recv().unwrap();
         true
@@ -58,7 +58,7 @@ fn capture_requests_held(
 
 #[test]
 fn enabling_autocommit_commits_pending_manual_work() {
-    let (endpoint, requests) = capture_requests(vec![
+    let (endpoint, requests) = capture_statements(vec![
         session_created(),
         finished(),
         finished(),
@@ -88,7 +88,7 @@ fn enabling_autocommit_commits_pending_manual_work() {
 
 #[test]
 fn failed_lazy_begin_does_not_execute_the_caller_query_or_enable_autocommit() {
-    let (endpoint, requests) = capture_requests(vec![
+    let (endpoint, requests) = capture_statements(vec![
         session_created(),
         google_rejection(400, "INVALID_ARGUMENT", "", "injected BEGIN failure"),
         finished(),
@@ -115,7 +115,7 @@ fn failed_lazy_begin_does_not_execute_the_caller_query_or_enable_autocommit() {
 #[test]
 fn cancelling_while_the_session_is_created_still_ends_the_session() {
     let (endpoint, requests, wait_for_request, release_response) =
-        capture_requests_held(vec![session_created(), finished()]);
+        capture_statements_held(vec![session_created(), finished()]);
     let (_connection, mut statement) = manual_insert_at(&endpoint);
     let cancel = statement.get_cancel_handle();
     let canceller = std::thread::spawn(move || {
@@ -134,7 +134,7 @@ fn cancelling_while_the_session_is_created_still_ends_the_session() {
         ["SELECT 1", "CALL BQ.ABORT_SESSION('mock-session')"]
     );
     assert_eq!(
-        requests[1].body["connectionProperties"],
+        *requests[1].connection_properties(),
         json!([{"key": "session_id", "value": "mock-session"}])
     );
     assert!(matches!(
@@ -148,7 +148,7 @@ fn cancelling_while_the_session_is_created_still_ends_the_session() {
 #[test]
 fn releasing_the_connection_while_a_statement_opens_its_transaction_ends_the_session() {
     let (endpoint, requests, wait_for_request, release_response) =
-        capture_requests_held(vec![session_created(), finished(), finished()]);
+        capture_statements_held(vec![session_created(), finished(), finished()]);
     let (connection, mut statement) = manual_insert_at(&endpoint);
     let releaser = std::thread::spawn(move || {
         wait_for_request.recv().unwrap();
@@ -170,7 +170,7 @@ fn releasing_the_connection_while_a_statement_opens_its_transaction_ends_the_ses
         ]
     );
     assert_eq!(
-        requests[2].body["connectionProperties"],
+        *requests[2].connection_properties(),
         json!([{"key": "session_id", "value": "mock-session"}])
     );
     // The mock has finished, so a request would fail with an I/O error rather than this one.
@@ -230,7 +230,7 @@ fn ingest_transaction_rejection_precedes_the_unbound_data_error() {
 /// option-only operations that change something are refused.
 #[test]
 fn a_dataset_location_lookup_runs_with_autocommit_disabled() {
-    let (endpoint, captured) = capture_requests(vec![ok(json!({"location": "EU"}))]);
+    let (endpoint, captured) = capture_statements(vec![ok(json!({"location": "EU"}))]);
     let mut statement = test_statement_at(&endpoint);
     set_option(
         &mut statement,
@@ -249,7 +249,7 @@ fn a_dataset_location_lookup_runs_with_autocommit_disabled() {
 /// and runs in the session the transaction opened.
 #[test]
 fn queries_are_unaffected_by_the_ingest_transaction_rejection() {
-    let (endpoint, requests) = capture_requests(vec![completed_job(
+    let (endpoint, requests) = capture_statements(vec![completed_job(
         "job",
         json!({"numDmlAffectedRows": "1"}),
     )]);
@@ -260,7 +260,7 @@ fn queries_are_unaffected_by_the_ingest_transaction_rejection() {
     let requests = requests.join().unwrap();
     assert_eq!(sql_of(&requests), [INSERT]);
     assert_eq!(
-        requests[0].body["connectionProperties"],
+        *requests[0].connection_properties(),
         json!([{"key": "session_id", "value": "fixture-session"}])
     );
 }
@@ -333,7 +333,7 @@ fn each_bound_transaction_boundary_starts_the_next_transaction() {
                 "statementType": format!("{boundary}_TRANSACTION"),
                 "jobReference": {"projectId": "fixture-project", "jobId": "boundary", "location": "EU"}
             }));
-            let (endpoint, requests) = capture_requests(vec![ended.clone(), finished(), ended]);
+            let (endpoint, requests) = capture_statements(vec![ended.clone(), finished(), ended]);
             let mut statement = statement_in_session(&endpoint, "bound-session");
             let sql = format!("{boundary} TRANSACTION");
             statement.set_sql_query(&sql).unwrap();
@@ -356,7 +356,7 @@ fn each_bound_transaction_boundary_starts_the_next_transaction() {
             );
             for request in &requests {
                 assert_eq!(
-                    request.body["connectionProperties"],
+                    *request.connection_properties(),
                     json!([{"key": "session_id", "value": "bound-session"}])
                 );
             }
@@ -366,7 +366,7 @@ fn each_bound_transaction_boundary_starts_the_next_transaction() {
 
 #[test]
 fn releasing_a_manual_connection_prevents_later_parameter_rows() {
-    let (endpoint, requests) = capture_requests(vec![select_answer(&["1"])]);
+    let (endpoint, requests) = capture_statements(vec![select_answer(&["1"])]);
     let mut statement = statement_in_session(&endpoint, "bound-session");
     statement.set_sql_query("SELECT ? AS value").unwrap();
     statement.bind(int64_column("value", vec![1, 2])).unwrap();
@@ -389,7 +389,7 @@ fn releasing_a_manual_connection_prevents_later_parameter_rows() {
 #[test]
 fn a_lazy_parameter_row_joins_the_transaction_after_an_adbc_boundary() {
     for boundary in ["commit", "rollback"] {
-        let (endpoint, requests) = capture_requests(vec![
+        let (endpoint, requests) = capture_statements(vec![
             select_answer(&["1"]),
             finished(),
             select_answer(&["2"]),

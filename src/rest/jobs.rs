@@ -83,7 +83,7 @@ const JOB_VERDICT_REASONS: [&str; 7] = [
 
 /// Attempts to find a job after an ambiguous submission; an accepted job can take a moment to
 /// become visible to `jobs.get`.
-const MAX_RECONCILIATION_ATTEMPTS: u32 = 3;
+pub(crate) const MAX_RECONCILIATION_ATTEMPTS: u32 = 3;
 
 /// Bound the exceptional cross-region search, including credentials, pagination and the final
 /// job fetch. The page cap also bounds work if a service repeats pagination tokens.

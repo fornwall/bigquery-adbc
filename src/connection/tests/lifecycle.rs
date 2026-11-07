@@ -2,6 +2,7 @@
 //! and what it must not issue.
 
 use super::*;
+use crate::test_support::http::capture_statements;
 use crate::test_support::options::{option_string, set_option, set_option_error};
 
 /// A connection carrying an open transaction with one statement already executed inside it,
@@ -36,7 +37,7 @@ fn connection_with_open_transaction_then(
         (200, complete()),
     ];
     responses.extend(then);
-    let (endpoint, requests) = capture_requests(responses);
+    let (endpoint, requests) = capture_statements(responses);
     let mut connection = test_connection_at(&endpoint);
     set_option(&mut connection, OptionConnection::AutoCommit, false);
     let mut statement = connection.new_statement().unwrap();
@@ -63,12 +64,13 @@ fn assert_transaction_cleanup(requests: CapturedServer, finish: &str) {
     );
 }
 
-/// Asserts the SQL of every request the mock captured, in order.
+/// Asserts the SQL of every statement the mock captured, in order.
 fn assert_sql(requests: CapturedServer, expected: &[&str]) {
     let requests = requests.join().unwrap();
     assert_eq!(
         requests
             .iter()
+            .filter(|request| request.line.starts_with("POST"))
             .map(CapturedRequest::sql)
             .collect::<Vec<_>>(),
         expected
@@ -302,9 +304,7 @@ fn a_dry_run_in_an_expired_idle_session_describes_outside_it() {
 
     let requests = requests.join().unwrap();
     // A dry run is a `jobs.insert`, which nests the session in its configuration.
-    let session = |index: usize| {
-        requests[index].body["configuration"]["query"]["connectionProperties"].clone()
-    };
+    let session = |index: usize| requests[index].connection_properties().clone();
     assert_eq!(
         session(4),
         json!([{"key": "session_id", "value": "mock-session"}])
@@ -416,7 +416,7 @@ fn a_statement_refused_right_after_its_begin_runs_again_in_a_new_session() {
             "CALL BQ.ABORT_SESSION('fresh-session')",
         ]
     );
-    let session = |index: usize| requests[index].body["connectionProperties"][0]["value"].clone();
+    let session = |index: usize| requests[index].connection_properties()[0]["value"].clone();
     assert_eq!(session(5), "mock-session");
     assert_eq!(session(8), "fresh-session");
     assert_ne!(requests[5].body["requestId"], requests[8].body["requestId"]);
@@ -573,7 +573,7 @@ fn a_statement_outliving_a_manual_commit_connection_refuses_to_run() {
 fn first_transaction_without_a_location(dataset: (u16, serde_json::Value)) -> Vec<CapturedRequest> {
     let mut responses = vec![dataset, (200, session_created("mock-session"))];
     responses.extend(std::iter::repeat_n((200, complete()), 4));
-    let (endpoint, requests) = capture_requests(responses);
+    let (endpoint, requests) = capture_statements(responses);
     let mut connection = crate::test_support::driver::test_connection_with(
         &endpoint,
         [
@@ -635,7 +635,7 @@ fn a_cancel_during_commit_waits_for_its_outcome() {
     let (release_commit, commit_released) = std::sync::mpsc::sync_channel(0);
     let mut served = 0;
     let (endpoint, requests) =
-        crate::test_support::http::capture_requests_responding(8, move |request| {
+        crate::test_support::http::capture_statements_responding(8, move |request| {
             served += 1;
             if served == 1 {
                 return Some((200, session_created("mock-session")));
@@ -735,7 +735,7 @@ fn a_cancel_during_begin_keeps_the_transaction_it_began() {
     let (release_begin, begin_released) = std::sync::mpsc::sync_channel(0);
     let mut served = 0;
     let (endpoint, requests) =
-        crate::test_support::http::capture_requests_responding(5, move |request| {
+        crate::test_support::http::capture_statements_responding(5, move |request| {
             served += 1;
             if served == 1 {
                 return Some((200, session_created("mock-session")));
@@ -778,15 +778,20 @@ fn a_cancel_during_begin_keeps_the_transaction_it_began() {
     );
 }
 
-/// The answers to a `COMMIT` that meets a server error on every attempt, which leaves BigQuery's
-/// verdict unknown.
+/// The answers to a `COMMIT` that meets a server error on every attempt and whose job never
+/// appears, which leaves BigQuery's verdict unknown.
 fn commit_without_a_verdict() -> Vec<(u16, serde_json::Value)> {
     let unavailable = json!({"error": {
         "code": 503,
         "message": "Service unavailable",
         "errors": [{"reason": "backendError", "message": "Service unavailable"}]
     }});
-    vec![(503, unavailable); crate::rest::retry::MAX_ATTEMPTS as usize]
+    let mut answers = vec![(503, unavailable); crate::rest::retry::MAX_ATTEMPTS as usize];
+    answers.extend(vec![
+        (404, not_found_response());
+        crate::rest::jobs::MAX_RECONCILIATION_ATTEMPTS as usize
+    ]);
+    answers
 }
 
 /// Re-enabling autocommit commits the open transaction; when that commit gets no verdict, the
@@ -867,6 +872,97 @@ fn a_commit_without_a_verdict_ends_the_session_and_says_the_outcome_is_unknown()
         "CALL BQ.ABORT_SESSION('fresh-session')",
     ]);
     assert_sql(requests, &expected);
+}
+
+/// BigQuery does not deduplicate `BEGIN`, `COMMIT` or `ROLLBACK` by `jobs.query` request ID, so
+/// replaying one whose answer was lost runs it again, and the second run's failure hides that the
+/// first took effect (verified live). A job ID does hold: the replay answers 409, and the job says
+/// what happened. Serves `count` requests, running `lost` once and losing its first answer.
+fn bigquery_losing_the_answer_to(lost: &'static str, count: usize) -> (String, CapturedServer) {
+    let mut served = 0;
+    let mut ran = false;
+    crate::test_support::http::capture_statements_responding(count, move |request| {
+        served += 1;
+        if request.line.starts_with("GET") {
+            let job = request.path().rsplit('/').next().unwrap();
+            let job = job.split('?').next().unwrap();
+            return Some((
+                200,
+                json!({
+                    "jobReference": {"projectId": "fixture-project", "jobId": job, "location": "EU"},
+                    "status": {"state": "DONE"}
+                }),
+            ));
+        }
+        if served == 1 {
+            return Some((200, session_created("mock-session")));
+        }
+        if request.sql() != lost {
+            return Some((200, complete()));
+        }
+        if !std::mem::replace(&mut ran, true) {
+            return None;
+        }
+        let job = &request.body["jobReference"]["jobId"];
+        Some(if let Some(job) = job.as_str() {
+            let message = format!("Already Exists: Job fixture-project:EU.{job}");
+            (
+                409,
+                crate::test_support::http::error_body("duplicate", &message),
+            )
+        } else if lost == "BEGIN TRANSACTION" {
+            (
+                400,
+                crate::test_support::http::error_body(
+                    "invalidQuery",
+                    "Only one transaction at a time is supported",
+                ),
+            )
+        } else {
+            (400, transaction_lost())
+        })
+    })
+}
+
+/// A lost answer leaves the statement run exactly once, under one job, and reports what it did:
+/// the caller sees neither a transaction it committed as lost nor one it began as refused.
+#[test]
+fn a_control_statement_whose_answer_is_lost_reports_what_it_did() {
+    for (lost, rollback) in [
+        ("BEGIN TRANSACTION", false),
+        ("COMMIT TRANSACTION", false),
+        ("ROLLBACK TRANSACTION", true),
+    ] {
+        let (endpoint, requests) = bigquery_losing_the_answer_to(lost, 7);
+        let mut connection = test_connection_at(&endpoint);
+        set_option(&mut connection, OptionConnection::AutoCommit, false);
+        let mut statement = connection.new_statement().unwrap();
+        statement
+            .set_sql_query("INSERT dataset.table VALUES (42)")
+            .unwrap();
+        statement.execute_update().unwrap();
+        drop(statement);
+        if rollback {
+            connection.rollback().unwrap();
+        } else {
+            connection.commit().unwrap();
+        }
+        drop(connection);
+
+        let requests = requests.join().unwrap();
+        let sent = requests
+            .iter()
+            .filter(|request| request.line.starts_with("POST"))
+            .collect::<Vec<_>>();
+        let replays = sent
+            .iter()
+            .filter(|request| request.sql() == lost)
+            .map(|request| &request.body["jobReference"]["jobId"])
+            .collect::<Vec<_>>();
+        assert_eq!(replays.len(), 2, "{lost}");
+        assert_eq!(replays[0], replays[1], "{lost}");
+        assert!(replays[0].is_string(), "{lost}");
+    }
 }
 
 /// The location is a placement hint: a default dataset that cannot be read leaves the session

@@ -336,7 +336,8 @@ Each execution keeps one request or job ID across transport retries: after an am
 `jobs.insert` (a lost response or a 409) the driver fetches exactly that job. If a replayed
 `jobs.query` receives a 409 naming a job, the driver reads its results; Go's SDK returns an error.
 BigQuery may ignore `requestId` for a read-only query, so repeating that request does not guarantee
-recovery of the original execution. A job confirmed failed with `backendError`, `jobBackendError`,
+recovery of the original execution. It ignores it for `BEGIN`, `COMMIT` and `ROLLBACK TRANSACTION`
+too, so the driver submits those as named jobs. A job confirmed failed with `backendError`, `jobBackendError`,
 `jobInternalError`, `rateLimitExceeded`, `jobRateLimitExceeded`, `internalError` or
 `tableUnavailable` is rerun with a fresh ID at most three times, except scripts, `CALL` and
 statements of unknown type, whose earlier statements may have committed; Go never reruns a failed
@@ -504,9 +505,9 @@ A commit or rollback sends nothing more; the next query begins the next transact
 session if BigQuery has ended the old one, even right after accepting the `BEGIN` there
 ([autocommit](REFERENCE.md#standard-adbc-options)). Go sends `BEGIN TRANSACTION` right after
 `COMMIT` or `ROLLBACK`, so a failed `BEGIN` reports an error for a commit that succeeded. Here
-`BEGIN`, `COMMIT` and `ROLLBACK` run to a verdict, ignoring cancellation for up to a minute, and
-only a refused `BEGIN` or `COMMIT` keeps the session; Go cancels all three with its context and
-keeps the session after any failure. Without `bigquery.location`, the session is created in the
+`BEGIN`, `COMMIT` and `ROLLBACK` run to a verdict as named jobs, ignoring cancellation for up to a
+minute, and only a refused `BEGIN` or `COMMIT` keeps the session; Go cancels all three with its
+context and keeps the session after any failure. Without `bigquery.location`, the session is created in the
 default dataset's location, where Go lets BigQuery place it in the US.
 
 ### G40. Snapshot isolation is an accepted and reported isolation level

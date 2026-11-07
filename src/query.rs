@@ -196,6 +196,11 @@ pub(crate) fn read_query_partition(
 
 /// Runs a statement the driver issues itself (session control, ingest DDL) for its effect.
 /// A nonzero `job_timeout_ms` has BigQuery stop the job at that age.
+///
+/// Session control runs as a named job. BigQuery does not deduplicate `BEGIN`, `COMMIT` or
+/// `ROLLBACK TRANSACTION` by `jobs.query` request ID, so replaying one whose answer was lost runs
+/// it again, and that run's failure hides that the first took effect. A replayed job ID answers
+/// 409, which leaves the first job's own verdict to read.
 pub(crate) fn execute_driver_statement(
     runtime: &SharedRuntime,
     state: &ClientState,
@@ -204,16 +209,18 @@ pub(crate) fn execute_driver_statement(
     sql: &str,
     job_timeout_ms: i64,
 ) -> Result<()> {
+    let options = StatementQueryOptions {
+        job_timeout_ms,
+        named_job: context.session_id.is_some(),
+        ..StatementQueryOptions::default()
+    };
     direct::complete_context_query(
         runtime,
         state,
         billing_project_id,
         context,
         sql,
-        &StatementQueryOptions {
-            job_timeout_ms,
-            ..StatementQueryOptions::default()
-        },
+        &options,
         "BigQuery query execution failed",
     )?;
     Ok(())

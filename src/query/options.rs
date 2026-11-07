@@ -48,6 +48,8 @@ pub(crate) struct StatementQueryOptions {
     pub(crate) create_session: bool,
     pub(crate) disable_query_cache: bool,
     pub(crate) dry_run: bool,
+    /// Submit through `jobs.insert` under a driver-chosen job ID, whatever else is set.
+    pub(crate) named_job: bool,
 }
 
 /// A validated `project.dataset.table` name set through an option: a destination, a table copy's

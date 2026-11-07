@@ -70,6 +70,10 @@ changes.
 - A database opened in a `fork` child works instead of hanging forever on a runtime whose worker
   threads did not survive the fork. Using a handle inherited from the parent returns an error, and
   releasing one leaves the parent's BigQuery session open.
+- A `BEGIN`, `COMMIT` or `ROLLBACK` whose answer is lost now reports what BigQuery did. BigQuery does
+  not deduplicate these by request ID, so a retry ran them again: a commit that took effect failed
+  as a lost transaction, and a transaction that began left every later statement failing. They now
+  run as named jobs, and a retry reads the first job's verdict.
 
 ## [0.2.0] - 2026-11-06
 

@@ -221,6 +221,7 @@ impl QueryPlan {
 /// treats it as absent.
 fn needs_job_insert(options: &StatementQueryOptions) -> bool {
     options.dry_run
+        || options.named_job
         || options.destination_table.is_some()
         || options.create_disposition != BigQueryCreateDisposition::default()
         || options.write_disposition != BigQueryWriteDisposition::default()
