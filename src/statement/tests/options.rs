@@ -4,9 +4,6 @@
 use super::*;
 use crate::BigQueryStatementOption as BqOption;
 use crate::dbt::statement::DbtOperation;
-use crate::test_support::driver::test_statement_at;
-use crate::test_support::errors::{assert_message, assert_message_omits};
-use crate::test_support::http::job_reference;
 
 #[test]
 fn reservation_round_trips_clears_and_rejects_wrong_types_and_legacy_alias() {
@@ -731,8 +728,7 @@ fn python_model_options_round_trip_and_clear_under_the_dbt_key_spellings() {
     assert_eq!(option_int(&statement, timeout), 0);
     // Every python-model option is released, so the statement needs SQL again.
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(&error, &["without a SQL query"]);
+    assert_failure(&error, Status::InvalidState, &["without a SQL query"]);
 }
 
 /// dbt-core 2.0 sends the timeout as a string, which the dbt-labs fork rejects, so its python
@@ -1063,9 +1059,9 @@ fn option_refusals_name_the_key_the_caller_used() {
     let alias = |name: &str| OptionStatement::Other(format!("adbc.bigquery.sql.query.{name}"));
     let mut statement = test_statement();
     let error = set_option_error(&mut statement, alias("default_project_id"), "unsafe/path");
-    assert_eq!(error.status, Status::InvalidArguments);
-    assert_message(
+    assert_failure(
         &error,
+        Status::InvalidArguments,
         &["the adbc.bigquery.sql.query.default_project_id option"],
     );
     let error = set_option_error(
@@ -1073,30 +1069,33 @@ fn option_refusals_name_the_key_the_caller_used() {
         alias("destination_table"),
         "a/b.dataset.table",
     );
-    assert_eq!(error.status, Status::InvalidArguments);
-    assert_message(&error, &["adbc.bigquery.sql.query.destination_table"]);
+    assert_failure(
+        &error,
+        Status::InvalidArguments,
+        &["adbc.bigquery.sql.query.destination_table"],
+    );
     for value in [OptionValue::Int(1), "abc".into()] {
         let error = set_option_error(&mut statement, alias("max_billing_tier"), value);
-        assert_eq!(error.status, Status::NotImplemented);
-        assert_message(
+        assert_failure(
             &error,
+            Status::NotImplemented,
             &["adbc.bigquery.sql.query.max_billing_tier is deprecated"],
         );
     }
     let error = statement
         .get_option_int(alias("max_billing_tier"))
         .unwrap_err();
-    assert_eq!(error.status, Status::NotFound);
-    assert_message(
+    assert_failure(
         &error,
+        Status::NotFound,
         &["adbc.bigquery.sql.query.max_billing_tier is deprecated"],
     );
 
     let mut statement = statement_without_a_project();
     let error = set_option_error(&mut statement, alias("default_dataset_id"), "some_dataset");
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(
+    assert_failure(
         &error,
+        Status::InvalidState,
         &["setting the statement option adbc.bigquery.sql.query.default_dataset_id;"],
     );
 }
@@ -1160,11 +1159,9 @@ fn naming_a_default_dataset_without_a_project_reports_the_options_that_supply_on
 /// finishes, progress is its maximum and both are the bytes the job processed.
 #[test]
 fn execution_progress_reports_the_bytes_the_query_processed() {
-    let (endpoint, requests) = capture_requests(vec![(
-        200,
+    let (endpoint, requests) = capture_requests(vec![completed_job(
+        "options-job-1",
         json!({
-            "jobReference": job_reference("fixture-project", "options-job-1"),
-            "jobComplete": true,
             "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
             "statementType": "SELECT",
             "totalBytesProcessed": "4096",
@@ -1201,8 +1198,7 @@ fn execution_progress_reports_the_bytes_the_query_processed() {
             statement.get_option_int(key.clone()).unwrap_err(),
             statement.get_option_bytes(key.clone()).unwrap_err(),
         ] {
-            assert_eq!(error.status, Status::NotFound);
-            assert_message(&error, &["double"]);
+            assert_failure(&error, Status::NotFound, &["double"]);
         }
     }
     assert_eq!(requests.join().unwrap().len(), 1);
@@ -1211,20 +1207,15 @@ fn execution_progress_reports_the_bytes_the_query_processed() {
 /// An update runs a job like any query, so it publishes the bytes that job processed.
 #[test]
 fn an_update_publishes_the_bytes_its_job_processed() {
-    let (endpoint, requests) = capture_requests(vec![(
-        200,
+    let (endpoint, requests) = capture_requests(vec![completed_job(
+        "options-job-2",
         json!({
-            "jobReference": job_reference("fixture-project", "options-job-2"),
-            "jobComplete": true,
             "statementType": "UPDATE",
             "totalBytesProcessed": "4096",
             "numDmlAffectedRows": "3"
         }),
     )]);
-    let mut statement = test_statement_at(&endpoint);
-    statement
-        .set_sql_query("UPDATE dataset.table SET value = 1 WHERE true")
-        .unwrap();
+    let mut statement = test_query_at(&endpoint, "UPDATE dataset.table SET value = 1 WHERE true");
     assert_eq!(statement.execute_update().unwrap(), Some(3));
 
     for key in [OptionStatement::Progress, OptionStatement::MaxProgress] {
@@ -1237,19 +1228,16 @@ fn an_update_publishes_the_bytes_its_job_processed() {
 /// publishes no progress: adbc.h's "the maximum is not known".
 #[test]
 fn a_dry_run_publishes_no_execution_progress() {
-    let (endpoint, requests) = capture_requests(vec![(
-        200,
-        json!({
-            "statistics": {
-                "query": {
-                    "statementType": "SELECT",
-                    "totalBytesProcessed": "4096",
-                    "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]}
-                }
-            },
-            "status": {"state": "DONE"}
-        }),
-    )]);
+    let (endpoint, requests) = capture_requests(vec![ok(json!({
+        "statistics": {
+            "query": {
+                "statementType": "SELECT",
+                "totalBytesProcessed": "4096",
+                "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]}
+            }
+        },
+        "status": {"state": "DONE"}
+    }))]);
     let mut statement = test_statement_at(&endpoint);
     set_option(&mut statement, BqOption::DryRun, "true");
     statement.set_sql_query("SELECT 21 + 21 AS answer").unwrap();
@@ -1267,11 +1255,9 @@ fn a_dry_run_publishes_no_execution_progress() {
 #[test]
 fn several_parameter_rows_publish_the_bytes_all_their_jobs_processed() {
     let completed = |job_id: &str, statement_type: &str, bytes: &str| {
-        (
-            200,
+        completed_job(
+            job_id,
             json!({
-                "jobComplete": true,
-                "jobReference": job_reference("fixture-project", job_id),
                 "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
                 "statementType": statement_type,
                 "numDmlAffectedRows": "1",

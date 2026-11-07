@@ -2,25 +2,22 @@
 //! outside autocommit, and what a failed lazy begin leaves behind.
 
 use super::*;
-use crate::test_support::driver::test_statement_at;
-use crate::test_support::http::{capture_requests_gated, job_reference};
+use crate::test_support::http::capture_requests_gated;
 
 #[test]
 fn enabling_autocommit_commits_pending_manual_work() {
     let complete = || json!({"jobReference": job_reference("fixture-project", "transactions-job-1"), "jobComplete": true});
     let (endpoint, requests) = capture_requests(vec![
-        (
-            200,
+        completed_job(
+            "transactions-job-2",
             json!({
-                "jobReference": job_reference("fixture-project", "transactions-job-2"),
-                "jobComplete": true,
                 "sessionInfo": {"sessionId": "mock-session"}
             }),
         ),
-        (200, complete()),
-        (200, complete()),
-        (200, complete()),
-        (200, complete()),
+        ok(complete()),
+        ok(complete()),
+        ok(complete()),
+        ok(complete()),
     ]);
     let mut connection = test_connection_at(&endpoint);
     set_option(&mut connection, OptionConnection::AutoCommit, false);
@@ -55,11 +52,9 @@ fn enabling_autocommit_commits_pending_manual_work() {
 #[test]
 fn failed_lazy_begin_does_not_execute_the_caller_query_or_enable_autocommit() {
     let (endpoint, requests) = capture_requests(vec![
-        (
-            200,
+        completed_job(
+            "transactions-job-3",
             json!({
-                "jobReference": job_reference("fixture-project", "transactions-job-3"),
-                "jobComplete": true,
                 "sessionInfo": {"sessionId": "mock-session"}
             }),
         ),
@@ -73,10 +68,7 @@ fn failed_lazy_begin_does_not_execute_the_caller_query_or_enable_autocommit() {
                 }
             }),
         ),
-        (
-            200,
-            json!({"jobReference": job_reference("fixture-project", "transactions-job-4"), "jobComplete": true}),
-        ),
+        completed_job("transactions-job-4", json!({})),
     ]);
     let mut connection = test_connection_at(&endpoint);
     set_option(&mut connection, OptionConnection::AutoCommit, false);
@@ -112,18 +104,13 @@ fn cancelling_while_the_session_is_created_still_ends_the_session() {
     let (release_response, response_released) = std::sync::mpsc::sync_channel(0);
     let (endpoint, requests) = capture_requests_gated(
         vec![
-            (
-                200,
+            completed_job(
+                "transactions-job-5",
                 json!({
-                    "jobReference": job_reference("fixture-project", "transactions-job-5"),
-                    "jobComplete": true,
                     "sessionInfo": {"sessionId": "mock-session"}
                 }),
             ),
-            (
-                200,
-                json!({"jobReference": job_reference("fixture-project", "transactions-job-6"), "jobComplete": true}),
-            ),
+            completed_job("transactions-job-6", json!({})),
         ],
         move || {
             request_seen.send(()).unwrap();
@@ -174,22 +161,14 @@ fn releasing_the_connection_while_a_statement_opens_its_transaction_ends_the_ses
     let (release_response, response_released) = std::sync::mpsc::sync_channel(0);
     let (endpoint, requests) = capture_requests_gated(
         vec![
-            (
-                200,
+            completed_job(
+                "transactions-job-7",
                 json!({
-                    "jobReference": job_reference("fixture-project", "transactions-job-7"),
-                    "jobComplete": true,
                     "sessionInfo": {"sessionId": "mock-session"}
                 }),
             ),
-            (
-                200,
-                json!({"jobReference": job_reference("fixture-project", "transactions-job-8"), "jobComplete": true}),
-            ),
-            (
-                200,
-                json!({"jobReference": job_reference("fixture-project", "transactions-job-9"), "jobComplete": true}),
-            ),
+            completed_job("transactions-job-8", json!({})),
+            completed_job("transactions-job-9", json!({})),
         ],
         move || {
             request_seen.send(()).unwrap();
@@ -294,7 +273,7 @@ fn ingest_transaction_rejection_precedes_the_unbound_data_error() {
 /// option-only operations that change something are refused.
 #[test]
 fn a_dataset_location_lookup_runs_with_autocommit_disabled() {
-    let (endpoint, captured) = capture_requests(vec![(200, json!({"location": "EU"}))]);
+    let (endpoint, captured) = capture_requests(vec![ok(json!({"location": "EU"}))]);
     let mut statement = test_statement_at(&endpoint);
     set_option(
         &mut statement,
@@ -311,9 +290,9 @@ fn a_dataset_location_lookup_runs_with_autocommit_disabled() {
 
 #[test]
 fn queries_are_unaffected_by_the_ingest_transaction_rejection() {
-    let (endpoint, requests) = capture_requests(vec![(
-        200,
-        json!({"jobReference": job_reference("fixture-project", "transactions-job-10"), "jobComplete": true, "numDmlAffectedRows": "1"}),
+    let (endpoint, requests) = capture_requests(vec![completed_job(
+        "transactions-job-10",
+        json!({"numDmlAffectedRows": "1"}),
     )]);
     let mut statement = test_statement_at(&endpoint);
     statement.transaction.disable_autocommit().unwrap();
@@ -412,10 +391,7 @@ fn each_bound_transaction_boundary_starts_the_next_transaction() {
             });
             let (endpoint, requests) = capture_requests(vec![
                 (200, finished.clone()),
-                (
-                    200,
-                    json!({"jobReference": job_reference("fixture-project", "transactions-job-11"), "jobComplete": true}),
-                ),
+                completed_job("transactions-job-11", json!({})),
                 (200, finished),
             ]);
             let mut statement = test_statement_at(&endpoint);
@@ -475,12 +451,10 @@ fn each_bound_transaction_boundary_starts_the_next_transaction() {
 
 #[test]
 fn releasing_a_manual_connection_prevents_later_parameter_rows() {
-    let (endpoint, requests) = capture_requests(vec![(
-        200,
+    let (endpoint, requests) = capture_requests(vec![completed_job(
+        "transactions-job-12",
         json!({
-            "jobReference": job_reference("fixture-project", "transactions-job-12"),
             "statementType": "SELECT",
-            "jobComplete": true,
             "schema": {"fields": [{"name": "value", "type": "INTEGER"}]},
             "rows": [{"f": [{"v": "1"}]}]
         }),
@@ -521,12 +495,9 @@ fn a_lazy_parameter_row_joins_the_transaction_after_an_adbc_boundary() {
             })
         };
         let (endpoint, requests) = capture_requests(vec![
-            (200, result("1")),
-            (
-                200,
-                json!({"jobReference": job_reference("fixture-project", "transactions-job-14"), "jobComplete": true}),
-            ),
-            (200, result("2")),
+            ok(result("1")),
+            completed_job("transactions-job-14", json!({})),
+            ok(result("2")),
         ]);
         let mut statement = test_statement_at(&endpoint);
         statement.transaction.disable_autocommit().unwrap();

@@ -2,9 +2,6 @@
 //! take, prepare, and the cancellation a superseded result reports.
 
 use super::*;
-use crate::test_support::driver::test_statement_at;
-use crate::test_support::errors::assert_message;
-use crate::test_support::http::job_reference;
 
 #[test]
 fn reservation_reaches_both_submission_paths_and_clearing_omits_it() {
@@ -15,10 +12,7 @@ fn reservation_reaches_both_submission_paths_and_clearing_omits_it() {
             json!({"jobReference": job_reference("fixture-project", "execution-job-1"), "jobComplete":true})
         };
         let (endpoint, requests) = capture_requests(vec![(200, response); 4]);
-        let mut statement = test_statement_at(&endpoint);
-        statement
-            .set_sql_query("DELETE FROM dataset.table WHERE false")
-            .unwrap();
+        let mut statement = test_query_at(&endpoint, "DELETE FROM dataset.table WHERE false");
         set_option(
             &mut statement,
             BigQueryStatementOption::DryRun,
@@ -67,27 +61,20 @@ fn reservation_reaches_both_submission_paths_and_clearing_omits_it() {
 #[test]
 fn failed_update_poll_cancels_the_unfinished_remote_job() {
     let (endpoint, requests) = capture_requests(vec![
-        (
-            200,
-            json!({
-                "jobComplete": false,
-                "jobReference": {"projectId":"fixture-project", "jobId":"running-job", "location":"EU"}
-            }),
-        ),
+        ok(json!({
+            "jobComplete": false,
+            "jobReference": {"projectId":"fixture-project", "jobId":"running-job", "location":"EU"}
+        })),
         (
             403,
             json!({"error":{"errors":[{"reason":"accessDenied", "message":"poll denied"}]}}),
         ),
-        (200, json!({})),
+        ok(json!({})),
     ]);
-    let mut statement = test_statement_at(&endpoint);
-    statement
-        .set_sql_query("DELETE FROM dataset.table WHERE true")
-        .unwrap();
+    let mut statement = test_query_at(&endpoint, "DELETE FROM dataset.table WHERE true");
 
     let failure = statement.execute_update().unwrap_err();
-    assert_eq!(failure.status, Status::Unauthorized);
-    assert_message(&failure, &["poll denied"]);
+    assert_failure(&failure, Status::Unauthorized, &["poll denied"]);
     let requests = requests.join().unwrap();
     assert_eq!(requests.len(), 3);
     assert_eq!(
@@ -103,14 +90,11 @@ fn completed_query_reader_cancellation_needs_no_job_cancel_permission() {
             json!({"projectId":"fixture-project", "jobId":"completed-job", "location":"EU"});
         let mut responses = Vec::new();
         if !complete_on_submit {
-            responses.push((200, json!({"jobComplete":false, "jobReference":reference})));
+            responses.push(ok(json!({"jobComplete":false, "jobReference":reference})));
         }
-        responses.push((200, json!({"jobComplete":true, "jobReference":reference})));
+        responses.push(ok(json!({"jobComplete":true, "jobReference":reference})));
         let (endpoint, requests) = capture_requests(responses);
-        let mut statement = test_statement_at(&endpoint);
-        statement
-            .set_sql_query("DELETE FROM dataset.table WHERE true")
-            .unwrap();
+        let mut statement = test_query_at(&endpoint, "DELETE FROM dataset.table WHERE true");
         let reader = statement.execute().unwrap();
         let requests = requests.join().unwrap();
 
@@ -130,8 +114,7 @@ fn dry_run_execute_partitions_is_rejected_before_any_request() {
     // A dry run creates no job, and partitions are job references, so the combination is
     // rejected instead of reporting success with zero partitions.
     let error = statement.execute_partitions().unwrap_err();
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(&error, &["bigquery.query.dry_run"]);
+    assert_failure(&error, Status::InvalidState, &["bigquery.query.dry_run"]);
 }
 
 #[test]
@@ -143,8 +126,7 @@ fn dry_run_partition_rejection_preserves_empty_and_nonempty_bindings() {
         set_option(&mut statement, BigQueryStatementOption::DryRun, "true");
 
         let failure = statement.execute_partitions().unwrap_err();
-        assert_eq!(failure.status, Status::InvalidState);
-        assert_message(&failure, &["bigquery.query.dry_run"]);
+        assert_failure(&failure, Status::InvalidState, &["bigquery.query.dry_run"]);
         assert!(statement.parameters.schema().is_some());
     }
 }
@@ -154,18 +136,13 @@ fn dry_run_partition_rejection_preserves_empty_and_nonempty_bindings() {
 #[test]
 fn a_dry_run_leaves_bound_parameters_for_the_next_execute() {
     let schema = json!({"fields": [{"name": "answer", "type": "INTEGER"}]});
-    let dry_run = (
-        200,
+    let dry_run = ok(json!({
+        "statistics": {"query": {"statementType": "SELECT", "schema": schema}},
+        "status": {"state": "DONE"}
+    }));
+    let executed = completed_job(
+        "execution-job-2",
         json!({
-            "statistics": {"query": {"statementType": "SELECT", "schema": schema}},
-            "status": {"state": "DONE"}
-        }),
-    );
-    let executed = (
-        200,
-        json!({
-            "jobReference": job_reference("fixture-project", "execution-job-2"),
-            "jobComplete": true,
             "statementType": "SELECT",
             "schema": schema,
             "rows": [{"f": [{"v": "7"}]}],
@@ -174,8 +151,7 @@ fn a_dry_run_leaves_bound_parameters_for_the_next_execute() {
     );
     for update in [false, true] {
         let (endpoint, requests) = capture_requests(vec![dry_run.clone(), executed.clone()]);
-        let mut statement = test_statement_at(&endpoint);
-        statement.set_sql_query("SELECT ? AS answer").unwrap();
+        let mut statement = test_query_at(&endpoint, "SELECT ? AS answer");
         statement.bind(int64_column("value", vec![7])).unwrap();
 
         set_option(&mut statement, BigQueryStatementOption::DryRun, "true");
@@ -214,18 +190,12 @@ fn a_dry_run_leaves_bound_parameters_for_the_next_execute() {
 #[test]
 fn dry_runs_accept_statements_without_result_columns() {
     for statement_type in ["DROP_TABLE", "DELETE", "SCRIPT"] {
-        let response = (
-            200,
-            json!({
-                "statistics": {"query": {"statementType": statement_type}},
-                "status": {"state": "DONE"}
-            }),
-        );
+        let response = ok(json!({
+            "statistics": {"query": {"statementType": statement_type}},
+            "status": {"state": "DONE"}
+        }));
         let (endpoint, requests) = capture_requests(vec![response.clone(), response]);
-        let mut statement = test_statement_at(&endpoint);
-        statement
-            .set_sql_query("DROP TABLE IF EXISTS dataset.table")
-            .unwrap();
+        let mut statement = test_query_at(&endpoint, "DROP TABLE IF EXISTS dataset.table");
         assert!(statement.execute_schema().unwrap().fields().is_empty());
 
         set_option(&mut statement, BigQueryStatementOption::DryRun, "true");
@@ -242,30 +212,23 @@ fn dry_runs_accept_statements_without_result_columns() {
 #[test]
 fn dry_runs_reject_missing_select_schemas_or_query_statistics() {
     for query in [json!({"statementType": "SELECT"}), serde_json::Value::Null] {
-        let (endpoint, requests) = capture_requests(vec![(
-            200,
+        let (endpoint, requests) = capture_requests(vec![ok(
             json!({"statistics": {"query": query}, "status": {"state": "DONE"}}),
         )]);
-        let mut statement = test_statement_at(&endpoint);
-        statement.set_sql_query("SELECT 1").unwrap();
+        let mut statement = test_query_at(&endpoint, "SELECT 1");
         let failure = statement.execute_schema().unwrap_err();
-        assert_eq!(failure.status, Status::InvalidData);
-        assert_message(&failure, &["without a result schema"]);
+        assert_failure(&failure, Status::InvalidData, &["without a result schema"]);
         requests.join().unwrap();
     }
 }
 
 #[test]
 fn parameterless_queries_have_an_empty_parameter_schema() {
-    let (endpoint, requests) = capture_requests(vec![(
-        200,
-        json!({
-            "statistics": {"query": {"statementType": "SELECT"}},
-            "status": {"state": "DONE"}
-        }),
-    )]);
-    let mut statement = test_statement_at(&endpoint);
-    statement.set_sql_query("SELECT 1").unwrap();
+    let (endpoint, requests) = capture_requests(vec![ok(json!({
+        "statistics": {"query": {"statementType": "SELECT"}},
+        "status": {"state": "DONE"}
+    }))]);
+    let mut statement = test_query_at(&endpoint, "SELECT 1");
     statement.prepare().unwrap();
     for _ in 0..2 {
         let schema = statement.get_parameter_schema().unwrap();
@@ -276,34 +239,22 @@ fn parameterless_queries_have_an_empty_parameter_schema() {
 
 #[test]
 fn parameter_discovery_rejects_missing_query_statistics() {
-    let (endpoint, requests) = capture_requests(vec![(
-        200,
+    let (endpoint, requests) = capture_requests(vec![ok(
         json!({"statistics": {}, "status": {"state": "DONE"}}),
     )]);
-    let mut statement = test_statement_at(&endpoint);
-    statement.set_sql_query("SELECT 1").unwrap();
+    let statement = test_query_at(&endpoint, "SELECT 1");
     let failure = statement.get_parameter_schema().unwrap_err();
-    assert_eq!(failure.status, Status::InvalidData);
-    assert_message(&failure, &["without query statistics"]);
+    assert_failure(&failure, Status::InvalidData, &["without query statistics"]);
     requests.join().unwrap();
 }
 
 #[test]
 fn parameterized_update_reports_unknown_rows_when_a_count_is_missing() {
     let (endpoint, requests) = capture_requests(vec![
-        (
-            200,
-            json!({"jobReference": job_reference("fixture-project", "execution-job-3"), "jobComplete": true, "numDmlAffectedRows": "3"}),
-        ),
-        (
-            200,
-            json!({"jobReference": job_reference("fixture-project", "execution-job-4"), "jobComplete": true}),
-        ),
+        completed_job("execution-job-3", json!({"numDmlAffectedRows": "3"})),
+        completed_job("execution-job-4", json!({})),
     ]);
-    let mut statement = test_statement_at(&endpoint);
-    statement
-        .set_sql_query("INSERT dataset.table VALUES (?)")
-        .unwrap();
+    let mut statement = test_query_at(&endpoint, "INSERT dataset.table VALUES (?)");
     let batch = int64_column("value", vec![1_i64, 2_i64]);
     statement.bind(batch).unwrap();
 
@@ -326,22 +277,16 @@ fn parameterized_update_reports_unknown_rows_when_a_count_is_missing() {
 #[test]
 fn dml_through_execute_query_reports_its_affected_rows() {
     let (endpoint, requests) = capture_requests(vec![
-        (
-            200,
-            json!({"jobReference": job_reference("fixture-project", "execution-job-5"), "jobComplete": true, "statementType": "DELETE", "numDmlAffectedRows": "7"}),
+        completed_job(
+            "execution-job-5",
+            json!({"statementType": "DELETE", "numDmlAffectedRows": "7"}),
         ),
-        (
-            200,
-            json!({"jobReference": job_reference("fixture-project", "execution-job-6"), "jobComplete": true, "statementType": "UPDATE", "numDmlAffectedRows": "0"}),
+        completed_job(
+            "execution-job-6",
+            json!({"statementType": "UPDATE", "numDmlAffectedRows": "0"}),
         ),
-        (
-            200,
-            json!({"jobReference": job_reference("fixture-project", "execution-job-7"), "jobComplete": true, "statementType": "CREATE_TABLE"}),
-        ),
-        (
-            200,
-            json!({"jobReference": job_reference("fixture-project", "execution-job-8"), "jobComplete": true, "statementType": "SCRIPT"}),
-        ),
+        completed_job("execution-job-7", json!({"statementType": "CREATE_TABLE"})),
+        completed_job("execution-job-8", json!({"statementType": "SCRIPT"})),
     ]);
     let mut statement = test_statement_at(&endpoint);
     for (sql, expected) in [
@@ -374,27 +319,21 @@ fn explicit_destination_execute_query_requests_metadata_without_rows() {
     let (endpoint, requests) = capture_requests_responding(2, move |request| {
         if job_reference.is_null() {
             job_reference = request.body["jobReference"].clone();
-            return Some((
-                200,
-                json!({
-                    "jobReference": job_reference,
-                    "statistics": {"query": {"statementType": "SELECT"}},
-                    "status": {"state": "DONE"}
-                }),
-            ));
-        }
-        Some((
-            200,
-            json!({
-                "jobComplete": true,
+            return Some(ok(json!({
                 "jobReference": job_reference,
-                "schema": {"fields": [{"name": "value", "type": "INTEGER"}]},
-                "rows": [{"f": [{"v": "7"}]}],
-                "pageToken": "must-not-be-fetched",
-                // The destination table's size, not the rows this query wrote.
-                "totalRows": "6"
-            }),
-        ))
+                "statistics": {"query": {"statementType": "SELECT"}},
+                "status": {"state": "DONE"}
+            })));
+        }
+        Some(ok(json!({
+            "jobComplete": true,
+            "jobReference": job_reference,
+            "schema": {"fields": [{"name": "value", "type": "INTEGER"}]},
+            "rows": [{"f": [{"v": "7"}]}],
+            "pageToken": "must-not-be-fetched",
+            // The destination table's size, not the rows this query wrote.
+            "totalRows": "6"
+        })))
     });
     let mut statement = test_statement_at(&endpoint);
     set_option(
@@ -430,24 +369,18 @@ fn an_explicit_destination_runs_every_bound_row_before_execute_returns() {
         observed.fetch_add(1, Ordering::Relaxed);
         if request.body.get("jobReference").is_some() {
             job_reference = request.body["jobReference"].clone();
-            return Some((
-                200,
-                json!({
-                    "jobReference": job_reference,
-                    "statistics": {"query": {"statementType": "SELECT"}},
-                    "status": {"state": "DONE"}
-                }),
-            ));
-        }
-        Some((
-            200,
-            json!({
-                "jobComplete": true,
+            return Some(ok(json!({
                 "jobReference": job_reference,
-                "schema": {"fields": [{"name": "value", "type": "INTEGER"}]},
-                "totalRows": "100"
-            }),
-        ))
+                "statistics": {"query": {"statementType": "SELECT"}},
+                "status": {"state": "DONE"}
+            })));
+        }
+        Some(ok(json!({
+            "jobComplete": true,
+            "jobReference": job_reference,
+            "schema": {"fields": [{"name": "value", "type": "INTEGER"}]},
+            "totalRows": "100"
+        })))
     });
     let mut statement = test_statement_at(&endpoint);
     set_option(
@@ -493,21 +426,17 @@ fn a_batch_query_without_a_location_reads_its_rows_where_bigquery_ran_it() {
         if job_reference.is_null() {
             job_reference = request.body["jobReference"].clone();
             job_reference["location"] = json!("europe-west2");
-            return Some((
-                200,
+            return Some(ok(
                 json!({"jobReference": job_reference, "status": {"state": "PENDING"}}),
             ));
         }
-        Some((
-            200,
-            json!({
-                "jobComplete": true,
-                "jobReference": job_reference,
-                "schema": {"fields": [{"name": "value", "type": "INTEGER"}]},
-                "rows": [{"f": [{"v": "7"}]}],
-                "totalRows": "1"
-            }),
-        ))
+        Some(ok(json!({
+            "jobComplete": true,
+            "jobReference": job_reference,
+            "schema": {"fields": [{"name": "value", "type": "INTEGER"}]},
+            "rows": [{"f": [{"v": "7"}]}],
+            "totalRows": "1"
+        })))
     });
     let mut connection = crate::test_support::driver::unlocated_connection_at(&endpoint);
     let mut statement = connection.new_statement().unwrap();
@@ -544,10 +473,7 @@ fn a_batch_query_without_a_location_reads_its_rows_where_bigquery_ran_it() {
 /// particular, it must not turn a query that can use `jobs.query` into a job insertion.
 #[test]
 fn explicit_query_defaults_keep_the_jobs_query_path() {
-    let (endpoint, requests) = capture_requests(vec![(
-        200,
-        json!({"jobReference": job_reference("fixture-project", "execution-job-9"), "jobComplete": true}),
-    )]);
+    let (endpoint, requests) = capture_requests(vec![completed_job("execution-job-9", json!({}))]);
     let mut statement = test_statement_at(&endpoint);
     for (option, value) in [
         (
@@ -603,10 +529,7 @@ fn explicit_query_defaults_keep_the_jobs_query_path() {
 /// Labels and the job timeout must actually reach the BigQuery job request.
 #[test]
 fn job_labels_and_timeout_reach_the_query_request() {
-    let (endpoint, requests) = capture_requests(vec![(
-        200,
-        json!({"jobReference": job_reference("fixture-project", "execution-job-10"), "jobComplete": true}),
-    )]);
+    let (endpoint, requests) = capture_requests(vec![completed_job("execution-job-10", json!({}))]);
     let mut statement = test_statement_at(&endpoint);
     set_option(
         &mut statement,
@@ -639,11 +562,9 @@ fn job_labels_and_timeout_reach_the_query_request() {
 #[test]
 fn unparameterized_statement_reuses_its_sql_across_executions() {
     let response = || {
-        (
-            200,
+        completed_job(
+            "execution-job-11",
             json!({
-                "jobReference": job_reference("fixture-project", "execution-job-11"),
-                "jobComplete": true,
                 "queryId": "short_query",
                 "totalRows": "0"
             }),
@@ -664,19 +585,16 @@ fn unparameterized_statement_reuses_its_sql_across_executions() {
 
 #[test]
 fn empty_parameter_stream_uses_the_borrowed_sql_for_its_schema_request() {
-    let (endpoint, requests) = capture_requests(vec![(
-        200,
-        json!({
-            "statistics": {
-                "query": {
-                    "schema": {
-                        "fields": [{"name": "answer", "type": "INTEGER"}]
-                    }
+    let (endpoint, requests) = capture_requests(vec![ok(json!({
+        "statistics": {
+            "query": {
+                "schema": {
+                    "fields": [{"name": "answer", "type": "INTEGER"}]
                 }
-            },
-            "status": {"state": "DONE"}
-        }),
-    )]);
+            }
+        },
+        "status": {"state": "DONE"}
+    }))]);
     let mut statement = test_statement_at(&endpoint);
     let sql = "SELECT ? AS answer";
     statement.set_sql_query(sql).unwrap();
@@ -707,12 +625,10 @@ fn empty_parameter_stream_uses_the_borrowed_sql_for_its_schema_request() {
 #[test]
 fn lazy_parameterized_reader_keeps_its_owned_sql() {
     let response = || {
-        (
-            200,
+        completed_job(
+            "execution-job-12",
             json!({
-                "jobReference": job_reference("fixture-project", "execution-job-12"),
                 "statementType": "SELECT",
-                "jobComplete": true,
                 "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
                 "totalRows": "0"
             }),
@@ -745,12 +661,10 @@ fn lazy_parameterized_reader_keeps_its_owned_sql() {
 #[test]
 fn statement_defaults_apply_to_every_parameter_row() {
     let response = || {
-        (
-            200,
+        completed_job(
+            "execution-job-13",
             json!({
-                "jobReference": job_reference("fixture-project", "execution-job-13"),
                 "statementType": "SELECT",
-                "jobComplete": true,
                 "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
                 "totalRows": "0"
             }),
@@ -813,9 +727,9 @@ fn parameters_reach_the_request_as_bigquery_spells_them() {
             }]),
         ),
     ] {
-        let (endpoint, requests) = capture_requests(vec![(
-            200,
-            json!({"jobReference": job_reference("fixture-project", "execution-job-14"), "jobComplete": true, "schema": {"fields": []}, "totalRows": "0"}),
+        let (endpoint, requests) = capture_requests(vec![completed_job(
+            "execution-job-14",
+            json!({"schema": {"fields": []}, "totalRows": "0"}),
         )]);
         let mut statement = test_statement_at(&endpoint);
         if let Some(mode) = mode {
@@ -887,19 +801,16 @@ fn execute_reports_a_query_results_total_rows() {
 /// total is not known when `AdbcStatementExecuteQuery` returns, even though the first row's is.
 #[test]
 fn multi_row_parameter_queries_report_an_unknown_row_count() {
-    let (endpoint, requests) = capture_requests(vec![(
-        200,
+    let (endpoint, requests) = capture_requests(vec![completed_job(
+        "execution-job-16",
         json!({
-            "jobReference": job_reference("fixture-project", "execution-job-16"),
-            "jobComplete": true,
             "statementType": "SELECT",
             "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
             "rows": [{"f": [{"v": "1"}]}],
             "totalRows": "1"
         }),
     )]);
-    let mut statement = test_statement_at(&endpoint);
-    statement.set_sql_query("SELECT ? AS answer").unwrap();
+    let mut statement = test_query_at(&endpoint, "SELECT ? AS answer");
     statement
         .bind(int64_column("value", vec![1_i64, 2_i64]))
         .unwrap();
@@ -916,21 +827,17 @@ fn bound_procedure_calls_return_each_result_in_parameter_order() {
         [1, 2]
             .into_iter()
             .map(|value| {
-                (
-                    200,
-                    json!({
-                        "jobComplete": true,
-                        "statementType": "CALL",
-                        "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
-                        "rows": [{"f": [{"v": value.to_string()}]}],
-                        "totalRows": "1"
-                    }),
-                )
+                ok(json!({
+                    "jobComplete": true,
+                    "statementType": "CALL",
+                    "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
+                    "rows": [{"f": [{"v": value.to_string()}]}],
+                    "totalRows": "1"
+                }))
             })
             .collect(),
     );
-    let mut statement = test_statement_at(&endpoint);
-    statement.set_sql_query("CALL dataset.echo(?)").unwrap();
+    let mut statement = test_query_at(&endpoint, "CALL dataset.echo(?)");
     statement.bind(int64_column("value", vec![1, 2])).unwrap();
 
     let (reader, affected) = statement.execute_with_rows_affected().unwrap();
@@ -971,10 +878,7 @@ fn a_one_row_binding_reports_its_row_count() {
         completed(json!({"statementType": "UPDATE", "numDmlAffectedRows": "3"})),
         completed(json!({"statementType": "SELECT", "totalRows": "0"})),
     ]);
-    let mut statement = test_statement_at(&endpoint);
-    statement
-        .set_sql_query("UPDATE dataset.table SET value = 1 WHERE id = ?")
-        .unwrap();
+    let mut statement = test_query_at(&endpoint, "UPDATE dataset.table SET value = 1 WHERE id = ?");
     statement.bind(int64_column("id", vec![7])).unwrap();
     let (reader, affected) = statement.execute_with_rows_affected().unwrap();
     drop(reader);
@@ -1022,10 +926,7 @@ fn a_multi_row_binding_of_dml_runs_every_row_before_execute_returns() {
         dml("CREATE_TABLE", None),
         dml("CREATE_TABLE", None),
     ]);
-    let mut statement = test_statement_at(&endpoint);
-    statement
-        .set_sql_query("INSERT INTO dataset.table (a) VALUES (?)")
-        .unwrap();
+    let mut statement = test_query_at(&endpoint, "INSERT INTO dataset.table (a) VALUES (?)");
     statement.bind(int64_column("a", vec![1, 2, 3])).unwrap();
     let (reader, affected) = statement.execute_with_rows_affected().unwrap();
     assert_eq!(affected, 3);
@@ -1067,10 +968,7 @@ fn an_unknown_first_dml_count_keeps_the_combined_count_unknown() {
             })
             .collect();
         let (endpoint, requests) = capture_requests(responses);
-        let mut statement = test_statement_at(&endpoint);
-        statement
-            .set_sql_query("INSERT dataset.table VALUES (?)")
-            .unwrap();
+        let mut statement = test_query_at(&endpoint, "INSERT dataset.table VALUES (?)");
         statement.bind(int64_column("value", vec![1, 2])).unwrap();
 
         let (mut reader, affected) = statement.execute_with_rows_affected().unwrap();
@@ -1085,13 +983,11 @@ fn an_unknown_first_dml_count_keeps_the_combined_count_unknown() {
 /// statement as one that returns no rows, so every bound row runs before execute returns.
 #[test]
 fn dml_without_a_statement_type_still_runs_every_row() {
-    let dml = (
-        200,
+    let dml = completed_job(
+        "dml-job",
         json!({
-            "jobComplete": true,
-            "jobReference": job_reference("fixture-project", "dml-job"),
             "schema": {"fields": [{"name": "a", "type": "INTEGER"}]},
-            "numDmlAffectedRows": "1",
+            "numDmlAffectedRows": "1"
         }),
     );
     let denied = (
@@ -1101,10 +997,7 @@ fn dml_without_a_statement_type_still_runs_every_row() {
     let (endpoint, server) = crate::test_support::http::capture_requests_until_stopped(
         [dml, denied].iter().cycle().take(6).cloned().collect(),
     );
-    let mut statement = test_statement_at(&endpoint);
-    statement
-        .set_sql_query("INSERT INTO dataset.table (a) VALUES (?)")
-        .unwrap();
+    let mut statement = test_query_at(&endpoint, "INSERT INTO dataset.table (a) VALUES (?)");
     statement.bind(int64_column("a", vec![1, 2, 3])).unwrap();
     let (reader, affected) = statement.execute_with_rows_affected().unwrap();
     drop(reader);
@@ -1145,8 +1038,7 @@ fn partitions_report_the_summed_total_rows_of_their_jobs() {
             json!({"statementType": "INSERT", "numDmlAffectedRows": "2"}),
         ),
     ]);
-    let mut statement = test_statement_at(&endpoint);
-    statement.set_sql_query("SELECT 42 AS answer").unwrap();
+    let mut statement = test_query_at(&endpoint, "SELECT 42 AS answer");
     assert_eq!(statement.execute_partitions().unwrap().rows_affected, 4);
 
     statement.set_sql_query("SELECT ? AS answer").unwrap();
@@ -1180,21 +1072,18 @@ fn partition_row_counts_preserve_unknown_totals_and_reported_zero() {
             .into_iter()
             .enumerate()
             .map(|(index, count)| {
-                (
-                    200,
+                completed_job(
+                    &format!("job-{index}"),
                     json!({
-                        "jobComplete": true,
-                        "jobReference": job_reference("fixture-project", &format!("job-{index}")),
                         "statementType": "SELECT",
                         "schema": {"fields": []},
-                        "totalRows": count,
+                        "totalRows": count
                     }),
                 )
             })
             .collect();
         let (endpoint, requests) = capture_requests(responses);
-        let mut statement = test_statement_at(&endpoint);
-        statement.set_sql_query("SELECT ? AS answer").unwrap();
+        let mut statement = test_query_at(&endpoint, "SELECT ? AS answer");
         statement.bind(int64_column("value", vec![1, 2])).unwrap();
 
         let result = statement.execute_partitions().unwrap();
@@ -1230,18 +1119,14 @@ fn prepare_without_a_query_is_refused_and_supersedes_nothing() {
 
 #[test]
 fn option_only_execute_schema_cancels_unread_parameter_rows() {
-    let (endpoint, requests) = capture_requests(vec![(
-        200,
-        json!({
-            "jobComplete": true,
-            "statementType": "SELECT",
-            "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
-            "rows": [{"f": [{"v": "1"}]}],
-            "totalRows": "1"
-        }),
-    )]);
-    let mut statement = test_statement_at(&endpoint);
-    statement.set_sql_query("SELECT ? AS answer").unwrap();
+    let (endpoint, requests) = capture_requests(vec![ok(json!({
+        "jobComplete": true,
+        "statementType": "SELECT",
+        "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
+        "rows": [{"f": [{"v": "1"}]}],
+        "totalRows": "1"
+    }))]);
+    let mut statement = test_query_at(&endpoint, "SELECT ? AS answer");
     statement.bind(int64_column("value", vec![1, 2])).unwrap();
     let mut reader = statement.execute().unwrap();
 
@@ -1283,23 +1168,19 @@ fn option_only_execute_schema_refusal_keeps_the_previous_operation() {
 #[test]
 fn the_parameter_schema_is_derived_once_and_dropped_when_the_query_changes() {
     let dry_run = || {
-        (
-            200,
-            json!({
-                "statistics": {
-                    "query": {
-                        "undeclaredQueryParameters": [
-                            {"name": "answer", "parameterType": {"type": "INT64"}}
-                        ]
-                    }
-                },
-                "status": {"state": "DONE"}
-            }),
-        )
+        ok(json!({
+            "statistics": {
+                "query": {
+                    "undeclaredQueryParameters": [
+                        {"name": "answer", "parameterType": {"type": "INT64"}}
+                    ]
+                }
+            },
+            "status": {"state": "DONE"}
+        }))
     };
     let (endpoint, requests) = capture_requests(vec![dry_run(), dry_run(), dry_run()]);
-    let mut statement = test_statement_at(&endpoint);
-    statement.set_sql_query("SELECT @answer AS answer").unwrap();
+    let mut statement = test_query_at(&endpoint, "SELECT @answer AS answer");
 
     let schema = statement.get_parameter_schema().unwrap();
     assert_eq!(schema.fields().len(), 1);
@@ -1323,22 +1204,19 @@ fn the_parameter_schema_is_derived_once_and_dropped_when_the_query_changes() {
 #[test]
 fn parameter_schema_cache_tracks_the_session_and_rejects_a_released_connection() {
     let dry_run = |data_type| {
-        (
-            200,
-            json!({
-                "statistics": {"query": {"undeclaredQueryParameters": [
-                    {"name": "value", "parameterType": {"type": data_type}}
-                ]}},
-                "status": {"state": "DONE"}
-            }),
-        )
+        ok(json!({
+            "statistics": {"query": {"undeclaredQueryParameters": [
+                {"name": "value", "parameterType": {"type": data_type}}
+            ]}},
+            "status": {"state": "DONE"}
+        }))
     };
     let (endpoint, requests) =
         capture_requests(vec![dry_run("INT64"), dry_run("STRING"), dry_run("INT64")]);
-    let mut statement = test_statement_at(&endpoint);
-    statement
-        .set_sql_query("SELECT value FROM temporary_table WHERE value = @value")
-        .unwrap();
+    let statement = test_query_at(
+        &endpoint,
+        "SELECT value FROM temporary_table WHERE value = @value",
+    );
     let outside = statement.get_parameter_schema().unwrap();
 
     statement.transaction.disable_autocommit().unwrap();
@@ -1382,12 +1260,10 @@ fn parameter_schema_cache_tracks_the_session_and_rejects_a_released_connection()
 
 #[test]
 fn cached_parameter_schema_does_not_bypass_create_session_refusal() {
-    let (endpoint, requests) = capture_requests(vec![(
-        200,
+    let (endpoint, requests) = capture_requests(vec![ok(
         json!({"statistics": {"query": {}}, "status": {"state": "DONE"}}),
     )]);
-    let mut statement = test_statement_at(&endpoint);
-    statement.set_sql_query("SELECT 1").unwrap();
+    let mut statement = test_query_at(&endpoint, "SELECT 1");
     set_option(&mut statement, BigQueryStatementOption::CreateSession, true);
     statement.get_parameter_schema().unwrap();
     statement.transaction.disable_autocommit().unwrap();
@@ -1402,9 +1278,9 @@ fn cached_parameter_schema_does_not_bypass_create_session_refusal() {
 #[test]
 fn re_executing_consumed_parameters_is_refused_by_every_execute_entrypoint() {
     let response = || {
-        (
-            200,
-            json!({"jobReference": job_reference("fixture-project", "execution-job-19"), "statementType": "SELECT", "jobComplete": true, "schema": {"fields": []}, "totalRows": "0"}),
+        completed_job(
+            "execution-job-19",
+            json!({"statementType": "SELECT", "schema": {"fields": []}, "totalRows": "0"}),
         )
     };
     let parameters = || int64_column("value", vec![7_i64]);
@@ -1420,8 +1296,11 @@ fn re_executing_consumed_parameters_is_refused_by_every_execute_entrypoint() {
     bound(&mut statement);
     statement.execute_update().unwrap();
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(&error, &["consumed by the previous execute"]);
+    assert_failure(
+        &error,
+        Status::InvalidState,
+        &["consumed by the previous execute"],
+    );
     // Binding again makes the statement executable again.
     statement.bind(parameters()).unwrap();
     statement.execute_update().unwrap();
@@ -1456,9 +1335,9 @@ fn re_executing_consumed_parameters_is_refused_by_every_execute_entrypoint() {
 #[test]
 fn a_new_query_is_executable_after_a_parameterized_one() {
     let response = || {
-        (
-            200,
-            json!({"jobReference": job_reference("fixture-project", "execution-job-20"), "jobComplete": true, "schema": {"fields": []}, "totalRows": "0"}),
+        completed_job(
+            "execution-job-20",
+            json!({"schema": {"fields": []}, "totalRows": "0"}),
         )
     };
     let (endpoint, requests) = capture_requests(std::iter::repeat_with(response).take(2).collect());
@@ -1528,11 +1407,9 @@ fn cancelling_a_multi_page_drain_reports_the_cancellation() {
     let (endpoint, requests) = capture_requests_responding(2, move |_request| {
         page += 1;
         if page == 1 {
-            return Some((
-                200,
+            return Some(completed_job(
+                "paged-job",
                 json!({
-                    "jobComplete": true,
-                    "jobReference": job_reference("fixture-project", "paged-job"),
                     "schema": {"fields": [{"name": "value", "type": "INTEGER"}]},
                     "rows": [{"f": [{"v": "1"}]}],
                     "pageToken": "second-page",
@@ -1586,12 +1463,10 @@ fn cancelling_a_multi_page_drain_reports_the_cancellation() {
 #[test]
 fn getting_the_parameter_schema_preserves_a_draining_result_and_its_progress() {
     let result = || {
-        (
-            200,
+        completed_job(
+            "execution-job-21",
             json!({
-                "jobReference": job_reference("fixture-project", "execution-job-21"),
                 "statementType": "SELECT",
-                "jobComplete": true,
                 "totalBytesProcessed": "7",
                 "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
                 "rows": [{"f": [{"v": "7"}]}],
@@ -1601,34 +1476,27 @@ fn getting_the_parameter_schema_preserves_a_draining_result_and_its_progress() {
     };
     let (endpoint, requests) = capture_requests(vec![
         result(),
-        (
-            200,
-            json!({
-                "statistics": {"query": {"statementType": "SELECT"}},
-                "status": {
-                    "state": "DONE",
-                    "errorResult": {"reason": "backendError", "message": "retry"}
+        ok(json!({
+            "statistics": {"query": {"statementType": "SELECT"}},
+            "status": {
+                "state": "DONE",
+                "errorResult": {"reason": "backendError", "message": "retry"}
+            }
+        })),
+        ok(json!({
+            "statistics": {
+                "query": {
+                    "undeclaredQueryParameters": [
+                        {"name": "", "parameterType": {"type": "INT64"}}
+                    ],
+                    "totalBytesProcessed": "999"
                 }
-            }),
-        ),
-        (
-            200,
-            json!({
-                "statistics": {
-                    "query": {
-                        "undeclaredQueryParameters": [
-                            {"name": "", "parameterType": {"type": "INT64"}}
-                        ],
-                        "totalBytesProcessed": "999"
-                    }
-                },
-                "status": {"state": "DONE"}
-            }),
-        ),
+            },
+            "status": {"state": "DONE"}
+        })),
         result(),
     ]);
-    let mut statement = test_statement_at(&endpoint);
-    statement.set_sql_query("SELECT ? AS answer").unwrap();
+    let mut statement = test_query_at(&endpoint, "SELECT ? AS answer");
     statement
         .bind(int64_column("value", vec![1_i64, 2]))
         .unwrap();
@@ -1660,26 +1528,22 @@ fn getting_the_parameter_schema_preserves_a_draining_result_and_its_progress() {
 #[test]
 fn describing_an_unbound_statement_leaves_its_placeholders_undeclared() {
     let described = || {
-        (
-            200,
-            json!({
-                "statistics": {"query": {"statementType": "SELECT", "schema": {"fields": [
-                    {"name": "answer", "type": "INTEGER"}
-                ]}}},
-                "status": {"state": "DONE"}
-            }),
-        )
+        ok(json!({
+            "statistics": {"query": {"statementType": "SELECT", "schema": {"fields": [
+                {"name": "answer", "type": "INTEGER"}
+            ]}}},
+            "status": {"state": "DONE"}
+        }))
     };
     let (endpoint, requests) = capture_requests(vec![
         described(),
-        (
-            200,
-            json!({"jobReference": job_reference("fixture-project", "execution-job-22"), "jobComplete": true, "schema": {"fields": []}, "totalRows": "0"}),
+        completed_job(
+            "execution-job-22",
+            json!({"schema": {"fields": []}, "totalRows": "0"}),
         ),
         described(),
     ]);
-    let mut statement = test_statement_at(&endpoint);
-    statement.set_sql_query("SELECT ? AS answer").unwrap();
+    let mut statement = test_query_at(&endpoint, "SELECT ? AS answer");
     assert_eq!(
         statement.execute_schema().unwrap().field(0).name(),
         "answer"

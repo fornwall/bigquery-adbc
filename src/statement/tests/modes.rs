@@ -4,7 +4,6 @@
 
 use super::*;
 use crate::dbt::statement::DbtOperation;
-use crate::test_support::errors::assert_message;
 
 #[test]
 fn clearing_the_ingest_target_keeps_the_sql_query() {
@@ -76,8 +75,7 @@ fn the_select_one_placeholder_finalizes_a_python_model_while_real_sql_replaces_i
     statement.set_sql_query("SELECT 1").unwrap();
     set_option(&mut statement, bucket, "");
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(&error, &["without a SQL query"]);
+    assert_failure(&error, Status::InvalidState, &["without a SQL query"]);
 
     // Any other real statement wins, as it wins over a configured table copy.
     for query in [
@@ -289,8 +287,11 @@ fn python_model_execution_follows_precedence_as_selectors_are_cleared() {
 
     for (selector, missing) in selectors {
         let failure = statement.execute_update().unwrap_err();
-        assert_eq!(failure.status, Status::InvalidState);
-        assert_message(&failure, &[missing.as_str(), "required"]);
+        assert_failure(
+            &failure,
+            Status::InvalidState,
+            &[missing.as_str(), "required"],
+        );
         set_option(&mut statement, selector, "");
     }
     let failure = statement.execute_update().unwrap_err();

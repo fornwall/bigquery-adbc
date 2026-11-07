@@ -2,8 +2,6 @@
 //! what a dry run inspects, and which requests reach BigQuery before a table is written.
 
 use super::*;
-use crate::test_support::driver::test_statement_at;
-use crate::test_support::errors::assert_message;
 
 /// A bulk-ingest statement with `bigquery.query.dry_run` set, targeting the test
 /// connection whose endpoint is unroutable: every local check runs, and the first request
@@ -71,8 +69,7 @@ fn dry_run_ingest_reports_schema_errors_before_any_request() {
     statement.bind(unusable_ingest_row()).unwrap();
 
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::InvalidArguments);
-    assert_message(&error, &["1invalid"]);
+    assert_failure(&error, Status::InvalidArguments, &["1invalid"]);
     assert!(statement.parameters.schema().is_some());
 }
 
@@ -83,8 +80,7 @@ fn dry_run_ingest_requires_bound_data() {
     let error = dry_run_ingest_statement("events")
         .execute_update()
         .unwrap_err();
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(&error, &["bind"]);
+    assert_failure(&error, Status::InvalidState, &["bind"]);
 }
 
 #[test]
@@ -96,8 +92,11 @@ fn dry_run_ingest_is_refused_in_a_manual_transaction() {
     statement.transaction.disable_autocommit().unwrap();
 
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(&error, &["adbc.connection.autocommit"]);
+    assert_failure(
+        &error,
+        Status::InvalidState,
+        &["adbc.connection.autocommit"],
+    );
 }
 
 #[test]
@@ -109,8 +108,7 @@ fn clearing_the_ingest_target_returns_the_statement_to_the_query_dry_run_path() 
     // a dry run creates no job, so there is nothing to partition. An ingest dry run, by
     // contrast, reports zero partitions rather than refusing.
     let error = statement.execute_partitions().unwrap_err();
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(&error, &["bigquery.query.dry_run"]);
+    assert_failure(&error, Status::InvalidState, &["bigquery.query.dry_run"]);
 }
 
 fn empty_ingest_statement_at(endpoint: &str) -> BigQueryStatement {
@@ -135,16 +133,13 @@ fn empty_ingest_statement_at(endpoint: &str) -> BigQueryStatement {
 /// ingest reports 0 appended rows rather than the -1 that means "unknown".
 #[test]
 fn execute_reports_the_ingest_row_count_alongside_the_stream() {
-    let (endpoint, requests) = capture_requests(vec![(
-        200,
-        json!({
-            "tableReference": {
-                "projectId": "fixture-project",
-                "datasetId": "dataset",
-                "tableId": "events"
-            }
-        }),
-    )]);
+    let (endpoint, requests) = capture_requests(vec![ok(json!({
+        "tableReference": {
+            "projectId": "fixture-project",
+            "datasetId": "dataset",
+            "tableId": "events"
+        }
+    }))]);
     let mut statement = empty_ingest_statement_at(&endpoint);
 
     let (mut reader, affected) = statement.execute_with_rows_affected().unwrap();
@@ -243,19 +238,16 @@ fn the_ingest_target_falls_back_to_the_statement_defaults() {
 
 #[test]
 fn append_ingest_still_inspects_and_validates_the_existing_target() {
-    let (endpoint, requests) = capture_requests(vec![(
-        200,
-        json!({
-            "tableReference": {
-                "projectId": "fixture-project",
-                "datasetId": "dataset",
-                "tableId": "events"
-            },
-            "schema": {
-                "fields": [{"name": "value", "type": "INTEGER", "mode": "REQUIRED"}]
-            }
-        }),
-    )]);
+    let (endpoint, requests) = capture_requests(vec![ok(json!({
+        "tableReference": {
+            "projectId": "fixture-project",
+            "datasetId": "dataset",
+            "tableId": "events"
+        },
+        "schema": {
+            "fields": [{"name": "value", "type": "INTEGER", "mode": "REQUIRED"}]
+        }
+    }))]);
     let mut statement = empty_ingest_statement_at(&endpoint);
     set_option(
         &mut statement,
@@ -284,16 +276,13 @@ fn create_append_and_replace_still_probe_before_creating_a_missing_target() {
                     }
                 }),
             ),
-            (
-                200,
-                json!({
-                    "tableReference": {
-                        "projectId": "fixture-project",
-                        "datasetId": "dataset",
-                        "tableId": "events"
-                    }
-                }),
-            ),
+            ok(json!({
+                "tableReference": {
+                    "projectId": "fixture-project",
+                    "datasetId": "dataset",
+                    "tableId": "events"
+                }
+            })),
         ]);
         let mut statement = empty_ingest_statement_at(&endpoint);
         set_option(&mut statement, OptionStatement::IngestMode, mode);

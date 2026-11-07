@@ -17,7 +17,10 @@ use crate::cancellation::{Cancellation, OperationCancelHandle, operation_reader}
 use crate::parameters::ParameterMode;
 use crate::runtime::new_runtime;
 use crate::test_support::arrow::bigquery_typed;
-use crate::test_support::http::{CapturedRequest, capture_requests, capture_requests_responding};
+use crate::test_support::http::{
+    CapturedRequest, capture_requests, capture_requests_responding, completed_job, job_reference,
+    ok,
+};
 use crate::transaction::QueryTransaction;
 use crate::{
     BigQueryBulkIngestMethod, BigQueryConnectionOption, BigQueryCreateDisposition,
@@ -26,7 +29,10 @@ use crate::{
 
 use super::BigQueryStatement;
 use super::sql_text::{normalize_sql, skip_comments};
-use crate::test_support::driver::{test_connection, test_connection_at, test_statement};
+use crate::test_support::driver::{
+    test_connection, test_connection_at, test_query_at, test_statement, test_statement_at,
+};
+use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
 use crate::test_support::options::{
     assert_string_option, option_int, option_string, set_option, set_option_error,
 };
