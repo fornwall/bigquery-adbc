@@ -193,22 +193,18 @@ fn a_python_model_operation_replaces_every_other_mode_and_is_replaced_by_it() {
 #[test]
 fn the_shared_batch_id_and_pooling_timeout_select_no_operation() {
     let mut statement = test_statement();
-    set_option(&mut statement, BqOption::CreateBatchBatchId, "batch-0001");
-    set_option(&mut statement, BqOption::DataprocPoolingTimeout, "86400");
-    set_option(
-        &mut statement,
-        BqOption::DataprocComputeRegion,
-        "europe-west1",
-    );
-    set_option(&mut statement, BqOption::DataprocProject, "compute-project");
+    for (option, value) in [
+        (BqOption::CreateBatchBatchId, "batch-0001"),
+        (BqOption::DataprocPoolingTimeout, "86400"),
+        (BqOption::DataprocComputeRegion, "europe-west1"),
+        (BqOption::DataprocProject, "compute-project"),
+    ] {
+        set_option(&mut statement, option, value);
+    }
 
+    // No operation is selected, so the statement still needs SQL.
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::InvalidState);
-    assert!(
-        error.message.contains("without a SQL query"),
-        "no operation is selected, so the statement still needs SQL: {}",
-        error.message
-    );
+    assert_failure(&error, Status::InvalidState, &["without a SQL query"]);
     // Nor do they discard a real query, since they select nothing.
     statement.set_sql_query("select 1").unwrap();
     assert_string_option(&statement, BqOption::CreateBatchBatchId, None);
@@ -336,14 +332,8 @@ fn a_table_metadata_update_cannot_be_combined_with_another_operation() {
             for (key, value) in settings {
                 set_option(&mut statement, key, value.to_owned());
             }
-            let order = format!("{option:?}, update first: {update_first}");
             let error = statement.execute_update().unwrap_err();
-            assert_eq!(error.status, Status::InvalidState, "{order}");
-            assert!(
-                error.message.contains(family) && error.message.contains(update.as_str()),
-                "the rejection names both operations ({order}): {}",
-                error.message
-            );
+            assert_failure(&error, Status::InvalidState, &[family, update.as_str()]);
         }
     }
 }
@@ -364,14 +354,10 @@ fn a_table_metadata_update_cannot_be_combined_with_a_sql_query() {
             statement.set_sql_query("SELECT 1").unwrap();
         }
         let error = statement.execute_update().unwrap_err();
-        assert_eq!(error.status, Status::InvalidState, "{query_first}");
-        assert!(
-            error
-                .message
-                .contains("a SQL query cannot be combined with")
-                && error.message.contains(update.as_str()),
-            "the rejection names both the query and the option: {}",
-            error.message
+        assert_failure(
+            &error,
+            Status::InvalidState,
+            &["a SQL query cannot be combined with", update.as_str()],
         );
     }
 
@@ -383,11 +369,10 @@ fn a_table_metadata_update_cannot_be_combined_with_a_sql_query() {
         .set_sql_query("-- bigquery-adbc: model.project.table\n")
         .unwrap();
     let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::InvalidState);
-    assert!(
-        error.message.contains(BqOption::DestinationTable.as_str()),
-        "the placeholder reaches the metadata update itself: {}",
-        error.message
+    assert_failure(
+        &error,
+        Status::InvalidState,
+        &[BqOption::DestinationTable.as_str()],
     );
 }
 

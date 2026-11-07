@@ -112,20 +112,18 @@ fn storage_api_disabled_client_round_trips_without_changing_a_recorded_refusal()
 #[test]
 fn connection_and_statement_option_errors_do_not_disclose_payloads() {
     const SECRET: &str = "object-option-payload-secret-sentinel";
+    let bytes = || OptionValue::Bytes(SECRET.as_bytes().to_vec());
 
     let mut connection = test_connection();
     for (key, value) in [
-        (
-            OptionConnection::AutoCommit,
-            OptionValue::String(SECRET.to_owned()),
-        ),
+        (OptionConnection::AutoCommit, SECRET.into()),
         (
             BigQueryConnectionOption::BulkIngestMethod.into(),
-            OptionValue::String(SECRET.to_owned()),
+            SECRET.into(),
         ),
         (
             BigQueryConnectionOption::PrefetchConcurrency.into(),
-            OptionValue::Bytes(SECRET.as_bytes().to_vec()),
+            bytes(),
         ),
     ] {
         let rendered = format!("{value:?}");
@@ -136,25 +134,13 @@ fn connection_and_statement_option_errors_do_not_disclose_payloads() {
 
     let mut statement = connection.new_statement().unwrap();
     for (key, value) in [
-        (
-            OptionStatement::IngestMode,
-            OptionValue::String(SECRET.to_owned()),
-        ),
-        (
-            BqOption::Priority.into(),
-            OptionValue::String(SECRET.to_owned()),
-        ),
-        (
-            BqOption::CreateSession.into(),
-            OptionValue::String(SECRET.to_owned()),
-        ),
-        (
-            BqOption::MaximumBytesBilled.into(),
-            OptionValue::Bytes(SECRET.as_bytes().to_vec()),
-        ),
+        (OptionStatement::IngestMode, SECRET.into()),
+        (BqOption::Priority.into(), SECRET.into()),
+        (BqOption::CreateSession.into(), SECRET.into()),
+        (BqOption::MaximumBytesBilled.into(), bytes()),
         (
             BqOption::DestinationTable.into(),
-            OptionValue::String(format!("{SECRET}/path.dataset.table")),
+            format!("{SECRET}/path.dataset.table").into(),
         ),
     ] {
         let rendered = format!("{value:?}");
@@ -606,13 +592,6 @@ fn statement_options_reject_invalid_values() {
         0,
         "a rejected timeout leaves the statement without a client-side deadline"
     );
-    // And that unset `0` is exactly what setting the option back to zero asks for, so the
-    // value a getter reports is always one the setter accepts.
-    set_option(
-        &mut statement,
-        BqOption::DataprocPoolingTimeout,
-        OptionValue::Int(0),
-    );
     // The setter refuses the deprecated option with NotImplemented, but adbc.h gives
     // `AdbcStatementGetOptionInt` only NotFound.
     assert_eq!(
@@ -632,11 +611,8 @@ fn statement_options_reject_invalid_values() {
 fn python_model_options_round_trip_and_clear_under_the_dbt_key_spellings() {
     const KEYS: [(&str, &str); 19] = [
         ("adbc.bigquery.write_gcs.bucket", "dbt-python"),
-        ("adbc.bigquery.write_gcs.object_name", "analytics/model.py"),
-        (
-            "adbc.bigquery.write_gcs.content",
-            "def model(dbt, session):",
-        ),
+        ("adbc.bigquery.write_gcs.object_name", "model.py"),
+        ("adbc.bigquery.write_gcs.content", "print(1)"),
         ("adbc.bigquery.dataproc.compute_region", "europe-west1"),
         ("adbc.bigquery.dataproc.project", "compute-project"),
         (
@@ -645,20 +621,20 @@ fn python_model_options_round_trip_and_clear_under_the_dbt_key_spellings() {
         ),
         (
             "adbc.bigquery.dataproc.submit_job.gcs_path",
-            "gs://dbt-python/analytics/model.py",
+            "gs://bucket/model.py",
         ),
         (
             "adbc.bigquery.create_batch.parent",
-            "projects/compute-project/locations/europe-west1",
+            "projects/p/locations/eu",
         ),
         (
             "adbc.bigquery.create_batch.batch_yml",
-            "runtime_config:\n  version: \"1.1\"\n",
+            "runtime_config: {}\n",
         ),
         ("adbc.bigquery.create_batch.batch_id", "batch-0001"),
         (
             "adbc.bigquery.notebook_execute_job.gsc_path",
-            "gs://dbt-python/analytics/model.py",
+            "gs://bucket/model.py",
         ),
         (
             "adbc.bigquery.notebook_execute_job.gsc_bucket",
@@ -666,12 +642,12 @@ fn python_model_options_round_trip_and_clear_under_the_dbt_key_spellings() {
         ),
         (
             "adbc.bigquery.notebook_execute_job.model_file_name",
-            "analytics/model.py",
+            "model.py",
         ),
         ("adbc.bigquery.notebook_execute_job.model_name", "model"),
         (
             "adbc.bigquery.notebook_execute_job.parent",
-            "projects/compute-project/locations/europe-west1",
+            "projects/p/locations/eu",
         ),
         (
             "adbc.bigquery.notebook_execute_job.project",
@@ -682,7 +658,7 @@ fn python_model_options_round_trip_and_clear_under_the_dbt_key_spellings() {
         // credentials that name none of their own.
         (
             "adbc.bigquery.notebook_execute_job.service_account",
-            "dbt-runner@compute-project.iam.gserviceaccount.com",
+            "runner@p.iam.gserviceaccount.com",
         ),
         ("adbc.bigquery.notebook_execute_job.template_id", "12345"),
     ];
@@ -788,11 +764,6 @@ fn pooling_timeout_is_accepted_as_a_string_and_as_an_integer() {
             "zero and the empty string are the same clear"
         );
     }
-    // And the getter's own reading of an unset deadline goes straight back through the setter.
-    let unset = option_int(&statement, key);
-    assert_eq!(unset, 0);
-    set_option(&mut statement, key, unset);
-    assert_eq!(option_int(&statement, key), 0);
 }
 
 /// The statement options dbt-core 2.0 sets on nearly every query: job labels, the job timeout,
@@ -1102,22 +1073,10 @@ fn option_refusals_name_the_key_the_caller_used() {
 /// A statement with no project anywhere: no database `bigquery.project_id` and no connection
 /// catalog, so nothing can qualify a dataset name.
 fn statement_without_a_project() -> BigQueryStatement {
-    use adbc_core::{Database as _, Driver as _};
-
-    let mut driver = crate::BigQueryDriver::try_new().unwrap();
-    let database = driver
-        .new_database_with_opts([
-            (
-                crate::BigQueryDatabaseOption::AuthenticationType.into(),
-                crate::BigQueryAuthenticationType::Anonymous.into(),
-            ),
-            (
-                crate::BigQueryDatabaseOption::Endpoint.into(),
-                "http://127.0.0.1:1".into(),
-            ),
-        ])
-        .unwrap();
-    database.new_connection().unwrap().new_statement().unwrap()
+    let project = (crate::BigQueryDatabaseOption::ProjectId.into(), "".into());
+    crate::test_support::driver::test_connection_with("http://127.0.0.1:1", [project])
+        .new_statement()
+        .unwrap()
 }
 
 /// A dataset without a project gets the same status and message at both scopes; the connection
@@ -1154,6 +1113,13 @@ fn naming_a_default_dataset_without_a_project_reports_the_options_that_supply_on
     );
 }
 
+#[track_caller]
+fn assert_progress(statement: &BigQueryStatement, expected: f64) {
+    for key in [OptionStatement::Progress, OptionStatement::MaxProgress] {
+        assert_eq!(statement.get_option_double(key).unwrap(), expected);
+    }
+}
+
 /// adbc.h's `adbc.statement.exec.progress` and `adbc.statement.exec.max_progress`: after a query
 /// finishes, progress is its maximum and both are the bytes the job processed.
 #[test]
@@ -1161,26 +1127,19 @@ fn execution_progress_reports_the_bytes_the_query_processed() {
     let (endpoint, requests) = capture_requests(vec![completed_job(
         "options-job-1",
         json!({
-            "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
+            "schema": integer_schema("answer"),
             "statementType": "SELECT",
             "totalBytesProcessed": "4096",
             "totalRows": "0"
         }),
     )]);
     let mut statement = test_statement_at(&endpoint);
-    for key in [OptionStatement::Progress, OptionStatement::MaxProgress] {
-        assert_eq!(
-            statement.get_option_double(key).unwrap(),
-            0.0,
-            "a statement that has executed nothing knows no progress"
-        );
-    }
+    // A statement that has executed nothing knows no progress.
+    assert_progress(&statement, 0.0);
 
     statement.set_sql_query("SELECT 21 + 21 AS answer").unwrap();
     let reader = statement.execute().unwrap();
-    for key in [OptionStatement::Progress, OptionStatement::MaxProgress] {
-        assert_eq!(statement.get_option_double(key).unwrap(), 4096.0);
-    }
+    assert_progress(&statement, 4096.0);
     // Progress is of execution, not of consumption: draining the reader does not change it.
     drop(reader);
     assert_eq!(
@@ -1217,9 +1176,7 @@ fn an_update_publishes_the_bytes_its_job_processed() {
     let mut statement = test_query_at(&endpoint, "UPDATE dataset.table SET value = 1 WHERE true");
     assert_eq!(statement.execute_update().unwrap(), Some(3));
 
-    for key in [OptionStatement::Progress, OptionStatement::MaxProgress] {
-        assert_eq!(statement.get_option_double(key).unwrap(), 4096.0);
-    }
+    assert_progress(&statement, 4096.0);
     assert_eq!(requests.join().unwrap().len(), 1);
 }
 
@@ -1232,7 +1189,7 @@ fn a_dry_run_publishes_no_execution_progress() {
             "query": {
                 "statementType": "SELECT",
                 "totalBytesProcessed": "4096",
-                "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]}
+                "schema": integer_schema("answer")
             }
         },
         "status": {"state": "DONE"}
@@ -1242,9 +1199,7 @@ fn a_dry_run_publishes_no_execution_progress() {
     statement.set_sql_query("SELECT 21 + 21 AS answer").unwrap();
     drop(statement.execute().unwrap());
 
-    for key in [OptionStatement::Progress, OptionStatement::MaxProgress] {
-        assert_eq!(statement.get_option_double(key).unwrap(), 0.0);
-    }
+    assert_progress(&statement, 0.0);
     assert_eq!(requests.join().unwrap().len(), 1);
 }
 
@@ -1257,7 +1212,7 @@ fn several_parameter_rows_publish_the_bytes_all_their_jobs_processed() {
         completed_job(
             job_id,
             json!({
-                "schema": {"fields": [{"name": "answer", "type": "INTEGER"}]},
+                "schema": integer_schema("answer"),
                 "statementType": statement_type,
                 "numDmlAffectedRows": "1",
                 "totalBytesProcessed": bytes
@@ -1271,27 +1226,18 @@ fn several_parameter_rows_publish_the_bytes_all_their_jobs_processed() {
         completed("select-2", "SELECT", "8192"),
     ]);
     let mut statement = test_statement_at(&endpoint);
-    let assert_progress = |statement: &BigQueryStatement, expected: f64, what: &str| {
-        for key in [OptionStatement::Progress, OptionStatement::MaxProgress] {
-            assert_eq!(
-                statement.get_option_double(key).unwrap(),
-                expected,
-                "{what}"
-            );
-        }
-    };
 
     statement
         .set_sql_query("UPDATE dataset.table SET x = ? WHERE true")
         .unwrap();
     statement.bind(int64_column("x", vec![1, 2])).unwrap();
     assert_eq!(statement.execute_update().unwrap(), Some(2));
-    assert_progress(&statement, 3072.0, "ExecuteUpdate");
+    assert_progress(&statement, 3072.0);
 
     statement.set_sql_query("SELECT ? AS answer").unwrap();
     statement.bind(int64_column("answer", vec![1, 2])).unwrap();
     assert_eq!(statement.execute_partitions().unwrap().partitions.len(), 2);
-    assert_progress(&statement, 12288.0, "ExecutePartitions");
+    assert_progress(&statement, 12288.0);
     assert_eq!(requests.join().unwrap().len(), 4);
 }
 
