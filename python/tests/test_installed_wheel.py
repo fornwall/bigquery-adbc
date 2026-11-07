@@ -249,7 +249,7 @@ def test_native_database_uri_does_not_expose_secrets() -> None:
         ),
         pytest.param(
             "bigquery:///my-project-123?OAuthType=999",
-            r'OAuthType "999" must be 0, 1, 2, or 3',
+            "OAuthType must be 0, 1, 2, or 3",
             id="invalid-oauth-type",
         ),
         pytest.param(
