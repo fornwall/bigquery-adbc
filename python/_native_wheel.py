@@ -88,12 +88,9 @@ def _pe_exported_symbols(library: Path) -> set[str]:
     optional_size = _unpack_from("<H", data, pe + 20, library)
     optional = pe + 24
     magic = _unpack_from("<H", data, optional, library)
-    if magic == 0x10B:  # PE32
-        directory_count_offset = optional + 92
-    elif magic == 0x20B:  # PE32+
-        directory_count_offset = optional + 108
-    else:
+    if magic != 0x20B:  # PE32+, the only format of the 64-bit machines in _PE_MACHINES
         raise RuntimeError(f"unsupported PE optional header {magic:#x} in {library}")
+    directory_count_offset = optional + 108
     if _unpack_from("<I", data, directory_count_offset, library) < 1:
         return set()
     export_address = _unpack_from("<I", data, directory_count_offset + 4, library)

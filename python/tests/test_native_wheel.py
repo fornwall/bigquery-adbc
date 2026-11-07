@@ -125,10 +125,10 @@ def test_rejects_unsupported_platform_tags(platform_tag: str) -> None:
         platform_tag_for_binary(platform_tag, binary)
 
 
-def _synthesized_pe(path: Path, magic: int, names: list[str]) -> Path:
+def _synthesized_pe(path: Path, names: list[str]) -> Path:
     """Write a minimal PE library exporting ``names`` from a single section."""
 
-    optional_size = (96 if magic == 0x10B else 112) + 16 * 8
+    optional_size = 112 + 16 * 8
     section_offset = 88 + optional_size
     section_rva = 0x1000
     raw_offset = 0x400
@@ -139,8 +139,8 @@ def _synthesized_pe(path: Path, magic: int, names: list[str]) -> Path:
     header[64:68] = b"PE\0\0"
     struct.pack_into("<HH", header, 68, 0x8664, 1)
     struct.pack_into("<H", header, 84, optional_size)
-    struct.pack_into("<H", header, 88, magic)
-    directory_count_offset = 88 + (92 if magic == 0x10B else 108)
+    struct.pack_into("<H", header, 88, 0x20B)
+    directory_count_offset = 88 + 108
     struct.pack_into("<I", header, directory_count_offset, 16)
     struct.pack_into("<I", header, directory_count_offset + 4, section_rva)
     header[section_offset : section_offset + 8] = b".rdata\0\0"
@@ -160,12 +160,7 @@ def _synthesized_pe(path: Path, magic: int, names: list[str]) -> Path:
     return path
 
 
-@pytest.mark.parametrize("magic", [0x10B, 0x20B])
-def test_reads_pe_export_names(tmp_path: Path, magic: int) -> None:
-    library = _synthesized_pe(
-        tmp_path / f"driver{magic:x}.dll",
-        magic,
-        ["AdbcDriverBigqueryInit", "AdbcDriverInit"],
-    )
+def test_reads_pe_export_names(tmp_path: Path) -> None:
+    library = _synthesized_pe(tmp_path / "driver.dll", ["AdbcDriverBigqueryInit", "AdbcDriverInit"])
 
     assert exported_symbols(library, "pe") == {"AdbcDriverBigqueryInit", "AdbcDriverInit"}
