@@ -24,11 +24,15 @@ use values::parameter_value;
 string_enum! {
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub(crate) enum ParameterMode {
+        /// Send bound parameters in field order, for SQL that spells its placeholders `?`. The
+        /// default.
         #[default]
         Positional => (
             "positional",
             ["adbc.bigquery.sql.query.parameter_mode_positional"]
         ),
+        /// Send each bound parameter under the name of the field it came from, for SQL that spells
+        /// its placeholders `@name`.
         Named => (
             "named",
             ["adbc.bigquery.sql.query.parameter_mode_named"]

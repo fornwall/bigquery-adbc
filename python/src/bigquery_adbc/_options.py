@@ -20,13 +20,12 @@ class DatabaseOptions(enum.StrEnum):
     #: setting a URI carries also has an option of its own.
     URI = "uri"
 
-    #: How the driver authenticates: an `AuthenticationType` value. Unset resolves Google Cloud
-    #: Application Default Credentials.
+    #: How the driver authenticates: a `AuthenticationType` value. Unset resolves Application
+    #: Default Credentials.
     AUTHENTICATION_TYPE = "bigquery.auth_type"
 
-    #: The JSON credential file path or credential document selected by `AUTHENTICATION_TYPE`.
-    #: Write-only and redacted from debug output; an error may quote a file path, never a
-    #: document.
+    #: The JSON credential file path or credential document selected by `bigquery.auth_type`.
+    #: Write-only: the driver keeps it out of debug output and errors, file paths included.
     AUTHENTICATION_CREDENTIALS = "bigquery.auth.credentials"
 
     #: An optional `CredentialsType` value the JSON credential's `type` field must match; a
@@ -50,89 +49,103 @@ class DatabaseOptions(enum.StrEnum):
     #: Google's default.
     AUTHENTICATION_ACCESS_TOKEN_ENDPOINT = "bigquery.auth.access_token_endpoint"
 
-    #: The Workload Identity Federation provider resource required by `external_account`.
+    #: Workload Identity Federation provider resource required by `external_account`.
     AUTHENTICATION_EXTERNAL_ACCOUNT_AUDIENCE = "bigquery.auth.external_account.audience"
 
-    #: The OAuth identity-provider URL required by `external_account`. Write-only, because its
-    #: query can carry secrets. HTTPS is required unless `ALLOW_UNTRUSTED_ENDPOINT` is set.
+    #: OAuth identity-provider URL required by `external_account`. Write-only because its query
+    #: can contain secrets. HTTPS is required unless untrusted endpoints are enabled.
     AUTHENTICATION_EXTERNAL_ACCOUNT_REQUEST_URL = "bigquery.auth.external_account.request_url"
 
-    #: The already form-encoded identity-provider POST body required by `external_account`, sent
+    #: Already form-encoded identity-provider POST body required by `external_account`. Sent
     #: unchanged. Write-only.
     AUTHENTICATION_EXTERNAL_ACCOUNT_REQUEST_DATA = "bigquery.auth.external_account.request_data"
 
-    #: An optional standard IAM Credentials `generateAccessToken` URL for `external_account`.
+    #: Optional standard IAM Credentials `generateAccessToken` URL for `external_account`.
     AUTHENTICATION_EXTERNAL_ACCOUNT_IMPERSONATION_URL = "bigquery.auth.external_account.impersonation_url"
 
-    #: How Google's Security Token Service interprets the token the identity provider returns:
-    #: `urn:ietf:params:oauth:token-type:jwt`, the default, or
-    #: `urn:ietf:params:oauth:token-type:access_token` for an opaque token.
+    #: How Google's Security Token Service interprets the token the identity provider returns,
+    #: for `external_account`. `urn:ietf:params:oauth:token-type:jwt`, the default, or
+    #: `urn:ietf:params:oauth:token-type:access_token` for an identity provider that returns an
+    #: opaque token rather than a JWT.
     AUTHENTICATION_EXTERNAL_ACCOUNT_SUBJECT_TOKEN_TYPE = "bigquery.auth.external_account.subject_token_type"
 
-    #: Overrides `https://sts.googleapis.com/v1/token`, where the `external_account` subject
-    #: token is exchanged. An override must still be HTTPS on `googleapis.com` unless
-    #: `ALLOW_UNTRUSTED_ENDPOINT` is set.
+    #: Overrides `https://sts.googleapis.com/v1/token`, the Security Token Service endpoint the
+    #: `external_account` subject token is exchanged at. Unset uses Google's default with the
+    #: credential's universe domain substituted in. An override must still be HTTPS on
+    #: `googleapis.com` unless `bigquery.allow_untrusted_endpoint` is set, because the subject
+    #: token is sent there.
     AUTHENTICATION_EXTERNAL_ACCOUNT_TOKEN_URL = "bigquery.auth.external_account.token_url"
 
     #: The project API quota and billing are attributed to, applied to the shared credentials.
     AUTHENTICATION_QUOTA_PROJECT = "bigquery.auth.quota_project"
 
-    #: Comma-separated base OAuth scopes. Without an impersonation layer, unset falls back to
-    #: `IMPERSONATION_SCOPES`, then the credential default: `cloud-platform` for service
-    #: accounts, or the original consent grant for user credentials. User credentials can
-    #: request a subset of their consented scopes. External tables over Google Sheets or Drive
-    #: also need `https://www.googleapis.com/auth/drive`, with prior consent for user
-    #: credentials.
+    #: Comma-separated OAuth scopes the configured credentials are minted with. When unset and
+    #: no impersonation layer is configured, `bigquery.impersonate.scopes` supplies the base
+    #: scopes; otherwise the credential's default applies: `cloud-platform` for service
+    #: accounts, or the original consent grant for user credentials, which can request a subset
+    #: of their consented scopes. Shapes the credential `bigquery.auth_type` builds, including
+    #: Application Default Credentials and every JSON credential type. With an impersonation
+    #: layer, this configures its source token independently of the impersonated token's scopes.
+    #: A BigQuery external table over Google Sheets or Drive needs
+    #: `https://www.googleapis.com/auth/drive`, which `cloud-platform` does not cover, with
+    #: prior consent for user credentials.
     AUTHENTICATION_SCOPES = "bigquery.auth.scopes"
 
-    #: The project queries run and are billed in. Only a database sets it; on a connection it
-    #: reads back the current catalog.
+    #: The project queries run and are billed in. A connection also *reads* this key, as another
+    #: name for the standard current-catalog option; only a database sets it.
     PROJECT_ID = "bigquery.project_id"
 
-    #: The initial dataset unqualified table names resolve in. Only a database sets it; on a
-    #: connection it reads back the current schema.
+    #: The initial dataset unqualified table names resolve in. A connection also *reads* this
+    #: key, as another name for the standard current-schema option; only a database sets it.
     DATASET_ID = "bigquery.dataset_id"
 
-    #: Overrides `https://bigquery.googleapis.com`, the BigQuery REST endpoint. A bare
+    #: The BigQuery REST endpoint, overriding `https://bigquery.googleapis.com`. A bare
     #: `host[:port]` is HTTPS; an emulator needs an explicit `http://`. Set as an option, the
-    #: endpoint is trusted to receive credentials on any host and scheme, unlike the host of a
-    #: `bigquery://` URI.
+    #: endpoint is trusted to receive the credentials on any host and scheme, unlike the host of
+    #: a `bigquery://` URI. The `api_endpoint` alias is the retired `apache/arrow-adbc`
+    #: spelling, which dbt-core 2.0 still sends.
     ENDPOINT = "bigquery.endpoint"
 
     #: Overrides the BigQuery Storage API endpoint, shared by the Read and Write halves of that
-    #: API.
+    #: API. The `storage_read_api_endpoint` alias names only the Read half, but the dbt-labs
+    #: fork of the Go driver, which spells it that way, overrides both, so this driver does too.
     STORAGE_ENDPOINT = "bigquery.storage_endpoint"
 
     #: Overrides `https://storage.googleapis.com`, the Cloud Storage JSON API host the
-    #: python-model upload is sent to.
+    #: `adbc.bigquery.write_gcs.*` upload is sent to.
     GCS_ENDPOINT = "bigquery.gcs_endpoint"
 
-    #: Overrides `https://{region}-dataproc.googleapis.com`, the regional Dataproc host. An
-    #: override replaces the whole host, region included.
+    #: Overrides `https://{region}-dataproc.googleapis.com`, the regional Dataproc host the
+    #: `adbc.bigquery.create_batch.*` and `adbc.bigquery.dataproc.submit_job.*` operations are
+    #: sent to. An override replaces the whole host, region included.
     DATAPROC_ENDPOINT = "bigquery.dataproc_endpoint"
 
-    #: Overrides `https://{region}-aiplatform.googleapis.com`, the regional Vertex AI host. An
-    #: override replaces the whole host, region included.
+    #: Overrides `https://{region}-aiplatform.googleapis.com`, the regional Vertex AI host the
+    #: `adbc.bigquery.notebook_execute_job.*` operation is sent to. An override replaces the
+    #: whole host, region included.
     VERTEX_ENDPOINT = "bigquery.vertex_endpoint"
 
     #: Boolean string, default `false`: permits a `bigquery://` URI host, auxiliary service and
     #: credential-exchange endpoint overrides, and credential-document destinations that are not
-    #: HTTPS Google API hosts. A BigQuery REST endpoint set as an option is already explicitly
-    #: trusted. It cannot be set through a URI.
+    #: HTTPS Google API hosts. Not a URI query parameter. A BigQuery REST endpoint set as an
+    #: option is already explicitly trusted.
     ALLOW_UNTRUSTED_ENDPOINT = "bigquery.allow_untrusted_endpoint"
 
     #: The comma-separated service-account delegation chain used to impersonate.
     IMPERSONATION_DELEGATES = "bigquery.impersonate.delegates"
 
     #: The impersonated token's lifetime, a positive Go duration up to 12 hours; unset is one
-    #: hour. Over one hour also needs an organization policy, which IAM checks at the first
-    #: query.
+    #: hour. Over one hour, the IAM Credentials API also requires the organization policy
+    #: `constraints/iam.allowServiceAccountCredentialLifetimeExtension` for the target service
+    #: account. That cannot be checked offline, so IAM rejects a disallowed lifetime at the
+    #: first query.
     IMPERSONATION_LIFETIME = "bigquery.impersonate.lifetime"
 
     #: Comma-separated OAuth scopes for the impersonated token. Without an impersonation layer,
-    #: also the base credential's fallback when `AUTHENTICATION_SCOPES` is unset. Discrete
-    #: external-account credentials use that fallback even with an impersonation layer. Scopes
-    #: alone do not turn impersonation on; temporary access tokens remain unchanged.
+    #: also the base credential's fallback when `bigquery.auth.scopes` is unset. Discrete
+    #: external-account credentials use this fallback even with an impersonation layer. Scopes
+    #: alone do not turn impersonation on, because dbt-core 2.0 sets them on every connection. A
+    #: temporary access token is sent unchanged.
     IMPERSONATION_SCOPES = "bigquery.impersonate.scopes"
 
     #: The service account to impersonate; required when delegates or a lifetime are configured.
@@ -183,18 +196,21 @@ class ConnectionOptions(enum.StrEnum):
     #: treating `%` and `_` literally. GetStatistics is unaffected.
     GET_OBJECTS_DISABLE_WILDCARDS = "bigquery.get_objects.disable_wildcards"
 
-    #: The maximum number of REST row batches one reader converts concurrently: a positive
-    #: integer, default `10`, also capped by available parallelism. Storage Read ignores it.
+    #: The maximum number of REST row batches one reader converts concurrently, a positive
+    #: integer defaulting to `10`. Conversion is also bounded by the process's available
+    #: parallelism. The Storage Read path ignores this option.
     QUERY_PREFETCH_CONCURRENCY = "bigquery.query.prefetch_concurrency"
 
     #: Boolean string, default `false`: lets the Storage Read path read several streams in
-    #: parallel and return batches as they arrive, ignoring `ORDER BY`. Rows are never lost or
-    #: duplicated.
+    #: parallel and return batches in whatever order they arrive. Rows are never lost or
+    #: duplicated, only reordered, so set it only when the result's order, including an `ORDER
+    #: BY`, does not matter.
     QUERY_UNORDERED_READ = "bigquery.query.unordered_read"
 
-    #: Boolean string, default `false`: forces query results through REST when `true`. Reports
-    #: the configured value even after automatic fallback. Setting `false` on a connection also
-    #: clears the billing project's cached Storage Read refusal.
+    #: Boolean string, default `false`: forces query results through REST when `true`. Matches
+    #: the dbt fork's option and reports the configured value. Automatic fallback after a
+    #: Storage Read refusal does not change it. Setting `false` on a connection also clears the
+    #: billing project's cached refusal so Storage Read can be tried again.
     QUERY_USE_STORAGE_API_DISABLED_CLIENT = "bigquery.query.use_storage_api_disabled_client"
 
 
@@ -205,80 +221,6 @@ class StatementOptions(enum.StrEnum):
     #: binds parameters by the bound stream's field names, `false` by position. The two options
     #: read each other back.
     BIND_BY_NAME = "adbc.statement.bind_by_name"
-
-    #: The bulk-ingest implementation: a `BulkIngestMethod` value.
-    BULK_INGEST_METHOD = "bigquery.bulk_ingest.method"
-
-    #: Whether the query may create its destination table: a `CreateDisposition` value.
-    QUERY_CREATE_DISPOSITION = "bigquery.query.create_disposition"
-
-    #: Boolean string: asks BigQuery to create a session, independently of the sessions ADBC
-    #: transactions use.
-    QUERY_CREATE_SESSION = "bigquery.query.create_session"
-
-    #: The dataset unqualified names resolve in for this statement; empty restores the
-    #: connection's current schema.
-    QUERY_DEFAULT_DATASET_ID = "bigquery.query.default_dataset_id"
-
-    #: The project of this statement's default dataset; empty restores the connection's current
-    #: catalog.
-    QUERY_DEFAULT_PROJECT_ID = "bigquery.query.default_project_id"
-
-    #: Where the query writes its result, as `[[project.]dataset.]table` completed from the
-    #: effective defaults; empty clears it.
-    QUERY_DESTINATION_TABLE = "bigquery.query.destination_table"
-
-    #: Boolean string: when true the query does not use BigQuery's query cache.
-    QUERY_DISABLE_QUERY_CACHE = "bigquery.query.disable_query_cache"
-
-    #: Boolean string: validates the statement without running it, returning an empty stream
-    #: with the inferred schema. `execute_partitions` rejects it with `INVALID_STATE`.
-    QUERY_DRY_RUN = "bigquery.query.dry_run"
-
-    #: The job timeout in milliseconds; zero clears the override and a negative value is
-    #: rejected.
-    QUERY_JOB_TIMEOUT = "bigquery.query.job_timeout"
-
-    #: Reservation resource name
-    #: `projects/{project}/locations/{location}/reservations/{reservation}`. Empty clears the
-    #: override; `none` requests on-demand billing when permitted by the project's or
-    #: organization's reservation override policy. BigQuery validates the value.
-    QUERY_RESERVATION = "bigquery.query.reservation"
-
-    #: A JSON object of string labels for every query job, such as `{"team":"data"}`; empty or
-    #: `{}` clears them, and `key=value` or comma-separated strings are rejected. Reads back as
-    #: canonical JSON sorted by key.
-    QUERY_LABELS = "bigquery.query.labels"
-
-    #: Boolean string accepted for Go-driver compatibility, but a no-op: a failed job's error
-    #: message ends with its console link either way.
-    QUERY_LINK_FAILED_JOB = "bigquery.query.link_failed_job"
-
-    #: Recognized but returns `NOT_IMPLEMENTED`, because Google deprecated the field. Cap cost
-    #: with `QUERY_MAXIMUM_BYTES_BILLED` instead.
-    QUERY_MAXIMUM_BILLING_TIER = "bigquery.query.max_billing_tier"
-
-    #: The maximum bytes the query may bill; zero clears the override and a negative value is
-    #: rejected.
-    QUERY_MAXIMUM_BYTES_BILLED = "bigquery.query.max_bytes_billed"
-
-    #: How bound parameters are sent: a `ParameterMode` value, `positional` by default.
-    QUERY_PARAMETER_MODE = "bigquery.query.parameter_mode"
-
-    #: Overrides `ConnectionOptions.QUERY_PREFETCH_CONCURRENCY` for one statement.
-    QUERY_PREFETCH_CONCURRENCY = "bigquery.query.prefetch_concurrency"
-
-    #: The query's scheduling priority: a `QueryPriority` value.
-    QUERY_PRIORITY = "bigquery.query.priority"
-
-    #: Overrides `ConnectionOptions.QUERY_UNORDERED_READ` for one statement.
-    QUERY_UNORDERED_READ = "bigquery.query.unordered_read"
-
-    #: Overrides `ConnectionOptions.QUERY_USE_STORAGE_API_DISABLED_CLIENT` for one statement.
-    QUERY_USE_STORAGE_API_DISABLED_CLIENT = "bigquery.query.use_storage_api_disabled_client"
-
-    #: How the query writes to an existing destination table: a `WriteDisposition` value.
-    QUERY_WRITE_DISPOSITION = "bigquery.query.write_disposition"
 
     #: Standard ADBC bulk-ingest mode: whether the target table is created, appended to,
     #: replaced, or created and appended to.
@@ -309,6 +251,82 @@ class StatementOptions(enum.StrEnum):
     #: `get_option_float(member.value)`.
     MAX_PROGRESS = "adbc.statement.exec.max_progress"
 
+    #: The bulk-ingest implementation: a `BulkIngestMethod` value.
+    BULK_INGEST_METHOD = "bigquery.bulk_ingest.method"
+
+    #: Whether the query may create its destination table: a `CreateDisposition` value.
+    QUERY_CREATE_DISPOSITION = "bigquery.query.create_disposition"
+
+    #: Boolean string: asks BigQuery to create a session, independently of the sessions ADBC
+    #: transactions use.
+    QUERY_CREATE_SESSION = "bigquery.query.create_session"
+
+    #: The dataset unqualified names resolve in for this statement; empty restores the
+    #: connection's current schema.
+    QUERY_DEFAULT_DATASET_ID = "bigquery.query.default_dataset_id"
+
+    #: The project of this statement's default dataset; empty restores the connection's current
+    #: catalog.
+    QUERY_DEFAULT_PROJECT_ID = "bigquery.query.default_project_id"
+
+    #: Where the query writes its result, as `[[project.]dataset.]table` completed from the
+    #: effective defaults; empty clears it.
+    QUERY_DESTINATION_TABLE = "bigquery.query.destination_table"
+
+    #: Boolean string: when true the query does not use BigQuery's query cache.
+    QUERY_DISABLE_QUERY_CACHE = "bigquery.query.disable_query_cache"
+
+    #: Boolean string: validates the statement without running it, returning an empty stream
+    #: carrying the inferred schema. A dry run creates no job to partition, so
+    #: `execute_partitions` is rejected with `INVALID_STATE`.
+    QUERY_DRY_RUN = "bigquery.query.dry_run"
+
+    #: The job timeout in milliseconds; zero clears the override and a negative value is
+    #: rejected.
+    QUERY_JOB_TIMEOUT = "bigquery.query.job_timeout"
+
+    #: Reservation resource name
+    #: `projects/{project}/locations/{location}/reservations/{reservation}`. Empty clears the
+    #: override; `none` requests on-demand billing when permitted by the project's or
+    #: organization's reservation override policy. BigQuery validates the value.
+    QUERY_RESERVATION = "bigquery.query.reservation"
+
+    #: A JSON object of string job labels applied to every query job, such as `{"team":"data"}`;
+    #: empty or `{}` clears them. Anything else, including a `key=value` or comma-separated
+    #: string, is rejected. Reading the option back returns canonical JSON sorted by key.
+    QUERY_LABELS = "bigquery.query.labels"
+
+    #: Boolean string accepted for Go-driver compatibility, but a no-op: a failed job's error
+    #: message ends with its console link either way.
+    QUERY_LINK_FAILED_JOB = "bigquery.query.link_failed_job"
+
+    #: Recognized but returns `NOT_IMPLEMENTED`, because Google deprecated the field. Use
+    #: `bigquery.query.max_bytes_billed`.
+    QUERY_MAXIMUM_BILLING_TIER = "bigquery.query.max_billing_tier"
+
+    #: The maximum bytes the query may bill; zero clears the override and a negative value is
+    #: rejected.
+    QUERY_MAXIMUM_BYTES_BILLED = "bigquery.query.max_bytes_billed"
+
+    #: How bound parameters are sent: `positional` (the default) or `named`.
+    QUERY_PARAMETER_MODE = "bigquery.query.parameter_mode"
+
+    #: Overrides the connection's `bigquery.query.prefetch_concurrency` for one statement.
+    QUERY_PREFETCH_CONCURRENCY = "bigquery.query.prefetch_concurrency"
+
+    #: The query's scheduling priority: a `QueryPriority` value.
+    QUERY_PRIORITY = "bigquery.query.priority"
+
+    #: Overrides the connection's `bigquery.query.unordered_read` for one statement.
+    QUERY_UNORDERED_READ = "bigquery.query.unordered_read"
+
+    #: Overrides the connection's `bigquery.query.use_storage_api_disabled_client` for one
+    #: statement.
+    QUERY_USE_STORAGE_API_DISABLED_CLIENT = "bigquery.query.use_storage_api_disabled_client"
+
+    #: How the query writes to an existing destination table: a `WriteDisposition` value.
+    QUERY_WRITE_DISPOSITION = "bigquery.query.write_disposition"
+
 
 class ParameterMode(enum.StrEnum):
     """BigQuery query parameter binding modes."""
@@ -333,53 +351,48 @@ class BulkIngestMethod(enum.StrEnum):
 class AuthenticationType(enum.StrEnum):
     """Supported Google Cloud authentication modes."""
 
-    #: Google Cloud Application Default Credentials, under the Go driver's `auth_bigquery`
-    #: spelling. What an unconfigured database uses.
+    #: Application Default Credentials, under the Go driver's `auth_bigquery` spelling. What an
+    #: unconfigured database uses.
     DEFAULT = "auth_bigquery"
 
-    #: Google Cloud Application Default Credentials, under the `app_default_credentials`
-    #: spelling. The same code path as `DEFAULT`.
+    #: Application Default Credentials, under the `app_default_credentials` spelling.
     APPLICATION_DEFAULT = "app_default_credentials"
 
-    #: A Google Cloud JSON credential document read from the file path in
-    #: `DatabaseOptions.AUTHENTICATION_CREDENTIALS`.
+    #: A JSON credential document read from the file `bigquery.auth.credentials` names.
     JSON_CREDENTIAL_FILE = "json_credential_file"
 
-    #: A Google Cloud JSON credential document passed inline in
-    #: `DatabaseOptions.AUTHENTICATION_CREDENTIALS`.
+    #: A JSON credential document passed as the value of `bigquery.auth.credentials`.
     JSON_CREDENTIAL_STRING = "json_credential_string"
 
-    #: An OAuth client ID, client secret and refresh token, which the driver redeems for access
-    #: tokens.
+    #: An OAuth client and refresh token, from `bigquery.auth.client_id`,
+    #: `bigquery.auth.client_secret` and `bigquery.auth.refresh_token`.
     USER_AUTHENTICATION = "user_authentication"
 
-    #: Workload Identity Federation using an OAuth identity-provider token request, configured
-    #: with the `AUTHENTICATION_EXTERNAL_ACCOUNT_*` options.
+    #: Workload Identity Federation using an OAuth identity-provider token request.
     EXTERNAL_ACCOUNT = "external_account"
 
-    #: A caller-supplied short-lived OAuth access token, used as-is. The driver never refreshes
-    #: it, so requests fail once it expires.
+    #: A caller-supplied short-lived OAuth access token, used as-is and never refreshed.
+    #: Supports dbt-core 2.0 (Go driver) profiles.
     TEMPORARY_ACCESS_TOKEN = "temporary_access_token"
 
-    #: No credentials at all: requests carry no token. For emulators and for offline tests, and
-    #: incompatible with quota project and impersonation.
+    #: No credentials: requests carry no token. For emulators and offline tests, and
+    #: incompatible with a quota project and impersonation.
     ANONYMOUS = "anonymous"
 
 
 class CredentialsType(enum.StrEnum):
     """Supported Google Cloud JSON credential document types."""
 
-    #: A service-account key document.
+    #: A service-account key.
     SERVICE_ACCOUNT = "service_account"
 
-    #: A user credential document, as `gcloud auth application-default login` writes.
+    #: OAuth user credentials, as `gcloud auth application-default login` writes them.
     AUTHORIZED_USER = "authorized_user"
 
-    #: A service-account impersonation document, naming a source credential and a target
-    #: principal.
+    #: A source credential and the service account it impersonates.
     IMPERSONATED_SERVICE_ACCOUNT = "impersonated_service_account"
 
-    #: A Workload Identity Federation external-account document.
+    #: A Workload or Workforce Identity Federation configuration.
     EXTERNAL_ACCOUNT = "external_account"
 
 

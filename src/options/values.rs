@@ -76,13 +76,14 @@ string_enum! {
     /// accepts both spellings.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub enum BigQueryAuthenticationType {
-        /// Application Default Credentials. The default.
+        /// Application Default Credentials, under the Go driver's `auth_bigquery` spelling. What
+        /// an unconfigured database uses.
         #[default]
         Default => (
             "auth_bigquery",
             ["adbc.bigquery.sql.auth_type.auth_bigquery"]
         ),
-        /// Application Default Credentials, selected by name.
+        /// Application Default Credentials, under the `app_default_credentials` spelling.
         ApplicationDefault => (
             "app_default_credentials",
             ["adbc.bigquery.sql.auth_type.app_default_credentials"]
@@ -114,7 +115,8 @@ string_enum! {
             "temporary_access_token",
             ["adbc.bigquery.sql.auth_type.temporary_access_token"]
         ),
-        /// No credentials, for an emulator or a mock.
+        /// No credentials: requests carry no token. For emulators and offline tests, and
+        /// incompatible with a quota project and impersonation.
         Anonymous => (
             "anonymous",
             ["adbc.bigquery.sql.auth_type.anonymous"]

@@ -30,7 +30,7 @@ macro_rules! string_enum {
         $(#[$enum_meta:meta])*
         $visibility:vis enum $name:ident {
             $(
-                $(#[$variant_meta:meta])*
+                $(#[$($variant_meta:tt)*])*
                 $variant:ident => ($value:literal, [$($alias:literal),*], $kind:ident)
             ),+ $(,)?
         }
@@ -40,7 +40,7 @@ macro_rules! string_enum {
             $(#[$enum_meta])*
             $visibility enum $name {
                 $(
-                    $(#[$variant_meta])*
+                    $(#[$($variant_meta)*])*
                     $variant => ($value, [$($alias),*])
                 ),+
             }
@@ -59,7 +59,7 @@ macro_rules! string_enum {
         $(#[$enum_meta:meta])*
         $visibility:vis enum $name:ident {
             $(
-                $(#[$variant_meta:meta])*
+                $(#[$($variant_meta:tt)*])*
                 $variant:ident => ($value:literal, [$($alias:literal),*])
             ),+ $(,)?
         }
@@ -68,7 +68,7 @@ macro_rules! string_enum {
         $(#[$enum_meta])*
         $visibility enum $name {
             $(
-                $(#[$variant_meta])*
+                $(#[$($variant_meta)*])*
                 #[doc = ""]
                 #[doc = concat!("Spelled `", $value, "`", $(", or `", $alias, "`",)* ".")]
                 $variant
@@ -78,6 +78,14 @@ macro_rules! string_enum {
         impl $name {
             /// Every value, in declaration order.
             pub(crate) const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+            /// Each value's Rust name, canonical spelling and documentation.
+            #[cfg(feature = "python-option-codegen")]
+            pub(crate) const DECLARED: &'static [(&'static str, &'static str, &'static str)] = &[$((
+                stringify!($variant),
+                $value,
+                concat!($($crate::options::doc_text!($($variant_meta)*)),*),
+            )),+];
 
             /// The canonical spelling, which is what the driver reads an option back as.
             $visibility const fn as_str(self) -> &'static str {
@@ -137,6 +145,20 @@ macro_rules! string_enum {
 }
 
 pub(crate) use string_enum;
+
+/// The text of one `string_enum!` attribute: a doc comment's, and nothing for any other.
+#[cfg(feature = "python-option-codegen")]
+macro_rules! doc_text {
+    (doc = $text:literal) => {
+        $text
+    };
+    ($($other:tt)*) => {
+        ""
+    };
+}
+
+#[cfg(feature = "python-option-codegen")]
+pub(crate) use doc_text;
 
 // Canonical names and enum values have the same declaration order. Share their scan across
 // enums without inlining a separate case-insensitive matcher into each option entry point.

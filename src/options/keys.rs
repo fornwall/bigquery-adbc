@@ -15,25 +15,23 @@ string_enum! {
     /// Converts into [`adbc_core::options::OptionDatabase`].
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum BigQueryDatabaseOption {
-        /// How the driver authenticates: a
-        /// [`BigQueryAuthenticationType`](crate::BigQueryAuthenticationType) value.
+        /// How the driver authenticates: a `BigQueryAuthenticationType` value. Unset resolves
+        /// Application Default Credentials.
         AuthenticationType => (
             "bigquery.auth_type",
             ["adbc.bigquery.sql.auth_type"],
             String
         ),
-        /// The JSON credential file path or credential document selected by
-        /// [`Self::AuthenticationType`].
+        /// The JSON credential file path or credential document selected by `bigquery.auth_type`.
         ///
-        /// Write-only: the driver redacts it from debug output, and an error quotes it only as a
-        /// file path, never as a credential document.
+        /// Write-only: the driver keeps it out of debug output and errors, file paths included.
         AuthenticationCredentials => (
             "bigquery.auth.credentials",
             ["adbc.bigquery.sql.auth_credentials"],
             String
         ),
-        /// Optional validation of the configured JSON credential's `type` field: a
-        /// [`BigQueryCredentialsType`](crate::BigQueryCredentialsType) value.
+        /// An optional `BigQueryCredentialsType` value the JSON credential's `type` field must
+        /// match; a mismatch is rejected. It does not change how the document is parsed.
         AuthenticationCredentialsType => ("bigquery.auth.credentials_type", [], String),
         /// The OAuth client ID required by `user_authentication`.
         AuthenticationClientId => (
@@ -94,8 +92,8 @@ string_enum! {
             ["adbc.bigquery.sql.auth.external_account.impersonation_url"],
             String
         ),
-        /// How Google's Security Token Service interprets the token
-        /// [`Self::AuthenticationExternalAccountRequestUrl`] returns, for `external_account`.
+        /// How Google's Security Token Service interprets the token the identity provider returns,
+        /// for `external_account`.
         ///
         /// `urn:ietf:params:oauth:token-type:jwt`, the default, or
         /// `urn:ietf:params:oauth:token-type:access_token` for an identity provider that returns
@@ -110,7 +108,7 @@ string_enum! {
         ///
         /// Unset uses Google's default with the credential's universe domain substituted in. An
         /// override must still be HTTPS on `googleapis.com` unless
-        /// [`Self::AllowUntrustedEndpoint`] is set, because the subject token is sent there.
+        /// `bigquery.allow_untrusted_endpoint` is set, because the subject token is sent there.
         AuthenticationExternalAccountTokenUrl => (
             "bigquery.auth.external_account.token_url",
             [],
@@ -124,17 +122,18 @@ string_enum! {
             String
         ),
         /// Comma-separated OAuth scopes the configured credentials are minted with. When unset
-        /// and no impersonation layer is configured, [`Self::ImpersonationScopes`] supplies the
-        /// base scopes; otherwise Google's default is `https://www.googleapis.com/auth/cloud-platform`.
+        /// and no impersonation layer is configured, `bigquery.impersonate.scopes` supplies the
+        /// base scopes; otherwise the credential's default applies: `cloud-platform` for service
+        /// accounts, or the original consent grant for user credentials, which can request a
+        /// subset of their consented scopes.
         ///
-        /// Shapes the credential [`Self::AuthenticationType`] builds, including Application
-        /// Default Credentials and every JSON credential type. With an impersonation layer,
-        /// this configures its source token independently of the impersonated token's scopes.
+        /// Shapes the credential `bigquery.auth_type` builds, including Application Default
+        /// Credentials and every JSON credential type. With an impersonation layer, this configures
+        /// its source token independently of the impersonated token's scopes.
         ///
         /// A BigQuery external table over Google Sheets or Drive needs
-        /// `https://www.googleapis.com/auth/drive`, which `cloud-platform` does not cover. There is
-        /// no `adbc.bigquery.sql.*` alias: the Go driver has no scopes option outside
-        /// impersonation.
+        /// `https://www.googleapis.com/auth/drive`, which `cloud-platform` does not cover, with
+        /// prior consent for user credentials.
         AuthenticationScopes => ("bigquery.auth.scopes", [], String),
         /// The project queries run and are billed in.
         ///
@@ -218,7 +217,7 @@ string_enum! {
             String
         ),
         /// Comma-separated OAuth scopes for the impersonated token. Without an impersonation
-        /// layer, also the base credential's fallback when [`Self::AuthenticationScopes`] is unset.
+        /// layer, also the base credential's fallback when `bigquery.auth.scopes` is unset.
         ///
         /// Discrete external-account credentials use this fallback even with an impersonation
         /// layer. Scopes alone do not turn impersonation on, because dbt-core 2.0 sets them on
@@ -255,8 +254,7 @@ string_enum! {
     /// override the connection value for one statement. Metadata options are connection-only.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum BigQueryConnectionOption {
-        /// The bulk-ingest implementation: a
-        /// [`BigQueryBulkIngestMethod`](crate::BigQueryBulkIngestMethod) value.
+        /// The bulk-ingest implementation: a `BigQueryBulkIngestMethod` value.
         BulkIngestMethod => ("bigquery.bulk_ingest.method", [], String),
         /// Boolean string, default `true`: list tables without fetching their constraints.
         /// Setting `false` includes constraints at tables depth. Column/all depth is unaffected.
@@ -308,8 +306,7 @@ string_enum! {
             [],
             String
         ),
-        /// The bulk-ingest implementation: a
-        /// [`BigQueryBulkIngestMethod`](crate::BigQueryBulkIngestMethod) value.
+        /// The bulk-ingest implementation: a `BigQueryBulkIngestMethod` value.
         BulkIngestMethod => ("bigquery.bulk_ingest.method", [], String),
         /// The destination of a copy-table job, as `[[project.]dataset.]table`.
         CopyTableDestination => ("adbc.bigquery.copy_table.destination", [], String),
@@ -360,8 +357,8 @@ string_enum! {
         /// A JSON object `{"project": ..., "dataset": ...}` naming the dataset whose location the
         /// statement returns in a `location` column: one row, or none when the dataset is missing.
         GetDatasetLocation => ("bigquery.dataset.get_location", [], String),
-        /// Whether the query may create its destination table: a
-        /// [`BigQueryCreateDisposition`](crate::BigQueryCreateDisposition) value.
+        /// Whether the query may create its destination table: a `BigQueryCreateDisposition`
+        /// value.
         CreateDisposition => (
             "bigquery.query.create_disposition",
             ["adbc.bigquery.sql.query.create_disposition"],
@@ -441,7 +438,7 @@ string_enum! {
             String
         ),
         /// Recognized but returns `NOT_IMPLEMENTED`, because Google deprecated the field. Use
-        /// [`Self::MaximumBytesBilled`].
+        /// `bigquery.query.max_bytes_billed`.
         MaximumBillingTier => (
             "bigquery.query.max_billing_tier",
             ["adbc.bigquery.sql.query.max_billing_tier"],
@@ -525,29 +522,29 @@ string_enum! {
         /// The description to set on the relation [`Self::DestinationTable`] names. An empty
         /// string clears the option rather than the description.
         UpdateDescription => ("adbc.bigquery.table.update_description", [], String),
-        /// Overrides [`BigQueryConnectionOption::PrefetchConcurrency`] for one statement.
+        /// Overrides the connection's `bigquery.query.prefetch_concurrency` for one statement.
         PrefetchConcurrency => (
             "bigquery.query.prefetch_concurrency",
             ["adbc.bigquery.sql.query.prefetch_concurrency"],
             Int
         ),
-        /// The query's scheduling priority: a
-        /// [`BigQueryQueryPriority`](crate::BigQueryQueryPriority) value.
+        /// The query's scheduling priority: a `BigQueryQueryPriority` value.
         Priority => (
             "bigquery.query.priority",
             ["adbc.bigquery.sql.query.priority"],
             String
         ),
-        /// Overrides [`BigQueryConnectionOption::UnorderedRead`] for one statement.
+        /// Overrides the connection's `bigquery.query.unordered_read` for one statement.
         UnorderedRead => ("bigquery.query.unordered_read", [], String),
-        /// Overrides [`BigQueryConnectionOption::UseStorageApiDisabledClient`] for one statement.
+        /// Overrides the connection's `bigquery.query.use_storage_api_disabled_client` for one
+        /// statement.
         UseStorageApiDisabledClient => (
             "bigquery.query.use_storage_api_disabled_client",
             ["adbc.bigquery.sql.query.use_storage_api_disabled_client"],
             String
         ),
-        /// How the query writes to an existing destination table: a
-        /// [`BigQueryWriteDisposition`](crate::BigQueryWriteDisposition) value.
+        /// How the query writes to an existing destination table: a `BigQueryWriteDisposition`
+        /// value.
         WriteDisposition => (
             "bigquery.query.write_disposition",
             ["adbc.bigquery.sql.query.write_disposition"],
