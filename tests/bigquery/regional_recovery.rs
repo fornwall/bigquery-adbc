@@ -28,7 +28,12 @@ fn regional_recovery_survives_lost_submission_responses() {
     crate::backend::require_real_bigquery();
     let api = Arc::new(LiveApi::new());
     let dataset = scratch_table("regional_recovery");
-    let dataset_path = format!("/bigquery/v2/projects/{}/datasets/{dataset}", project());
+    // Armed first: a create whose response was lost still made the dataset.
+    let fixture = Fixture {
+        api: api.clone(),
+        dataset_path: format!("/bigquery/v2/projects/{}/datasets/{dataset}", project()),
+        jobs: Arc::new(Mutex::new(Vec::new())),
+    };
     let (status, _) = api
         .send(
             "POST",
@@ -41,11 +46,6 @@ fn regional_recovery_survives_lost_submission_responses() {
         )
         .unwrap();
     assert_eq!(status, 200, "create regional fixture dataset");
-    let fixture = Fixture {
-        api: api.clone(),
-        dataset_path,
-        jobs: Arc::new(Mutex::new(Vec::new())),
-    };
     let table = format!("{}.{dataset}.markers", project());
     let mut control = connect_at_location(project(), REGION);
     execute_sql(
@@ -340,21 +340,22 @@ struct Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         let mut failures = Vec::new();
-        let mut check = |method, path: &str, expected| match self.api.send(method, path, None) {
-            Ok((status, _)) if status == expected => {}
-            Ok((status, _)) => failures.push(format!("{method} {path} returned HTTP {status}")),
-            Err(error) => failures.push(format!("{method} {path}: {error}")),
-        };
+        let mut check =
+            |method, path: &str, expected: &[u16]| match self.api.send(method, path, None) {
+                Ok((status, _)) if expected.contains(&status) => {}
+                Ok((status, _)) => failures.push(format!("{method} {path} returned HTTP {status}")),
+                Err(error) => failures.push(format!("{method} {path}: {error}")),
+            };
         for reference in self.jobs.lock().unwrap().iter() {
             let path = job_path(reference).replace("?location=", "/cancel?location=");
-            check("POST", &path, 200);
+            check("POST", &path, &[200]);
         }
         check(
             "DELETE",
             &format!("{}?deleteContents=true", self.dataset_path),
-            204,
+            &[204, 404],
         );
-        check("GET", &self.dataset_path, 404);
+        check("GET", &self.dataset_path, &[404]);
         if !failures.is_empty() {
             report_failed_cleanup(
                 &format!("clean up {} and its jobs", self.dataset_path),

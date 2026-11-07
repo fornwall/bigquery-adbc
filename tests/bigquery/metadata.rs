@@ -373,17 +373,17 @@ fn gets_hidden_dataset_objects_and_statistics() {
     let mut connection = connect_at_location(project, "US");
     let dataset = format!("_{}", scratch_table("statistics"));
     let qualified_dataset = format!("{project}.{dataset}");
-    let cleanup = prepare_query(
+    // Armed first: a create whose response was lost still made the dataset.
+    let _cleanup = DropSchema(prepare_query(
         &mut connection,
         &format!("DROP SCHEMA IF EXISTS `{qualified_dataset}` CASCADE"),
-    );
+    ));
     execute_sql(
         &mut connection,
         &format!(
             "CREATE SCHEMA `{qualified_dataset}` OPTIONS(location='US', default_table_expiration_days=1)"
         ),
     );
-    let _cleanup = DropSchema(cleanup);
     execute_sql(
         &mut connection,
         &format!("CREATE TABLE `{qualified_dataset}.events` AS SELECT 42 AS id"),
