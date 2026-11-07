@@ -138,23 +138,6 @@ fn floats_widen_to_float64() {
 }
 
 #[test]
-fn large_strings_and_binaries_narrow_their_offsets_across_a_slice() {
-    let large = LargeStringArray::from(vec![Some("a"), None, Some("bcd"), Some("é")]);
-    let narrowed = cast(Arc::new(large.slice(1, 3)), &DataType::Utf8);
-    assert_eq!(
-        narrowed.as_ref(),
-        &StringArray::from(vec![None, Some("bcd"), Some("é")]) as &dyn Array
-    );
-
-    let large = LargeBinaryArray::from_opt_vec(vec![Some(b"a".as_slice()), None, Some(b"bcd")]);
-    let narrowed = cast(Arc::new(large.slice(1, 2)), &DataType::Binary);
-    assert_eq!(
-        narrowed.as_ref(),
-        &BinaryArray::from_opt_vec(vec![None, Some(b"bcd".as_slice())]) as &dyn Array
-    );
-}
-
-#[test]
 fn large_byte_offset_narrowing_preserves_slices_at_vector_boundaries() {
     let strings = LargeStringArray::from_iter((0..65_560).map(|row| match row % 4 {
         0 => Some("large offset benchmark"),
@@ -534,20 +517,10 @@ fn narrower_intervals_become_month_day_nano_intervals() {
     );
 }
 
+/// The values themselves are cast after expansion, so a dictionary of a narrower type still lands
+/// on the normalized BigQuery type.
 #[test]
-fn dictionaries_expand_to_their_values() {
-    let dictionary = DictionaryArray::<Int32Type>::new(
-        Int32Array::from(vec![Some(1), None, Some(0), Some(1)]),
-        Arc::new(StringArray::from(vec!["a", "b"])),
-    );
-    let expanded = cast(Arc::new(dictionary), &DataType::Utf8);
-    assert_eq!(
-        expanded.as_ref(),
-        &StringArray::from(vec![Some("b"), None, Some("a"), Some("b")]) as &dyn Array
-    );
-
-    // The values themselves are cast after expansion, so a dictionary of a narrower type
-    // still lands on the normalized BigQuery type.
+fn dictionary_values_are_cast_after_expansion() {
     let dictionary = DictionaryArray::<Int32Type>::new(
         Int32Array::from(vec![Some(0), None]),
         Arc::new(Int8Array::from(vec![7])),
@@ -721,30 +694,13 @@ fn nullable_dictionary_runs_match_arrow_take_across_slices() {
 fn dictionary_with_out_of_bounds_keys_is_rejected_not_expanded() {
     let values: ArrayRef = Arc::new(StringArray::from(vec!["a"]));
     for key in [5, -1] {
-        let keys = Int32Array::from(vec![key]);
-        let message = super::expand_dictionary(&values, &keys).unwrap_err();
-        assert_eq!(
-            message,
-            format!("dictionary key {key} is out of bounds for 1 dictionary values")
-        );
+        // Invalid live keys cannot be hidden by an earlier null run or a coalesced valid run.
+        for keys in [vec![Some(key)], vec![None, Some(0), Some(key), None]] {
+            let message = super::expand_dictionary(&values, &Int32Array::from(keys)).unwrap_err();
+            assert_eq!(
+                message,
+                format!("dictionary key {key} is out of bounds for 1 dictionary values")
+            );
+        }
     }
-    // Invalid live keys cannot be hidden by an earlier null run or a coalesced valid run.
-    for key in [5, -1] {
-        let keys = Int32Array::from(vec![None, Some(0), Some(key), None]);
-        let message = super::expand_dictionary(&values, &keys).unwrap_err();
-        assert_eq!(
-            message,
-            format!("dictionary key {key} is out of bounds for 1 dictionary values")
-        );
-    }
-}
-
-#[test]
-fn an_unreachable_pair_is_reported_rather_than_silently_dropped() {
-    let message = cast_error(Arc::new(StringArray::from(vec!["1"])), &DataType::Int64);
-    assert_eq!(
-        message,
-        "failed to normalize BigQuery ingest column \"field\" from Utf8 to Int64: \
-         the cast is not supported"
-    );
 }

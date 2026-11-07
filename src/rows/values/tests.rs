@@ -711,6 +711,22 @@ fn direct_conversion_observes_pipeline_cancellation_before_rows() {
     assert!(converted.is_none());
 }
 
+/// Anything but a shape schema conversion produces is a defect here, reported rather than decoded
+/// wrongly.
+#[test]
+fn refuses_columns_schema_conversion_cannot_produce() {
+    for data_type in [
+        DataType::Decimal128(10, 2),
+        DataType::Decimal256(20, 4),
+        DataType::Int32,
+    ] {
+        let Err(error) = ColumnBuilder::new(&Field::new("column", data_type, true), 1) else {
+            panic!("the column was accepted");
+        };
+        assert!(error.to_string().contains("has no REST decoder"), "{error}");
+    }
+}
+
 /// An array is the one unbounded part of a row, so a cancellation has to land inside it.
 #[test]
 fn a_long_array_is_polled_for_cancellation() {

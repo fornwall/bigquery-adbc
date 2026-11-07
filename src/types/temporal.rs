@@ -41,7 +41,7 @@ pub(crate) const BIGQUERY_MAX_INTERVAL_DAYS: u32 = 3_660_000;
 /// BigQuery documents the second range as ±316,224,000,000.999999, but the service refuses
 /// anything past the round number (observed, not documented): `INTERVAL '0-0 0 87840000:0:0'` is
 /// accepted and `INTERVAL '0-0 0 87840000:0:0.000001'` is out of range.
-const BIGQUERY_MAX_INTERVAL_MICROS: i64 = 316_224_000_000_000_000;
+const BIGQUERY_MAX_INTERVAL_MICROS: u64 = 316_224_000_000_000_000;
 
 /// The INTERVAL component outside BigQuery's supported range, without its value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,7 +79,7 @@ pub(crate) fn check_interval_months_days(months: i32, days: i32) -> Result<(), I
 /// Checks an INTERVAL's time component against BigQuery's bound, for Arrow values wide enough to
 /// exceed it (a duration in seconds to microseconds spans a whole `i64` of microseconds).
 pub(crate) fn check_interval_micros(micros: i64) -> Result<(), IntervalOutOfRange> {
-    if micros.unsigned_abs() > BIGQUERY_MAX_INTERVAL_MICROS.unsigned_abs() {
+    if micros.unsigned_abs() > BIGQUERY_MAX_INTERVAL_MICROS {
         return Err(IntervalOutOfRange::Microseconds);
     }
     Ok(())
