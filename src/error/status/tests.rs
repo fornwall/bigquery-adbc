@@ -108,6 +108,26 @@ fn exhausted_retries_keep_the_last_attempts_status_and_details() {
     );
 }
 
+/// Retry exhaustion with no Google error beneath it reports the exhaustion itself.
+#[test]
+fn an_exhausted_failure_with_no_last_attempt_reports_itself() {
+    let failure = google_error(
+        "read BigQuery rows",
+        GoogleError::exhausted("no last attempt"),
+    );
+    assert_eq!(failure.status, Status::Unknown);
+    assert!(
+        failure.message.starts_with("read BigQuery rows: "),
+        "{}",
+        failure.message
+    );
+    assert!(
+        failure.message.contains("no last attempt"),
+        "{}",
+        failure.message
+    );
+}
+
 /// A rejection whose body carried no `google.rpc.Status` is classified by its HTTP status, so a
 /// proxy's 503 page stays retryable rather than becoming `Unknown`.
 #[test]
