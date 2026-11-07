@@ -13,15 +13,14 @@ fn delivers_resident_rows_while_the_next_page_is_waiting() {
     use crate::rest::jobs::{JobClient, JobReference};
     use crate::rows::{RestRow, RestValue};
     use crate::runtime::new_runtime;
-    use crate::test_support::http::capture_requests_gated;
+    use crate::test_support::http::{capture_requests_gated, ok};
 
     for concurrency in [1, 10] {
         for row_count in [1, BATCH_SIZE, 10_000] {
             let (requested, request_received) = tokio::sync::oneshot::channel();
             let (release, wait_for_release) = std::sync::mpsc::channel();
             let (endpoint, captured) = capture_requests_gated(
-                vec![(
-                    200,
+                vec![ok(
                     json!({"jobComplete":true,"rows":[{"f":[{"v":"10000"}]}]}),
                 )],
                 // No wall-clock bound on the reader: a pager that withheld resident rows until

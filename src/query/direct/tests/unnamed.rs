@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::query::{ExecutionContext, StatementQueryContext};
-use crate::test_support::http::capture_requests_responding;
+use crate::test_support::http::{capture_requests_responding, ok};
 use crate::transaction::{QueryTransaction, TransactionState};
 
 fn active_transaction() -> TransactionState {
@@ -66,27 +66,21 @@ fn replayed(then: Vec<(u16, serde_json::Value)>) -> Vec<(u16, serde_json::Value)
             json!({"error": {"code": 409, "errors": [{"reason": "duplicate",
                 "message": "Already Exists: Job project:EU.job_first"}]}}),
         ),
-        (
-            200,
-            json!({
-                "jobComplete": true,
-                "jobReference": {"projectId":"project","jobId":"job_first","location":"EU"}
-            }),
-        ),
+        ok(json!({
+            "jobComplete": true,
+            "jobReference": {"projectId":"project","jobId":"job_first","location":"EU"}
+        })),
     ];
     responses.extend(then);
     responses
 }
 
 fn job_first(statistics: &serde_json::Value) -> (u16, serde_json::Value) {
-    (
-        200,
-        json!({
-            "jobReference": {"projectId":"project","jobId":"job_first","location":"EU"},
-            "status": {"state":"DONE"},
-            "statistics": statistics
-        }),
-    )
+    ok(json!({
+        "jobReference": {"projectId":"project","jobId":"job_first","location":"EU"},
+        "status": {"state":"DONE"},
+        "statistics": statistics
+    }))
 }
 
 /// The replay names only the job, so one `jobs.get` learns that it committed.
@@ -116,24 +110,18 @@ fn an_inserted_commit_ends_the_transaction_from_its_running_answer() {
     let (endpoint, captured) = capture_requests_responding(2, move |request| {
         index += 1;
         Some(if index == 1 {
-            (
-                200,
-                json!({
-                    "jobReference": request.body["jobReference"].clone(),
-                    "status": {"state": "RUNNING"},
-                    "statistics": {"query": {"statementType": "COMMIT_TRANSACTION"}}
-                }),
-            )
+            ok(json!({
+                "jobReference": request.body["jobReference"].clone(),
+                "status": {"state": "RUNNING"},
+                "statistics": {"query": {"statementType": "COMMIT_TRANSACTION"}}
+            }))
         } else {
             let job_id = request.path().split("/queries/").nth(1).unwrap();
             let job_id = job_id.split('?').next().unwrap().to_owned();
-            (
-                200,
-                json!({
-                    "jobComplete": true,
-                    "jobReference": {"projectId":"project","jobId":job_id,"location":"EU"}
-                }),
-            )
+            ok(json!({
+                "jobComplete": true,
+                "jobReference": {"projectId":"project","jobId":job_id,"location":"EU"}
+            }))
         })
     });
     let transaction = active_transaction();

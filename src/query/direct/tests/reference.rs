@@ -2,7 +2,7 @@
 //! job link a failure carries.
 
 use super::*;
-use crate::test_support::errors::assert_message_omits;
+use crate::test_support::errors::{assert_failure, assert_message_omits};
 use crate::test_support::identifiers::project;
 
 #[test]
@@ -12,14 +12,14 @@ fn failed_jobs_link_to_their_server_returned_location() {
             json!({"projectId":"project","jobId":"failed-job","location":"us-central1"});
         let mut responses = Vec::new();
         if polled {
-            responses.push((200, json!({"jobComplete":false,"jobReference":reference})));
+            responses.push(ok(json!({"jobComplete":false,"jobReference":reference})));
         }
         responses.extend([
-            (200, json!({
+            ok(json!({
                 "jobComplete":true,"jobReference":reference,
                 "errors":[{"reason":"invalidQuery","message":"division by zero","location":"query"}]
             })),
-            (200, json!({
+            ok(json!({
                 "jobReference":reference,
                 "status":{"state":"DONE","errorResult":{"reason":"invalidQuery","message":"division by zero","location":"query"}}
             })),
@@ -34,8 +34,11 @@ fn failed_jobs_link_to_their_server_returned_location() {
             "query failed",
         )
         .unwrap_err();
-        assert_eq!(failure.status, Status::InvalidArguments);
-        assert_message(&failure, &["invalidQuery: division by zero (field: query)"]);
+        assert_failure(
+            &failure,
+            Status::InvalidArguments,
+            &["invalidQuery: division by zero (field: query)"],
+        );
         assert!(failure.message.ends_with(" (Query: https://console.cloud.google.com/bigquery?project=project&j=bq:us-central1:failed-job&page=queryresults)"));
         assert_eq!(failure.sqlstate, [0x34, 0x32, 0x30, 0x30, 0x30]);
         assert_eq!(
@@ -54,13 +57,10 @@ fn polling_failures_link_to_the_known_job_but_submission_rejections_do_not() {
     for polled in [false, true] {
         let mut responses = Vec::new();
         if polled {
-            responses.push((
-                200,
-                json!({
-                    "jobComplete":false,
-                    "jobReference":{"projectId":"project","jobId":"running-job","location":"EU"}
-                }),
-            ));
+            responses.push(ok(json!({
+                "jobComplete":false,
+                "jobReference":{"projectId":"project","jobId":"running-job","location":"EU"}
+            })));
         }
         responses.push((
             403,
@@ -76,8 +76,7 @@ fn polling_failures_link_to_the_known_job_but_submission_rejections_do_not() {
             "query failed",
         )
         .unwrap_err();
-        assert_eq!(failure.status, Status::Unauthorized);
-        assert_message(&failure, &["access denied"]);
+        assert_failure(&failure, Status::Unauthorized, &["access denied"]);
         if polled {
             assert!(failure.message.ends_with(" (Query: https://console.cloud.google.com/bigquery?project=project&j=bq:EU:running-job&page=queryresults)"));
         } else {
@@ -121,10 +120,7 @@ fn both_routes_keep_the_services_canonical_location_casing() {
         });
         let responses = if inserts {
             vec![
-                (
-                    200,
-                    json!({"jobReference": reference, "status": {"state":"DONE"}}),
-                ),
+                ok(json!({"jobReference": reference, "status": {"state":"DONE"}})),
                 (200, results),
             ]
         } else {
@@ -175,30 +171,21 @@ fn both_query_routes_follow_a_numeric_projects_canonical_identity() {
         });
         let mut responses = Vec::new();
         if priority == BigQueryQueryPriority::Batch {
-            responses.push((
-                200,
-                json!({
-                    "jobReference": {"projectId": "123456789", "jobId": job_id, "location": "EU"},
-                    "status": {"state": "RUNNING"},
-                    "statistics": {"query": {"statementType": "SELECT"}}
-                }),
-            ));
+            responses.push(ok(json!({
+                "jobReference": {"projectId": "123456789", "jobId": job_id, "location": "EU"},
+                "status": {"state": "RUNNING"},
+                "statistics": {"query": {"statementType": "SELECT"}}
+            })));
         }
         responses.extend([
-            (
-                200,
-                json!({
-                    "jobComplete": false, "jobReference": canonical,
-                    "statementType": "SELECT"
-                }),
-            ),
-            (
-                200,
-                json!({
-                    "jobComplete": true, "jobReference": canonical,
-                    "statementType": "SELECT", "schema": {"fields": []}
-                }),
-            ),
+            ok(json!({
+                "jobComplete": false, "jobReference": canonical,
+                "statementType": "SELECT"
+            })),
+            ok(json!({
+                "jobComplete": true, "jobReference": canonical,
+                "statementType": "SELECT", "schema": {"fields": []}
+            })),
         ]);
         let (endpoint, captured) = capture_requests(responses);
         let (runtime, client) = client(&endpoint);

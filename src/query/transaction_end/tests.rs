@@ -7,7 +7,7 @@ use crate::clients::ClientState;
 use crate::config::ServiceEndpointKind;
 use crate::runtime::new_runtime;
 use crate::test_support::UNREACHABLE_ENDPOINT;
-use crate::test_support::http::{capture_requests, error_body};
+use crate::test_support::http::{capture_requests, error_body, ok};
 
 fn metadata(statement_type: &str, job: bool) -> QueryMetadata {
     QueryMetadata {
@@ -90,7 +90,7 @@ fn a_scripts_newest_child_decides() {
 fn a_refused_or_unreadable_listing_leaves_the_transaction_active() {
     for response in [
         (403, error_body("accessDenied", "no bigquery.jobs.list")),
-        (200, json!({"jobs": "not a list"})),
+        ok(json!({"jobs": "not a list"})),
     ] {
         let (decision, requests) = decide(&metadata("SCRIPT", true), vec![response]);
         assert!(!decision.unwrap());

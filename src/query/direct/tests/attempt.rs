@@ -13,25 +13,19 @@ fn a_replayed_jobs_query_reads_the_job_its_first_attempt_created() {
             json!({"error": {"code": 409, "errors": [{"reason": "duplicate",
                 "message": "Already Exists: Job project:EU.job_first"}]}}),
         ),
-        (
-            200,
-            json!({
-                "jobComplete": true,
-                "jobReference": {"projectId":"project","jobId":"job_first","location":"EU"},
-                "schema": {"fields":[{"name":"value","type":"INTEGER"}]},
-                "rows": [{"f":[{"v":"7"}]}],
-                "totalRows": "1"
-            }),
-        ),
+        ok(json!({
+            "jobComplete": true,
+            "jobReference": {"projectId":"project","jobId":"job_first","location":"EU"},
+            "schema": {"fields":[{"name":"value","type":"INTEGER"}]},
+            "rows": [{"f":[{"v":"7"}]}],
+            "totalRows": "1"
+        })),
         // The results never name the statement type, so the job is described once.
-        (
-            200,
-            json!({
-                "jobReference": {"projectId":"project","jobId":"job_first","location":"EU"},
-                "status": {"state":"DONE"},
-                "statistics": {"query": {"statementType": "SELECT"}}
-            }),
-        ),
+        ok(json!({
+            "jobReference": {"projectId":"project","jobId":"job_first","location":"EU"},
+            "status": {"state":"DONE"},
+            "statistics": {"query": {"statementType": "SELECT"}}
+        })),
     ]);
     let (runtime, client) = client(&endpoint);
     let completed = complete(
@@ -67,18 +61,15 @@ fn a_replayed_jobs_query_reads_the_job_its_first_attempt_created() {
 
 #[test]
 fn jobs_query_jobless_result_keeps_initial_page_and_wire_invariants() {
-    let (endpoint, captured) = capture_requests(vec![(
-        200,
-        json!({
-            "jobComplete": true,
-            "queryId": "query-1",
-            "schema": {"fields":[{"name":"value","type":"INTEGER"}]},
-            "rows": [{"f":[{"v":"7"}]}],
-            "totalRows": "1",
-            "statementType": "SELECT",
-            "sessionInfo": {"sessionId":"session-1"}
-        }),
-    )]);
+    let (endpoint, captured) = capture_requests(vec![ok(json!({
+        "jobComplete": true,
+        "queryId": "query-1",
+        "schema": {"fields":[{"name":"value","type":"INTEGER"}]},
+        "rows": [{"f":[{"v":"7"}]}],
+        "totalRows": "1",
+        "statementType": "SELECT",
+        "sessionInfo": {"sessionId":"session-1"}
+    }))]);
     let (runtime, client) = client(&endpoint);
     let completed = complete(
         &runtime,
@@ -113,17 +104,14 @@ fn jobs_query_jobless_result_keeps_initial_page_and_wire_invariants() {
 
 #[test]
 fn jobs_query_metadata_only_requests_no_rows_and_drops_an_unexpected_page() {
-    let (endpoint, captured) = capture_requests(vec![(
-        200,
-        json!({
-            "jobComplete": true,
-            "jobReference": {"projectId":"project","jobId":"query-1","location":"EU"},
-            "schema": {"fields":[{"name":"value","type":"INTEGER"}]},
-            "rows": [{"f":[{"v":"7"}]}],
-            "pageToken": "must-not-be-fetched",
-            "statementType": "SELECT"
-        }),
-    )]);
+    let (endpoint, captured) = capture_requests(vec![ok(json!({
+        "jobComplete": true,
+        "jobReference": {"projectId":"project","jobId":"query-1","location":"EU"},
+        "schema": {"fields":[{"name":"value","type":"INTEGER"}]},
+        "rows": [{"f":[{"v":"7"}]}],
+        "pageToken": "must-not-be-fetched",
+        "statementType": "SELECT"
+    }))]);
     let (runtime, client) = client_with_one_result_worker(&endpoint);
     let permit = runtime
         .result_conversion_permits()
@@ -165,8 +153,7 @@ fn jobs_query_metadata_only_requests_no_rows_and_drops_an_unexpected_page() {
 #[test]
 fn required_job_creation_rejects_responses_without_a_job_reference() {
     for complete_response in [false, true] {
-        let (endpoint, captured) = capture_requests(vec![(
-            200,
+        let (endpoint, captured) = capture_requests(vec![ok(
             json!({"jobComplete": complete_response, "queryId": "jobless-query"}),
         )]);
         let (runtime, client) = client(&endpoint);
@@ -174,8 +161,11 @@ fn required_job_creation_rejects_responses_without_a_job_reference() {
         plan.job_creation = QueryJobCreation::Required;
         let failure = complete(&runtime, client, plan, QueryResultMode::Rows, "test").unwrap_err();
 
-        assert_eq!(failure.status, Status::InvalidData);
-        assert_message(&failure, &["returned without a job reference"]);
+        assert_failure(
+            &failure,
+            Status::InvalidData,
+            &["returned without a job reference"],
+        );
         let captured = captured.join().unwrap();
         assert_eq!(captured.len(), 1);
         assert_eq!(captured[0].body["jobCreationMode"], "JOB_CREATION_REQUIRED");
@@ -185,8 +175,7 @@ fn required_job_creation_rejects_responses_without_a_job_reference() {
 
 #[test]
 fn optional_job_creation_rejects_an_incomplete_response_without_a_job_reference() {
-    let (endpoint, captured) = capture_requests(vec![(
-        200,
+    let (endpoint, captured) = capture_requests(vec![ok(
         json!({"jobComplete": false, "queryId": "jobless-query"}),
     )]);
     let (runtime, client) = client(&endpoint);
@@ -199,22 +188,22 @@ fn optional_job_creation_rejects_an_incomplete_response_without_a_job_reference(
     )
     .unwrap_err();
 
-    assert_eq!(failure.status, Status::InvalidData);
-    assert_message(&failure, &["incomplete", "no job reference to poll"]);
+    assert_failure(
+        &failure,
+        Status::InvalidData,
+        &["incomplete", "no job reference to poll"],
+    );
     assert_eq!(captured.join().unwrap().len(), 1);
 }
 
 #[test]
 fn dry_insert_without_location_is_synchronous_and_does_not_invent_a_job() {
-    let (endpoint, captured) = capture_requests(vec![(
-        200,
-        json!({
-            "configuration":{"dryRun":true},
-            "jobReference":{"projectId":"project","location":"US"},
-            "statistics":{"query":{"schema":{"fields":[]},"undeclaredQueryParameters":[]}},
-            "status":{"state":"DONE"}
-        }),
-    )]);
+    let (endpoint, captured) = capture_requests(vec![ok(json!({
+        "configuration":{"dryRun":true},
+        "jobReference":{"projectId":"project","location":"US"},
+        "statistics":{"query":{"schema":{"fields":[]},"undeclaredQueryParameters":[]}},
+        "status":{"state":"DONE"}
+    }))]);
     let (runtime, client) = client(&endpoint);
     let completed = complete(
         &runtime,
@@ -262,23 +251,17 @@ fn non_dry_insert_without_location_polls_where_bigquery_ran_the_job() {
     let job_id = plan.job_id().unwrap().to_owned();
     let located = json!({"projectId":"project","jobId":job_id,"location":"asia-northeast1"});
     let (endpoint, captured) = capture_requests(vec![
-        (
-            200,
-            json!({
-                "jobReference":located,
-                "status":{"state":"RUNNING"},
-                "statistics":{"query":{"statementType":"SELECT"}}
-            }),
-        ),
-        (
-            200,
-            json!({
-                "jobComplete":true,
-                "jobReference":located,
-                "schema":{"fields":[{"name":"value","type":"INTEGER"}]},
-                "rows":[{"f":[{"v":"7"}]}]
-            }),
-        ),
+        ok(json!({
+            "jobReference":located,
+            "status":{"state":"RUNNING"},
+            "statistics":{"query":{"statementType":"SELECT"}}
+        })),
+        ok(json!({
+            "jobComplete":true,
+            "jobReference":located,
+            "schema":{"fields":[{"name":"value","type":"INTEGER"}]},
+            "rows":[{"f":[{"v":"7"}]}]
+        })),
     ]);
     let (runtime, client) = client(&endpoint);
     let completed = complete(&runtime, client, plan, QueryResultMode::Rows, "test").unwrap();
@@ -336,13 +319,11 @@ fn a_lost_destination_insert_without_location_is_found_in_the_destination_datase
     let mut responses = vec![(503, error_body("backendError", "try later")); attempts];
     // Each of the three reconciliation attempts without a location finds nothing.
     responses.extend(vec![(404, error_body("notFound", "Not found: Job")); 3]);
-    responses.push((200, json!({"location":"asia-northeast1"})));
-    responses.push((
-        200,
+    responses.push(ok(json!({"location":"asia-northeast1"})));
+    responses.push(ok(
         json!({"jobReference":located,"status":{"state":"DONE"}}),
     ));
-    responses.push((
-        200,
+    responses.push(ok(
         json!({"jobComplete":true,"jobReference":located,"schema":{"fields":[]}}),
     ));
     let (endpoint, captured) = capture_requests(responses);
@@ -389,24 +370,18 @@ fn non_dry_insert_requires_and_uses_the_exact_caller_job_id() {
     });
     let job_id = plan.job_id().unwrap().to_owned();
     let (endpoint, captured) = capture_requests(vec![
-        (
-            200,
-            json!({
-                "jobReference":{"projectId":"project","jobId":job_id,"location":"EU"},
-                "statistics":{"query":{"statementType":"SELECT","totalBytesBilled":"9"}},
-                "status":{"state":"DONE"}
-            }),
-        ),
-        (
-            200,
-            json!({
-                "jobComplete":true,
-                "jobReference":{"projectId":"project","jobId":plan.job_id().unwrap(),"location":"EU"},
-                "schema":{"fields":[{"name":"value","type":"INTEGER"}]},
-                "rows":[{"f":[{"v":"7"}]}],
-                "pageToken":"next-page"
-            }),
-        ),
+        ok(json!({
+            "jobReference":{"projectId":"project","jobId":job_id,"location":"EU"},
+            "statistics":{"query":{"statementType":"SELECT","totalBytesBilled":"9"}},
+            "status":{"state":"DONE"}
+        })),
+        ok(json!({
+            "jobComplete":true,
+            "jobReference":{"projectId":"project","jobId":plan.job_id().unwrap(),"location":"EU"},
+            "schema":{"fields":[{"name":"value","type":"INTEGER"}]},
+            "rows":[{"f":[{"v":"7"}]}],
+            "pageToken":"next-page"
+        })),
     ]);
     let (runtime, client) = client(&endpoint);
     let completed = complete(&runtime, client, plan, QueryResultMode::Rows, "test").unwrap();
@@ -453,24 +428,18 @@ fn destination_insert_requests_no_rows_and_drops_an_unexpected_page() {
     });
     let job_id = plan.job_id().unwrap().to_owned();
     let (endpoint, captured) = capture_requests(vec![
-        (
-            200,
-            json!({
-                "jobReference":{"projectId":"project","jobId":job_id,"location":"EU"},
-                "statistics":{"query":{"statementType":"SELECT"}},
-                "status":{"state":"DONE"}
-            }),
-        ),
-        (
-            200,
-            json!({
-                "jobComplete":true,
-                "jobReference":{"projectId":"project","jobId":plan.job_id().unwrap(),"location":"EU"},
-                "schema":{"fields":[{"name":"value","type":"INTEGER"}]},
-                "rows":[{"f":[{"v":"7"}]}],
-                "pageToken":"must-not-be-fetched"
-            }),
-        ),
+        ok(json!({
+            "jobReference":{"projectId":"project","jobId":job_id,"location":"EU"},
+            "statistics":{"query":{"statementType":"SELECT"}},
+            "status":{"state":"DONE"}
+        })),
+        ok(json!({
+            "jobComplete":true,
+            "jobReference":{"projectId":"project","jobId":plan.job_id().unwrap(),"location":"EU"},
+            "schema":{"fields":[{"name":"value","type":"INTEGER"}]},
+            "rows":[{"f":[{"v":"7"}]}],
+            "pageToken":"must-not-be-fetched"
+        })),
     ]);
     let (runtime, client) = client(&endpoint);
     let completed = complete(
@@ -504,27 +473,21 @@ fn running_insert_preserves_the_session_its_result_poll_cannot_return() {
     });
     let job_id = plan.job_id().unwrap().to_owned();
     let (endpoint, captured) = capture_requests(vec![
-        (
-            200,
-            json!({
-                "jobReference":{"projectId":"project","jobId":job_id,"location":"EU"},
-                "statistics":{
-                    "totalBytesProcessed":"1",
-                    "query":{"statementType":"SELECT"},
-                    "sessionInfo":{"sessionId":"created-session"}
-                },
-                "status":{"state":"RUNNING"}
-            }),
-        ),
-        (
-            200,
-            json!({
-                "jobComplete":true,
-                "jobReference":{"projectId":"project","jobId":plan.job_id().unwrap(),"location":"EU"},
-                "schema":{"fields":[]},
-                "totalBytesProcessed":"2"
-            }),
-        ),
+        ok(json!({
+            "jobReference":{"projectId":"project","jobId":job_id,"location":"EU"},
+            "statistics":{
+                "totalBytesProcessed":"1",
+                "query":{"statementType":"SELECT"},
+                "sessionInfo":{"sessionId":"created-session"}
+            },
+            "status":{"state":"RUNNING"}
+        })),
+        ok(json!({
+            "jobComplete":true,
+            "jobReference":{"projectId":"project","jobId":plan.job_id().unwrap(),"location":"EU"},
+            "schema":{"fields":[]},
+            "totalBytesProcessed":"2"
+        })),
     ]);
     let (runtime, client) = client(&endpoint);
     let completed = complete(&runtime, client, plan, QueryResultMode::Rows, "test").unwrap();
@@ -543,8 +506,7 @@ fn running_insert_preserves_the_session_its_result_poll_cannot_return() {
 
 #[test]
 fn dry_insert_requires_a_done_status() {
-    let (endpoint, captured) = capture_requests(vec![(
-        200,
+    let (endpoint, captured) = capture_requests(vec![ok(
         json!({"configuration":{"dryRun":true},"status":{"state":"RUNNING"}}),
     )]);
     let (runtime, client) = client(&endpoint);

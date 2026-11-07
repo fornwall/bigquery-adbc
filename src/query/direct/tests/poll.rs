@@ -5,24 +5,18 @@ use super::*;
 #[test]
 fn incomplete_warning_polls_same_default_location_job() {
     let (endpoint, captured) = capture_requests(vec![
-        (
-            200,
-            json!({
-                "jobComplete": false,
-                "jobReference": {"projectId":"project","jobId":"job-1"},
-                "statementType": "SELECT",
-                "errors": [{"reason":"backendError","message":"warning"}]
-            }),
-        ),
-        (
-            200,
-            json!({
-                "jobComplete": true,
-                "jobReference": {"projectId":"project","jobId":"job-1"},
-                "schema": {"fields":[]},
-                "rows": []
-            }),
-        ),
+        ok(json!({
+            "jobComplete": false,
+            "jobReference": {"projectId":"project","jobId":"job-1"},
+            "statementType": "SELECT",
+            "errors": [{"reason":"backendError","message":"warning"}]
+        })),
+        ok(json!({
+            "jobComplete": true,
+            "jobReference": {"projectId":"project","jobId":"job-1"},
+            "schema": {"fields":[]},
+            "rows": []
+        })),
     ]);
     let (runtime, client) = client(&endpoint);
     let completed = complete(
@@ -64,23 +58,17 @@ fn a_row_too_large_for_any_response_leaves_the_rows_to_storage_read() {
                 "message": "Already Exists: Job project:EU.job_large"}]}}),
         ),
         too_large(),
-        (
-            200,
-            json!({
-                "jobComplete": true,
-                "jobReference": {"projectId":"project","jobId":"job_large","location":"EU"},
-                "schema": {"fields":[{"name":"big","type":"STRING"}]},
-                "totalRows": "2"
-            }),
-        ),
-        (
-            200,
-            json!({
-                "jobReference": {"projectId":"project","jobId":"job_large","location":"EU"},
-                "status": {"state":"DONE"},
-                "statistics": {"query": {"statementType": "SELECT"}}
-            }),
-        ),
+        ok(json!({
+            "jobComplete": true,
+            "jobReference": {"projectId":"project","jobId":"job_large","location":"EU"},
+            "schema": {"fields":[{"name":"big","type":"STRING"}]},
+            "totalRows": "2"
+        })),
+        ok(json!({
+            "jobReference": {"projectId":"project","jobId":"job_large","location":"EU"},
+            "status": {"state":"DONE"},
+            "statistics": {"query": {"statementType": "SELECT"}}
+        })),
     ]);
     let (runtime, client) = client(&endpoint);
     let completed = complete(
@@ -124,15 +112,12 @@ fn instant_incomplete_answers_are_paced_rather_than_spun_on() {
         (200, incomplete.clone()),
         (200, incomplete.clone()),
         (200, incomplete),
-        (
-            200,
-            json!({
-                "jobComplete": true,
-                "jobReference": {"projectId":"project","jobId":"job-1","location":"EU"},
-                "schema": {"fields":[]},
-                "rows": []
-            }),
-        ),
+        ok(json!({
+            "jobComplete": true,
+            "jobReference": {"projectId":"project","jobId":"job-1","location":"EU"},
+            "schema": {"fields":[]},
+            "rows": []
+        })),
     ]);
     let (runtime, client) = client(&endpoint);
     let started = std::time::Instant::now();
@@ -158,22 +143,16 @@ fn instant_incomplete_answers_are_paced_rather_than_spun_on() {
 #[test]
 fn completed_warning_is_verified_as_success_without_reissue() {
     let (endpoint, captured) = capture_requests(vec![
-        (
-            200,
-            json!({
-                "jobComplete": true,
-                "jobReference": {"projectId":"project","jobId":"job-1","location":"EU"},
-                "schema": {"fields":[]},
-                "errors": [{"reason":"backendError","message":"warning"}]
-            }),
-        ),
-        (
-            200,
-            json!({
-                "jobReference": {"projectId":"project","jobId":"job-1","location":"EU"},
-                "status": {"state":"DONE","errors":[{"reason":"backendError","message":"warning"}]}
-            }),
-        ),
+        ok(json!({
+            "jobComplete": true,
+            "jobReference": {"projectId":"project","jobId":"job-1","location":"EU"},
+            "schema": {"fields":[]},
+            "errors": [{"reason":"backendError","message":"warning"}]
+        })),
+        ok(json!({
+            "jobReference": {"projectId":"project","jobId":"job-1","location":"EU"},
+            "status": {"state":"DONE","errors":[{"reason":"backendError","message":"warning"}]}
+        })),
     ]);
     let (runtime, client) = client(&endpoint);
     complete(
@@ -194,18 +173,12 @@ fn completed_warning_is_verified_as_success_without_reissue() {
 fn completed_no_schema_response_verifies_errors_as_warnings() {
     let reference = json!({"projectId":"project","jobId":"job-1","location":"EU"});
     let (endpoint, captured) = capture_requests(vec![
-        (
-            200,
-            json!({
-                "jobComplete": true,
-                "jobReference": reference,
-                "errors": [{"reason":"backendError","message":"warning"}]
-            }),
-        ),
-        (
-            200,
-            json!({"jobReference":reference,"status":{"state":"DONE"}}),
-        ),
+        ok(json!({
+            "jobComplete": true,
+            "jobReference": reference,
+            "errors": [{"reason":"backendError","message":"warning"}]
+        })),
+        ok(json!({"jobReference":reference,"status":{"state":"DONE"}})),
     ]);
     let (runtime, client) = client(&endpoint);
     let completed = complete(

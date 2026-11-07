@@ -3,7 +3,7 @@ use serde_json::json;
 use super::*;
 use crate::rows::RestValue;
 use crate::runtime::{SharedRuntime, new_runtime};
-use crate::test_support::http::capture_requests;
+use crate::test_support::http::{capture_requests, ok};
 
 fn client(endpoint: &str) -> (SharedRuntime, JobClient) {
     let runtime = new_runtime().unwrap();
@@ -90,32 +90,23 @@ fn splits_resident_pages_without_skipping_or_repeating_rows() {
 #[test]
 fn consumes_initial_rows_and_opaque_pages_once_in_order() {
     let (endpoint, captured) = capture_requests(vec![
-        (
-            200,
-            json!({
-                "jobComplete":true,
-                "jobReference":{"projectId":"project","jobId":"job","location":"EU"},
-                "rows":[{"f":[{"v":"second"}]}],
-                "pageToken":"next +/token"
-            }),
-        ),
-        (
-            200,
-            json!({
-                "jobComplete":true,
-                "jobReference":{"projectId":"project","jobId":"job"},
-                "rows":[],
-                "pageToken":"last/token"
-            }),
-        ),
-        (
-            200,
-            json!({
-                "jobComplete":true,
-                "rows":[{"f":[{"v":"third"}]}],
-                "errors":[{"reason":"warning","message":"successful page warning"}]
-            }),
-        ),
+        ok(json!({
+            "jobComplete":true,
+            "jobReference":{"projectId":"project","jobId":"job","location":"EU"},
+            "rows":[{"f":[{"v":"second"}]}],
+            "pageToken":"next +/token"
+        })),
+        ok(json!({
+            "jobComplete":true,
+            "jobReference":{"projectId":"project","jobId":"job"},
+            "rows":[],
+            "pageToken":"last/token"
+        })),
+        ok(json!({
+            "jobComplete":true,
+            "rows":[{"f":[{"v":"third"}]}],
+            "errors":[{"reason":"warning","message":"successful page warning"}]
+        })),
     ]);
     let (runtime, client) = client(&endpoint);
     let reference = JobReference::new("project", Some("EU"), "job".to_owned());
@@ -153,14 +144,11 @@ fn consumes_initial_rows_and_opaque_pages_once_in_order() {
 
 #[test]
 fn repeated_token_is_rejected_even_when_the_page_has_rows() {
-    let (endpoint, captured) = capture_requests(vec![(
-        200,
-        json!({
-            "jobComplete":true,
-            "rows":[{"f":[{"v":"duplicate"}]}],
-            "pageToken":"same"
-        }),
-    )]);
+    let (endpoint, captured) = capture_requests(vec![ok(json!({
+        "jobComplete":true,
+        "rows":[{"f":[{"v":"duplicate"}]}],
+        "pageToken":"same"
+    }))]);
     let (runtime, client) = client(&endpoint);
     let mut pager = QueryPager::new(
         client,
@@ -192,14 +180,11 @@ fn repeated_token_is_rejected_even_when_the_page_has_rows() {
 
 #[test]
 fn page_identity_mismatch_is_rejected_before_rows_are_delivered() {
-    let (endpoint, captured) = capture_requests(vec![(
-        200,
-        json!({
-            "jobComplete":true,
-            "jobReference":{"projectId":"project","jobId":"other","location":"EU"},
-            "rows":[{"f":[{"v":"poisoned"}]}]
-        }),
-    )]);
+    let (endpoint, captured) = capture_requests(vec![ok(json!({
+        "jobComplete":true,
+        "jobReference":{"projectId":"project","jobId":"other","location":"EU"},
+        "rows":[{"f":[{"v":"poisoned"}]}]
+    }))]);
     let (runtime, client) = client(&endpoint);
     let mut pager = QueryPager::new(
         client,

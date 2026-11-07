@@ -52,25 +52,19 @@ fn failed_attempt(
     statement_type: &str,
 ) -> Vec<(u16, serde_json::Value)> {
     vec![
-        (
-            200,
-            json!({
-                "jobComplete": true,
-                "jobReference": {"projectId":"project","jobId":job_id,"location":"EU"},
-                "statementType": statement_type,
-                "errors": [{"reason":reason,"message":"temporary"}]
-            }),
-        ),
-        (
-            200,
-            json!({
-                "jobReference": {"projectId":"project","jobId":job_id,"location":"EU"},
-                "status": {
-                    "state":"DONE",
-                    "errorResult":{"reason":reason,"message":"temporary"}
-                }
-            }),
-        ),
+        ok(json!({
+            "jobComplete": true,
+            "jobReference": {"projectId":"project","jobId":job_id,"location":"EU"},
+            "statementType": statement_type,
+            "errors": [{"reason":reason,"message":"temporary"}]
+        })),
+        ok(json!({
+            "jobReference": {"projectId":"project","jobId":job_id,"location":"EU"},
+            "status": {
+                "state":"DONE",
+                "errorResult":{"reason":reason,"message":"temporary"}
+            }
+        })),
     ]
 }
 

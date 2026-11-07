@@ -29,8 +29,8 @@ use crate::query::response::QueryResponse;
 use crate::query::{QueryDefaults, StatementQueryOptions};
 use crate::rest::client::rest_client;
 use crate::runtime::{SharedRuntime, new_runtime, new_runtime_with_result_conversion_concurrency};
-use crate::test_support::errors::assert_message;
-use crate::test_support::http::{capture_requests, capture_requests_gated, error_body};
+use crate::test_support::errors::assert_failure;
+use crate::test_support::http::{capture_requests, capture_requests_gated, error_body, ok};
 
 mod attempt;
 mod cancellation;

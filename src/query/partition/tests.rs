@@ -4,7 +4,7 @@ use crate::pipeline::QueryResultOptions;
 use crate::rest::jobs::JobReference;
 
 use super::{decode_partition, encode_partition};
-use crate::test_support::errors::assert_message;
+use crate::test_support::errors::assert_failure;
 
 fn options(use_storage_read: bool, unordered_read: bool, prefetch: i64) -> QueryResultOptions {
     let mut options = QueryResultOptions::default();
@@ -115,7 +115,6 @@ fn partition_descriptors_reject_invalid_data() {
         ),
     ] {
         let failure = decode_partition(&invalid).unwrap_err();
-        assert_eq!(failure.status, Status::InvalidArguments, "{expected}");
-        assert_message(&failure, &[expected]);
+        assert_failure(&failure, Status::InvalidArguments, &[expected]);
     }
 }

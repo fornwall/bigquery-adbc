@@ -14,11 +14,11 @@ use crate::rest::jobs::JobReference;
 use crate::runtime::new_runtime;
 use crate::test_support::http::{
     CapturedServer, capture_requests, capture_requests_gated, capture_requests_until_stopped,
-    error_body, mock_listener, retire,
+    error_body, mock_listener, ok, retire,
 };
 
 use super::{Cancellation, OperationCancelHandle, buffered_operation_reader, operation_reader};
-use crate::test_support::errors::assert_message;
+use crate::test_support::errors::assert_failure;
 
 /// How long a test waits for an event that must happen: a deadlock guard, not a timing assertion,
 /// so it is far longer than any delay a loaded parallel `cargo test` adds.
@@ -46,7 +46,7 @@ fn invisible_then_cancelled() -> Vec<(u16, serde_json::Value)> {
         (404, error_body("notFound", "not visible"));
         crate::rest::retry::MAX_ATTEMPTS as usize
     ];
-    responses.push((200, json!({})));
+    responses.push(ok(json!({})));
     responses
 }
 
@@ -96,7 +96,7 @@ fn cancellation_tracks_active_operation_lifecycle() {
 #[test]
 fn synchronous_work_finishes_retained_operations_and_cancels_unfinished_jobs() {
     for succeeds in [true, false] {
-        let (endpoint, requests) = capture_requests(vec![(200, json!({}))]);
+        let (endpoint, requests) = capture_requests(vec![ok(json!({}))]);
         let cancellation = cancellation_at(&endpoint);
         let previous = cancellation.begin();
         let mut retained = None;
@@ -134,7 +134,7 @@ fn synchronous_work_finishes_retained_operations_and_cancels_unfinished_jobs() {
 /// retains enough state to cancel a job whose reference only arrives after that release.
 #[test]
 fn a_late_job_reference_retains_its_released_cancellation_owner() {
-    let (endpoint, requests) = capture_requests(vec![(200, json!({}))]);
+    let (endpoint, requests) = capture_requests(vec![ok(json!({}))]);
     let cancellation = cancellation_at(&endpoint);
     let operation = cancellation.begin();
     OperationCancelHandle(cancellation.clone())
@@ -286,7 +286,7 @@ fn cancelled_operation_readers_release_retained_buffers() {
 /// the service, delivered through the driver's runtime instead.
 #[test]
 fn cancellation_from_a_runtime_thread_still_delivers_the_remote_cancel() {
-    let (endpoint, requests) = capture_requests(vec![(200, json!({}))]);
+    let (endpoint, requests) = capture_requests(vec![ok(json!({}))]);
     let cancellation = cancellation_at(&endpoint);
     let operation = cancellation.begin();
     let reference = job("query-job");
@@ -311,7 +311,7 @@ fn failed_runtime_thread_cancel_rearms_the_same_confirmed_reference() {
     let (endpoint, requests) = capture_requests_gated(
         vec![
             (400, json!({"error":{"message":"not cancellable yet"}})),
-            (200, json!({})),
+            ok(json!({})),
         ],
         move || {
             first_seen.send(()).unwrap();
@@ -353,7 +353,7 @@ fn failed_runtime_thread_cancel_rearms_the_same_confirmed_reference() {
 
 #[test]
 fn cancellation_sends_one_location_aware_job_request() {
-    let (endpoint, requests) = capture_requests(vec![(200, json!({}))]);
+    let (endpoint, requests) = capture_requests(vec![ok(json!({}))]);
     let cancellation = cancellation_at(&endpoint);
     let operation = cancellation.begin();
     let reference = JobReference::new(
@@ -378,7 +378,7 @@ fn cancellation_sends_one_location_aware_job_request() {
 
 #[test]
 fn cancellation_before_job_registration_cancels_job_when_known() {
-    let (endpoint, requests) = capture_requests(vec![(200, json!({}))]);
+    let (endpoint, requests) = capture_requests(vec![ok(json!({}))]);
     let cancellation = cancellation_at(&endpoint);
     let operation = cancellation.begin();
     OperationCancelHandle(cancellation).try_cancel().unwrap();
@@ -394,7 +394,7 @@ fn cancellation_before_job_registration_cancels_job_when_known() {
 #[test]
 fn late_registration_returns_cancelled_before_remote_cancellation_answers() {
     let (release, released) = mpsc::channel();
-    let (endpoint, requests) = capture_requests_gated(vec![(200, json!({}))], move || {
+    let (endpoint, requests) = capture_requests_gated(vec![ok(json!({}))], move || {
         released.recv().unwrap();
         true
     });
@@ -445,7 +445,7 @@ fn a_cancelled_operation_refuses_a_provisional_job_and_cancels_nothing() {
 
 #[test]
 fn a_more_specific_reference_rearms_an_already_cancelled_job() {
-    let (endpoint, requests) = capture_requests(vec![(200, json!({})), (200, json!({}))]);
+    let (endpoint, requests) = capture_requests(vec![ok(json!({})), ok(json!({}))]);
     let cancellation = cancellation_at(&endpoint);
     let operation = cancellation.begin();
     let provisional = job("query-job");
@@ -574,7 +574,7 @@ fn every_concurrent_operation_is_locally_cancelled_before_the_first_remote_answe
     let (first_seen, seen) = mpsc::channel();
     let (release, released) = mpsc::channel();
     let (endpoint, requests) =
-        capture_requests_gated(vec![(200, json!({})), (200, json!({}))], move || {
+        capture_requests_gated(vec![ok(json!({})), ok(json!({}))], move || {
             first_seen.send(()).unwrap();
             released.recv().unwrap();
             true
@@ -599,7 +599,7 @@ fn every_concurrent_operation_is_locally_cancelled_before_the_first_remote_answe
 
 #[test]
 fn superseding_an_operation_cancels_its_registered_job() {
-    let (endpoint, requests) = capture_requests(vec![(200, json!({}))]);
+    let (endpoint, requests) = capture_requests(vec![ok(json!({}))]);
     let cancellation = cancellation_at(&endpoint);
     let first = cancellation.begin();
     let reference = job("superseded-job");
@@ -614,7 +614,7 @@ fn superseding_an_operation_cancels_its_registered_job() {
 
 #[test]
 fn abandoning_an_operation_cancels_its_registered_job() {
-    let (endpoint, requests) = capture_requests(vec![(200, json!({}))]);
+    let (endpoint, requests) = capture_requests(vec![ok(json!({}))]);
     let cancellation = cancellation_at(&endpoint);
     let operation = cancellation.begin();
     let reference = job("abandoned-job");
@@ -696,8 +696,7 @@ fn cancel_failure_reports_unknown_after_stopping_local_work() {
     let failure = OperationCancelHandle(cancellation)
         .try_cancel()
         .unwrap_err();
-    assert_eq!(failure.status, Status::Unknown);
-    assert_message(&failure, &["cancel denied"]);
+    assert_failure(&failure, Status::Unknown, &["cancel denied"]);
     assert_eq!(operation.check().unwrap_err().status, Status::Cancelled);
     assert_eq!(requests.join().unwrap().len(), 1);
 }
@@ -727,8 +726,11 @@ fn cancellation_deadline_bounds_a_stalled_remote_request() {
     let failure = result
         .expect("Cancel did not respect its deadline")
         .unwrap_err();
-    assert_eq!(failure.status, Status::Unknown);
-    assert_message(&failure, &["cancellation deadline exceeded"]);
+    assert_failure(
+        &failure,
+        Status::Unknown,
+        &["cancellation deadline exceeded"],
+    );
     assert!(operation.is_cancelled());
     cancel.join().unwrap();
 }

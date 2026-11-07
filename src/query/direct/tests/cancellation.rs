@@ -2,7 +2,7 @@
 //! cancellation after the POST still has to clean up.
 
 use super::*;
-use crate::test_support::http::{job_reference, mock_listener, retire};
+use crate::test_support::http::{job_reference, mock_listener, ok, retire};
 use crate::test_support::identifiers::project;
 
 fn cancellation_at(runtime: &SharedRuntime, endpoint: &str) -> Arc<Cancellation> {
@@ -110,14 +110,11 @@ fn cancellation_after_the_post_keeps_the_late_response_and_cancels_its_job() {
     let (release_response, response_released) = mpsc::sync_channel(0);
     let (endpoint, captured) = capture_requests_gated(
         vec![
-            (
-                200,
-                json!({
-                    "jobComplete":false,
-                    "jobReference": job_reference("project", "late-job")
-                }),
-            ),
-            (200, json!({})),
+            ok(json!({
+                "jobComplete":false,
+                "jobReference": job_reference("project", "late-job")
+            })),
+            ok(json!({})),
         ],
         move || {
             request_seen.send(()).unwrap();

@@ -2,7 +2,7 @@
 //! an extra request on it.
 
 use super::*;
-use crate::test_support::http::{capture_requests_responding, job_reference};
+use crate::test_support::http::{capture_requests_responding, job_reference, ok};
 
 #[test]
 fn row_returning_jobs_query_decode_waits_for_the_driver_wide_permit() {
@@ -13,15 +13,12 @@ fn row_returning_jobs_query_decode_waits_for_the_driver_wide_permit() {
         let (request_seen, wait_for_request) = mpsc::sync_channel(0);
         let (release_response, response_released) = mpsc::sync_channel(0);
         let (endpoint, captured) = capture_requests_gated(
-            vec![(
-                200,
-                json!({
-                    "jobComplete":true,
-                    "jobReference": job_reference("project", "decode-job"),
-                    "schema":{"fields":[{"name":"value","type":"INTEGER"}]},
-                    "rows":rows
-                }),
-            )],
+            vec![ok(json!({
+                "jobComplete":true,
+                "jobReference": job_reference("project", "decode-job"),
+                "schema":{"fields":[{"name":"value","type":"INTEGER"}]},
+                "rows":rows
+            }))],
             move || {
                 request_seen.send(()).unwrap();
                 response_released.recv().unwrap();
@@ -70,29 +67,23 @@ fn row_returning_completion_poll_decode_waits_for_the_driver_wide_permit() {
     let (endpoint, server) = capture_requests_responding(2, move |_| {
         answered += 1;
         if answered == 1 {
-            return Some((
-                200,
-                json!({
-                    "jobComplete":false,
-                    "jobReference": job_reference("project", "job-1"),
-                    "statementType":"SELECT"
-                }),
-            ));
+            return Some(ok(json!({
+                "jobComplete":false,
+                "jobReference": job_reference("project", "job-1"),
+                "statementType":"SELECT"
+            })));
         }
         poll_seen.send(()).unwrap();
         poll_released.recv().unwrap();
         let rows = (0..1_024)
             .map(|value| json!({"f":[{"v":value.to_string()}]}))
             .collect::<Vec<_>>();
-        Some((
-            200,
-            json!({
-                "jobComplete":true,
-                "jobReference": job_reference("project", "job-1"),
-                "schema":{"fields":[{"name":"value","type":"INTEGER"}]},
-                "rows":rows
-            }),
-        ))
+        Some(ok(json!({
+            "jobComplete":true,
+            "jobReference": job_reference("project", "job-1"),
+            "schema":{"fields":[{"name":"value","type":"INTEGER"}]},
+            "rows":rows
+        })))
     });
     let (runtime, client) = client_with_one_result_worker(&endpoint);
     let execute_runtime = runtime.clone();

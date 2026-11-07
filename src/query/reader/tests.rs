@@ -10,7 +10,7 @@ use crate::clients::ClientState;
 use crate::config::ServiceEndpointKind;
 use crate::pipeline::QueryResultOptions;
 use crate::runtime::SharedRuntime;
-use crate::test_support::http::capture_requests_until_stopped;
+use crate::test_support::http::{capture_requests_until_stopped, ok};
 
 use super::*;
 
@@ -253,14 +253,11 @@ fn a_transient_failure_describing_the_job_is_retried() {
             503,
             json!({"error":{"code":503,"message":"unavailable","errors":[{"reason":"backendError","message":"unavailable"}]}}),
         ),
-        (
-            200,
-            json!({
-                "jobReference":{"projectId":"project","jobId":"job","location":"US"},
-                "status":{"state":"DONE"},
-                "statistics":{"query":{"statementType":"SELECT"}}
-            }),
-        ),
+        ok(json!({
+            "jobReference":{"projectId":"project","jobId":"job","location":"US"},
+            "status":{"state":"DONE"},
+            "statistics":{"query":{"statementType":"SELECT"}}
+        })),
     ]);
     let execution = execution_at(&runtime, &endpoint);
     // A completed, job-backed result that never named its statement type.
@@ -306,8 +303,7 @@ fn an_explicit_destination_keeps_schema_metadata_but_discards_result_pages() {
 fn empty_results_keep_metadata_and_empty_pages_follow_their_token() {
     let runtime = crate::runtime::new_runtime().unwrap();
     for paginated in [false, true] {
-        let (endpoint, server) = capture_requests_until_stopped(vec![(
-            200,
+        let (endpoint, server) = capture_requests_until_stopped(vec![ok(
             json!({"jobComplete":true,"rows":[{"f":[{"v":"7"}]}]}),
         )]);
         let mut execution = execution_at(&runtime, &endpoint);
@@ -439,13 +435,10 @@ fn only_rows_still_to_page_through_justify_a_storage_read() {
     const ROWS: usize = 120_000;
     let runtime = crate::runtime::new_runtime().unwrap();
     for (page_token, expected_requests) in [(None, 0), (Some("next"), 1)] {
-        let (endpoint, server) = capture_requests_until_stopped(vec![(
-            200,
-            json!({
-                "jobReference":{"projectId":"project","jobId":"job","location":"US"},
-                "status":{"state":"DONE"}
-            }),
-        )]);
+        let (endpoint, server) = capture_requests_until_stopped(vec![ok(json!({
+            "jobReference":{"projectId":"project","jobId":"job","location":"US"},
+            "status":{"state":"DONE"}
+        }))]);
         let execution = execution_at(&runtime, &endpoint);
         let mut body = json!({
             "jobComplete":true,
@@ -484,16 +477,13 @@ fn only_rows_still_to_page_through_justify_a_storage_read() {
 #[test]
 fn a_result_completed_by_a_poll_reports_the_costs_the_poll_omits() {
     let runtime = crate::runtime::new_runtime().unwrap();
-    let (endpoint, server) = capture_requests_until_stopped(vec![(
-        200,
-        json!({
-            "jobReference":{"projectId":"project","jobId":"job","location":"US"},
-            "status":{"state":"DONE"},
-            "statistics":{"query":{
-                "statementType":"SELECT", "totalBytesBilled":"5", "totalSlotMs":"6"
-            }}
-        }),
-    )]);
+    let (endpoint, server) = capture_requests_until_stopped(vec![ok(json!({
+        "jobReference":{"projectId":"project","jobId":"job","location":"US"},
+        "status":{"state":"DONE"},
+        "statistics":{"query":{
+            "statementType":"SELECT", "totalBytesBilled":"5", "totalSlotMs":"6"
+        }}
+    }))]);
     let execution = execution_at(&runtime, &endpoint);
     let mut complete = completed(
         br#"{"jobComplete":true,"jobReference":{"projectId":"project","jobId":"job","location":"US"},"statementType":"SELECT","schema":{"fields":[{"name":"value","type":"INTEGER"}]},"rows":[{"f":[{"v":"7"}]}],"totalRows":"1"}"#,
@@ -684,15 +674,12 @@ fn a_paginated_result_uses_storage_read_before_emitting_any_rest_rows() {
                 .path()
                 .starts_with("/bigquery/v2/projects/project/jobs/job?")
             {
-                (
-                    200,
-                    json!({
-                        "jobReference":{"projectId":"project","jobId":"job","location":"US"},
-                        "status":{"state":"DONE"},
-                        "configuration":{"query":{"destinationTable":
-                            {"projectId":"project","datasetId":"_anon","tableId":"results"}}}
-                    }),
-                )
+                ok(json!({
+                    "jobReference":{"projectId":"project","jobId":"job","location":"US"},
+                    "status":{"state":"DONE"},
+                    "configuration":{"query":{"destinationTable":
+                        {"projectId":"project","datasetId":"_anon","tableId":"results"}}}
+                }))
             } else {
                 (
                     403,
@@ -776,15 +763,12 @@ fn a_result_read_through_storage_read_reports_it() {
         },
     );
     // The job lookup names the destination table the read session reads.
-    let (endpoint, server) = capture_requests_until_stopped(vec![(
-        200,
-        json!({
-            "jobReference":{"projectId":"project","jobId":"storage-diag","location":"US"},
-            "status":{"state":"DONE"},
-            "configuration":{"query":{"destinationTable":
-                {"projectId":"project","datasetId":"_anon","tableId":"results"}}}
-        }),
-    )]);
+    let (endpoint, server) = capture_requests_until_stopped(vec![ok(json!({
+        "jobReference":{"projectId":"project","jobId":"storage-diag","location":"US"},
+        "status":{"state":"DONE"},
+        "configuration":{"query":{"destinationTable":
+            {"projectId":"project","datasetId":"_anon","tableId":"results"}}}
+    }))]);
     let mut config = crate::config::DatabaseConfig {
         authentication_type: crate::BigQueryAuthenticationType::Anonymous,
         ..crate::config::DatabaseConfig::default()

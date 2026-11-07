@@ -15,7 +15,7 @@ use crate::query::response::retryable_job_errors;
 use crate::rest::retry::MAX_ATTEMPTS;
 use crate::runtime::{SharedRuntime, new_runtime};
 use crate::test_support::http::{
-    CapturedRequest, capture_requests, capture_requests_until_stopped, error_body,
+    CapturedRequest, capture_requests, capture_requests_until_stopped, error_body, ok,
 };
 
 /// The job every fixture below polls.
@@ -73,16 +73,13 @@ fn after_rejected_reads(job: (u16, serde_json::Value)) -> Vec<(u16, serde_json::
 }
 
 fn failed_job(reason: &str) -> (u16, serde_json::Value) {
-    (
-        200,
-        json!({
-            "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
-            "status": {
-                "state": "DONE",
-                "errorResult": {"reason": reason, "message": "the job failed"}
-            }
-        }),
-    )
+    ok(json!({
+        "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
+        "status": {
+            "state": "DONE",
+            "errorResult": {"reason": reason, "message": "the job failed"}
+        }
+    }))
 }
 
 /// BigQuery reports a terminally failed job as an HTTP rejection of the results read, so the
@@ -116,17 +113,14 @@ fn a_rejected_read_of_a_failed_job_becomes_the_terminal_failure_the_job_reports(
 fn verified_terminal_jobs_are_not_cancelled_again() {
     for (state, failed) in [("DONE", false), ("DONE", true), ("RUNNING", false)] {
         let (endpoint, server) = capture_requests_until_stopped(vec![
-            (
-                200,
-                json!({
-                    "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
-                    "status": {
-                        "state": state,
-                        "errorResult": failed.then(|| json!({"reason": "backendError"}))
-                    }
-                }),
-            ),
-            (200, json!({})),
+            ok(json!({
+                "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
+                "status": {
+                    "state": state,
+                    "errorResult": failed.then(|| json!({"reason": "backendError"}))
+                }
+            })),
+            ok(json!({})),
         ]);
         let (runtime, client) = client(&endpoint);
         let cancellation = Cancellation::new(
@@ -212,7 +206,7 @@ fn a_rejection_whose_job_cannot_be_fetched_reports_the_rejection() {
     )
     .collect::<Vec<_>>();
     // A 200 that is not a job resource establishes nothing, like a failed fetch.
-    let undecodable = vec![(200, json!([]))];
+    let undecodable = vec![ok(json!([]))];
 
     for (what, fetches, requests_expected) in [
         ("a fetch that never answers", unavailable, READS * 2),
@@ -244,13 +238,10 @@ fn a_rejection_whose_job_cannot_be_fetched_reports_the_rejection() {
 
 /// An answer to the job's `jobs.get`, in `state`.
 fn job_in(state: &str) -> (u16, serde_json::Value) {
-    (
-        200,
-        json!({
-            "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
-            "status": {"state": state}
-        }),
-    )
+    ok(json!({
+        "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
+        "status": {"state": state}
+    }))
 }
 
 fn unavailable() -> (u16, serde_json::Value) {
@@ -282,15 +273,12 @@ fn tracked_job(runtime: &SharedRuntime, endpoint: &str) -> (Arc<Cancellation>, O
 /// finishes is read without having been cancelled.
 #[test]
 fn a_wait_outlasts_failed_requests_and_leaves_the_job_alone() {
-    let complete = (
-        200,
-        json!({
-            "jobComplete": true,
-            "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
-            "schema": {"fields": [{"name": "value", "type": "INTEGER"}]},
-            "rows": [{"f": [{"v": "7"}]}]
-        }),
-    );
+    let complete = ok(json!({
+        "jobComplete": true,
+        "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
+        "schema": {"fields": [{"name": "value", "type": "INTEGER"}]},
+        "rows": [{"f": [{"v": "7"}]}]
+    }));
     for (what, mut responses) in [
         (
             "every request failing",
@@ -350,15 +338,12 @@ fn a_wait_outlasts_failed_requests_and_leaves_the_job_alone() {
 fn a_rejected_read_of_an_unfinished_job_keeps_waiting_without_an_outage_budget() {
     for state in ["PENDING", "RUNNING"] {
         let mut responses = after_rejected_reads(job_in(state));
-        responses.push((
-            200,
-            json!({
-                "jobComplete": true,
-                "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
-                "schema": {"fields": []},
-                "rows": []
-            }),
-        ));
+        responses.push(ok(json!({
+            "jobComplete": true,
+            "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
+            "schema": {"fields": []},
+            "rows": []
+        })));
 
         let (outcome, requests, _) = poll(responses);
 
@@ -372,7 +357,7 @@ fn a_rejected_read_of_an_unfinished_job_keeps_waiting_without_an_outage_budget()
 #[test]
 fn a_wait_that_gives_up_says_the_job_may_still_be_running() {
     let mut responses = failed_round();
-    responses.push((200, json!({})));
+    responses.push(ok(json!({})));
     let (endpoint, requests) = capture_requests(responses);
     let (runtime, client) = client(&endpoint);
     let (_cancellation, operation) = tracked_job(&runtime, &endpoint);
@@ -436,28 +421,22 @@ fn a_rejection_no_fresh_job_could_answer_is_reported_without_describing_the_job(
 #[test]
 fn a_transient_failure_of_the_verification_fetch_does_not_fail_a_successful_query() {
     let (outcome, requests, metadata) = poll(vec![
-        (
-            200,
-            json!({
-                "jobComplete": true,
-                "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
-                "schema": {"fields": [{"name": "value", "type": "INTEGER"}]},
-                "rows": [{"f": [{"v": "7"}]}],
-                "totalRows": "1",
-                "errors": [{"reason": "stopped", "message": "a warning, not a failure"}]
-            }),
-        ),
+        ok(json!({
+            "jobComplete": true,
+            "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
+            "schema": {"fields": [{"name": "value", "type": "INTEGER"}]},
+            "rows": [{"f": [{"v": "7"}]}],
+            "totalRows": "1",
+            "errors": [{"reason": "stopped", "message": "a warning, not a failure"}]
+        })),
         (
             503,
             json!({"error": {"code": 503, "message": "unavailable", "status": "UNAVAILABLE"}}),
         ),
-        (
-            200,
-            json!({
-                "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
-                "status": {"state": "DONE"}
-            }),
-        ),
+        ok(json!({
+            "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
+            "status": {"state": "DONE"}
+        })),
     ]);
 
     let page = match outcome {
@@ -483,17 +462,14 @@ fn a_transient_failure_of_the_verification_fetch_does_not_fail_a_successful_quer
 #[test]
 fn an_undecodable_verification_body_reports_the_unverified_errors() {
     let (outcome, requests, _) = poll(vec![
-        (
-            200,
-            json!({
-                "jobComplete": true,
-                "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
-                "schema": {"fields": [{"name": "value", "type": "INTEGER"}]},
-                "rows": [{"f": [{"v": "7"}]}],
-                "errors": [{"reason": "backendError", "message": "unverified"}]
-            }),
-        ),
-        (200, json!([])),
+        ok(json!({
+            "jobComplete": true,
+            "jobReference": {"projectId": "project", "jobId": "polled-job", "location": "EU"},
+            "schema": {"fields": [{"name": "value", "type": "INTEGER"}]},
+            "rows": [{"f": [{"v": "7"}]}],
+            "errors": [{"reason": "backendError", "message": "unverified"}]
+        })),
+        ok(json!([])),
     ]);
 
     let AttemptFailure::Request(failure) = outcome.expect_err("the poll must fail") else {
