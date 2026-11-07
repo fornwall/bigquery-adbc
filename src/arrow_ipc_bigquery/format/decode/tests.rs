@@ -48,18 +48,13 @@ fn oracle_record_batch_metadata_decodes() {
         panic!("expected record-batch message");
     };
     assert_eq!(decoded.length, 2);
+    assert_eq!(decoded.nodes.iter().collect::<Vec<_>>(), [(2, 0)]);
     assert_eq!(
-        (0..decoded.nodes.len())
-            .map(|index| decoded.nodes.get(index).unwrap())
-            .collect::<Vec<_>>(),
-        [(2, 0)]
-    );
-    assert_eq!(
-        (0..decoded.buffers.len())
-            .map(|index| decoded.buffers.get(index).unwrap())
-            .collect::<Vec<_>>(),
+        decoded.buffers.iter().collect::<Vec<_>>(),
         [(0, 1), (64, 16)]
     );
+    // No `compression` table at all means raw buffers.
+    assert!(!decoded.lz4_compressed);
 }
 
 /// LZ4_FRAME is the only codec `create_read_session` requests and the only one decoded, so
@@ -80,15 +75,6 @@ fn only_the_lz4_frame_compression_codec_is_accepted() {
             format!("unsupported Arrow IPC compression codec {codec}")
         );
     }
-}
-
-/// A batch with no `compression` table at all carries raw buffers.
-#[test]
-fn an_absent_compression_table_decodes_as_uncompressed() {
-    let MessageHeader::RecordBatch(decoded) = decode_message(ORACLE_INT64_BATCH).unwrap() else {
-        panic!("expected record-batch message");
-    };
-    assert!(!decoded.lz4_compressed);
 }
 
 /// `parse_fields` and the reader's `decode_field` recurse once per nesting level of a
@@ -144,6 +130,24 @@ fn arrow_ipc_schema_metadata(schema: &arrow_schema::Schema) -> Vec<u8> {
     stream[8..8 + metadata_length].to_vec()
 }
 
+/// Finishes a `Message` around a schema listing `fields`.
+fn schema_message(
+    builder: &mut FlatBufferBuilder<'static>,
+    fields: &[flatbuffers::WIPOffset<flatbuffers::TableFinishedWIPOffset>],
+) -> Vec<u8> {
+    let fields = builder.create_vector(fields);
+    let start = builder.start_table();
+    builder.push_slot_always(slot::SCHEMA_FIELDS, fields);
+    let schema = builder.end_table(start);
+    let start = builder.start_table();
+    builder.push_slot(slot::MESSAGE_VERSION, 4_i16, 0);
+    builder.push_slot(slot::MESSAGE_HEADER_TYPE, 1_u8, 0);
+    builder.push_slot_always(slot::MESSAGE_HEADER, schema);
+    let message = builder.end_table(start);
+    builder.finish_minimal(message);
+    builder.finished_data().to_vec()
+}
+
 /// Each level's children vector lists the level below eight times, so 20 levels in about a
 /// kilobyte describe 8^20 fields. Without the expansion budget this would not finish.
 #[test]
@@ -162,18 +166,9 @@ fn aliased_field_offsets_cannot_expand_a_small_schema_exponentially() {
         }
         field = Some(builder.end_table(start));
     }
-    let fields = builder.create_vector(&[field.unwrap()]);
-    let start = builder.start_table();
-    builder.push_slot_always(slot::SCHEMA_FIELDS, fields);
-    let schema = builder.end_table(start);
-    let start = builder.start_table();
-    builder.push_slot(slot::MESSAGE_VERSION, 4_i16, 0);
-    builder.push_slot(slot::MESSAGE_HEADER_TYPE, 1_u8, 0);
-    builder.push_slot_always(slot::MESSAGE_HEADER, schema);
-    let message = builder.end_table(start);
-    builder.finish_minimal(message);
+    let message = schema_message(&mut builder, &[field.unwrap()]);
 
-    let error = decode_message(builder.finished_data()).unwrap_err();
+    let error = decode_message(&message).unwrap_err();
     assert!(
         error.to_string().contains("aliased FlatBuffer offsets"),
         "{error}"
@@ -193,17 +188,7 @@ fn aliased_schema(
     let mut builder = FlatBufferBuilder::new();
     let long = builder.create_string(&"x".repeat(length));
     let field = field(&mut builder, long);
-    let fields = builder.create_vector(&vec![field; copies]);
-    let start = builder.start_table();
-    builder.push_slot_always(slot::SCHEMA_FIELDS, fields);
-    let schema = builder.end_table(start);
-    let start = builder.start_table();
-    builder.push_slot(slot::MESSAGE_VERSION, 4_i16, 0);
-    builder.push_slot(slot::MESSAGE_HEADER_TYPE, 1_u8, 0);
-    builder.push_slot_always(slot::MESSAGE_HEADER, schema);
-    let message = builder.end_table(start);
-    builder.finish_minimal(message);
-    builder.finished_data().to_vec()
+    schema_message(&mut builder, &vec![field; copies])
 }
 
 /// A field table of `tag` with an empty type table and the given name, metadata and type.
@@ -303,18 +288,9 @@ fn a_schema_sharing_its_repeated_strings_decodes() {
             builder.end_table(start)
         })
         .collect();
-    let fields = builder.create_vector(&fields);
-    let start = builder.start_table();
-    builder.push_slot_always(slot::SCHEMA_FIELDS, fields);
-    let schema = builder.end_table(start);
-    let start = builder.start_table();
-    builder.push_slot(slot::MESSAGE_VERSION, 4_i16, 0);
-    builder.push_slot(slot::MESSAGE_HEADER_TYPE, 1_u8, 0);
-    builder.push_slot_always(slot::MESSAGE_HEADER, schema);
-    let message = builder.end_table(start);
-    builder.finish_minimal(message);
+    let message = schema_message(&mut builder, &fields);
 
-    let MessageHeader::Schema(schema) = decode_message(builder.finished_data()).unwrap() else {
+    let MessageHeader::Schema(schema) = decode_message(&message).unwrap() else {
         panic!("expected schema message");
     };
     assert_eq!(schema.fields.len(), 1000);

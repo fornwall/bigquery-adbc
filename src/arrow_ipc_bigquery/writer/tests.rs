@@ -50,6 +50,15 @@ fn canonical_ingest_types() -> Vec<DataType> {
     types
 }
 
+/// One nullable field per [`canonical_ingest_types`].
+fn canonical_fields() -> Vec<Field> {
+    canonical_ingest_types()
+        .into_iter()
+        .enumerate()
+        .map(|(index, data_type)| Field::new(format!("field_{index}"), data_type, true))
+        .collect()
+}
+
 /// Arrow types outside BigQuery's canonical ingest surface, at the top level and nested.
 fn noncanonical_ingest_types() -> Vec<DataType> {
     vec![
@@ -175,37 +184,10 @@ fn schema_round_trips_every_canonical_bigquery_type_and_metadata() {
         "item-key".to_owned(),
         "item-value".to_owned(),
     )]));
-    let fields = vec![
-        Field::new("boolean", DataType::Boolean, true),
-        Field::new("integer", DataType::Int64, false),
-        Field::new("float", DataType::Float64, true),
-        Field::new("bytes", DataType::Binary, true),
-        Field::new("string", DataType::Utf8, false),
-        Field::new("date", DataType::Date32, true),
-        Field::new("time", DataType::Time64(TimeUnit::Microsecond), true),
-        Field::new(
-            "timestamp",
-            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-            true,
-        ),
-        Field::new(
-            "datetime",
-            DataType::Timestamp(TimeUnit::Microsecond, None),
-            true,
-        ),
-        Field::new("numeric", DataType::Decimal128(38, 9), true),
-        Field::new("bignumeric", DataType::Decimal256(76, 38), true),
-        Field::new(
-            "year_month",
-            DataType::Interval(IntervalUnit::YearMonth),
-            true,
-        ),
-        Field::new(
-            "interval",
-            DataType::Interval(IntervalUnit::MonthDayNano),
-            true,
-        ),
-        Field::new("array", DataType::List(Arc::new(item)), false),
+    let mut fields = canonical_fields();
+    fields[1] = fields[1].clone().with_nullable(false);
+    fields.push(Field::new("array", DataType::List(Arc::new(item)), false));
+    fields.push(
         Field::new(
             "record",
             DataType::Struct(
@@ -221,7 +203,7 @@ fn schema_round_trips_every_canonical_bigquery_type_and_metadata() {
             "field-key".to_owned(),
             "field-value".to_owned(),
         )])),
-    ];
+    );
     let schema = Schema::new_with_metadata(fields, metadata);
     let mut stream = encode_schema(&schema).unwrap();
     stream.extend_from_slice(&super::super::END_OF_STREAM);
@@ -231,40 +213,12 @@ fn schema_round_trips_every_canonical_bigquery_type_and_metadata() {
 
 #[test]
 fn exact_plans_round_trip_every_canonical_batch_layout_and_reuse_writer() {
-    let data_types = vec![
-        DataType::Boolean,
-        DataType::Int64,
-        DataType::Float64,
-        DataType::Binary,
-        DataType::Utf8,
-        DataType::Date32,
-        DataType::Time64(TimeUnit::Microsecond),
-        DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-        DataType::Timestamp(TimeUnit::Microsecond, None),
-        DataType::Decimal128(38, 9),
-        DataType::Decimal256(76, 38),
-        DataType::Interval(IntervalUnit::YearMonth),
-        DataType::Interval(IntervalUnit::MonthDayNano),
-        DataType::List(Arc::new(Field::new("element", DataType::Int64, true))),
-        DataType::Struct(
-            vec![
-                Field::new("child", DataType::Utf8, true),
-                Field::new("flag", DataType::Boolean, true),
-            ]
-            .into(),
-        ),
-    ];
-    let schema = Arc::new(Schema::new(
-        data_types
-            .iter()
-            .enumerate()
-            .map(|(index, data_type)| Field::new(format!("field_{index}"), data_type.clone(), true))
-            .collect::<Vec<_>>(),
-    ));
-    let columns = data_types
+    let fields = canonical_fields();
+    let columns = fields
         .iter()
-        .map(|data_type| new_null_array(data_type, 3))
+        .map(|field| new_null_array(field.data_type(), 3))
         .collect();
+    let schema = Arc::new(Schema::new(fields));
     let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
     let sliced = batch.slice(1, 1);
 

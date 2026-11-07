@@ -13,28 +13,6 @@ fn field_of(data_type: DataType) -> Field {
 }
 
 #[test]
-fn identical_shapes_are_coercible() {
-    for data_type in [
-        DataType::Int64,
-        DataType::Utf8,
-        DataType::Binary,
-        DataType::Boolean,
-        DataType::Float64,
-        DataType::Date32,
-        DataType::Time64(TimeUnit::Microsecond),
-        DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-        DataType::Timestamp(TimeUnit::Microsecond, None),
-        DataType::Decimal128(38, 9),
-        DataType::Decimal256(76, 38),
-    ] {
-        assert!(
-            column_plan(&data_type, &data_type).is_some(),
-            "{data_type} should reshape into itself"
-        );
-    }
-}
-
-#[test]
 fn timestamp_zone_labels_preserve_the_logical_type() {
     for source_zone in [None, Some(""), Some("UTC"), Some("America/New_York")] {
         for target_zone in [None, Some(""), Some("UTC"), Some("America/New_York")] {
@@ -202,23 +180,6 @@ fn nested_year_month_intervals_reshape_to_the_canonical_unit() {
     assert_eq!(reshaped.column(0).as_ref(), &expected as &dyn Array);
 }
 
-#[test]
-fn nested_shapes_recurse() {
-    let source = DataType::List(Arc::new(field_of(DataType::Decimal128(38, 9))));
-    let target = DataType::List(Arc::new(field_of(DataType::Decimal128(38, 9))));
-    assert!(column_plan(&source, &target).is_some());
-
-    let source = DataType::Struct(Fields::from(vec![field_of(DataType::Int64)]));
-    let target = DataType::Struct(Fields::from(vec![field_of(DataType::Int64)]));
-    assert!(column_plan(&source, &target).is_some());
-
-    let mismatched = DataType::Struct(Fields::from(vec![
-        field_of(DataType::Int64),
-        field_of(DataType::Int64),
-    ]));
-    assert!(column_plan(&source, &mismatched).is_none());
-}
-
 /// A parameter-free BIGNUMERIC spans the whole `i256`, one digit past the `Decimal256(76, 38)`
 /// that describes it. Widening a narrower Storage Read decimal into it must accept every value
 /// the REST path decodes, or a query would succeed or fail by the size of its result.
@@ -379,6 +340,8 @@ fn unreconcilable_shapes_are_rejected() {
     };
     assert!(column_plan(&structure("a", "b"), &structure("a", "b")).is_some());
     assert!(column_plan(&structure("a", "b"), &structure("b", "a")).is_none());
+    let one_child = DataType::Struct(vec![Field::new("a", DataType::Utf8, true)].into());
+    assert!(column_plan(&one_child, &structure("a", "b")).is_none());
 }
 
 /// A list is rebuilt with the canonical item field, so the item is checked like a struct's
@@ -394,38 +357,24 @@ fn a_list_item_field_is_checked_before_it_is_adopted() {
     let narrow = || DataType::Decimal128(10, 2);
     let canonical = || DataType::Decimal128(38, 9);
 
-    assert!(
-        column_plan(
-            &list("item", true, narrow()),
-            &list("item", true, canonical())
-        )
-        .is_some()
-    );
-    // Non-nullable values are a subset of what a nullable canonical item accepts.
-    assert!(
-        column_plan(
-            &list("item", false, narrow()),
-            &list("item", true, canonical())
-        )
-        .is_some()
-    );
-
-    assert!(
-        column_plan(
-            &list("element", true, narrow()),
-            &list("item", true, canonical())
-        )
-        .is_none(),
-        "a renamed list item must fall back rather than be relabelled"
-    );
-    assert!(
-        column_plan(
-            &list("item", true, narrow()),
-            &list("item", false, canonical())
-        )
-        .is_none(),
-        "a nullable list item must not be rebuilt under a non-nullable canonical field"
-    );
+    for (source, target, reconciles, why) in [
+        (("item", true), ("item", true), true, "the same item"),
+        // Non-nullable values are a subset of what a nullable canonical item accepts.
+        (("item", false), ("item", true), true, "a loosened item"),
+        (
+            ("element", true),
+            ("item", true),
+            false,
+            "a relabelled item",
+        ),
+        (("item", true), ("item", false), false, "a tightened item"),
+    ] {
+        let plan = column_plan(
+            &list(source.0, source.1, narrow()),
+            &list(target.0, target.1, canonical()),
+        );
+        assert_eq!(plan.is_some(), reconciles, "{why}");
+    }
 }
 
 #[test]

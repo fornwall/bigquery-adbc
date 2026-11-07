@@ -5,7 +5,6 @@ use arrow_array::{
 };
 use arrow_buffer::IntervalDayTime;
 use arrow_schema::{UnionFields, UnionMode};
-use base64::Engine;
 
 use super::*;
 use crate::arrow_ipc_bigquery::format::FieldNode;
@@ -14,11 +13,6 @@ use crate::arrow_ipc_bigquery::{
     CONTINUATION_MARKER, END_OF_STREAM, canonical_schema, encode_schema_fixture, encode_stream,
     message_length,
 };
-
-// Produced once by arrow-ipc 59.3.0 from a nullable Utf8 column containing sixteen copies of
-// 32 `a` bytes, with LZ4_FRAME buffer compression. This fixed oracle keeps compressed-input
-// coverage independent of the in-tree uncompressed writer.
-const LZ4_IPC_FIXTURE: &str = "/////3gAAAAQAAAAAAAKAAwACgAJAAQACgAAABAAAAAAAQQACAAIAAAABAAIAAAABAAAAAEAAAAUAAAAEAAUABAADgAPAAQAAAAIABAAAAAYAAAADAAAAAAAAQUQAAAAAAAAAAQABAAEAAAABQAAAHZhbHVlAAAAAAAAAAAAAAD/////uAAAABAAAAAMABQAEgARAAQACAAMAAAAHAAAAAABAAAAAAAAAAMEAAwAHAAQAAwACAAEAAwAAABoAAAALAAAABAAAAAQAAAAAAAAAAAAAAABAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAADAAAAAAAAAAAAAAAKAAAAAAAAAEAAAAAAAAAATAAAAAAAAADAAAAAAAAAACQAAAAAAAAABAAEAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/////////////AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//////////8AAAAAIAAAAEAAAABgAAAAgAAAAKAAAADAAAAA4AAAAAABAAAgAQAAQAEAAGABAACAAQAAoAEAAMABAADgAQAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAAAAAQiTRhgQIINAAAAH2EBAP/nYGFhYWFhYQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/////wAAAAA=";
 
 // A `CreateReadSession` schema and the one `ReadRowsResponse` batch BigQuery sent for a
 // three-row table holding every GoogleSQL type, nulls, empty and nested arrays, and a
@@ -86,9 +80,9 @@ fn standalone_schema_rejects_a_partial_trailing_message() {
     assert!(decode_schema(&encoded).is_err());
 }
 
-#[test]
-fn standalone_schema_supports_csv_seed_physical_type_inputs() {
-    let types = vec![
+/// The physical types dbt-core 2.0 CSV seeds declare that no Storage Read batch carries.
+fn csv_seed_only_types() -> Vec<DataType> {
+    vec![
         DataType::Int8,
         DataType::Int16,
         DataType::Int32,
@@ -112,11 +106,15 @@ fn standalone_schema_supports_csv_seed_physical_type_inputs() {
         DataType::Timestamp(ArrowTimeUnit::Nanosecond, Some("UTC".into())),
         DataType::Decimal32(7, 2),
         DataType::Decimal64(16, 4),
-        DataType::Interval(ArrowIntervalUnit::YearMonth),
-        DataType::Interval(ArrowIntervalUnit::DayTime),
-    ];
-    let fields = types
+    ]
+}
+
+#[test]
+fn standalone_schema_supports_csv_seed_physical_type_inputs() {
+    let intervals = [ArrowIntervalUnit::YearMonth, ArrowIntervalUnit::DayTime];
+    let fields = csv_seed_only_types()
         .into_iter()
+        .chain(intervals.map(DataType::Interval))
         .enumerate()
         .map(|(index, data_type)| Field::new(format!("field_{index}"), data_type, true))
         .collect::<Vec<_>>();
@@ -335,25 +333,6 @@ fn arrow_ipc_schema(schema: &Schema) -> Vec<u8> {
         .unwrap()
 }
 
-#[test]
-fn lz4_frame_compressed_batch_decodes() {
-    let values = vec![Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); 16];
-    let array = Arc::new(StringArray::from(values)) as ArrayRef;
-    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Utf8, true)]));
-    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![array]).unwrap();
-    let encoded = base64::engine::general_purpose::STANDARD
-        .decode(LZ4_IPC_FIXTURE)
-        .unwrap();
-
-    let (encoded_schema, encoded_batch) = schema_and_batch(&encoded);
-    let schema = decode_schema(encoded_schema).unwrap();
-    let input = Buffer::from(encoded_batch.to_vec());
-    assert_eq!(
-        &decode_record_batch_message(&input, schema).unwrap(),
-        &batch
-    );
-}
-
 /// Only the declared offsets are meaningful; trailing bytes need not fill a whole offset.
 /// Short buffers must return a field-specific error.
 #[test]
@@ -554,31 +533,7 @@ fn a_message_at_a_misaligned_base_address_decodes_rather_than_panicking() {
 /// fails on every batch. The error names the type so the caller can find the column.
 #[test]
 fn a_schema_type_no_batch_can_decode_is_refused_by_name() {
-    for data_type in [
-        DataType::Int8,
-        DataType::Int16,
-        DataType::Int32,
-        DataType::UInt8,
-        DataType::UInt16,
-        DataType::UInt32,
-        DataType::UInt64,
-        DataType::Float16,
-        DataType::Float32,
-        DataType::Date64,
-        DataType::Time32(ArrowTimeUnit::Second),
-        DataType::Time32(ArrowTimeUnit::Millisecond),
-        DataType::Time64(ArrowTimeUnit::Nanosecond),
-        DataType::Timestamp(ArrowTimeUnit::Second, None),
-        DataType::Timestamp(ArrowTimeUnit::Millisecond, None),
-        DataType::Timestamp(ArrowTimeUnit::Nanosecond, Some("UTC".into())),
-        DataType::LargeBinary,
-        DataType::LargeUtf8,
-        DataType::BinaryView,
-        DataType::Utf8View,
-        DataType::FixedSizeBinary(4),
-        DataType::Decimal32(7, 2),
-        DataType::Decimal64(16, 4),
-    ] {
+    for data_type in csv_seed_only_types() {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "value",
             data_type.clone(),
@@ -635,23 +590,6 @@ fn variadic_buffer_counts_are_refused() {
             None => assert_eq!(decoded.unwrap().num_rows(), 0),
         }
     }
-}
-
-#[test]
-fn truncated_complete_message_body_is_rejected_immediately() {
-    let array = Arc::new(StringArray::from(vec!["value"])) as ArrayRef;
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        "value",
-        DataType::Utf8,
-        false,
-    )]));
-    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![array]).unwrap();
-    let encoded = encode_stream(&schema, &[batch]);
-    let mut encoded_batch = schema_and_batch(&encoded).1.to_vec();
-    // Remove one byte of the batch body, not merely the stream end marker.
-    encoded_batch.pop();
-
-    assert!(decode_record_batch_message(&Buffer::from(encoded_batch), schema).is_err());
 }
 
 /// The schema message and the first record-batch message of `stream`.

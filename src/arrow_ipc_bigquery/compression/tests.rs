@@ -202,35 +202,6 @@ fn lz4_uncompressed_sentinel_is_zero_copy() {
     assert_eq!(decoded.as_slice(), payload.as_slice());
 }
 
-#[test]
-fn lz4_output_cannot_exceed_its_declared_length() {
-    let encoded = declaring(compressed(FrameInfo::new(), b"longer than declared"), 3);
-    let error = decompress_buffer(Buffer::from(encoded)).unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "Ipc error: LZ4 Arrow IPC buffer exceeds its declared uncompressed length 3"
-    );
-}
-
-/// The length prefix is the sender's number, so without this bound a few hundred bytes off the
-/// wire could ask for hundreds of gibibytes before the frame behind it is ever looked at.
-#[test]
-fn an_lz4_length_prefix_beyond_what_its_payload_could_expand_to_is_refused() {
-    let encoded = compressed(FrameInfo::new(), b"small");
-    let frame_length = encoded.len() - COMPRESSION_PREFIX_LENGTH;
-    let ceiling = frame_length * LZ4_MAX_EXPANSION_RATIO;
-
-    let error = decompress_buffer(Buffer::from(declaring(encoded, ceiling + 1))).unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        format!(
-            "Ipc error: LZ4 Arrow IPC buffer declares {} uncompressed bytes, more than the \
-             {ceiling} its {frame_length} compressed bytes could produce",
-            ceiling + 1,
-        )
-    );
-}
-
 /// The expansion bound still lets a length prefix ask for 255 times its frame, so the output is
 /// zeroed only one block ahead of what has decoded: a prefix that overstates its frame costs
 /// address space, not memory. Both block kinds are covered: a compressible payload, then an
@@ -262,13 +233,17 @@ fn a_highly_compressible_lz4_buffer_stays_within_the_expansion_bound() {
 }
 
 /// The remaining `decompress_buffer` refusals, by text: a buffer too short to hold its own
-/// length prefix, a negative declared length that is not the uncompressed sentinel, and a
-/// frame that decodes short of what it declared.
+/// length prefix, a negative declared length that is not the uncompressed sentinel, a frame that
+/// decodes short of or past what it declared, and a prefix no payload of that size could reach.
+/// That last bound stops a few hundred wire bytes asking for gibibytes before the frame is read.
 #[test]
 fn every_compressed_buffer_refusal_names_what_was_wrong() {
     // One byte past what the frame holds and far below the expansion ceiling, so nothing
     // refuses it before the frame is decoded.
     let decodes_short = declaring(compressed(FrameInfo::new(), b"five!"), 6);
+    let small = compressed(FrameInfo::new(), b"small");
+    let frame_length = small.len() - COMPRESSION_PREFIX_LENGTH;
+    let ceiling = frame_length * LZ4_MAX_EXPANSION_RATIO;
 
     for (encoded, expected) in [
         (
@@ -285,6 +260,18 @@ fn every_compressed_buffer_refusal_names_what_was_wrong() {
         (
             decodes_short,
             "Ipc error: LZ4 Arrow IPC buffer decoded to 5 bytes, expected 6".to_owned(),
+        ),
+        (
+            declaring(compressed(FrameInfo::new(), b"longer than declared"), 3),
+            "Ipc error: LZ4 Arrow IPC buffer exceeds its declared uncompressed length 3".to_owned(),
+        ),
+        (
+            declaring(small, ceiling + 1),
+            format!(
+                "Ipc error: LZ4 Arrow IPC buffer declares {} uncompressed bytes, more than the \
+                 {ceiling} its {frame_length} compressed bytes could produce",
+                ceiling + 1,
+            ),
         ),
     ] {
         let error = decompress_buffer(Buffer::from(encoded)).unwrap_err();
