@@ -76,11 +76,6 @@ pub(crate) struct MockPlan {
     /// `available_parallelism`; honouring it would make the tested branch of `read_streams`
     /// depend on the machine.
     pub(crate) read_stream_count: usize,
-    /// `(stream index, responses before the break, status)`. Keyed by stream rather than by call
-    /// order, because parallel streams are opened concurrently and no test can predict which
-    /// call index a given stream gets. A stream named here ends with that status after that many
-    /// responses; every other stream runs to the end.
-    pub(crate) read_stream_breaks: Vec<(usize, usize, u32)>,
     /// One entry per `ReadRows` call, in call order: refuse the call with this gRPC status before
     /// any response headers, which is how gRPC reports a failure to open a server stream (the
     /// client's open future resolves to an error). `OK` opens the call normally, and calls past
@@ -483,23 +478,17 @@ fn read_rows(
     // Only a stream the session handed out is served, so a resume that lost or rewrote the name
     // is refused rather than answered from the same script as the original call.
     let name = pb::field_string(request, 1).unwrap_or_default();
-    let Some(stream) =
-        (0..granted_read_streams(plan)).find(|&index| read_stream_name(index) == name)
-    else {
+    if !(0..granted_read_streams(plan)).any(|index| read_stream_name(index) == name) {
         return NOT_FOUND;
-    };
+    }
     let Some(start) = response_index(plan, read_offset(request)) else {
         return OUT_OF_RANGE;
     };
 
-    // A per-stream break wins over a per-call one: a parallel read has no predictable call order,
-    // so a test scripting one stream's failure has no call index to name it by.
     let (limit, status) = plan
-        .read_stream_breaks
-        .iter()
-        .find(|&&(index, _, _)| index == stream)
-        .map(|&(_, after, status)| (after, status))
-        .or_else(|| plan.read_breaks.get(call).copied())
+        .read_breaks
+        .get(call)
+        .copied()
         .unwrap_or((usize::MAX, OK));
     for (rows, batch) in plan.read_responses.iter().skip(start).take(limit) {
         let mut response = Vec::new();

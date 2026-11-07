@@ -138,6 +138,8 @@ enum ReadCall {
     Stall(usize),
     /// This many one-row responses, then the end of the stream.
     Finish(usize),
+    /// The open fails with this status.
+    Refuse(Code),
 }
 
 /// Serves `ReadRows` calls from a script, recording the offset each one asked for.
@@ -159,6 +161,7 @@ impl google_cloud_bigquery::stub::Read for ScriptedRead {
             ReadCall::Hang => std::future::pending().await,
             ReadCall::Stall(rows) => (rows, true),
             ReadCall::Finish(rows) => (rows, false),
+            ReadCall::Refuse(code) => return Err(service_failure(code)),
         };
         Ok(ResponseStream::from_stream(ScriptedRows { rows, stall }))
     }
@@ -326,6 +329,38 @@ fn a_read_stream_is_not_stalled_while_the_reader_holds_it_back() {
         }
     });
     assert_eq!(*offsets.lock().unwrap(), [0]);
+}
+
+/// One stream of a parallel read failing unresumably fails the whole read and stops the others.
+///
+/// Calls take the script in the order they arrive, so the refusal reaches whichever stream opens
+/// last, after the other two are silent. Each of those would reopen at the stall limit if it were
+/// still running, and on the paused clock that limit cannot pass before the failure lands.
+#[test]
+fn one_stream_failing_unresumably_fails_the_parallel_read_and_stops_the_rest() {
+    let script = [
+        ReadCall::Stall(0),
+        ReadCall::Stall(0),
+        ReadCall::Refuse(Code::InvalidArgument),
+    ];
+    let (client, offsets) = scripted_client(&script);
+    paused_runtime().block_on(async {
+        let schema = Arc::new(arrow_schema::Schema::empty());
+        let plan = Arc::new(reshape_plans(&schema, &schema).unwrap());
+        let streams = (0..script.len()).map(|index| index.to_string()).collect();
+        let sink = ResultSink::for_test();
+        let failure = read_streams(client.read_rows(), streams, schema, plan, sink)
+            .await
+            .unwrap_err()
+            .to_string();
+        // The scripted status itself, not a `JoinError` from the abort and not a cancellation:
+        // the failing stream's own error is what the caller has to be told about.
+        assert!(failure.contains("Storage Read rows"), "{failure}");
+        assert!(failure.contains("INVALID_ARGUMENT"), "{failure}");
+
+        tokio::time::sleep(READ_ROWS_STALL_TIMEOUT * 2).await;
+    });
+    assert_eq!(offsets.lock().unwrap().len(), script.len());
 }
 
 /// The unordered stream request stays a sane "units of work" bound on any machine.
@@ -914,44 +949,6 @@ mod mock_reads {
         calls.dedup();
         assert_eq!(calls.len(), STREAMS);
         assert_eq!(mock.read_offsets(), vec![0; STREAMS]);
-    }
-
-    /// One stream of a parallel read failing unresumably fails the whole read once and stops the
-    /// others. The other streams break resumably, so without cancellation each would open a second
-    /// `ReadRows`.
-    #[test]
-    fn one_stream_failing_unresumably_fails_the_parallel_read_and_stops_the_rest() {
-        const STREAMS: usize = 3;
-
-        let fixture = Fixture::new();
-        let mock = fixture.mock(|plan| {
-            plan.read_stream_count = STREAMS;
-            plan.read_stream_breaks = vec![
-                (0, usize::MAX, UNAVAILABLE),
-                (1, 1, INVALID_ARGUMENT),
-                (2, usize::MAX, UNAVAILABLE),
-            ];
-        });
-
-        let failure = fixture.read_with(&mock, unordered()).unwrap_err();
-        // The scripted status itself, not a `JoinError` from the abort and not a cancellation:
-        // the failing stream's own error is what the caller has to be told about.
-        let failure = failure.to_string();
-        assert!(failure.contains("Storage Read rows"), "{failure}");
-        assert!(failure.contains("INVALID_ARGUMENT"), "{failure}");
-
-        // The failing stream is not retried (`INVALID_ARGUMENT` is not resumable), and the two
-        // resumable ones were aborted before they could reopen, so no stream appears twice.
-        let calls = mock.read_stream_calls();
-        let mut distinct = calls.clone();
-        distinct.sort();
-        distinct.dedup();
-        assert_eq!(
-            distinct.len(),
-            calls.len(),
-            "a stream was reopened: {calls:?}"
-        );
-        assert!(calls.len() <= STREAMS, "{calls:?}");
     }
 
     /// A stream delivers nothing without the pipeline's delivery slot.
