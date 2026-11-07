@@ -80,7 +80,7 @@ jobs:
       matrix:
         check: [miri, fuzz]
     env:
-      RUSTUP_TOOLCHAIN: nightly-2026-11-05
+      RUSTUP_TOOLCHAIN: nightly-2026-11-07
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
