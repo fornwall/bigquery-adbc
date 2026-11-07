@@ -6,7 +6,7 @@ use crate::types::decimal::{
 };
 
 use super::*;
-use crate::test_support::errors::assert_message;
+use crate::test_support::errors::assert_failure;
 
 /// One metadata value of a converted field, as the `&str` every assertion compares against.
 fn meta<'a>(field: &'a Field, key: &str) -> Option<&'a str> {
@@ -15,64 +15,49 @@ fn meta<'a>(field: &'a Field, key: &str) -> Option<&'a str> {
 
 #[test]
 fn converts_supported_bigquery_scalar_schema() {
+    let micros =
+        |zone: Option<&str>| DataType::Timestamp(TimeUnit::Microsecond, zone.map(Into::into));
     let types = [
-        "STRING",
-        "BYTES",
-        "INT64",
-        "FLOAT64",
-        "BOOL",
-        "TIMESTAMP",
-        "DATE",
-        "TIME",
-        "DATETIME",
-        "NUMERIC",
-        "BIGNUMERIC",
-        "INTERVAL",
-        "GEOGRAPHY",
-        "JSON",
+        ("STRING", DataType::Utf8, None),
+        ("BYTES", DataType::Binary, None),
+        ("INT64", DataType::Int64, None),
+        ("FLOAT64", DataType::Float64, None),
+        ("BOOL", DataType::Boolean, None),
+        ("TIMESTAMP", micros(Some("UTC")), None),
+        ("DATE", DataType::Date32, None),
+        ("TIME", DataType::Time64(TimeUnit::Microsecond), None),
+        ("DATETIME", micros(None), None),
+        (
+            "NUMERIC",
+            DataType::Decimal128(NUMERIC_PRECISION, NUMERIC_SCALE),
+            None,
+        ),
+        (
+            "BIGNUMERIC",
+            DataType::Decimal256(BIGNUMERIC_PRECISION, BIGNUMERIC_SCALE),
+            None,
+        ),
+        (
+            "INTERVAL",
+            DataType::Interval(IntervalUnit::MonthDayNano),
+            None,
+        ),
+        ("GEOGRAPHY", DataType::Utf8, Some("geoarrow.wkt")),
+        ("JSON", DataType::Utf8, Some("arrow.json")),
     ];
-    let table = table_schema(types.iter().enumerate().map(|(index, kind)| {
+    let table = table_schema(types.iter().enumerate().map(|(index, (kind, ..))| {
         let mode = if index == 0 { "REQUIRED" } else { "NULLABLE" };
         field_mode(format!("column_{index}"), *kind, mode)
     }));
     let schema = convert_schema(&table).unwrap();
     assert_eq!(schema.fields().len(), types.len());
     assert!(!schema.field(0).is_nullable());
-    for (index, kind) in types.iter().enumerate() {
-        assert_eq!(
-            meta(schema.field(index), BIGQUERY_TYPE_METADATA_KEY),
-            Some(*kind)
-        );
+    assert!(schema.field(1).is_nullable());
+    for (field, (kind, data_type, extension)) in schema.fields().iter().zip(&types) {
+        assert_eq!(field.data_type(), data_type, "{kind}");
+        assert_eq!(meta(field, BIGQUERY_TYPE_METADATA_KEY), Some(*kind));
+        assert_eq!(meta(field, "ARROW:extension:name"), *extension, "{kind}");
     }
-    assert_eq!(
-        schema.field(5).data_type(),
-        &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
-    );
-    assert_eq!(schema.field(6).data_type(), &DataType::Date32);
-    assert_eq!(
-        schema.field(7).data_type(),
-        &DataType::Time64(TimeUnit::Microsecond)
-    );
-    assert_eq!(
-        schema.field(9).data_type(),
-        &DataType::Decimal128(NUMERIC_PRECISION, NUMERIC_SCALE)
-    );
-    assert_eq!(
-        schema.field(10).data_type(),
-        &DataType::Decimal256(BIGNUMERIC_PRECISION, BIGNUMERIC_SCALE)
-    );
-    assert_eq!(
-        schema.field(11).data_type(),
-        &DataType::Interval(IntervalUnit::MonthDayNano)
-    );
-    assert_eq!(
-        meta(schema.field(12), "ARROW:extension:name"),
-        Some("geoarrow.wkt")
-    );
-    assert_eq!(
-        meta(schema.field(13), "ARROW:extension:name"),
-        Some("arrow.json")
-    );
 }
 
 #[test]
@@ -266,23 +251,19 @@ fn rejects_invalid_bigquery_decimal_constraints() {
             scale,
             ..field("invalid_decimal", data_type)
         };
-        let error = convert_schema(&table_schema([column])).unwrap_err();
-        assert_eq!(error.status, Status::InvalidData);
         // Every sibling failure in `convert_field` shares the status, so the message has to
         // carry what a caller acts on: which column, and which constraint it violated.
-        for fragment in [
-            "invalid_decimal",
-            data_type,
-            "invalid decimal shape",
-            &precision.to_string(),
-            &scale.to_string(),
-        ] {
-            assert!(
-                error.message.contains(fragment),
-                "{data_type}({precision}, {scale}): {fragment:?} missing from {}",
-                error.message
-            );
-        }
+        assert_failure(
+            &convert_schema(&table_schema([column])).unwrap_err(),
+            Status::InvalidData,
+            &[
+                "invalid_decimal",
+                data_type,
+                "invalid decimal shape",
+                &precision.to_string(),
+                &scale.to_string(),
+            ],
+        );
     }
 }
 
@@ -293,15 +274,11 @@ fn rejects_invalid_bigquery_string_constraints() {
             max_length,
             ..field(name, kind)
         };
-        let error = convert_schema(&table_schema([column])).unwrap_err();
-        assert_eq!(error.status, Status::InvalidData);
-        for fragment in [name, kind, "invalid max length", &max_length.to_string()] {
-            assert!(
-                error.message.contains(fragment),
-                "{name}: {fragment:?} missing from {}",
-                error.message
-            );
-        }
+        assert_failure(
+            &convert_schema(&table_schema([column])).unwrap_err(),
+            Status::InvalidData,
+            &[name, kind, "invalid max length", &max_length.to_string()],
+        );
     }
 }
 
@@ -491,22 +468,15 @@ fn rejects_invalid_range_schema() {
     for (column, fragments) in [
         (
             field_mode("missing", "RANGE", "NULLABLE"),
-            ["missing", "is missing its element type"].as_slice(),
+            ["missing", "is missing its element type"],
         ),
         (
             range_field("unsupported", "STRING"),
-            ["unsupported", "unsupported element type STRING"].as_slice(),
+            ["unsupported", "unsupported element type STRING"],
         ),
     ] {
         let error = convert_schema(&table_schema([column])).unwrap_err();
-        assert_eq!(error.status, Status::InvalidData);
-        for fragment in fragments {
-            assert!(
-                error.message.contains(fragment),
-                "{fragment:?} missing from {}",
-                error.message
-            );
-        }
+        assert_failure(&error, Status::InvalidData, &fragments);
     }
 }
 
@@ -542,8 +512,7 @@ fn rejects_composite_metadata_on_the_wrong_type() {
     ] {
         let name = column.name.clone();
         let error = convert_schema(&table_schema([column])).unwrap_err();
-        assert_eq!(error.status, Status::InvalidData);
-        assert_message(&error, &[&name, expected]);
+        assert_failure(&error, Status::InvalidData, &[&name, expected]);
     }
 }
 
@@ -551,8 +520,7 @@ fn rejects_composite_metadata_on_the_wrong_type() {
 fn rejects_unknown_field_modes() {
     let error =
         convert_schema(&table_schema([field_mode("value", "STRING", "UNKNOWN")])).unwrap_err();
-    assert_eq!(error.status, Status::InvalidData);
-    assert_message(&error, &["\"UNKNOWN\"", "value"]);
+    assert_failure(&error, Status::InvalidData, &["\"UNKNOWN\"", "value"]);
 }
 
 /// A temporal column declaring more sub-second digits than Arrow's microsecond type holds would
@@ -570,11 +538,13 @@ fn a_temporal_column_finer_than_microseconds_is_refused_rather_than_decoded() {
         for precision in [serde_json::json!("12"), serde_json::json!(9)] {
             let failure = convert_schema(&table_schema([precise(kind, precision.clone())]))
                 .expect_err(&format!("{kind} {precision}"));
-            assert_eq!(failure.status, Status::NotImplemented);
-            assert!(
-                failure.message.contains("at most microsecond precision")
-                    && failure.message.contains(&format!("CAST it to {kind}(6)")),
-                "{kind} {precision}: {failure}"
+            assert_failure(
+                &failure,
+                Status::NotImplemented,
+                &[
+                    "at most microsecond precision",
+                    &format!("CAST it to {kind}(6)"),
+                ],
             );
         }
     }
@@ -632,12 +602,14 @@ fn a_result_schema_nested_past_the_supported_depth_is_refused_rather_than_recurs
     // Even a much deeper input stops at the first unsupported level, before the type-literal
     // formatter or the row builders can walk it.
     let hostile = nested(256);
-    let failure = convert_field(&hostile).unwrap_err();
-    assert_eq!(failure.status, Status::InvalidData);
-    assert!(failure.message.contains(&format!(
-        "is nested {} levels deep",
-        MAX_SCHEMA_NESTING_DEPTH + 1
-    )));
+    assert_failure(
+        &convert_field(&hostile).unwrap_err(),
+        Status::InvalidData,
+        &[&format!(
+            "is nested {} levels deep",
+            MAX_SCHEMA_NESTING_DEPTH + 1
+        )],
+    );
 
     // Siblings each start at their parent's depth, including repeated STRUCTs.
     let mut repeated = nested(MAX_SCHEMA_NESTING_DEPTH);

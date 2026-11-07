@@ -1,6 +1,6 @@
 use super::*;
 use crate::test_support::arrow::bigquery_typed;
-use crate::test_support::errors::assert_message;
+use crate::test_support::errors::assert_failure;
 
 /// The exact metadata strings are a wire-format contract with consumers; a typo in a hoisted
 /// const must fail here rather than pass every test that uses the const on both sides.
@@ -10,28 +10,29 @@ fn metadata_contract_strings_are_pinned() {
     assert_eq!(ARROW_EXTENSION_NAME_KEY, "ARROW:extension:name");
     assert_eq!(ARROW_EXTENSION_METADATA_KEY, "ARROW:extension:metadata");
 
-    let mut metadata = Metadata::new();
-    insert_extension_metadata(BigQueryType::Geography, &mut metadata);
+    let extension = |kind| {
+        let mut metadata = Metadata::new();
+        insert_extension_metadata(kind, &mut metadata);
+        metadata
+    };
+    let geography = extension(BigQueryType::Geography);
     assert_eq!(
-        metadata.get("ARROW:extension:name").map(String::as_str),
+        geography.get("ARROW:extension:name").map(String::as_str),
         Some("geoarrow.wkt")
     );
     assert_eq!(
-        metadata.get("ARROW:extension:metadata").map(String::as_str),
+        geography
+            .get("ARROW:extension:metadata")
+            .map(String::as_str),
         Some(r#"{"crs":"EPSG:4326","crs_type":"authority_code","edges":"spherical"}"#)
     );
-
-    let mut metadata = Metadata::new();
-    insert_extension_metadata(BigQueryType::Json, &mut metadata);
+    let json = extension(BigQueryType::Json);
     assert_eq!(
-        metadata.get("ARROW:extension:name").map(String::as_str),
+        json.get("ARROW:extension:name").map(String::as_str),
         Some("arrow.json")
     );
-    assert_eq!(metadata.len(), 1);
-
-    let mut metadata = Metadata::new();
-    insert_extension_metadata(BigQueryType::Int64, &mut metadata);
-    assert!(metadata.is_empty());
+    assert_eq!(json.len(), 1);
+    assert!(extension(BigQueryType::Int64).is_empty());
 }
 
 #[test]
@@ -43,16 +44,18 @@ fn extension_names_imply_their_bigquery_types() {
         }
         Field::new("value", DataType::Utf8, true).with_metadata(metadata)
     };
-    assert_eq!(
-        extension_type(&string_field(Some("arrow.json"))),
-        Some(BigQueryType::Json)
-    );
-    assert_eq!(
-        extension_type(&string_field(Some("geoarrow.wkt"))),
-        Some(BigQueryType::Geography)
-    );
-    assert_eq!(extension_type(&string_field(Some("other.extension"))), None);
-    assert_eq!(extension_type(&string_field(None)), None);
+    for (extension, kind) in [
+        (Some("arrow.json"), Some(BigQueryType::Json)),
+        (Some("geoarrow.wkt"), Some(BigQueryType::Geography)),
+        (Some("other.extension"), None),
+        (None, None),
+    ] {
+        assert_eq!(
+            extension_type(&string_field(extension)),
+            kind,
+            "{extension:?}"
+        );
+    }
 }
 
 #[test]
@@ -165,34 +168,27 @@ fn every_spelling_round_trips_to_its_own_type() {
 }
 
 #[test]
-fn googlesql_parsing_rejects_rest_only_spellings() {
-    for name in [
-        "INTEGER",
-        "FLOAT",
-        "BOOLEAN",
-        "RECORD",
-        "DECIMAL",
-        "BIGDECIMAL",
+fn rest_only_spellings_are_not_googlesql_and_name_their_replacement() {
+    for (rest, googlesql) in [
+        ("INTEGER", "INT64"),
+        ("FLOAT", "FLOAT64"),
+        ("BOOLEAN", "BOOL"),
+        ("RECORD", "STRUCT"),
+        ("DECIMAL", "NUMERIC"),
+        ("BIGDECIMAL", "BIGNUMERIC"),
     ] {
         assert_eq!(
-            BigQueryType::from_sql(name),
+            BigQueryType::from_sql(rest),
             None,
-            "{name} is not GoogleSQL"
+            "{rest} is not GoogleSQL"
         );
-        assert!(BigQueryType::from_rest(name).is_some());
+        assert_eq!(googlesql_spelling_of(rest), Some(googlesql));
     }
     assert_eq!(BigQueryType::from_sql("float64"), None);
     assert_eq!(BigQueryType::from_sql("ARRAY<INT64>"), None);
-}
-
-#[test]
-fn composite_types_are_the_only_non_scalars() {
-    let composite = BigQueryType::ALL
-        .iter()
-        .copied()
-        .filter(|kind| !kind.is_scalar())
-        .collect::<Vec<_>>();
-    assert_eq!(composite, [BigQueryType::Struct, BigQueryType::Range]);
+    for name in ["FLOAT64", "STRING", "NOT_A_TYPE"] {
+        assert_eq!(googlesql_spelling_of(name), None, "{name}");
+    }
 }
 
 #[test]
@@ -239,21 +235,7 @@ fn composite_metadata_on_a_scalar_field_is_a_mismatch_not_a_missing_type() {
         PARAMETER_FIELD,
     )
     .unwrap_err();
-    assert_eq!(failure.status, Status::NotImplemented);
-    assert_message(&failure, &["is not implemented"]);
-}
-
-#[test]
-fn rest_only_spellings_name_their_googlesql_replacement() {
-    assert_eq!(googlesql_spelling_of("FLOAT"), Some("FLOAT64"));
-    assert_eq!(googlesql_spelling_of("INTEGER"), Some("INT64"));
-    assert_eq!(googlesql_spelling_of("BOOLEAN"), Some("BOOL"));
-    assert_eq!(googlesql_spelling_of("RECORD"), Some("STRUCT"));
-    assert_eq!(googlesql_spelling_of("DECIMAL"), Some("NUMERIC"));
-    assert_eq!(googlesql_spelling_of("BIGDECIMAL"), Some("BIGNUMERIC"));
-    assert_eq!(googlesql_spelling_of("FLOAT64"), None);
-    assert_eq!(googlesql_spelling_of("STRING"), None);
-    assert_eq!(googlesql_spelling_of("NOT_A_TYPE"), None);
+    assert_failure(&failure, Status::NotImplemented, &["is not implemented"]);
 }
 
 /// Ingest normalization and query result decoding must reach the same Arrow layout for a type.
@@ -347,6 +329,11 @@ fn canonical_arrow_types_cover_every_scalar_type_and_range_element() {
         assert_eq!(
             kind.canonical_data_type().is_some(),
             kind.is_scalar(),
+            "{kind:?}"
+        );
+        assert_eq!(
+            kind.is_scalar(),
+            !matches!(kind, BigQueryType::Struct | BigQueryType::Range),
             "{kind:?}"
         );
     }
