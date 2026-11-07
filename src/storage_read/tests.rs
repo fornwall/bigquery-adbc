@@ -859,7 +859,7 @@ mod mock_reads {
         let job = JobReference::new("project", None, "job".to_owned());
         let table = destination();
         let failure = paused.block_on(async {
-            let client = clients.read_client(&runtime).await.unwrap();
+            let client = clients.read_client(&runtime, None).await.unwrap();
             let creating = create_read_session(&client, &clients, &None, &job, &table, 1);
             tokio::time::timeout(Duration::from_secs(3600), creating)
                 .await
