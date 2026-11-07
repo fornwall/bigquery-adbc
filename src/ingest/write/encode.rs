@@ -200,7 +200,7 @@ impl ChunkEncoder {
         first_row: usize,
         admitted: impl FnOnce(PlannedBatch<'_>, usize, usize) -> Result<T>,
     ) -> Result<T> {
-        let mut row_count = window.num_rows().max(1);
+        let mut row_count = window.num_rows();
         loop {
             let candidate = window.slice(0, row_count);
             let planned_batch = self.writer.plan_batch(&candidate).map_err(|source| {
@@ -230,18 +230,6 @@ impl ChunkEncoder {
             row_count = scaled(row_count, self.target_batch_bytes, serialized_size)
                 .max(1)
                 .min(row_count - 1);
-        }
-    }
-
-    /// Builds an encoder with explicit budgets and a fresh Arrow IPC stream state.
-    #[cfg(test)]
-    fn with_limits(schema: SchemaRef, target_batch_bytes: usize, max_batch_bytes: usize) -> Self {
-        Self {
-            writer: Writer::new(),
-            schema,
-            target_batch_bytes,
-            max_batch_bytes,
-            last_chunk: None,
         }
     }
 }

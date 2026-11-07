@@ -15,11 +15,11 @@ use google_cloud_bigquery::write::stream_type::PendingStream;
 
 use crate::cancellation;
 use crate::diag::diag;
-use crate::error::{error, google_error, google_error_is_not_found};
+use crate::error::{error, google_error, google_error_is_not_found, google_error_is_transient};
 use crate::rest::retry::Schedule;
 
 use super::AppendTarget;
-use super::retry::{Replay, append_with_retry, control_plane_retry, google_error_is_transient};
+use super::retry::{append_with_retry, control_plane_retry};
 
 // A new or replaced table can stay invisible to the Storage Write API for over a minute,
 // especially after a dataset is deleted and recreated under the same name. As in the Go driver:
@@ -54,15 +54,12 @@ pub(super) fn attach_error_is_transient(source: &WriterBuilderError) -> bool {
 /// Creating the stream and landing the first payload both wait on the same new table, and callers
 /// size statement timeouts against the documented budget, so both steps charge one
 /// [`TABLE_VISIBILITY_ATTEMPTS`] budget.
+#[derive(Default)]
 struct VisibilityBudget {
     failures: u32,
 }
 
 impl VisibilityBudget {
-    fn new() -> Self {
-        Self { failures: 0 }
-    }
-
     /// Whether the failure just observed may be waited out rather than reported.
     fn has_attempt_left(&self) -> bool {
         self.failures + 1 < TABLE_VISIBILITY_ATTEMPTS
@@ -97,7 +94,7 @@ pub(super) async fn pending_writer(
         operation,
     } = target;
     let context = format!("failed to create BigQuery pending ingest stream for {table_path}");
-    let mut budget = VisibilityBudget::new();
+    let mut budget = VisibilityBudget::default();
     let mut writer = loop {
         // `CreateWriteStream` is not idempotent: a retry after a lost response leaves an extra
         // pending stream. That is harmless: an empty pending stream bills nothing and expires,
@@ -118,44 +115,18 @@ pub(super) async fn pending_writer(
         }
     };
 
-    // AppendRows may still report NOT_FOUND after creation succeeds. Reattach to the same
-    // stream and replay offset zero within the remaining visibility budget. Keep ownership
-    // here so cancellation during backoff or reattachment also finalizes the abandoned stream.
+    // AppendRows may still report NOT_FOUND after creation succeeds. Reattach to the same stream
+    // and replay offset zero within the remaining visibility budget. Keep ownership here so
+    // cancellation during backoff or reattachment also finalizes the abandoned stream.
     let initialized = async {
-        let mut reconnect = false;
-        let mut already_sent = false;
+        let mut replay = false;
         loop {
-            if reconnect {
-                let stream_name = writer.write_stream().to_owned();
-                match attach_writer(target, &stream_name).await? {
-                    Ok(attached) => {
-                        writer = attached;
-                    }
-                    Err(source)
-                        if budget.has_attempt_left() && attach_error_is_not_found(&source) =>
-                    {
-                        budget.back_off(target).await?;
-                        continue;
-                    }
-                    Err(source) => {
-                        return Err(reconnect_failure(&stream_name, source));
-                    }
-                }
-            }
-            // ALREADY_EXISTS acknowledges a lost response only when replaying a prior send.
-            // The attach above already reconnected, so the replay starts with its append.
-            let replay = Replay {
-                already_sent,
-                reconnect: false,
-            };
             match append_with_retry(target, &mut writer, first_rows.clone(), 0, replay).await {
-                Ok(()) => return Ok(()),
                 Err(source) if budget.has_attempt_left() && source.status == Status::NotFound => {
-                    already_sent = true;
+                    replay = true;
                     budget.back_off(target).await?;
-                    reconnect = true;
                 }
-                Err(source) => return Err(source),
+                outcome => return outcome,
             }
         }
     }
@@ -167,27 +138,6 @@ pub(super) async fn pending_writer(
             Err(source)
         }
     }
-}
-
-/// Reconnects to an existing pending stream by name.
-///
-/// `GetWriteStream` is a read, so retrying it is always safe.
-async fn attach_writer(
-    target: &AppendTarget<'_>,
-    stream_name: &str,
-) -> Result<std::result::Result<PendingWriter<Arrow>, WriterBuilderError>> {
-    control_plane_retry(
-        &reconnect_context(stream_name),
-        Some(target.operation),
-        attach_error_is_transient,
-        || {
-            target
-                .client
-                .attach_to_stream::<PendingStream>(stream_name)
-                .build_arrow(target.schema.clone())
-        },
-    )
-    .await
 }
 
 /// Reports a pending stream this ingest could not get back onto.
@@ -217,7 +167,8 @@ fn writer_builder_failure(context: &str, source: WriterBuilderError) -> adbc_cor
 /// Replaces `writer` with a fresh connection to the same pending stream.
 ///
 /// A new stream would restart the table-propagation window and leak the old one; reattaching by
-/// name keeps the driver-assigned offsets, and with them exactly-once replay.
+/// name keeps the driver-assigned offsets, and with them exactly-once replay. `GetWriteStream` is
+/// a read, so retrying it is always safe.
 ///
 /// The attach failure is returned unconverted so the enclosing append retry can spend an attempt
 /// on it rather than end the ingest.
@@ -225,10 +176,20 @@ pub(super) async fn reattach(
     target: &AppendTarget<'_>,
     writer: &mut PendingWriter<Arrow>,
 ) -> Result<std::result::Result<(), WriterBuilderError>> {
-    let stream_name = writer.write_stream().to_owned();
-    Ok(attach_writer(target, &stream_name).await?.map(|attached| {
-        *writer = attached;
-    }))
+    let stream_name = writer.write_stream();
+    let attached = control_plane_retry(
+        &reconnect_context(stream_name),
+        Some(target.operation),
+        attach_error_is_transient,
+        || {
+            target
+                .client
+                .attach_to_stream::<PendingStream>(stream_name)
+                .build_arrow(target.schema.clone())
+        },
+    )
+    .await?;
+    Ok(attached.map(|attached| *writer = attached))
 }
 
 /// Best-effort finalize of a pending stream whose ingest already failed, so the server-side

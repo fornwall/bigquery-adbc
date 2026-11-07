@@ -1170,7 +1170,7 @@ mod mock_writes {
         let first = reader.next().unwrap().unwrap();
         let first = FirstBatch::new(normalized_schema, first, &operation).unwrap();
         let result = runtime.block_on(async {
-            write_batches(client, TABLE, schema.clone(), first, reader, &operation)
+            write_batches(&client, TABLE, schema.clone(), first, reader, &operation)
                 .await?
                 .commit(TABLE)
                 .await

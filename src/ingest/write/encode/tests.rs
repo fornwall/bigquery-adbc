@@ -11,6 +11,17 @@ use crate::arrow_ipc_bigquery::reader::{decode_record_batch_message, decode_sche
 use super::*;
 use crate::test_support::errors::assert_message;
 
+/// An encoder with explicit budgets and a fresh Arrow IPC stream state.
+fn limited_encoder(schema: SchemaRef, target: usize, max: usize) -> ChunkEncoder {
+    ChunkEncoder {
+        writer: Writer::new(),
+        schema,
+        target_batch_bytes: target,
+        max_batch_bytes: max,
+        last_chunk: None,
+    }
+}
+
 #[test]
 fn encoded_chunks_release_their_normalized_window() {
     use arrow_array::{Float32Array, Float64Array};
@@ -131,7 +142,7 @@ fn splits_ingest_batches_by_serialized_size_without_losing_rows() {
         ],
     )
     .unwrap();
-    let one_row_size = ChunkEncoder::with_limits(schema.clone(), usize::MAX, usize::MAX)
+    let one_row_size = limited_encoder(schema.clone(), usize::MAX, usize::MAX)
         .encode(batch.slice(0, 1), 0)
         .unwrap()
         .rows
@@ -256,7 +267,7 @@ fn oversized_skewed_candidates_materialize_only_the_accepted_payload() {
     .unwrap();
     RECORD_BATCH_SERIALIZATIONS.with(|count| count.set(0));
     REJECTED_CANDIDATE_BYTES.with(|bytes| bytes.set(0));
-    let mut encoder = ChunkEncoder::with_limits(batch.schema(), 1_000_000, 3_000_000);
+    let mut encoder = limited_encoder(batch.schema(), 1_000_000, 3_000_000);
     let chunk = encoder.encode(batch, 0).unwrap();
 
     assert_eq!(chunk.row_count, 1);
@@ -285,7 +296,7 @@ fn permits_one_row_above_the_target_but_rejects_one_above_the_request_budget() {
     )
     .unwrap();
     let encode = |target_size, max_size| {
-        ChunkEncoder::with_limits(schema.clone(), target_size, max_size).encode(batch.clone(), 0)
+        limited_encoder(schema.clone(), target_size, max_size).encode(batch.clone(), 0)
     };
     let serialized_size = encode(usize::MAX, usize::MAX)
         .unwrap()
@@ -297,7 +308,7 @@ fn permits_one_row_above_the_target_but_rejects_one_above_the_request_budget() {
     assert_eq!(chunk.rows.serialized_record_batch.len(), serialized_size);
 
     let mut rejected_encoder =
-        ChunkEncoder::with_limits(schema.clone(), serialized_size - 1, serialized_size - 1);
+        limited_encoder(schema.clone(), serialized_size - 1, serialized_size - 1);
     let error = rejected_encoder.encode(batch, 0).unwrap_err();
     assert_eq!(rejected_encoder.writer.body_materializations(), 0);
     assert_eq!(error.status, Status::InvalidArguments);
@@ -426,7 +437,7 @@ fn a_large_batch_is_normalized_one_request_sized_window_at_a_time() {
         Field::new("day", DataType::Date32, false),
     ]));
     let target = 100_000;
-    let mut encoder = ChunkEncoder::with_limits(normalized, target, 2 * target);
+    let mut encoder = limited_encoder(normalized, target, 2 * target);
 
     let mut offset = 0;
     let mut windows = 0;
@@ -498,7 +509,7 @@ fn repeated_dictionary_values_and_list_views_normalize_in_bounded_windows() {
         let normalized =
             Arc::new(crate::ingest::schema::normalize_schema(&input.schema()).unwrap());
         let target = 10_000;
-        let mut encoder = ChunkEncoder::with_limits(normalized, target, 2 * target);
+        let mut encoder = limited_encoder(normalized, target, 2 * target);
         let mut offset = 0;
         let mut windows = 0;
         while offset < input.num_rows() {
@@ -545,7 +556,7 @@ fn repeated_empty_list_values_bound_their_normalized_offsets() {
         let normalized =
             Arc::new(crate::ingest::schema::normalize_schema(&input.schema()).unwrap());
         let target = 10_000;
-        let mut encoder = ChunkEncoder::with_limits(normalized, target, 2 * target);
+        let mut encoder = limited_encoder(normalized, target, 2 * target);
         let mut offset = 0;
         while offset < input.num_rows() {
             let window = encoder.window(&input, offset, target).unwrap();
@@ -594,7 +605,7 @@ fn resolved_null_columns_normalize_in_bounded_windows() {
     ] {
         let input = RecordBatch::try_from_iter([("value", column)]).unwrap();
         let schema = Arc::new(Schema::new(vec![Field::new("value", target_type, true)]));
-        let encoder = ChunkEncoder::with_limits(schema, 100, 200);
+        let encoder = limited_encoder(schema, 100, 200);
         let window = encoder.window(&input, 0, 100).unwrap();
         assert!(
             window.num_rows() <= 50,
@@ -621,7 +632,7 @@ fn widened_columns_are_sized_at_their_normalized_width() {
     for column in [decimal, dictionary] {
         let input = RecordBatch::try_from_iter([("value", column)]).unwrap();
         let schema = Arc::new(crate::ingest::schema::normalize_schema(&input.schema()).unwrap());
-        let encoder = ChunkEncoder::with_limits(schema, 100, 200);
+        let encoder = limited_encoder(schema, 100, 200);
         let window = encoder.window(&input, 0, 100).unwrap();
         assert!(
             window.num_rows() <= 12,

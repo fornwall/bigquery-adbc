@@ -19,7 +19,10 @@ use google_cloud_gax::error::rpc::Code;
 
 use crate::cancellation::{self, Operation, gate};
 use crate::diag::diag;
-use crate::error::{driver_defect, error, google_error, google_error_code, summarize_errors};
+use crate::error::{
+    driver_defect, error, google_error, google_error_code, google_error_is_transient,
+    summarize_errors,
+};
 
 use super::AppendTarget;
 use super::stream::{attach_error_is_transient, reattach, reconnect_failure};
@@ -42,8 +45,6 @@ pub(super) const CONTROL_PLANE_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long the oldest append may go unanswered before its call counts as ended. Replaying costs
 /// nothing if the service was only slow, so this need not be generous.
 const APPEND_ANSWER_TIMEOUT: Duration = Duration::from_secs(300);
-
-pub(super) use crate::error::google_error_is_transient;
 
 /// Retries transient control-plane failures. The outer error is cancellation or the timeout,
 /// reported under `context`, and the inner the RPC failure. Stream-closing RPCs pass no operation;
@@ -128,34 +129,23 @@ fn append_error_cause(source: &AppendError) -> &'static str {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(super) struct Replay {
-    /// Only a prior send makes `ALREADY_EXISTS` success; otherwise it signals an offset defect.
-    pub(super) already_sent: bool,
-    /// The current AppendRows call ended; reconnect before sending.
-    pub(super) reconnect: bool,
-}
-
-/// Replays at the original offset on the same stream, replacing the dead AppendRows connection.
+/// Sends one append and retries it at its original offset on the same stream, replacing the dead
+/// AppendRows connection. `replay` says its call already ended with the append sent, so it
+/// reconnects first and has spent an attempt; only a prior send makes `ALREADY_EXISTS` success,
+/// since otherwise it signals an offset defect.
 pub(super) async fn append_with_retry(
     target: &AppendTarget<'_>,
     writer: &mut PendingWriter<Arrow>,
     rows: ArrowRecordBatch,
     offset: i64,
-    replay: Replay,
+    mut replay: bool,
 ) -> Result<()> {
-    let Replay {
-        mut already_sent,
-        mut reconnect,
-    } = replay;
-    // Pipeline recovery has already spent its first append attempt.
-    let mut attempts_left = APPEND_RETRY_ATTEMPTS - 1 - usize::from(reconnect);
+    let mut attempts_left = APPEND_RETRY_ATTEMPTS - 1 - usize::from(replay);
     let mut delay = APPEND_RETRY_DELAY;
     loop {
-        if reconnect {
+        if replay {
             // Reconnection failures spend the same retry budget as append failures.
             match reattach(target, writer).await? {
-                // Every later failure also ends AppendRows, so leave `reconnect` set.
                 Ok(()) => {}
                 Err(source) if attempts_left > 0 && attach_error_is_transient(&source) => {
                     attempts_left -= 1;
@@ -175,7 +165,7 @@ pub(super) async fn append_with_retry(
             Ok(response) => {
                 return check_acknowledged_offset(response.offset, offset, target.table_path);
             }
-            Err(source) if replay_landed(already_sent, &source) => return Ok(()),
+            Err(source) if replay_landed(replay, &source) => return Ok(()),
             Err(source) if attempts_left > 0 && append_error_is_retryable(&source) => {
                 diag!(
                     Debug,
@@ -185,8 +175,7 @@ pub(super) async fn append_with_retry(
                     append_error_cause(&source)
                 );
                 attempts_left -= 1;
-                already_sent = true;
-                reconnect = true;
+                replay = true;
                 back_off(Some(target.operation), &mut delay).await?;
             }
             Err(source) => return Err(append_failure(target.table_path, source, offset)),
@@ -300,7 +289,7 @@ struct InFlightAppend {
     offset: i64,
     rows: ArrowRecordBatch,
     future: AppendFuture,
-    /// See [`Replay::already_sent`].
+    /// Whether an earlier send of this append may have landed; see [`replay_landed`].
     replayed: bool,
 }
 
@@ -309,8 +298,9 @@ fn pipeline_has_room(requests: usize, bytes: usize, size: usize) -> bool {
     requests == 0 || (requests < APPEND_PIPELINE_REQUESTS && bytes + size <= APPEND_PIPELINE_BYTES)
 }
 
-/// Bounded appends, acknowledged in offset order. A failure's successors are replayed or dropped;
-/// their offset errors must never hide the original failure.
+/// Bounded appends, acknowledged in offset order. A failure's successors are replayed or dropped
+/// with the pipeline; their offset errors must never hide the original failure.
+#[derive(Default)]
 pub(super) struct AppendPipeline {
     in_flight: VecDeque<InFlightAppend>,
     /// The serialized size of every payload in `in_flight`.
@@ -318,13 +308,6 @@ pub(super) struct AppendPipeline {
 }
 
 impl AppendPipeline {
-    pub(super) fn new() -> Self {
-        Self {
-            in_flight: VecDeque::new(),
-            in_flight_bytes: 0,
-        }
-    }
-
     /// Wait for room, then queue a chunk at its explicit offset.
     pub(super) async fn submit(
         &mut self,
@@ -375,12 +358,10 @@ impl AppendPipeline {
             return Ok(());
         };
         self.in_flight_bytes -= rows.serialized_record_batch.len();
-        let outcome = match target.operation.wait(append_answer(future)).await {
-            Ok(Ok(response)) => {
-                check_acknowledged_offset(response.offset, offset, target.table_path)
-            }
-            Ok(Err(source)) if replay_landed(replayed, &source) => Ok(()),
-            Ok(Err(source)) if append_error_is_retryable(&source) => {
+        match target.operation.wait(append_answer(future)).await? {
+            Ok(response) => check_acknowledged_offset(response.offset, offset, target.table_path),
+            Err(source) if replay_landed(replayed, &source) => Ok(()),
+            Err(source) if append_error_is_retryable(&source) => {
                 diag!(
                     Debug,
                     "replaying BigQuery ingest appends to {} from stream offset {offset}, {} of \
@@ -391,14 +372,8 @@ impl AppendPipeline {
                 );
                 self.resend(target, writer, offset, rows).await
             }
-            Ok(Err(source)) => Err(append_failure(target.table_path, source, offset)),
-            Err(cancelled) => Err(cancelled),
-        };
-        if outcome.is_err() {
-            self.in_flight.clear();
-            self.in_flight_bytes = 0;
+            Err(source) => Err(append_failure(target.table_path, source, offset)),
         }
-        outcome
     }
 
     /// Reconnect and replay the failed append, then requeue its successors in offset order.
@@ -409,11 +384,7 @@ impl AppendPipeline {
         offset: i64,
         rows: ArrowRecordBatch,
     ) -> Result<()> {
-        let first = Replay {
-            already_sent: true,
-            reconnect: true,
-        };
-        append_with_retry(target, writer, rows, offset, first).await?;
+        append_with_retry(target, writer, rows, offset, true).await?;
         for successor in &mut self.in_flight {
             successor.future = writer
                 .append(successor.rows.clone())

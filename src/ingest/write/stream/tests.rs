@@ -104,7 +104,7 @@ fn table_visibility_backoff_grows_and_saturates_like_its_reference_policy() {
 /// the documented three-minute ceiling that callers size statement timeouts against.
 #[test]
 fn the_table_visibility_budget_spans_every_step_of_one_wait() {
-    let mut budget = VisibilityBudget::new();
+    let mut budget = VisibilityBudget::default();
     let mut waits = 0;
     while budget.has_attempt_left() {
         budget.failures += 1;

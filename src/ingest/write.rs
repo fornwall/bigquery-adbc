@@ -2,7 +2,6 @@
 //! Stream lifecycle, append retries and IPC chunk sizing live in their respective submodules.
 
 use std::future::Future;
-use std::sync::Arc;
 
 use adbc_core::error::{Result, Status};
 use arrow_array::{RecordBatch, RecordBatchReader};
@@ -16,7 +15,7 @@ use google_cloud_bigquery::write::format::Arrow;
 use google_cloud_gax::error::Error as GoogleError;
 
 use crate::cancellation::Operation;
-use crate::error::{driver_defect, error, google_error, summarize_errors};
+use crate::error::{error, google_error, google_error_is_transient, summarize_errors};
 
 mod encode;
 mod retry;
@@ -26,10 +25,7 @@ mod window;
 pub(super) use encode::read_batch;
 
 use encode::ChunkEncoder;
-use retry::{
-    AppendPipeline, control_plane_retry, format_storage_error, google_error_is_transient,
-    storage_error_status,
-};
+use retry::{AppendPipeline, control_plane_retry, format_storage_error, storage_error_status};
 use stream::{finalize_abandoned_writer, pending_writer};
 
 /// An ingest's first non-empty batch, checked to normalize and to fit AppendRows requests, with
@@ -70,7 +66,7 @@ impl FirstBatch {
 /// None of the rows is visible until [`FinalizedStream::commit`]: that split is what lets a
 /// `replace` empty its target only once every row is safely on the stream.
 pub(super) async fn write_batches(
-    client: Arc<Write>,
+    client: &Write,
     table_path: &str,
     input_schema: SchemaRef,
     first: FirstBatch,
@@ -80,23 +76,29 @@ pub(super) async fn write_batches(
     operation.check()?;
     let FirstBatch {
         batch: first,
-        encoder,
-        schema: arrow_schema,
+        mut encoder,
+        schema,
     } = first;
+    let target = AppendTarget {
+        client,
+        schema,
+        table_path,
+        operation,
+    };
+    // `first` was checked before table preparation, so invalid input cannot create or truncate
+    // the target.
+    let window = encoder.window(&first, 0, FIRST_APPEND_TARGET_BYTES)?;
+    let chunk = encoder.encode(window, 0)?;
+    let writer = pending_writer(&target, chunk.rows).await?;
     let mut stream = StreamWriter {
-        target: AppendTarget {
-            client: &client,
-            schema: arrow_schema,
-            table_path,
-            operation,
-        },
+        target,
         encoder,
-        writer: None,
-        pipeline: AppendPipeline::new(),
-        total_rows: 0,
+        writer,
+        pipeline: AppendPipeline::default(),
+        total_rows: stream_rows(chunk.row_count),
     };
     let outcome = match stream
-        .append_all(&input_schema, first, reader.as_mut())
+        .append_all(&input_schema, first, chunk.row_count, reader.as_mut())
         .await
     {
         Ok(()) => stream.finalize().await,
@@ -105,15 +107,16 @@ pub(super) async fn write_batches(
     // An input failure already ends the ingest. Release queued appends without waiting for
     // their responses before the bounded cleanup of its uncommitted stream.
     drop(stream.pipeline);
-    if outcome.is_err()
-        && let Some(writer) = &stream.writer
-    {
+    if outcome.is_err() {
         // A failed ingest must not leave its pending stream open: BigQuery bills the buffered
         // rows until it expires. Re-finalizing is a no-op, so this also covers a failed
         // finalize. The failure that abandoned the stream is what gets reported.
-        finalize_abandoned_writer(writer).await;
+        finalize_abandoned_writer(&stream.writer).await;
     }
-    outcome
+    outcome.map(|()| FinalizedStream {
+        writer: stream.writer,
+        total_rows: stream.total_rows,
+    })
 }
 
 /// Completes finalize or commit without racing caller cancellation against its response.
@@ -149,6 +152,12 @@ fn commit_already_landed(errors: &[StorageError]) -> bool {
 /// would hold back the rest of the upload for its whole round trip.
 const FIRST_APPEND_TARGET_BYTES: usize = 1_000_000;
 
+/// A chunk's rows as the stream counts them: a chunk fits one request, and an ingest could not
+/// send `i64::MAX` rows in a lifetime, so neither this nor the running total can overflow.
+fn stream_rows(rows: usize) -> i64 {
+    i64::try_from(rows).expect("a chunk's rows fit one AppendRows request")
+}
+
 /// Append destination and reconnection state. A transport failure terminates the upstream
 /// AppendRows runner, so recovery must reattach to the same stream with its schema.
 struct AppendTarget<'a> {
@@ -159,29 +168,25 @@ struct AppendTarget<'a> {
 }
 
 /// One pending Storage Write stream and everything appended to it so far.
-///
-/// The stream is created lazily, by the first chunk that has rows to send. A NOT_FOUND from that
-/// first append can mean the new table or stream is not visible yet, so [`pending_writer`] keeps
-/// the first payload to reattach to the same stream and replay offset zero.
 struct StreamWriter<'a> {
     target: AppendTarget<'a>,
     encoder: ChunkEncoder,
-    writer: Option<PendingWriter<Arrow>>,
+    writer: PendingWriter<Arrow>,
     pipeline: AppendPipeline,
     total_rows: i64,
 }
 
 impl StreamWriter<'_> {
-    /// Appends remaining batches and drains the pipeline.
+    /// Appends the rest of `first` from row `first_unsent`, then every later batch, and drains
+    /// the pipeline.
     async fn append_all(
         &mut self,
         input_schema: &SchemaRef,
         first: RecordBatch,
+        first_unsent: usize,
         reader: &mut dyn RecordBatchReader,
     ) -> Result<()> {
-        // `first` was checked before table preparation, so invalid input cannot create or
-        // truncate the target.
-        self.append_batch(&first).await?;
+        self.append_batch(&first, first_unsent).await?;
         // Queued appends own their IPC bytes, so the first input's buffers need not remain
         // alive while the rest of the source is read or the pending stream is finalized.
         drop(first);
@@ -191,73 +196,43 @@ impl StreamWriter<'_> {
                 break;
             };
             let batch = read_batch(batch, input_schema)?;
-            if batch.num_rows() != 0 {
-                self.append_batch(&batch).await?;
-            }
+            self.append_batch(&batch, 0).await?;
         }
-        match &mut self.writer {
-            Some(writer) => self.pipeline.finish(&self.target, writer).await,
-            None => Ok(()),
-        }
+        self.pipeline.finish(&self.target, &mut self.writer).await
     }
 
-    /// Normalizes one input batch in request-sized chunks and queues each of them.
-    async fn append_batch(&mut self, input: &RecordBatch) -> Result<()> {
-        let mut offset = 0;
+    /// Normalizes `input` from row `offset` in request-sized chunks and queues each of them. The
+    /// submit only awaits a response once the pipeline is full, so a chunk's request goes out
+    /// while the next chunk is being encoded.
+    async fn append_batch(&mut self, input: &RecordBatch, mut offset: usize) -> Result<()> {
         while offset < input.num_rows() {
             self.target.operation.check()?;
-            let target_size = if self.writer.is_none() {
-                FIRST_APPEND_TARGET_BYTES
-            } else {
-                self.encoder.target_batch_bytes
-            };
+            let target_size = self.encoder.target_batch_bytes;
             let window = self.encoder.window(input, offset, target_size)?;
             let chunk = self.encoder.encode(window, offset)?;
-            let row_count = i64::try_from(chunk.row_count).map_err(|_| {
-                error(
-                    "BigQuery ingest cannot represent this many rows in one chunk; \
-                     split the input into smaller batches",
-                    Status::InvalidData,
-                )
-            })?;
-            if let Some(writer) = &mut self.writer {
-                // Later chunks are pipelined: the submit only awaits a response once the pipeline
-                // is full, so this chunk's request goes out while the next chunk is being encoded.
-                self.pipeline
-                    .submit(&self.target, writer, chunk.rows, self.total_rows)
-                    .await?;
-            } else {
-                self.writer = Some(pending_writer(&self.target, chunk.rows).await?);
-            }
-            self.target.operation.check()?;
-            self.total_rows = self.total_rows.checked_add(row_count).ok_or_else(|| {
-                error(
-                    "BigQuery ingest cannot represent this many rows in one ingestion; \
-                     split the input into smaller batches",
-                    Status::InvalidData,
-                )
-            })?;
+            self.pipeline
+                .submit(&self.target, &mut self.writer, chunk.rows, self.total_rows)
+                .await?;
+            self.total_rows += stream_rows(chunk.row_count);
             offset += chunk.row_count;
         }
         Ok(())
     }
 
-    /// Finalizes and checks the row count. Empty ingests return before reaching this method.
-    /// On failure, retain the writer for cleanup in [`write_batches`].
-    async fn finalize(&mut self) -> Result<FinalizedStream> {
-        let table_path = self.target.table_path;
-        let total_rows = self.total_rows;
-        self.target.operation.check()?;
-        let Some(writer) = &self.writer else {
-            return Err(driver_defect(format_args!(
-                "BigQuery ingest reached finalize for {table_path} without ever opening a \
-                 write stream"
-            )));
-        };
+    /// Finalizes the stream and checks its row count.
+    async fn finalize(&self) -> Result<()> {
+        let Self {
+            target,
+            writer,
+            total_rows,
+            ..
+        } = self;
+        let table_path = target.table_path;
+        target.operation.check()?;
         let stream = writer.write_stream();
         let finalized =
             close_stream_call(|| writer.finalize(), "finalize", stream, table_path).await?;
-        if finalized.row_count != total_rows {
+        if finalized.row_count != *total_rows {
             return Err(error(
                 format!(
                     "BigQuery finalized ingest stream {stream} for {table_path} with {} rows, \
@@ -268,10 +243,7 @@ impl StreamWriter<'_> {
                 Status::InvalidData,
             ));
         }
-        Ok(FinalizedStream {
-            writer: self.writer.take().expect("the writer was borrowed above"),
-            total_rows,
-        })
+        Ok(())
     }
 }
 
