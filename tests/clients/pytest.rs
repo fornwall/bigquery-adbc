@@ -37,7 +37,7 @@ impl PytestSuite {
         let root = self.root();
         run_checked(
             Command::new("uv")
-                .args(["sync", "--locked", "--python", "3.15", "--project"])
+                .args(["sync", "--locked", "--project"])
                 .arg(&root),
         );
         root.join(".venv/bin/python")
