@@ -127,26 +127,42 @@ pub(crate) fn option_value_json<T: serde::Serialize + ?Sized>(
 }
 
 /// Convert BigQuery's structured error entries into one ADBC error with `status`, keeping the
-/// first entry's details and SQLSTATE.
+/// first entry's `reason` and `location` as ADBC 1.1.0 details, so consumers need not parse them
+/// out of the message.
 ///
 /// Jobs derive `status` from the `reason`; REST responses from the HTTP status, with the reason
 /// refining an ambiguous 403.
 pub(crate) fn bigquery_errors(context: &str, errors: &[ErrorProto], status: Status) -> Error {
+    let Some(first) = errors.first() else {
+        return error(
+            named(context, "the job failed without error details"),
+            status,
+        );
+    };
     // BigQuery reports a `jobTimeoutMs` expiry as the same `stopped` cancellation a caller's
     // cancel produces, differing only in the message. adbc.h reserves CANCELLED for requested
     // cancels, so a deadline is TIMEOUT.
-    let status = match errors.first() {
-        Some(first)
-            if status == Status::Cancelled
-                && first.reason == "stopped"
-                && first.message.contains("timed out") =>
-        {
-            Status::Timeout
-        }
-        _ => status,
-    };
-    let mut failure = error(named(context, job_failure_message(errors)), status);
-    describe(&mut failure, errors.first());
+    let timed_out = status == Status::Cancelled
+        && first.reason == "stopped"
+        && first.message.contains("timed out");
+    let mut failure = error(
+        named(
+            context,
+            summarize_errors(errors.iter().map(format_error_proto)),
+        ),
+        if timed_out { Status::Timeout } else { status },
+    );
+    extend_details(
+        &mut failure,
+        [
+            (DETAIL_REASON, &first.reason),
+            (DETAIL_LOCATION, &first.location),
+        ]
+        .into_iter()
+        .filter(|(_, value)| !value.is_empty())
+        .map(|(key, value)| (key.to_owned(), value.clone().into_bytes())),
+    );
+    failure.sqlstate = sqlstate(&first.reason);
     failure
 }
 
@@ -357,26 +373,6 @@ fn status_detail_name(url: &str) -> Option<&str> {
     Some(url.rsplit_once('/').map_or(url, |(_, name)| name)).filter(|name| !name.is_empty())
 }
 
-/// Attach a BigQuery error's `reason` and `location` as ADBC 1.1.0 details, plus its SQLSTATE, so
-/// consumers need not parse them out of the message.
-fn describe(failure: &mut Error, source: Option<&ErrorProto>) {
-    let Some(source) = source else {
-        return;
-    };
-    let details: Vec<(String, Vec<u8>)> = [
-        (DETAIL_REASON, source.reason.as_str()),
-        (DETAIL_LOCATION, source.location.as_str()),
-    ]
-    .into_iter()
-    .filter(|(_, value)| !value.is_empty())
-    .map(|(key, value)| (key.to_owned(), value.as_bytes().to_vec()))
-    .collect();
-    if !details.is_empty() {
-        failure.details = Some(details);
-    }
-    failure.sqlstate = sqlstate(&source.reason);
-}
-
 /// `42000`, "syntax error or access rule violation", as ASCII code points, which fit `c_char`
 /// whatever its signedness.
 const SQLSTATE_SYNTAX_ERROR_OR_ACCESS_RULE_VIOLATION: [c_char; 5] = [0x34, 0x32, 0x30, 0x30, 0x30];
@@ -392,13 +388,6 @@ fn sqlstate(reason: &str) -> [c_char; 5] {
         "invalidQuery" | "accessDenied" => SQLSTATE_SYNTAX_ERROR_OR_ACCESS_RULE_VIOLATION,
         _ => [0; 5],
     }
-}
-
-fn job_failure_message(errors: &[ErrorProto]) -> String {
-    if errors.is_empty() {
-        return "the job failed without error details".to_owned();
-    }
-    summarize_errors(errors.iter().map(format_error_proto))
 }
 
 /// How many entries of a server-supplied error list are rendered before the rest are counted.

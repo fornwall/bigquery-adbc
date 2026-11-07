@@ -60,8 +60,11 @@ impl CredentialsProvider for RedactedTokenExchangeCredentials {
             Ok(headers) => headers.map_err(|source| redact(source, self.layer)),
             Err(_) => Err(CredentialsError::from_source(
                 true,
-                CredentialFailure::new(self.layer, Some("the token request timed out".into()))
-                    .noting_unavailability(Some(TokenServiceFailure::Exchange)),
+                CredentialFailure::new(
+                    self.layer,
+                    Some("the token request timed out".into()),
+                    Some(TokenServiceFailure::Exchange),
+                ),
             )),
         }
     }
@@ -117,9 +120,7 @@ fn redact(source: CredentialsError, layer: CredentialLayer) -> CredentialsError 
         .flatten();
     CredentialsError::from_source(
         transient,
-        CredentialFailure::new(layer, safe)
-            .noting_reauthentication(&source)
-            .noting_unavailability(unavailable),
+        CredentialFailure::new(layer, safe, unavailable).noting_reauthentication(&source),
     )
 }
 

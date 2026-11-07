@@ -52,19 +52,14 @@ impl CredentialFailure {
     pub(crate) fn new(
         layer: CredentialLayer,
         source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
+        unavailable: Option<TokenServiceFailure>,
     ) -> Self {
         Self {
             layer,
             source,
             reauthentication: false,
-            unavailable: None,
+            unavailable,
         }
-    }
-
-    /// Records a transient exchange failure before the original error is redacted.
-    pub(crate) fn noting_unavailability(mut self, failure: Option<TokenServiceFailure>) -> Self {
-        self.unavailable = failure;
-        self
     }
 
     /// Record whether `redacted`, the failure this replaces, is Google's demand that the user
@@ -235,7 +230,7 @@ pub(crate) fn chain<'a>(
 ///
 /// The auth retry loop wraps the authentication error in a retry-exhausted error with no kind or
 /// status, so the chain is walked; `is_authentication` covers the outermost error.
-pub(super) fn is_credentials_failure(source: &GoogleError) -> bool {
+fn is_credentials_failure(source: &GoogleError) -> bool {
     source.is_authentication()
         || chain(source)
             .skip(1)

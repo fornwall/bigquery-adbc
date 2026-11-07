@@ -3,6 +3,16 @@ use google_cloud_gax::error::rpc::Status as GoogleStatus;
 
 use crate::error::{DETAIL_HTTP_STATUS, DETAIL_RPC_CODE};
 
+/// A service answer with no message or details.
+fn service(code: Code) -> GoogleError {
+    GoogleError::service(GoogleStatus::default().set_code(code))
+}
+
+/// An HTTP rejection with no `google.rpc.Status` body, such as a proxy's error page.
+fn bare_http(code: u16) -> GoogleError {
+    GoogleError::http(code, http::HeaderMap::new(), bytes::Bytes::new())
+}
+
 #[test]
 fn generated_transport_failures_report_io_with_their_cause() {
     for source in [
@@ -31,11 +41,10 @@ fn a_storage_call_is_retried_only_when_no_verdict_was_reached() {
         GoogleError::io("connection reset"),
         GoogleError::timeout("attempt deadline elapsed"),
         GoogleError::transport(http::HeaderMap::new(), "connection reset"),
-        GoogleError::http(503, http::HeaderMap::new(), bytes::Bytes::new()),
+        bare_http(503),
     ] {
         assert!(google_error_is_transient(&source), "{source}");
     }
-    let service = |code| GoogleError::service(GoogleStatus::default().set_code(code));
     for code in [
         Code::Aborted,
         Code::DeadlineExceeded,
@@ -57,20 +66,15 @@ fn a_storage_call_is_retried_only_when_no_verdict_was_reached() {
     ] {
         assert!(!google_error_is_transient(&service(code)), "{code:?}");
     }
-    assert!(!google_error_is_transient(&GoogleError::http(
-        400,
-        http::HeaderMap::new(),
-        bytes::Bytes::new()
-    )));
+    assert!(!google_error_is_transient(&bare_http(400)));
 }
 
 #[test]
 fn exhausted_retries_keep_the_last_attempts_status_and_details() {
     for source in [
-        (|| GoogleError::service(GoogleStatus::default().set_code(Code::Unavailable)))
-            as fn() -> GoogleError,
-        || GoogleError::service(GoogleStatus::default().set_code(Code::Cancelled)),
-        || GoogleError::service(GoogleStatus::default().set_code(Code::PermissionDenied)),
+        (|| service(Code::Unavailable)) as fn() -> GoogleError,
+        || service(Code::Cancelled),
+        || service(Code::PermissionDenied),
         || {
             GoogleError::service(
                 GoogleStatus::default()
@@ -81,7 +85,7 @@ fn exhausted_retries_keep_the_last_attempts_status_and_details() {
                     }))]),
             )
         },
-        || GoogleError::http(503, http::HeaderMap::new(), bytes::Bytes::new()),
+        || bare_http(503),
         || GoogleError::timeout("request deadline elapsed"),
     ] {
         let expected = google_error("read BigQuery rows", source());
@@ -113,10 +117,7 @@ fn a_bare_http_rejection_is_classified_by_its_status() {
         (404, Status::NotFound),
         (403, Status::Unauthorized),
     ] {
-        let failure = google_error(
-            "BigQuery request failed",
-            GoogleError::http(code, http::HeaderMap::new(), bytes::Bytes::new()),
-        );
+        let failure = google_error("BigQuery request failed", bare_http(code));
         assert_eq!(failure.status, expected, "{code}");
         assert_eq!(failure.vendor_code, i32::from(code));
     }
@@ -282,10 +283,7 @@ fn a_service_failure_reports_the_number_its_status_was_decided_from() {
         Some(vec![(DETAIL_RPC_CODE.to_owned(), b"7".to_vec())])
     );
 
-    let http = google_error(
-        "failed to describe it",
-        GoogleError::http(404, http::HeaderMap::new(), bytes::Bytes::new()),
-    );
+    let http = google_error("failed to describe it", bare_http(404));
     assert_eq!(http.vendor_code, 404);
     assert_eq!(
         http.details,
@@ -296,11 +294,13 @@ fn a_service_failure_reports_the_number_its_status_was_decided_from() {
 #[test]
 fn the_reported_rpc_code_numbers_are_the_ones_the_protocol_assigns() {
     for number in (0..=16).chain([99]) {
-        let failure = google_error(
-            "test RPC code",
-            GoogleError::service(GoogleStatus::default().set_code(Code::from(number))),
-        );
+        let failure = google_error("test RPC code", service(Code::from(number)));
         let expected = if number == 99 { 2 } else { number };
+        assert_eq!(
+            failure.status,
+            rpc_code_status(i64::from(number)),
+            "{number}"
+        );
         assert_eq!(failure.vendor_code, expected, "{number}");
         assert_eq!(
             failure.details,
@@ -341,15 +341,6 @@ fn the_typed_and_numeric_code_tables_agree() {
     assert_eq!(rpc_code_status(0), Status::Unknown);
     assert_eq!(rpc_code_status(99), Status::Unknown);
     assert_eq!(rpc_code_status(i64::from(i32::MAX) + 1), Status::Unknown);
-}
-
-#[test]
-fn an_aborted_service_error_reports_invalid_state() {
-    let converted = google_error(
-        "BigQuery query execution failed",
-        GoogleError::service(GoogleStatus::default().set_code(Code::Aborted)),
-    );
-    assert_eq!(converted.status, Status::InvalidState);
 }
 
 /// A Storage API not enabled in the project is refused with `PERMISSION_DENIED` and an
@@ -526,10 +517,7 @@ fn an_unrecognized_detail_type_is_forwarded_and_an_untyped_one_skipped() {
 /// A status without details, and a failure with no status, gain no details.
 #[test]
 fn a_failure_without_status_details_gains_no_details() {
-    let bare = google_error(
-        "failed to append rows",
-        GoogleError::service(GoogleStatus::default().set_code(Code::Unavailable)),
-    );
+    let bare = google_error("failed to append rows", service(Code::Unavailable));
     assert_eq!(
         bare.details,
         Some(vec![(DETAIL_RPC_CODE.to_owned(), b"14".to_vec())])

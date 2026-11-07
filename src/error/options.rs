@@ -20,20 +20,23 @@ pub(crate) fn option_get_refusal(kind: &str, key: &str) -> Error {
 
 /// `unsupported` for a key the driver recognizes and refuses at this scope, `unknown` for one it
 /// has never heard of, then what to try next. `getter` is whether the key was being read.
-fn option_rejection(kind: &str, key: &str, getter: bool) -> String {
-    let (recognized, orientation) = option_orientation(kind, key, getter);
-    let verdict = if recognized { "unsupported" } else { "unknown" };
-    format!("{verdict} BigQuery {kind} option {key:?}{orientation}")
-}
-
-/// What to try next after a refused option key, and whether the driver recognizes it. In order:
-/// a statement read of the Go driver's project or dataset key (G57); the scope the key really
-/// belongs to; why a knowingly refused key is refused; the nearest known key, when close enough
-/// to be a typo; otherwise how the driver's keys are spelled.
 ///
 /// Only the key is echoed, never the value: a credential sent under the wrong key lands here. See
 /// [`crate::options`].
-fn option_orientation(kind: &str, key: &str, getter: bool) -> (bool, String) {
+fn option_rejection(kind: &str, key: &str, getter: bool) -> String {
+    match recognized_key_guidance(kind, key, getter) {
+        Some(guidance) => format!("unsupported BigQuery {kind} option {key:?}{guidance}"),
+        None => format!(
+            "unknown BigQuery {kind} option {key:?}{}",
+            unknown_key_guidance(kind, key)
+        ),
+    }
+}
+
+/// What to try next after refusing a key the driver knows, if it does. In order: a statement read
+/// of the Go driver's project or dataset key (G57); the scope the key really belongs to; why a
+/// knowingly refused key is refused.
+fn recognized_key_guidance(kind: &str, key: &str, getter: bool) -> Option<String> {
     // The Go driver reads these two on a statement too (G57); this driver's statement spelling of
     // the same value is its effective default.
     if getter && kind == "statement" {
@@ -47,64 +50,60 @@ fn option_orientation(kind: &str, key: &str, getter: bool) -> (bool, String) {
             _ => None,
         };
         if let Some((default, what)) = default {
-            return (
-                true,
-                format!(
-                    "; read {}, the statement's effective default {what}, or read this key \
-                     from the connection",
-                    default.as_str()
-                ),
-            );
+            return Some(format!(
+                "; read {}, the statement's effective default {what}, or read this key from the \
+                 connection",
+                default.as_str()
+            ));
         }
     }
     let access = if getter { "read it from" } else { "set it on" };
     // A real key at the wrong scope is not a typo, so check scope first. This answers
     // `bigquery.query.priority` on a database and `bigquery.auth_type` on a connection (the Go
     // driver takes both per connection) with where they go.
-    match other_option_scopes(kind, key).as_slice() {
-        [] => {}
-        [scope] => {
-            return (
-                true,
-                format!("; that is a BigQuery {scope} option, so {access} the {scope}"),
-            );
-        }
-        scopes => {
-            return (
-                true,
-                format!(
-                    "; that is a BigQuery {} option, so {access} one of those",
-                    scopes.join(" or ")
-                ),
-            );
-        }
+    let scopes = other_option_scopes(kind, key);
+    if let [scope] = scopes[..] {
+        return Some(format!(
+            "; that is a BigQuery {scope} option, so {access} the {scope}"
+        ));
     }
-    if let Some(refusal) =
-        refused_standard_option(key).or_else(|| refused_go_option(key).map(str::to_owned))
-    {
-        return (true, refusal);
+    if !scopes.is_empty() {
+        return Some(format!(
+            "; that is a BigQuery {} option, so {access} one of those",
+            scopes.join(" or ")
+        ));
     }
-    if let Some(&(_, scope)) = ADBC_OPTION_SCOPES
-        .iter()
-        .find(|&&(standard, scope)| standard == key && scope != kind)
-    {
-        return (
-            true,
-            format!("; that is an ADBC {scope} option, so {access} the {scope}"),
-        );
-    }
-    let orientation = match nearest_option_key(kind, key) {
+    refused_standard_option(key)
+        .or_else(|| refused_go_option(key).map(str::to_owned))
+        .or_else(|| {
+            let &(_, scope) = ADBC_OPTION_SCOPES
+                .iter()
+                .find(|&&(standard, scope)| standard == key && scope != kind)?;
+            Some(format!(
+                "; that is an ADBC {scope} option, so {access} the {scope}"
+            ))
+        })
+}
+
+/// What to try after a key the driver has never heard of: the nearest known key, when close enough
+/// to be a typo, otherwise how the driver's keys are spelled.
+fn unknown_key_guidance(kind: &str, key: &str) -> String {
+    match nearest_option_key(kind, key) {
         Some((scope, nearest)) if scope == kind => format!("; did you mean {nearest:?}?"),
         Some((scope, nearest)) => format!("; did you mean the {scope} option {nearest:?}?"),
         // Telling a caller who wrote `bigquery.*` that the driver's keys are spelled that way
         // would read as "you spelled it right".
-        None if has_driver_prefix(key) => format!("; no BigQuery {kind} option has that name"),
+        None if ["bigquery.", "adbc.bigquery."]
+            .iter()
+            .any(|prefix| strip_ascii_prefix(key, prefix).is_some()) =>
+        {
+            format!("; no BigQuery {kind} option has that name")
+        }
         None => format!(
             "; this driver takes the ADBC standard {kind} options plus its own, which are \
              spelled bigquery.* or adbc.bigquery.*"
         ),
-    };
-    (false, orientation)
+    }
 }
 
 /// The ADBC keys this driver takes, each with the one object that takes it, matched exactly as
@@ -135,12 +134,10 @@ const ADBC_OPTION_SCOPES: [(&str, &str); 13] = {
     ]
 };
 
-/// Whether `key` is spelled like one of this driver's own keys, whatever its case.
-fn has_driver_prefix(key: &str) -> bool {
-    ["bigquery.", "adbc.bigquery."].iter().any(|prefix| {
-        key.get(..prefix.len())
-            .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
-    })
+/// `key` after `prefix`, whatever its case.
+fn strip_ascii_prefix<'a>(key: &'a str, prefix: &str) -> Option<&'a str> {
+    let (head, rest) = key.split_at_checked(prefix.len())?;
+    head.eq_ignore_ascii_case(prefix).then_some(rest)
 }
 
 /// Guidance for the four ADBC standard option keys this driver refuses, which the fallback would
@@ -174,11 +171,7 @@ fn refused_standard_option(key: &str) -> Option<String> {
 fn refused_go_option(key: &str) -> Option<&'static str> {
     let name = ["bigquery.", "adbc.bigquery.sql."]
         .iter()
-        .find_map(|prefix| {
-            key.get(..prefix.len())
-                .filter(|head| head.eq_ignore_ascii_case(prefix))
-                .map(|_| &key[prefix.len()..])
-        })?;
+        .find_map(|prefix| strip_ascii_prefix(key, prefix))?;
     let reason = match name.to_ascii_lowercase().as_str() {
         "query.use_legacy_sql" | "query.disable_flattened_results" => {
             "; that is a legacy SQL option, and this driver runs GoogleSQL only"

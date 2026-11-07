@@ -5,7 +5,7 @@ use adbc_core::error::{Error, Status};
 use google_cloud_gax::error::Error as GoogleError;
 use google_cloud_gax::error::rpc::{Code, StatusDetails};
 
-use super::credentials::{chain, credentials_failure, is_credentials_failure};
+use super::credentials::{chain, credentials_failure};
 use super::{error, failed_to, record_google_error_code, record_status_details};
 
 /// Converts a generated client's failure: the classified status, the service's own code and
@@ -72,7 +72,6 @@ pub(crate) fn google_error_is_transient(source: &GoogleError) -> bool {
     if source.is_transient_and_before_rpc()
         || source.is_io()
         || source.is_timeout()
-        || source.is_connect()
         || (source.is_transport() && source.http_status_code().is_none())
     {
         return true;
@@ -294,8 +293,8 @@ fn code_status(code: Code) -> Status {
     }
 }
 
-pub(super) fn google_error_status(source: &GoogleError) -> Status {
-    let source = last_attempt(source);
+/// The status of a failure that is not a credential's, which [`google_error`] answers first.
+fn google_error_status(source: &GoogleError) -> Status {
     if source.is_timeout() {
         return Status::Timeout;
     }
@@ -303,8 +302,6 @@ pub(super) fn google_error_status(source: &GoogleError) -> Status {
         // A Storage API not enabled in the project; see `bigquery_reason_status`.
         Some(Status::Unauthorized) if names_disabled_service(source) => Status::InvalidState,
         Some(status) if status != Status::Unknown => status,
-        // A credential failure never reaches the service, so it carries no status of its own.
-        _ if is_credentials_failure(source) => Status::Unauthenticated,
         // These failures have no HTTP or RPC status: DNS, connection refusal, a broken connection,
         // or a gRPC stream reset mid-flight. Match the direct REST transport's classification.
         _ if source.is_connect()
