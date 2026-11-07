@@ -4,12 +4,13 @@
 //! explicit options, so URI and option handling cannot diverge.
 
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use adbc_core::error::Result;
 use percent_encoding::percent_decode_str;
 
 use crate::BigQueryAuthenticationType;
-use crate::BigQueryDatabaseOption;
+use crate::BigQueryDatabaseOption as O;
 use crate::config::endpoints::{
     AuthorityProblem, default_endpoint_host, parse_endpoint_authority, parse_endpoint_port,
 };
@@ -20,86 +21,68 @@ use crate::options::or_list;
 const URI_PREFIX: &str = "bigquery://";
 const DEFAULT_ENDPOINT_AUTHORITY: &str = concat!(default_endpoint_host!(), ":443");
 
-type QueryParameterSlot = fn(&mut QueryParameters) -> &mut Option<String>;
-
 /// One query parameter the driver accepts.
 struct QueryParameter {
     name: &'static str,
-    slot: QueryParameterSlot,
+    /// The option its value sets. `OAuthType` sets none: it selects `bigquery.auth_type`.
+    option: Option<O>,
     /// Whether the value is a credential, whose option is write-only and which [`redact_uri`]
     /// therefore removes.
     secret: bool,
 }
 
-/// The query parameters the driver accepts, and the slot each one fills.
+const fn parameter(name: &'static str, option: Option<O>, secret: bool) -> QueryParameter {
+    QueryParameter {
+        name,
+        option,
+        secret,
+    }
+}
+
+/// The query parameters the driver accepts.
 ///
 /// Matching is case-sensitive, as it is in the Go driver, but a name that differs only in case
 /// is answered with the spelling that would have worked.
 const QUERY_PARAMETERS: &[QueryParameter] = &[
-    parameter("OAuthType", |query| &mut query.oauth_type, false),
-    parameter("AuthCredentials", |query| &mut query.auth_credentials, true),
-    parameter("AuthClientId", |query| &mut query.auth_client_id, false),
+    parameter("OAuthType", None, false),
+    parameter("AuthCredentials", Some(O::AuthenticationCredentials), true),
+    parameter("AuthClientId", Some(O::AuthenticationClientId), false),
     parameter(
         "AuthClientSecret",
-        |query| &mut query.auth_client_secret,
+        Some(O::AuthenticationClientSecret),
         true,
     ),
     parameter(
         "AuthRefreshToken",
-        |query| &mut query.auth_refresh_token,
+        Some(O::AuthenticationRefreshToken),
         true,
     ),
-    parameter("DatasetId", |query| &mut query.dataset_id, false),
-    parameter("Location", |query| &mut query.location, false),
-    parameter("QuotaProject", |query| &mut query.quota_project, false),
+    parameter("DatasetId", Some(O::DatasetId), false),
+    parameter("Location", Some(O::Location), false),
+    parameter("QuotaProject", Some(O::AuthenticationQuotaProject), false),
     parameter(
         "ImpersonateTargetPrincipal",
-        |query| &mut query.impersonate_target,
+        Some(O::ImpersonationTargetPrincipal),
         false,
     ),
     parameter(
         "ImpersonateDelegates",
-        |query| &mut query.impersonate_delegates,
+        Some(O::ImpersonationDelegates),
         false,
     ),
-    parameter(
-        "ImpersonateScopes",
-        |query| &mut query.impersonate_scopes,
-        false,
-    ),
-    parameter(
-        "ImpersonateLifetime",
-        |query| &mut query.impersonate_lifetime,
-        false,
-    ),
+    parameter("ImpersonateScopes", Some(O::ImpersonationScopes), false),
+    parameter("ImpersonateLifetime", Some(O::ImpersonationLifetime), false),
 ];
 
-const fn parameter(name: &'static str, slot: QueryParameterSlot, secret: bool) -> QueryParameter {
-    QueryParameter { name, slot, secret }
-}
-
-#[derive(Default)]
-struct QueryParameters {
-    oauth_type: Option<String>,
-    auth_credentials: Option<String>,
-    auth_client_id: Option<String>,
-    auth_client_secret: Option<String>,
-    auth_refresh_token: Option<String>,
-    dataset_id: Option<String>,
-    location: Option<String>,
-    quota_project: Option<String>,
-    impersonate_target: Option<String>,
-    impersonate_delegates: Option<String>,
-    impersonate_scopes: Option<String>,
-    impersonate_lifetime: Option<String>,
-}
+/// The decoded value of each query parameter present, by its name in [`QUERY_PARAMETERS`].
+type QueryParameters = BTreeMap<&'static str, String>;
 
 /// Parse a BigQuery URI into the database options it configures.
 ///
 /// URI-level rules (shape, and which parameters each `OAuthType` admits) are enforced here; each
 /// returned value is validated by its option when applied. The project, endpoint and
 /// authentication type are always present.
-pub(crate) fn parse_bigquery_uri(uri: &str) -> Result<Vec<(BigQueryDatabaseOption, String)>> {
+pub(crate) fn parse_bigquery_uri(uri: &str) -> Result<Vec<(O, String)>> {
     if uri.is_empty() {
         return Err(invalid_argument("BigQuery URI must not be empty"));
     }
@@ -134,43 +117,23 @@ pub(crate) fn parse_bigquery_uri(uri: &str) -> Result<Vec<(BigQueryDatabaseOptio
         .map_err(|problem| decoding_failure(format_args!("project path"), problem))?;
     ProjectIdentifier::try_new_from("the URI path", project_id.as_str())?;
     let endpoint = endpoint_from_authority(authority)?;
-    let mut parameters = parse_query(query)?;
-    parameters.validate_impersonation()?;
+    let parameters = parse_query(query)?;
+    validate_impersonation(&parameters)?;
+    let authentication_type = authentication_type(&parameters)?;
 
     let mut options = vec![
-        (BigQueryDatabaseOption::ProjectId, project_id),
-        (BigQueryDatabaseOption::Endpoint, endpoint),
+        (O::ProjectId, project_id),
+        (O::Endpoint, endpoint),
+        (
+            O::AuthenticationType,
+            authentication_type.as_str().to_owned(),
+        ),
     ];
-    parameters.append_authentication(&mut options)?;
     // Validated by their options when applied, which marks a rejection as coming from the URI.
-    for (option, value) in [
-        (
-            BigQueryDatabaseOption::AuthenticationQuotaProject,
-            parameters.quota_project,
-        ),
-        (BigQueryDatabaseOption::DatasetId, parameters.dataset_id),
-        (BigQueryDatabaseOption::Location, parameters.location),
-        (
-            BigQueryDatabaseOption::ImpersonationTargetPrincipal,
-            parameters.impersonate_target,
-        ),
-        (
-            BigQueryDatabaseOption::ImpersonationDelegates,
-            parameters.impersonate_delegates,
-        ),
-        (
-            BigQueryDatabaseOption::ImpersonationScopes,
-            parameters.impersonate_scopes,
-        ),
-        (
-            BigQueryDatabaseOption::ImpersonationLifetime,
-            parameters.impersonate_lifetime,
-        ),
-    ] {
-        if let Some(value) = value {
-            options.push((option, value));
-        }
-    }
+    options.extend(QUERY_PARAMETERS.iter().filter_map(|parameter| {
+        let value = parameters.get(parameter.name)?;
+        Some((parameter.option?, value.clone())).filter(|_| !value.is_empty())
+    }));
     Ok(options)
 }
 
@@ -276,7 +239,7 @@ fn invalid_authority(authority: &str, problem: AuthorityProblem<'_>) -> adbc_cor
 }
 
 fn parse_query(query: Option<&str>) -> Result<QueryParameters> {
-    let mut parameters = QueryParameters::default();
+    let mut parameters = QueryParameters::new();
     let mut previous: Option<&QueryParameter> = None;
     // An empty query and an empty `&`-separated pair name no parameter; a URI assembled by
     // concatenation may end in one. Go's `url.ParseQuery` skips them, and so does this.
@@ -318,13 +281,11 @@ fn parse_query(query: Option<&str>) -> Result<QueryParameters> {
             )
         })?;
         previous = Some(parameter);
-        let slot = (parameter.slot)(&mut parameters);
-        if slot.is_some() {
+        if parameters.insert(parameter.name, value).is_some() {
             return Err(invalid_argument(format!(
                 "BigQuery URI query parameter {name} must not be repeated"
             )));
         }
-        *slot = Some(value);
     }
     Ok(parameters)
 }
@@ -445,123 +406,65 @@ fn decode_percent_encoded(value: &str) -> std::result::Result<String, DecodingPr
     Ok(decoded)
 }
 
-impl QueryParameters {
-    /// The authentication options selected by `OAuthType`, which also gates which credential
-    /// parameters may appear at all.
-    fn append_authentication(
-        &mut self,
-        options: &mut Vec<(BigQueryDatabaseOption, String)>,
-    ) -> Result<()> {
-        let authentication_type = |value: BigQueryAuthenticationType| {
-            (
-                BigQueryDatabaseOption::AuthenticationType,
-                value.as_str().to_owned(),
-            )
-        };
-        let selected = take_nonempty(&mut self.oauth_type);
-        match selected.as_deref().unwrap_or("0") {
-            "0" => {
-                self.reject_json_credentials()?;
-                self.reject_user_credentials()?;
-                options.push(authentication_type(
-                    BigQueryAuthenticationType::ApplicationDefault,
-                ));
-            }
-            oauth_type @ ("1" | "2") => {
-                let json_credentials = if oauth_type == "1" {
-                    BigQueryAuthenticationType::JsonCredentialFile
-                } else {
-                    BigQueryAuthenticationType::JsonCredentialString
-                };
-                self.reject_user_credentials()?;
-                options.extend([
-                    authentication_type(json_credentials),
-                    (
-                        BigQueryDatabaseOption::AuthenticationCredentials,
-                        take_nonempty(&mut self.auth_credentials).ok_or_else(|| {
-                            invalid_argument(
-                                "BigQuery URI OAuthType=1 or 2 requires AuthCredentials",
-                            )
-                        })?,
-                    ),
-                ]);
-            }
-            "3" => {
-                self.reject_json_credentials()?;
-                let (Some(client_id), Some(client_secret), Some(refresh_token)) = (
-                    take_nonempty(&mut self.auth_client_id),
-                    take_nonempty(&mut self.auth_client_secret),
-                    take_nonempty(&mut self.auth_refresh_token),
-                ) else {
-                    return Err(invalid_argument(
-                        "BigQuery URI OAuthType=3 requires AuthClientId, AuthClientSecret, and AuthRefreshToken",
-                    ));
-                };
-                options.extend([
-                    authentication_type(BigQueryAuthenticationType::UserAuthentication),
-                    (BigQueryDatabaseOption::AuthenticationClientId, client_id),
-                    (
-                        BigQueryDatabaseOption::AuthenticationClientSecret,
-                        client_secret,
-                    ),
-                    (
-                        BigQueryDatabaseOption::AuthenticationRefreshToken,
-                        refresh_token,
-                    ),
-                ]);
-            }
-            _ => {
-                return Err(invalid_argument(
-                    "BigQuery URI OAuthType must be 0, 1, 2, or 3",
-                ));
-            }
-        }
-        Ok(())
-    }
+/// The authentication type `OAuthType` selects, which also gates which credential parameters may
+/// appear at all.
+fn authentication_type(parameters: &QueryParameters) -> Result<BigQueryAuthenticationType> {
+    use BigQueryAuthenticationType as A;
+    const USER: [&str; 3] = ["AuthClientId", "AuthClientSecret", "AuthRefreshToken"];
 
-    fn reject_json_credentials(&self) -> Result<()> {
-        if is_set(&self.auth_credentials) {
+    let selected = parameters.get("OAuthType").map_or("", String::as_str);
+    let (selected, takes_json, takes_user) = match selected {
+        "" | "0" => (A::ApplicationDefault, false, false),
+        "1" => (A::JsonCredentialFile, true, false),
+        "2" => (A::JsonCredentialString, true, false),
+        "3" => (A::UserAuthentication, false, true),
+        _ => {
             return Err(invalid_argument(
-                "BigQuery URI AuthCredentials requires OAuthType=1 or 2",
+                "BigQuery URI OAuthType must be 0, 1, 2, or 3",
             ));
         }
-        Ok(())
+    };
+    let json = is_set(parameters, "AuthCredentials");
+    if json && !takes_json {
+        return Err(invalid_argument(
+            "BigQuery URI AuthCredentials requires OAuthType=1 or 2",
+        ));
     }
+    if !takes_user && USER.iter().any(|name| is_set(parameters, name)) {
+        return Err(invalid_argument(
+            "BigQuery URI user OAuth parameters require OAuthType=3",
+        ));
+    }
+    if takes_json && !json {
+        return Err(invalid_argument(
+            "BigQuery URI OAuthType=1 or 2 requires AuthCredentials",
+        ));
+    }
+    if takes_user && !USER.iter().all(|name| is_set(parameters, name)) {
+        return Err(invalid_argument(
+            "BigQuery URI OAuthType=3 requires AuthClientId, AuthClientSecret, and AuthRefreshToken",
+        ));
+    }
+    Ok(selected)
+}
 
-    fn reject_user_credentials(&self) -> Result<()> {
-        if is_set(&self.auth_client_id)
-            || is_set(&self.auth_client_secret)
-            || is_set(&self.auth_refresh_token)
-        {
-            return Err(invalid_argument(
-                "BigQuery URI user OAuth parameters require OAuthType=3",
-            ));
-        }
-        Ok(())
+fn validate_impersonation(parameters: &QueryParameters) -> Result<()> {
+    // Scopes alone are allowed, as `ImpersonationConfig::is_configured` allows them.
+    let has_dependent_option = ["ImpersonateDelegates", "ImpersonateLifetime"]
+        .iter()
+        .any(|name| is_set(parameters, name));
+    if has_dependent_option && !is_set(parameters, "ImpersonateTargetPrincipal") {
+        return Err(invalid_argument(
+            "BigQuery URI impersonation options require ImpersonateTargetPrincipal",
+        ));
     }
-
-    fn validate_impersonation(&self) -> Result<()> {
-        // Scopes alone are allowed, as `ImpersonationConfig::is_configured` allows them.
-        let has_dependent_option = [&self.impersonate_delegates, &self.impersonate_lifetime]
-            .into_iter()
-            .any(is_set);
-        if has_dependent_option && !is_set(&self.impersonate_target) {
-            return Err(invalid_argument(
-                "BigQuery URI impersonation options require ImpersonateTargetPrincipal",
-            ));
-        }
-        Ok(())
-    }
+    Ok(())
 }
 
 /// Whether a parameter carries a value at all: an empty value is the URI spelling of unset, as
 /// in Go (`OAuthType=` resolves to ADC), and every check has to agree on that.
-fn is_set(value: &Option<String>) -> bool {
-    value.as_deref().is_some_and(|value| !value.is_empty())
-}
-
-fn take_nonempty(value: &mut Option<String>) -> Option<String> {
-    value.take().filter(|value| !value.is_empty())
+fn is_set(parameters: &QueryParameters, name: &str) -> bool {
+    parameters.get(name).is_some_and(|value| !value.is_empty())
 }
 
 #[cfg(test)]
