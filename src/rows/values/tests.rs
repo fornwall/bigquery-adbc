@@ -11,7 +11,6 @@ use crate::pipeline::BATCH_SIZE;
 use crate::rest::model::TableFieldSchema;
 use crate::rows::RestRows;
 use crate::test_support::schema::{field, field_mode, range_field, record, table_schema};
-use crate::types::decimal::{BIGNUMERIC_PRECISION, BIGNUMERIC_SCALE};
 use crate::types::schema::convert_schema;
 
 use super::*;
@@ -22,6 +21,10 @@ const TEST_COLUMN: ColumnAt<'static> = ColumnAt {
     name: "column",
     row: Some(0),
 };
+
+fn text(value: &str) -> RestValue {
+    RestValue::String(value.to_owned())
+}
 
 fn uncancelled() -> ResultPipelineCancellation {
     ResultPipelineCancellation::new(None)
@@ -134,26 +137,27 @@ fn decodes_extreme_integers_and_non_finite_floats() {
     ]);
     let schema = convert_schema(&table).unwrap();
     let cancellation = uncancelled();
-    let rows = [(i64::MIN, "Infinity"), (i64::MAX, "-Infinity"), (0, "NaN")]
-        .into_iter()
-        .map(|(number, value)| {
-            vec![
-                RestValue::String(number.to_string()),
-                RestValue::String(value.to_owned()),
-            ]
-        })
-        .collect();
+    let rows = [
+        (i64::MIN, "Infinity"),
+        (i64::MAX, "-Infinity"),
+        (0, "NaN"),
+        (1, "-0"),
+    ]
+    .into_iter()
+    .map(|(number, value)| vec![RestValue::String(number.to_string()), text(value)])
+    .collect();
 
     let batch = decoded_rows_to_record_batch(rows, schema, &cancellation)
         .unwrap()
         .unwrap();
 
     let numbers = batch.column(0).as_primitive::<Int64Type>();
-    assert_eq!(numbers.values(), &[i64::MIN, i64::MAX, 0]);
+    assert_eq!(numbers.values(), &[i64::MIN, i64::MAX, 0, 1]);
     let values = batch.column(1).as_primitive::<Float64Type>();
     assert_eq!(values.value(0), f64::INFINITY);
     assert_eq!(values.value(1), f64::NEG_INFINITY);
     assert!(values.value(2).is_nan());
+    assert!(values.value(3) == 0.0 && values.value(3).is_sign_negative());
 }
 
 /// BigQuery spells a BOOL `"true"` or `"false"`; anything else, other capitalizations included,
@@ -161,14 +165,10 @@ fn decodes_extreme_integers_and_non_finite_floats() {
 #[test]
 fn decodes_exactly_the_two_bool_spellings() {
     let schema = convert_schema(&table_schema([field("flag", "BOOLEAN")])).unwrap();
-    let rows = [
-        RestValue::String("true".to_owned()),
-        RestValue::String("false".to_owned()),
-        RestValue::Boolean(true),
-    ]
-    .into_iter()
-    .map(|cell| vec![cell])
-    .collect();
+    let rows = [text("true"), text("false"), RestValue::Boolean(true)]
+        .into_iter()
+        .map(|cell| vec![cell])
+        .collect();
     let batch = decoded_rows_to_record_batch(rows, schema.clone(), &uncancelled())
         .unwrap()
         .unwrap();
@@ -180,7 +180,7 @@ fn decodes_exactly_the_two_bool_spellings() {
 
     for spelling in ["TRUE", "True", "1", "", " true"] {
         let message = decoded_rows_to_record_batch(
-            vec![vec![RestValue::String(spelling.to_owned())]],
+            vec![vec![text(spelling)]],
             schema.clone(),
             &uncancelled(),
         )
@@ -202,7 +202,7 @@ fn reports_non_integral_numbers_as_invalid_int64_values() {
     for cell in [
         RestValue::Float(1.5),
         RestValue::Unsigned(u64::try_from(i64::MAX).unwrap() + 1),
-        RestValue::String("1.5".to_owned()),
+        text("1.5"),
     ] {
         let message =
             decoded_rows_to_record_batch(vec![vec![cell]], schema.clone(), &uncancelled())
@@ -236,10 +236,7 @@ fn builds_nested_and_repeated_arrays() {
         RestValue::Repeated(vec![
             RestValue::Record(vec![
                 RestValue::Integer(1),
-                RestValue::Repeated(vec![
-                    RestValue::String("a".into()),
-                    RestValue::String("b".into()),
-                ]),
+                RestValue::Repeated(vec![text("a"), text("b")]),
             ]),
             RestValue::Record(vec![RestValue::Integer(2), RestValue::Repeated(Vec::new())]),
         ]),
@@ -266,74 +263,71 @@ fn builds_nested_and_repeated_arrays() {
     );
 }
 
+/// The whole REST decode path for the temporal, INTERVAL and RANGE columns, not only the parsers:
+/// each parsed value has to land in the Arrow column its converted field declares, beside a NULL.
 #[test]
-fn builds_interval_and_range_arrays() {
-    let table = table_schema([
-        field_mode("duration", "INTERVAL", "NULLABLE"),
-        range_field("dates", "DATE"),
-        range_field("datetimes", "DATETIME"),
-        range_field("timestamps", "TIMESTAMP"),
-    ]);
-    let schema = convert_schema(&table).unwrap();
-    let mut builders = column_builders(&schema);
-
-    for (index, spelling) in [
+fn decodes_temporal_interval_and_range_columns() {
+    let cells = [
+        "2020-07-02",
+        "12:34:56.789012",
+        "2020-07-02T12:34:56.789012",
+        "1593676800123456",
         "1-2 3 4:05:06.007008009",
         "[1970-01-01, 1970-01-03)",
         "[1970-01-01T00:00:01.123456, UNBOUNDED)",
         "[1000001, 2123456)",
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let builder = &mut builders[index];
-        append(builder, RestValue::String(spelling.to_owned())).unwrap();
-        append(builder, RestValue::Null).unwrap();
-    }
+    ];
+    let schema = convert_schema(&table_schema([
+        field("date", "DATE"),
+        field("time", "TIME"),
+        field("datetime", "DATETIME"),
+        field("moment", "TIMESTAMP"),
+        field("duration", "INTERVAL"),
+        range_field("dates", "DATE"),
+        range_field("datetimes", "DATETIME"),
+        range_field("timestamps", "TIMESTAMP"),
+    ]))
+    .unwrap();
+    let rows = vec![
+        cells.map(text).into(),
+        cells.map(|_| RestValue::Null).into(),
+    ];
+    let batch = decoded_rows_to_record_batch(rows, schema, &uncancelled())
+        .unwrap()
+        .unwrap();
+    assert!(batch.columns().iter().all(|column| column.is_null(1)));
 
-    let arrays = builders
-        .into_iter()
-        .map(|builder| builder.finish().unwrap())
-        .collect::<Vec<_>>();
-    let intervals = arrays[0].as_primitive::<IntervalMonthDayNanoType>();
+    let micros = |array: &ArrayRef| array.as_primitive::<TimestampMicrosecondType>().value(0);
     assert_eq!(
-        intervals.value(0),
+        batch.column(0).as_primitive::<Date32Type>().value(0),
+        18_445
+    );
+    assert_eq!(
+        batch
+            .column(1)
+            .as_primitive::<Time64MicrosecondType>()
+            .value(0),
+        45_296_789_012
+    );
+    assert_eq!(micros(batch.column(2)), 1_593_693_296_789_012);
+    assert_eq!(micros(batch.column(3)), 1_593_676_800_123_456);
+    assert_eq!(
+        batch
+            .column(4)
+            .as_primitive::<IntervalMonthDayNanoType>()
+            .value(0),
         IntervalMonthDayNano::new(14, 3, 14_706_007_008_009)
     );
-    assert!(intervals.is_null(1));
 
-    let dates = arrays[1].as_struct();
+    let dates = batch.column(5).as_struct();
     assert_eq!(dates.column(0).as_primitive::<Date32Type>().value(0), 0);
     assert_eq!(dates.column(1).as_primitive::<Date32Type>().value(0), 2);
-    assert!(dates.is_null(1));
-
-    let datetimes = arrays[2].as_struct();
-    assert_eq!(
-        datetimes
-            .column(0)
-            .as_primitive::<TimestampMicrosecondType>()
-            .value(0),
-        1_123_456
-    );
+    let datetimes = batch.column(6).as_struct();
+    assert_eq!(micros(datetimes.column(0)), 1_123_456);
     assert!(datetimes.column(1).is_null(0));
-    assert!(datetimes.is_null(1));
-
-    let timestamps = arrays[3].as_struct();
-    assert_eq!(
-        timestamps
-            .column(0)
-            .as_primitive::<TimestampMicrosecondType>()
-            .value(0),
-        1_000_001
-    );
-    assert_eq!(
-        timestamps
-            .column(1)
-            .as_primitive::<TimestampMicrosecondType>()
-            .value(0),
-        2_123_456
-    );
-    assert!(timestamps.is_null(1));
+    let timestamps = batch.column(7).as_struct();
+    assert_eq!(micros(timestamps.column(0)), 1_000_001);
+    assert_eq!(micros(timestamps.column(1)), 2_123_456);
 }
 
 /// BigQuery spells a RANGE as `[start, end)` and an absent bound as `UNBOUNDED`; an empty bound is
@@ -350,7 +344,7 @@ fn decodes_unbounded_and_malformed_range_literals() {
         "[1970-01-01, UNBOUNDED)",
         "[, )",
     ] {
-        append(&mut builder, RestValue::String(literal.to_owned())).unwrap();
+        append(&mut builder, text(literal)).unwrap();
     }
     let array = builder.finish().unwrap();
     let ranges = array.as_struct();
@@ -371,7 +365,7 @@ fn decodes_unbounded_and_malformed_range_literals() {
         "[1970-01-01, 1970-01-03]",
         "[1970-01-01)",
     ] {
-        let error = append(&mut builder, RestValue::String(malformed.to_owned())).unwrap_err();
+        let error = append(&mut builder, text(malformed)).unwrap_err();
         let message = error.to_string();
         assert!(message.contains("is not a valid RANGE"), "{message}");
     }
@@ -392,7 +386,7 @@ fn reports_a_null_in_a_required_column_or_field_by_its_row() {
     ]))
     .unwrap();
     let row = |id: RestValue, record: RestValue| vec![id, record];
-    let present = || RestValue::String("1".to_owned());
+    let present = || text("1");
     let convert = |rows| {
         decoded_rows_to_record_batch(rows, schema.clone(), &uncancelled())
             .unwrap_err()
@@ -417,19 +411,20 @@ fn reports_a_null_in_a_required_column_or_field_by_its_row() {
     );
 }
 
-/// Cells stay positional, so names are metadata rather than identity: anonymous and duplicate
-/// STRUCT children remain separate Arrow children in the order BigQuery returned them.
+/// Cells stay positional, so names are metadata rather than identity: anonymous, duplicate and
+/// unsorted STRUCT children remain separate Arrow children in the order BigQuery returned them.
 #[test]
-fn preserves_anonymous_and_duplicate_struct_fields_by_position() {
-    for children in [["", ""], ["a", "a"]] {
+fn preserves_struct_fields_by_position() {
+    for children in [["", ""], ["a", "a"], ["z", "a"]] {
         let table = table_schema([record("s", "RECORD", children.map(|n| field(n, "INT64")))]);
         let schema = convert_schema(&table).unwrap();
-        let mut builder = ColumnBuilder::new(schema.field(0), 1).unwrap();
+        let mut builder = ColumnBuilder::new(schema.field(0), 2).unwrap();
         append(
             &mut builder,
             RestValue::Record(vec![RestValue::Integer(7), RestValue::Integer(9)]),
         )
         .unwrap();
+        append(&mut builder, RestValue::Null).unwrap();
         let array = builder.finish().unwrap();
         let structs = array.as_struct();
         for (index, expected) in [7, 9].into_iter().enumerate() {
@@ -438,6 +433,7 @@ fn preserves_anonymous_and_duplicate_struct_fields_by_position() {
                 expected
             );
         }
+        assert!(structs.is_null(1));
     }
 }
 
@@ -489,7 +485,7 @@ fn reports_wrong_value_shapes_by_kind_without_echoing_them() {
 
     // A RECORD whose cell arrives as a string.
     let message = convert(vec![
-        RestValue::Repeated(vec![RestValue::String("a".to_owned())]),
+        RestValue::Repeated(vec![text("a")]),
         RestValue::String(secret.clone()),
     ]);
     assert!(message.contains("\"record\""), "{message}");
@@ -506,45 +502,12 @@ fn reports_wrong_value_shapes_by_kind_without_echoing_them() {
             .take(64)
             .collect::<Vec<_>>(),
     );
-    let message = convert(vec![
-        RestValue::Repeated(vec![RestValue::String("a".to_owned())]),
-        long_array,
-    ]);
+    let message = convert(vec![RestValue::Repeated(vec![text("a")]), long_array]);
     assert!(
         !message.contains(&secret),
         "the value was echoed: {message}"
     );
     assert!(message.len() < 200, "{} bytes: {message}", message.len());
-}
-
-/// A REST STRUCT value follows schema order even when the field names would sort differently.
-#[test]
-fn decodes_struct_fields_in_wire_position_order() {
-    let children = [
-        field("z", "INT64"),
-        field("a", "STRING"),
-        field("m", "INT64"),
-    ];
-    let table = table_schema([record("record", "RECORD", children)]);
-    let schema = convert_schema(&table).unwrap();
-    let mut builder = ColumnBuilder::new(schema.field(0), 2).unwrap();
-    append(
-        &mut builder,
-        RestValue::Record(vec![
-            RestValue::Integer(26),
-            RestValue::String("first".to_owned()),
-            RestValue::Integer(13),
-        ]),
-    )
-    .unwrap();
-    append(&mut builder, RestValue::Null).unwrap();
-
-    let array = builder.finish().unwrap();
-    let record = array.as_struct();
-    assert_eq!(record.column(0).as_primitive::<Int64Type>().value(0), 26);
-    assert_eq!(record.column(1).as_string::<i32>().value(0), "first");
-    assert_eq!(record.column(2).as_primitive::<Int64Type>().value(0), 13);
-    assert!(record.is_null(1));
 }
 
 /// A STRUCT cell with the wrong number of cells is a schema/row disagreement, not a null.
@@ -555,44 +518,13 @@ fn rejects_struct_values_with_missing_or_extra_cells() {
     let schema = convert_schema(&table).unwrap();
     for values in [
         vec![RestValue::Integer(1)],
-        vec![
-            RestValue::Integer(1),
-            RestValue::String("label".to_owned()),
-            RestValue::String("extra".to_owned()),
-        ],
+        vec![RestValue::Integer(1), text("label"), text("extra")],
     ] {
         let mut builder = ColumnBuilder::new(schema.field(0), 1).unwrap();
         let error = append(&mut builder, RestValue::Record(values)).unwrap_err();
         let message = error.to_string();
         assert!(message.contains("schema has 2 fields"), "{message}");
     }
-}
-
-/// A TIMESTAMP column keeps its UTC zone in the Arrow field it decodes into, and stores the
-/// microseconds [`parse_timestamp`] returns; the spelling itself is pinned beside that parser.
-#[test]
-fn decodes_scalar_timestamps_as_epoch_microseconds() {
-    let table = table_schema([field_mode("moment", "TIMESTAMP", "NULLABLE")]);
-    let schema = convert_schema(&table).unwrap();
-    assert_eq!(
-        schema.field(0).data_type(),
-        &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
-    );
-    let mut builder = ColumnBuilder::new(schema.field(0), 2).unwrap();
-    append(
-        &mut builder,
-        RestValue::String("1593676800123456".to_owned()),
-    )
-    .unwrap();
-    append(&mut builder, RestValue::Null).unwrap();
-    let array = builder.finish().unwrap();
-    let moments = array.as_primitive::<TimestampMicrosecondType>();
-    assert_eq!(moments.value(0), 1_593_676_800_123_456);
-    assert!(moments.is_null(1));
-    assert_eq!(
-        moments.data_type(),
-        &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
-    );
 }
 
 /// A RANGE bound is parsed by the same function as a scalar column of its element type, so
@@ -611,8 +543,7 @@ fn rejects_range_bounds_outside_the_calendar() {
         (1, "[UNBOUNDED, 0000-01-01T00:00:00)", "DATETIME"),
         (2, "[UNBOUNDED, 253402300800000000)", "TIMESTAMP"),
     ] {
-        let error =
-            append(&mut builders[index], RestValue::String(literal.to_owned())).unwrap_err();
+        let error = append(&mut builders[index], text(literal)).unwrap_err();
         let message = error.to_string();
         assert!(
             message.contains(&format!("is not a valid {kind}")),
@@ -621,79 +552,27 @@ fn rejects_range_bounds_outside_the_calendar() {
     }
 }
 
-/// The whole REST decode path for the civil temporal columns, not only the parsers: each
-/// parsed value has to land in the Arrow column its converted field declares.
-#[test]
-fn decodes_date_time_and_datetime_columns() {
-    let table = table_schema(["DATE", "TIME", "DATETIME"].map(|kind| field(kind, kind)));
-    let schema = convert_schema(&table).unwrap();
-    let mut builders = column_builders(&schema);
-    for (index, spelling) in [
-        "2020-07-02",
-        "12:34:56.789012",
-        "2020-07-02T12:34:56.789012",
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        append(&mut builders[index], RestValue::String(spelling.to_owned())).unwrap();
-        append(&mut builders[index], RestValue::Null).unwrap();
-    }
-    let arrays = builders
-        .into_iter()
-        .map(|builder| builder.finish().unwrap())
-        .collect::<Vec<_>>();
-    let dates = arrays[0].as_primitive::<Date32Type>();
-    assert_eq!(dates.value(0), 18_445);
-    assert!(dates.is_null(1));
-    let times = arrays[1].as_primitive::<Time64MicrosecondType>();
-    assert_eq!(times.value(0), 45_296_789_012);
-    assert!(times.is_null(1));
-    let datetimes = arrays[2].as_primitive::<TimestampMicrosecondType>();
-    assert_eq!(datetimes.value(0), 1_593_693_296_789_012);
-    assert!(datetimes.is_null(1));
-    assert_eq!(
-        datetimes.data_type(),
-        &DataType::Timestamp(TimeUnit::Microsecond, None)
-    );
-}
-
 /// The whole REST decode path for BIGNUMERIC's physical extremes, not only the parser: the
 /// builder must keep them too, because the Storage Read path delivers them without any value
-/// validation at all.
+/// validation at all. A rejection quotes both the 77-digit limit and the declared precision of 76
+/// the caller can act on.
 #[test]
-fn decodes_bignumeric_at_its_physical_extremes() {
+fn decodes_bignumeric_to_its_physical_extremes_and_refuses_past_them() {
     let maximum = "578960446186580977117854925043439539266.34992332820282019728792003956564819967";
     let minimum = "-578960446186580977117854925043439539266.34992332820282019728792003956564819968";
     let table = table_schema([field_mode("value", "BIGNUMERIC", "REQUIRED")]);
     let schema = convert_schema(&table).unwrap();
-    assert_eq!(
-        schema.field(0).data_type(),
-        &DataType::Decimal256(BIGNUMERIC_PRECISION, BIGNUMERIC_SCALE)
-    );
-    let cancellation = uncancelled();
-    let rows = vec![
-        vec![RestValue::String(maximum.to_owned())],
-        vec![RestValue::String(minimum.to_owned())],
-    ];
-    let batch = decoded_rows_to_record_batch(rows, schema, &cancellation)
+    let rows = vec![vec![text(maximum)], vec![text(minimum)]];
+    let batch = decoded_rows_to_record_batch(rows, schema.clone(), &uncancelled())
         .unwrap()
         .unwrap();
     let values = batch.column(0).as_primitive::<Decimal256Type>();
     assert_eq!(values.value(0), i256::MAX);
     assert_eq!(values.value(1), i256::MIN);
-}
 
-/// A rejection quotes both the 77-digit budget a parameter-free BIGNUMERIC is measured against
-/// and the declared precision of 76 that the caller can act on. Only the whole decode path shows
-/// both, because the parser widens the declared precision itself.
-#[test]
-fn a_bignumeric_past_its_physical_range_is_refused_by_its_declared_precision() {
-    let table = table_schema([field_mode("value", "BIGNUMERIC", "REQUIRED")]);
-    let schema = convert_schema(&table).unwrap();
     // Scaled by BIGNUMERIC's 38 fractional digits, `1e39` needs 78 significant digits.
-    let rows = vec![vec![RestValue::String("1e39".to_owned())]];
-    let error = decoded_rows_to_record_batch(rows, schema, &uncancelled()).unwrap_err();
+    let error =
+        decoded_rows_to_record_batch(vec![vec![text("1e39")]], schema, &uncancelled()).unwrap_err();
     assert!(
         error.to_string().contains(
             "BigQuery BIGNUMERIC result value needs more than the 77 significant digits a \
@@ -798,32 +677,12 @@ fn preserves_row_count_for_zero_column_batches() {
 }
 
 #[test]
-fn normalizes_null_repeated_rest_values_to_empty_arrays() {
-    let schema =
-        convert_schema(&table_schema([field_mode("numbers", "INT64", "REPEATED")])).unwrap();
-    let rows: RestRows = serde_json::from_str(r#"[{"f":[{"v":null}]},{"f":[{"v":[]}]}]"#).unwrap();
-    let batch = rest_rows_to_record_batch(rows.into_vec(), 0, schema, &uncancelled())
-        .unwrap()
-        .unwrap();
-    let numbers = batch.column(0).as_list::<i32>();
-    assert_eq!(numbers.value_offsets(), &[0, 0, 0]);
-    assert_eq!(numbers.null_count(), 0);
-}
-
-#[test]
 fn rejects_top_level_rows_with_missing_or_extra_cells() {
     let table = table_schema([field("a", "INT64"), field("b", "STRING")]);
     let schema = convert_schema(&table).unwrap();
     for (cells, actual) in [
         (vec![RestValue::Integer(1)], 1),
-        (
-            vec![
-                RestValue::Integer(1),
-                RestValue::String("b".to_owned()),
-                RestValue::String("extra".to_owned()),
-            ],
-            3,
-        ),
+        (vec![RestValue::Integer(1), text("b"), text("extra")], 3),
     ] {
         let error =
             rest_rows_to_record_batch(vec![RestRow::new(cells)], 0, schema.clone(), &uncancelled())
@@ -852,6 +711,24 @@ fn direct_conversion_observes_pipeline_cancellation_before_rows() {
     assert!(converted.is_none());
 }
 
+/// An array is the one unbounded part of a row, so a cancellation has to land inside it.
+#[test]
+fn a_long_array_is_polled_for_cancellation() {
+    let schema =
+        convert_schema(&table_schema([field_mode("numbers", "INT64", "REPEATED")])).unwrap();
+    let mut builder = ColumnBuilder::new(schema.field(0), 1).unwrap();
+    let cancellation = uncancelled();
+    cancellation.cancel_local();
+    let error = builder
+        .append(
+            &RestValue::Repeated(vec![RestValue::Integer(1)]),
+            &ValueAt::Root(&TEST_COLUMN),
+            &cancellation,
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("was cancelled"), "{error}");
+}
+
 /// A decode failure names the path to the failed cell: column, row, and each array element and
 /// nested field. The value itself stays out of the message (see
 /// `scalar_parse_failures_never_echo_values`).
@@ -872,7 +749,7 @@ fn a_nested_decode_failure_names_the_column_the_row_and_the_field_path() {
     let schema = convert_schema(&table).unwrap();
     let order = |date: &str| {
         RestValue::Repeated(vec![RestValue::Record(vec![RestValue::Record(vec![
-            RestValue::String(date.to_owned()),
+            text(date),
         ])])])
     };
     let rows = vec![vec![order("2026-09-17")], vec![order("not a date")]];
@@ -884,25 +761,8 @@ fn a_nested_decode_failure_names_the_column_the_row_and_the_field_path() {
     );
 }
 
-/// A failure in a column with nothing nested inside it carries the column and the row and
-/// nothing else, so the path costs nothing where there is no path to report.
-#[test]
-fn a_top_level_decode_failure_names_the_column_and_the_row() {
-    let table = table_schema([field_mode("moment", "TIMESTAMP", "REQUIRED")]);
-    let schema = convert_schema(&table).unwrap();
-    let rows = vec![
-        vec![RestValue::String("0".to_owned())],
-        vec![RestValue::String("not a timestamp".to_owned())],
-    ];
-    let error = decoded_rows_to_record_batch(rows, schema, &uncancelled()).unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "Parser error: failed to decode BigQuery result column \"moment\", row 1: BigQuery \
-         result value is not a valid TIMESTAMP"
-    );
-}
-
-/// A result is converted in batches, and a failure names the row within the whole result, which
+/// A failure in a column with nothing nested inside it carries the column and the row and nothing
+/// else. A result is converted in batches, so that row is the one within the whole result, which
 /// the caller can find, rather than its position within the batch.
 #[test]
 fn a_decode_failure_names_the_row_within_the_result() {
@@ -915,9 +775,13 @@ fn a_decode_failure_names_the_row_within_the_result() {
 
     let message = convert(vec![
         RestRow::new(vec![RestValue::Null]),
-        RestRow::new(vec![RestValue::String("not a timestamp".to_owned())]),
+        RestRow::new(vec![text("not a timestamp")]),
     ]);
-    assert!(message.contains("\"moment\", row 2049:"), "{message}");
+    assert_eq!(
+        message,
+        "Parser error: failed to decode BigQuery result column \"moment\", row 2049: BigQuery \
+         result value is not a valid TIMESTAMP"
+    );
 
     let message = convert(vec![
         RestRow::new(vec![RestValue::Null]),
