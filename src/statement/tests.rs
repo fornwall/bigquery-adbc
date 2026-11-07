@@ -25,7 +25,7 @@ use crate::{
 };
 
 use super::BigQueryStatement;
-use super::sql_text::normalize_sql;
+use super::sql_text::{normalize_sql, skip_comments};
 use crate::test_support::driver::{test_connection, test_connection_at, test_statement};
 use crate::test_support::options::{
     assert_string_option, option_int, option_string, set_option, set_option_error,

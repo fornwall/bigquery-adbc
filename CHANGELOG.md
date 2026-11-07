@@ -22,6 +22,8 @@ changes.
   dbt threads granting on one dataset no longer fail with `INVALID_STATE`.
 - A refused CSV seed upload no longer sends a `jobs.cancel` for a job that does not exist, nor warns
   that it may keep running.
+- A line comment now ends at a carriage return as well as a newline, as in GoogleSQL. A statement
+  after a `\r`-terminated comment was refused as comment-only text.
 
 ## [0.2.0] - 2026-11-06
 

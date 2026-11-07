@@ -466,3 +466,18 @@ fn strips_trailing_statement_terminators() {
     assert_eq!(normalize_sql("SELECT ';'"), "SELECT ';'");
     assert_eq!(normalize_sql("SELECT 1"), "SELECT 1");
 }
+
+/// GoogleSQL ends a line comment at a carriage return too, so a statement after one must reach
+/// BigQuery rather than be refused as comment-only text.
+#[test]
+fn a_line_comment_ends_at_a_carriage_return_or_a_newline() {
+    for query in [
+        "-- c\rSELECT 1",
+        "# c\rSELECT 1",
+        "-- c\r\nSELECT 1",
+        "# c\nSELECT 1",
+    ] {
+        assert_eq!(skip_comments(query), "SELECT 1", "{query:?}");
+    }
+    assert_eq!(skip_comments("-- only a comment\r"), "");
+}

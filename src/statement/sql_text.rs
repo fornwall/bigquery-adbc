@@ -37,8 +37,9 @@ pub(crate) fn skip_comments(query: &str) -> &str {
     loop {
         rest = rest.trim_start();
         if let Some(tail) = rest.strip_prefix("--").or_else(|| rest.strip_prefix('#')) {
-            // A line comment with no newline left runs to the end of the query.
-            rest = tail.split_once('\n').map_or("", |(_, tail)| tail);
+            // GoogleSQL ends a line comment at a carriage return as well as at a newline; one
+            // with neither left runs to the end of the query.
+            rest = tail.split_once(['\r', '\n']).map_or("", |(_, tail)| tail);
         } else if let Some(tail) = rest.strip_prefix("/*") {
             let Some((_, tail)) = tail.split_once("*/") else {
                 return "";
