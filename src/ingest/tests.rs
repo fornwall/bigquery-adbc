@@ -966,7 +966,7 @@ fn ingest_from(
 ) -> adbc_core::error::Result<i64> {
     let clients = ClientState::for_test_at(ServiceEndpointKind::Storage, mock.endpoint());
     let (_cancellation, operation) = operation(runtime, clients.clone());
-    let client = clients.write_client(runtime).unwrap();
+    let client = clients.write_client(runtime, None).unwrap();
     let normalized_schema = Arc::new(normalize_schema(schema).unwrap());
     // `write_batches` takes the first batch already checked, because the real path checks
     // it before the target table is created or truncated.

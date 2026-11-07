@@ -154,7 +154,7 @@ async fn open_reader(
     } else {
         ORDERED_MAX_STREAM_COUNT
     };
-    let read_client = gate(operation.as_ref(), Box::pin(clients.read_client(&runtime))).await??;
+    let read_client = clients.read_client(&runtime, operation.as_ref()).await?;
     let session = match create_read_session(
         &read_client,
         &clients,

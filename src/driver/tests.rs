@@ -41,7 +41,7 @@ fn assert_all_clients_build(database: &BigQueryDatabase) {
     state.rest_job_client(&database.runtime).unwrap();
     state.metadata_client(&database.runtime).unwrap();
     state.rest_client().unwrap();
-    state.write_client(&database.runtime).unwrap();
+    state.write_client(&database.runtime, None).unwrap();
     assert_eq!(
         state.initialized_clients(),
         crate::clients::InitializedClients {

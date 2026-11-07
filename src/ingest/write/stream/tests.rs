@@ -20,7 +20,7 @@ fn a_stream_type_mismatch_is_not_a_retryable_transport_failure() {
     let runtime = crate::runtime::new_runtime().unwrap();
     let mock = StorageMock::start(&runtime, MockPlan::default());
     let clients = ClientState::for_test_at(ServiceEndpointKind::Storage, mock.endpoint());
-    let client = clients.write_client(&runtime).unwrap();
+    let client = clients.write_client(&runtime, None).unwrap();
     let writer = runtime
         .block_on(
             client
@@ -102,7 +102,7 @@ fn cancelling_visibility_reattachment_finalizes_the_pending_stream() {
         },
     );
     let clients = ClientState::for_test_at(ServiceEndpointKind::Storage, mock.endpoint());
-    let client = clients.write_client(&runtime).unwrap();
+    let client = clients.write_client(&runtime, None).unwrap();
     let cancellation = Cancellation::new(runtime.clone(), clients, "statement");
     let operation = cancellation.begin();
     let schema = Arc::new(Schema::new(vec![Field::new("n", DataType::Int64, false)]));

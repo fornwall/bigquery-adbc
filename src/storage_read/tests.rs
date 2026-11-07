@@ -1167,7 +1167,10 @@ mod mock_reads {
             plan.read_responses[0].0 = i64::MAX;
         });
         fixture.runtime.block_on(async {
-            let client = clients(&mock).read_client(&fixture.runtime).await.unwrap();
+            let client = clients(&mock)
+                .read_client(&fixture.runtime, None)
+                .await
+                .unwrap();
             let (sender, _receiver) = tokio::sync::mpsc::channel(2);
             let stream = "projects/p/locations/l/sessions/mock/streams/0";
             let request = client.read_rows().set_read_stream(stream);

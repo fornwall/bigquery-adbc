@@ -99,7 +99,7 @@ mod tests {
         };
         let state = ClientState::new(&config);
         state.rest_job_client(&runtime).unwrap();
-        runtime.block_on(state.read_client(&runtime)).unwrap();
+        runtime.block_on(state.read_client(&runtime, None)).unwrap();
         let context = ExecutionContext {
             runtime,
             state,

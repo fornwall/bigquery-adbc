@@ -173,7 +173,9 @@ pub(crate) fn execute_ingest(
             }
             return Ok(None);
         };
-        let write_client = context.state.write_client(context.runtime)?;
+        let write_client = context
+            .state
+            .write_client(context.runtime, Some(context.operation))?;
         let stream = context.runtime.block_on(write_batches(
             &write_client,
             &table_path,

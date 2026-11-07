@@ -69,6 +69,8 @@ changes.
   two minutes instead of hanging it. Retries and later requests then fail within seconds until a
   token arrives, and a wait for a running job outlasts it like any other outage. This covers the
   OAuth, STS and metadata-server exchanges.
+- A cancel takes effect while a Storage client is being built, instead of waiting for a stalled
+  metadata-server lookup.
 - A database opened in a `fork` child works instead of hanging forever on a runtime whose worker
   threads did not survive the fork. Using a handle inherited from the parent returns an error, and
   releasing one leaves the parent's BigQuery session open.

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use adbc_core::error::Result;
 use google_cloud_bigquery::client::{Read, Write};
 
-use crate::cancellation::Operation;
+use crate::cancellation::{Operation, gate};
 use crate::config::{ClientConfiguration, DatabaseConfig, ServiceEndpointKind};
 use crate::error::{chain, invalid_argument};
 use crate::identifiers::ProjectIdentifier;
@@ -184,7 +184,13 @@ impl ClientState {
         Ok(self.cache.jobs.get_or_init(|| client).clone())
     }
 
-    pub(crate) fn write_client(&self, runtime: &SharedRuntime) -> Result<Arc<Write>> {
+    /// `operation` gates the build: a metadata-server credential looks up its universe here, and
+    /// that request can stall.
+    pub(crate) fn write_client(
+        &self,
+        runtime: &SharedRuntime,
+        operation: Option<&Operation>,
+    ) -> Result<Arc<Write>> {
         if let Some(client) = self.cache.write.get() {
             return Ok(client.clone());
         }
@@ -194,13 +200,18 @@ impl ClientState {
             builder = builder.with_endpoint(endpoint);
         }
         let client = runtime
-            .block_on(builder.build())
+            .block_on(gate(operation, Box::pin(builder.build())))?
             .map_err(|source| storage_client_error("Storage Write", &source))?;
         Ok(self.cache.write.get_or_init(|| Arc::new(client)).clone())
     }
 
     /// Async because Storage Read may initialize from a task already on the shared runtime.
-    pub(crate) async fn read_client(&self, runtime: &SharedRuntime) -> Result<Read> {
+    /// `operation` gates the build, as in [`Self::write_client`].
+    pub(crate) async fn read_client(
+        &self,
+        runtime: &SharedRuntime,
+        operation: Option<&Operation>,
+    ) -> Result<Read> {
         if let Some(client) = self.cache.read.get() {
             return Ok(client.clone());
         }
@@ -209,9 +220,8 @@ impl ClientState {
         if let Some(endpoint) = configuration.endpoints.get(ServiceEndpointKind::Storage) {
             builder = builder.with_endpoint(endpoint);
         }
-        let client = builder
-            .build()
-            .await
+        let client = gate(operation, Box::pin(builder.build()))
+            .await?
             .map_err(|source| storage_client_error("Storage Read", &source))?;
         Ok(self.cache.read.get_or_init(|| client).clone())
     }
@@ -370,13 +380,57 @@ mod tests {
     use std::sync::Arc;
 
     use adbc_core::error::Status;
+    use google_cloud_auth::credentials::{CacheableResource, Credentials, CredentialsProvider};
+    use google_cloud_gax::error::CredentialsError;
 
     use super::{ClientState, DATASET_LOCATION_CACHE_ENTRIES, storage_client_error};
     use crate::cancellation::Cancellation;
-    use crate::config::ServiceEndpointKind;
+    use crate::config::{ClientConfiguration, ServiceEndpointKind, ServiceEndpoints};
     use crate::runtime::new_runtime;
+    use crate::test_support::cancellation::operation;
     use crate::test_support::http::capture_requests;
     use crate::test_support::identifiers::project;
+
+    /// Building a Storage client asks a metadata-server credential for its universe, which can
+    /// stall, so the build has to stop for a cancel.
+    #[test]
+    fn building_a_storage_client_stops_for_a_cancelled_operation() {
+        #[derive(Debug)]
+        struct Stalled;
+
+        impl CredentialsProvider for Stalled {
+            async fn headers(
+                &self,
+                _: http::Extensions,
+            ) -> Result<CacheableResource<http::HeaderMap>, CredentialsError> {
+                std::future::pending().await
+            }
+
+            async fn universe_domain(&self) -> Option<String> {
+                std::future::pending().await
+            }
+        }
+
+        let runtime = new_runtime().unwrap();
+        let state = ClientState::for_test();
+        let configuration = ClientConfiguration {
+            credentials: Credentials::from(Stalled),
+            execution_principal: None,
+            endpoints: ServiceEndpoints::default(),
+        };
+        state
+            .cache
+            .configuration
+            .set(Arc::new(configuration))
+            .unwrap();
+        let (_cancellation, operation) = operation(&runtime, state.clone());
+        operation.finish();
+
+        let write = state.write_client(&runtime, Some(&operation));
+        let read = runtime.block_on(state.read_client(&runtime, Some(&operation)));
+        assert_eq!(write.err().unwrap().status, Status::Cancelled);
+        assert_eq!(read.err().unwrap().status, Status::Cancelled);
+    }
 
     #[test]
     fn a_job_location_resolver_does_not_keep_the_client_cache_alive() {
