@@ -31,12 +31,12 @@ pub(super) fn error_message(error: &AdbcError) -> Option<String> {
 }
 
 /// A handle struct as a caller hands it to `New`: zeroed.
-pub(super) fn zeroed_handle<H: FfiHandle>() -> H {
+pub(super) fn zeroed_handle<H: Default>() -> H {
     H::default()
 }
 
 /// A database or connection as `New` leaves it: allocated and not yet initialized.
-pub(super) fn allocated<H: FfiHandle<State: Default>>() -> H {
+pub(super) fn allocated<H: Default + FfiHandle<State: Default>>() -> H {
     let mut handle = zeroed_handle();
     // SAFETY: The handle is a writable local whose ownership slot starts empty.
     let status = unsafe { new_handle(&raw mut handle, std::ptr::null_mut()) };

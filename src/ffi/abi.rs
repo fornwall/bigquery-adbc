@@ -495,6 +495,13 @@ pub(crate) const ADBC_ERROR_1_0_0_SIZE: usize = std::mem::offset_of!(AdbcError, 
 /// struct is exactly the prefix.
 const _: () = assert!(ADBC_ERROR_1_0_0_SIZE == size_of::<AdbcErrorV100>());
 
+/// `options::slot_of` reaches `private_data` by casting the handle.
+const _: () = assert!(
+    std::mem::offset_of!(AdbcDatabase, private_data) == 0
+        && std::mem::offset_of!(AdbcConnection, private_data) == 0
+        && std::mem::offset_of!(AdbcStatement, private_data) == 0
+);
+
 #[cfg(test)]
 mod tests {
     use adbc_core::error::Status;

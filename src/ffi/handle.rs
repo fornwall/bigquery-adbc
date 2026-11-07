@@ -134,26 +134,29 @@ static SLOTS: RwLock<()> = RwLock::new(());
 /// Install `exported` in an empty slot, as `New` does.
 ///
 /// # Safety
-/// `slot` must point to a handle's live, aligned, writable `private_data` field, holding null or a
-/// pointer from this function for the same `S`. All concurrent accesses to the field must go
-/// through this module's slot-locking functions, without overlapping Rust references to it.
+/// `slot` must be null or point to a handle's live, aligned, writable `private_data` field,
+/// holding null or a pointer from this function for the same `S`. All concurrent accesses to the
+/// field must go through this module's slot-locking functions, without overlapping Rust
+/// references to it.
 pub(crate) unsafe fn install<S: Send>(
     slot: *mut *mut c_void,
     kind: &str,
     exported: Exported<S>,
 ) -> Result<()> {
     let _writing = SLOTS.write().unwrap_or_else(PoisonError::into_inner);
-    // SAFETY: The caller supplies the live field, and the write lock excludes other accesses.
-    unsafe {
-        if !slot.read().is_null() {
-            return Err(already_populated(kind));
-        }
-        slot.write(Arc::into_raw(Arc::new(exported)).cast_mut().cast());
+    // SAFETY: The caller supplies a live field or null, and the write lock excludes other
+    // accesses.
+    let Some(object) = (unsafe { slot.as_mut() }) else {
+        return Err(missing_argument(kind));
+    };
+    if !object.is_null() {
+        return Err(already_populated(kind));
     }
+    *object = Arc::into_raw(Arc::new(exported)).cast_mut().cast();
     Ok(())
 }
 
-/// Whether a handle's slot already holds an object, which `New` refuses to overwrite.
+/// Refuse what [`install`] would, for `AdbcStatementNew` to check before building a statement.
 ///
 /// # Safety
 /// `slot` must be null or point to a handle's live, aligned, initialized `private_data` field,
@@ -162,8 +165,9 @@ pub(crate) unsafe fn check_empty(slot: *const *mut c_void, kind: &str) -> Result
     let _reading = SLOTS.read().unwrap_or_else(PoisonError::into_inner);
     // SAFETY: The caller supplies a live field or null, and writers hold the write lock.
     match unsafe { slot.as_ref() } {
+        None => Err(missing_argument(kind)),
         Some(object) if !object.is_null() => Err(already_populated(kind)),
-        _ => Ok(()),
+        Some(_) => Ok(()),
     }
 }
 

@@ -15,10 +15,9 @@ use arrow_array::ffi_stream::FFI_ArrowArrayStream;
 
 use super::abi::{AdbcError, AdbcStatusCode};
 use super::guard::{
-    byte_slice, missing_argument, required_output, required_str, write_bytes, write_out,
-    write_string,
+    byte_slice, required_output, required_str, write_bytes, write_out, write_string,
 };
-use super::handle::{Exported, Staged, check_empty, dispatch, finish, install, with_locked};
+use super::handle::{Exported, Staged, dispatch, finish, install, with_locked};
 use super::stream::export_reader;
 use crate::connection::{connection_option_kind, connection_set_refusal};
 use crate::driver::database_option_kind;
@@ -26,26 +25,16 @@ use crate::error::{not_found, option_get_refusal, option_set_refusal};
 use crate::options::{OptionKind, expected_type};
 use crate::{BigQueryConnectionOption, BigQueryDatabaseOption};
 
-/// Access to the driver object behind an exported ABI struct. Implemented by [`ffi_handle!`] for
-/// `AdbcDatabase`, `AdbcConnection` and `AdbcStatement`.
+/// Access to the driver object behind an exported ABI struct.
 ///
 /// # Safety
-/// `slot` must return the address of this handle's `private_data` field without reading it or
-/// borrowing the whole handle: other calls may write that field under the slot lock. Its driver
-/// allocation must use exactly `State`. `Default` must initialize it to null.
-pub(super) unsafe trait FfiHandle: Default {
+/// `Self` must be `repr(C)` with `private_data` as its first field, as [`slot_of`] assumes, and
+/// that field's driver allocation must use exactly `State`.
+pub(super) unsafe trait FfiHandle {
     /// What lives behind `private_data`.
     type State: OptionTarget + Send;
     /// The object's name in diagnostics: "database", "connection" or "statement".
     const KIND: &'static str;
-
-    /// The address of the handle's `private_data` field. Its reads and writes go through
-    /// [`super::handle`], which orders `New` and `Release` with the calls that may race them, so
-    /// no reference to the whole struct is ever formed.
-    ///
-    /// # Safety
-    /// `handle` must point to a live handle struct.
-    unsafe fn slot(handle: *mut Self) -> *mut *mut c_void;
 }
 
 /// How options reach the state behind a handle. A [`Staged`] object buffers sets until `Init` and
@@ -178,53 +167,14 @@ where
 
 type KeyOf<H> = <<H as FfiHandle>::State as OptionTarget>::Key;
 
-/// Implement [`FfiHandle`] for an ABI handle struct, from the invoking module's `State` (what
-/// lives behind `private_data`) and `KIND` (the name in diagnostics).
-macro_rules! ffi_handle {
-    ($handle:ty) => {
-        // SAFETY: Each invocation pairs an ABI handle with its module's State. The derived
-        // Default nulls both pointers; access below projects individual fields without ever
-        // reading private_data or borrowing the whole handle.
-        unsafe impl $crate::ffi::options::FfiHandle for $handle {
-            type State = State;
-            const KIND: &'static str = KIND;
-
-            unsafe fn slot(handle: *mut Self) -> *mut *mut std::ffi::c_void {
-                // SAFETY: The caller supplies a non-null pointer to a live handle struct.
-                unsafe { &raw mut (*handle).private_data }
-            }
-        }
-    };
-}
-pub(super) use ffi_handle;
-
 /// The address of a caller-supplied handle's `private_data` field, or null for a null handle.
 ///
-/// [`super::handle`] keeps the two failures apart: a null slot is a bad argument
-/// (`INVALID_ARGUMENT`), and an unpopulated one an object used out of order (`INVALID_STATE`).
-///
-/// # Safety
-/// The [shared FFI safety contracts](super) apply.
-/// `handle` must be null or point to a valid ABI struct.
-pub(super) unsafe fn slot_of<H: FfiHandle>(handle: *mut H) -> *mut *mut c_void {
-    if handle.is_null() {
-        return std::ptr::null_mut();
-    }
-    // SAFETY: The caller keeps the non-null ABI struct live.
-    unsafe { H::slot(handle) }
-}
-
-/// The slot of a handle that `New` was handed, which must not be null (see [`slot_of`]).
-///
-/// # Safety
-/// The [shared FFI safety contracts](super) apply.
-/// `handle` must be null or point to a valid ABI struct.
-unsafe fn required_slot<H: FfiHandle>(handle: *mut H) -> Result<*mut *mut c_void> {
-    if handle.is_null() {
-        return Err(missing_argument(H::KIND));
-    }
-    // SAFETY: The caller keeps the non-null ABI struct live.
-    Ok(unsafe { H::slot(handle) })
+/// Every read and write of that field goes through [`super::handle`], which orders `New` and
+/// `Release` with the calls that may race them, so no reference to the whole struct is ever
+/// formed. It also keeps two failures apart: a null slot is a bad argument (`INVALID_ARGUMENT`),
+/// and an unpopulated one an object used out of order (`INVALID_STATE`).
+pub(super) fn slot_of<H: FfiHandle>(handle: *mut H) -> *mut *mut c_void {
+    handle.cast()
 }
 
 /// Run `f` against the state behind a caller-supplied handle, dispatching through
@@ -286,26 +236,9 @@ where
     H: FfiHandle<State: Default>,
 {
     let exported = Exported::new(H::State::default(), None, None);
-    // SAFETY: The caller supplies a live ABI struct or null, which is rejected.
-    let installed = unsafe { required_slot(handle) }
-        // SAFETY: The slot is the live field of the caller's handle.
-        .and_then(|slot| unsafe { install(slot, H::KIND, exported) });
-    // SAFETY: the caller provides initialized, exclusively writable error storage or null.
-    unsafe { finish(installed, error) }
-}
-
-/// The slot of a handle handed to `New`, refused if null or already populated. The statement
-/// constructor checks this before it builds a statement.
-///
-/// # Safety
-/// The [shared FFI safety contracts](super) apply.
-/// `handle` must be null or point to a valid ABI struct.
-pub(super) unsafe fn new_slot<H: FfiHandle>(handle: *mut H) -> Result<*mut *mut c_void> {
-    // SAFETY: The caller supplies a live ABI struct or null, which is rejected.
-    let slot = unsafe { required_slot(handle) }?;
-    // SAFETY: The slot is the live field of the caller's handle.
-    unsafe { check_empty(slot, H::KIND) }?;
-    Ok(slot)
+    // SAFETY: The caller supplies a live ABI struct or null, which `install` rejects, and
+    // initialized, exclusively writable error storage or null.
+    unsafe { finish(install(slot_of(handle), H::KIND, exported), error) }
 }
 
 /// Every `*Release`: empty the slot and drop its reference, so a second release is an error

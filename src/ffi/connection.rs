@@ -11,7 +11,7 @@ use arrow_array::ffi_stream::FFI_ArrowArrayStream;
 use super::abi::{AdbcConnection, AdbcDatabase, AdbcError, AdbcStatusCode};
 use super::guard::{byte_slice, optional_str, optional_str_list, required_output, required_str};
 use super::handle::{Staged, install_cancel_handle};
-use super::options::{ffi_handle, slot_of, with_handle, with_state, with_stream};
+use super::options::{FfiHandle, slot_of, with_handle, with_state, with_stream};
 use super::stream::write_schema;
 use crate::connection::BigQueryConnection;
 use crate::error::invalid_argument;
@@ -20,7 +20,11 @@ pub(super) const KIND: &str = "connection";
 
 pub(super) type State = Staged<OptionConnection, BigQueryConnection>;
 
-ffi_handle!(AdbcConnection);
+// SAFETY: `AdbcConnection` is repr(C) with `private_data` first, and only `State` is installed there.
+unsafe impl FfiHandle for AdbcConnection {
+    type State = State;
+    const KIND: &'static str = KIND;
+}
 
 /// # Safety
 /// The [shared FFI safety contracts](super) apply.

@@ -8,14 +8,18 @@ use adbc_core::options::OptionDatabase;
 
 use super::abi::{AdbcDatabase, AdbcError, AdbcStatusCode};
 use super::handle::Staged;
-use super::options::{ffi_handle, with_state};
+use super::options::{FfiHandle, with_state};
 use crate::driver::{BigQueryDatabase, BigQueryDriver};
 
 pub(super) const KIND: &str = "database";
 
 pub(super) type State = Staged<OptionDatabase, BigQueryDatabase>;
 
-ffi_handle!(AdbcDatabase);
+// SAFETY: `AdbcDatabase` is repr(C) with `private_data` first, and only `State` is installed there.
+unsafe impl FfiHandle for AdbcDatabase {
+    type State = State;
+    const KIND: &'static str = KIND;
+}
 
 /// One driver, and so one Tokio runtime, shared by every database in the process. Runtime build
 /// failure is reported as `ADBC_STATUS_INTERNAL`.

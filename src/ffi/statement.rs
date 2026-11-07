@@ -17,9 +17,9 @@ use super::abi::{
     ADBC_STATUS_OK, AdbcConnection, AdbcError, AdbcPartitions, AdbcStatement, AdbcStatusCode,
 };
 use super::guard::{byte_slice, catch, missing_argument, required_output, required_str, write_out};
-use super::handle::{Exported, finish, install, published_progress};
+use super::handle::{Exported, check_empty, finish, install, published_progress};
 use super::import::{BoundStreamReader, check_schema, import_struct, take_stream};
-use super::options::{ffi_handle, get_option_double, new_slot, slot_of, with_handle, with_state};
+use super::options::{FfiHandle, get_option_double, slot_of, with_handle, with_state};
 use super::stream::{export_reader, write_schema};
 use crate::error::invalid_argument;
 use crate::query::ExecutionProgress;
@@ -29,7 +29,11 @@ pub(super) const KIND: &str = "statement";
 
 pub(super) type State = BigQueryStatement;
 
-ffi_handle!(AdbcStatement);
+// SAFETY: `AdbcStatement` is repr(C) with `private_data` first, and only `State` is installed there.
+unsafe impl FfiHandle for AdbcStatement {
+    type State = State;
+    const KIND: &'static str = KIND;
+}
 
 /// Test-only option for exercising panic containment through the C ABI.
 #[cfg(test)]
@@ -64,8 +68,9 @@ pub(super) unsafe extern "C" fn statement_new(
     // A panic here precedes the statement handle, so the connection guard is held inside `catch`
     // to poison the connection instead.
     let created = catch(|| {
+        let slot = slot_of(statement);
         // SAFETY: The caller supplies a live statement struct or null, which is rejected.
-        let slot = unsafe { new_slot(statement) }?;
+        unsafe { check_empty(slot, KIND) }?;
         // SAFETY: The caller supplies a live connection struct or null.
         let state = unsafe {
             with_handle(connection, |connection| {
