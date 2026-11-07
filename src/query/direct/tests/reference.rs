@@ -25,7 +25,7 @@ fn failed_jobs_link_to_their_server_returned_location() {
             })),
         ]);
         let (endpoint, captured) = capture_requests(responses);
-        let (runtime, client) = client(&endpoint);
+        let (runtime, client) = job_client(&endpoint);
         let failure = complete(
             &runtime,
             client,
@@ -48,7 +48,7 @@ fn failed_jobs_link_to_their_server_returned_location() {
                 .count(),
             1
         );
-        assert_eq!(captured.join().unwrap().len(), if polled { 3 } else { 2 });
+        captured.served(if polled { 3 } else { 2 });
     }
 }
 
@@ -67,7 +67,7 @@ fn polling_failures_link_to_the_known_job_but_submission_rejections_do_not() {
             json!({"error":{"errors":[{"reason":"accessDenied","message":"access denied"}]}}),
         ));
         let (endpoint, captured) = capture_requests(responses);
-        let (runtime, client) = client(&endpoint);
+        let (runtime, client) = job_client(&endpoint);
         let failure = complete(
             &runtime,
             client,
@@ -82,7 +82,7 @@ fn polling_failures_link_to_the_known_job_but_submission_rejections_do_not() {
         } else {
             assert_message_omits(&failure, &["https://console.cloud.google.com/"]);
         }
-        assert_eq!(captured.join().unwrap().len(), if polled { 2 } else { 1 });
+        captured.served(if polled { 2 } else { 1 });
     }
 }
 

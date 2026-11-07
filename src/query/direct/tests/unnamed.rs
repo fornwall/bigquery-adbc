@@ -92,8 +92,7 @@ fn a_replayed_commit_ends_the_transaction() {
     let transaction = active_transaction();
     run_commit(&endpoint, &StatementQueryOptions::default(), &transaction);
 
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 4);
+    let captured = captured.served(4);
     assert!(
         captured[3]
             .path()
@@ -131,7 +130,7 @@ fn an_inserted_commit_ends_the_transaction_from_its_running_answer() {
     };
     run_commit(&endpoint, &options, &transaction);
 
-    assert_eq!(captured.join().unwrap().len(), 2);
+    captured.served(2);
     assert!(!still_active(&transaction));
 }
 
@@ -153,5 +152,5 @@ fn a_replayed_session_creation_returns_its_session() {
     )
     .unwrap();
     assert_eq!(&*session, "session-created");
-    assert_eq!(captured.join().unwrap().len(), 4);
+    captured.served(4);
 }

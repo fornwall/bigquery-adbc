@@ -29,6 +29,7 @@ use crate::query::response::QueryResponse;
 use crate::query::{QueryDefaults, StatementQueryOptions};
 use crate::rest::client::rest_client;
 use crate::runtime::{SharedRuntime, new_runtime, new_runtime_with_result_conversion_concurrency};
+use crate::test_support::cancellation::job_client;
 use crate::test_support::errors::assert_failure;
 use crate::test_support::http::{capture_requests, capture_requests_gated, error_body, ok};
 
@@ -62,10 +63,6 @@ fn plan(options: StatementQueryOptions) -> QueryPlan {
     plan_at(options, Some("EU"))
 }
 
-fn client(endpoint: &str) -> (SharedRuntime, JobClient) {
-    (new_runtime().unwrap(), JobClient::for_test(endpoint))
-}
-
 fn client_with_one_result_worker(endpoint: &str) -> (SharedRuntime, JobClient) {
     (
         new_runtime_with_result_conversion_concurrency(1).unwrap(),
@@ -94,6 +91,6 @@ fn complete(
 
 /// Runs `plan` for its rows against `endpoint`.
 fn run(endpoint: &str, plan: QueryPlan) -> Result<CompletedQuery> {
-    let (runtime, client) = client(endpoint);
+    let (runtime, client) = job_client(endpoint);
     complete(&runtime, client, plan, QueryResultMode::Rows, "test")
 }

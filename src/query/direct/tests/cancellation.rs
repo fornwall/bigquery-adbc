@@ -2,16 +2,9 @@
 //! cancellation after the POST still has to clean up.
 
 use super::*;
+use crate::test_support::cancellation::cancellation_at;
 use crate::test_support::http::{job_reference, mock_listener, ok, retire};
 use crate::test_support::identifiers::project;
-
-fn cancellation_at(runtime: &SharedRuntime, endpoint: &str) -> Arc<Cancellation> {
-    Cancellation::new(
-        runtime.clone(),
-        ClientState::for_test_at(ServiceEndpointKind::BigQuery, endpoint),
-        "statement",
-    )
-}
 
 fn assert_no_request(listener: TcpListener) {
     thread::sleep(Duration::from_millis(100));
@@ -53,7 +46,7 @@ impl CredentialsProvider for CancelDuringCredentials {
 #[test]
 fn cancellation_before_the_query_future_is_polled_sends_no_request() {
     let (listener, endpoint) = mock_listener();
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let cancellation = cancellation_at(&runtime, &endpoint);
     let operation = cancellation.begin();
     OperationCancelHandle(cancellation).try_cancel().unwrap();
@@ -155,8 +148,7 @@ fn cancellation_after_the_post_keeps_the_late_response_and_cancels_its_job() {
     cancel.join().unwrap();
 
     assert_eq!(failure.status, Status::Cancelled);
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 2);
+    let captured = captured.served(2);
     assert_eq!(captured[0].path(), "/bigquery/v2/projects/project/queries");
     assert_eq!(captured[0].body["jobCreationMode"], "JOB_CREATION_OPTIONAL");
     assert_eq!(captured[0].body["timeoutMs"], 10_000);

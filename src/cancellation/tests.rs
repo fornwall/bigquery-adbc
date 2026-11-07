@@ -148,8 +148,7 @@ fn a_late_job_reference_retains_its_released_cancellation_owner() {
 
     let error = operation.register_job(&job("query-job")).unwrap_err();
     assert_eq!(error.status, Status::Cancelled);
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 1);
+    let requests = requests.served(1);
     assert_eq!(
         requests[0].path(),
         "/bigquery/v2/projects/billing-project/jobs/query-job/cancel"
@@ -336,7 +335,7 @@ fn failed_runtime_thread_cancel_rearms_the_same_confirmed_reference() {
     }
 
     assert_status(operation.register_job(&reference), Status::Cancelled);
-    assert_eq!(requests.join().unwrap().len(), 2);
+    requests.served(2);
 }
 
 #[test]
@@ -355,8 +354,7 @@ fn cancellation_sends_one_location_aware_job_request() {
     handle.try_cancel().unwrap();
     handle.try_cancel().unwrap();
 
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 1);
+    let requests = requests.served(1);
     assert_eq!(
         requests[0].path(),
         "/bigquery/v2/projects/billing-project/jobs/query-job/cancel?location=europe-north1"
@@ -401,7 +399,7 @@ fn late_registration_returns_cancelled_before_remote_cancellation_answers() {
     assert_eq!(failure.status, Status::Cancelled);
 
     release.send(()).unwrap();
-    assert_eq!(requests.join().unwrap().len(), 1);
+    requests.served(1);
 }
 
 /// A caller cancelled before its submission sends no job, so a provisional identity registered
@@ -441,8 +439,7 @@ fn a_more_specific_reference_rearms_an_already_cancelled_job() {
     );
     assert_status(operation.register_job(&canonical), Status::Cancelled);
 
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 2);
+    let requests = requests.served(2);
     assert_eq!(
         requests[0].path(),
         "/bigquery/v2/projects/billing-project/jobs/query-job/cancel"
@@ -465,10 +462,7 @@ fn failed_provisional_cancel_retries_after_submission_confirmation() {
     OperationCancelHandle(cancellation).try_cancel().unwrap();
     assert_status(operation.register_job(&reference), Status::Cancelled);
 
-    assert_eq!(
-        requests.join().unwrap().len(),
-        crate::rest::retry::MAX_ATTEMPTS as usize + 1
-    );
+    requests.served(crate::rest::retry::MAX_ATTEMPTS as usize + 1);
 }
 
 #[test]
@@ -498,10 +492,7 @@ fn in_flight_provisional_cancel_retains_confirmation_after_the_caller_drops() {
     drop(operation);
     release.send(()).unwrap();
 
-    assert_eq!(
-        requests.join().unwrap().len(),
-        crate::rest::retry::MAX_ATTEMPTS as usize + 1
-    );
+    requests.served(crate::rest::retry::MAX_ATTEMPTS as usize + 1);
 }
 
 /// A concurrent operation is not superseded by anything that follows it, and it does not
@@ -564,7 +555,7 @@ fn every_concurrent_operation_is_locally_cancelled_before_the_first_remote_answe
 
     release.send(()).unwrap();
     cancel.join().unwrap().unwrap();
-    assert_eq!(requests.join().unwrap().len(), 2);
+    requests.served(2);
 }
 
 #[test]
@@ -655,7 +646,7 @@ fn cancel_failure_reports_unknown_after_stopping_local_work() {
         .unwrap_err();
     assert_failure(&failure, Status::Unknown, &["cancel denied"]);
     assert_status(operation.check(), Status::Cancelled);
-    assert_eq!(requests.join().unwrap().len(), 1);
+    requests.served(1);
 }
 
 #[test]
@@ -716,7 +707,7 @@ fn terminal_status_during_a_provisional_cancel_suppresses_confirmation_retry() {
     );
     release.send(()).unwrap();
     assert_eq!(cancel.join().unwrap().unwrap_err().status, Status::Unknown);
-    assert_eq!(requests.join().unwrap().len(), 1);
+    requests.served(1);
 }
 
 /// A cancellation landing while an operation is parked in `wait` has to wake it.

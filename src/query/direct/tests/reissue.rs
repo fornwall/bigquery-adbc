@@ -18,7 +18,7 @@ fn reservation_survives_transport_retries_on_both_submission_paths() {
             ),
             (200, success),
         ]);
-        let (runtime, client) = client(&endpoint);
+        let (runtime, client) = job_client(&endpoint);
         let reservation = "projects/billing-project/locations/EU/reservations/analytics";
         complete(
             &runtime,
@@ -32,8 +32,7 @@ fn reservation_survives_transport_retries_on_both_submission_paths() {
             "test",
         )
         .unwrap();
-        let captured = captured.join().unwrap();
-        assert_eq!(captured.len(), 2);
+        let captured = captured.served(2);
         assert_eq!(captured[0].body, captured[1].body);
         let configuration = if dry_run {
             &captured[1].body["configuration"]
@@ -101,8 +100,7 @@ fn terminal_transient_failures_reissue_three_times_with_fresh_request_ids() {
         1
     );
 
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 2 * (MAX_JOB_REISSUES + 1));
+    let captured = captured.served(2 * (MAX_JOB_REISSUES + 1));
     let request_ids: HashSet<_> = captured
         .iter()
         .filter(|request| request.line.starts_with("POST "))

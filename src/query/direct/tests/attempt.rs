@@ -74,8 +74,7 @@ fn jobs_query_jobless_result_keeps_initial_page_and_wire_invariants() {
     assert_eq!(cells[0].as_str(), Some("7"));
     assert!(completed.page.page_token.is_none());
 
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 1);
+    let captured = captured.served(1);
     assert_eq!(captured[0].path(), "/bigquery/v2/projects/project/queries");
     assert_eq!(captured[0].body["query"], "SELECT 1");
     assert_eq!(captured[0].body["useLegacySql"], false);
@@ -129,8 +128,7 @@ fn jobs_query_metadata_only_requests_no_rows_and_drops_an_unexpected_page() {
     assert!(completed.page.rows.is_empty());
     assert!(completed.page.page_token.is_none());
 
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 1);
+    let captured = captured.served(1);
     assert_eq!(captured[0].body["maxResults"], 0);
 }
 
@@ -140,7 +138,7 @@ fn required_job_creation_rejects_responses_without_a_job_reference() {
         let (endpoint, captured) = capture_requests(vec![ok(
             json!({"jobComplete": complete_response, "queryId": "jobless-query"}),
         )]);
-        let (runtime, client) = client(&endpoint);
+        let (runtime, client) = job_client(&endpoint);
         let mut plan = plan(StatementQueryOptions::default());
         plan.job_creation = QueryJobCreation::Required;
         let failure = complete(&runtime, client, plan, QueryResultMode::Rows, "test").unwrap_err();
@@ -150,8 +148,7 @@ fn required_job_creation_rejects_responses_without_a_job_reference() {
             Status::InvalidData,
             &["returned without a job reference"],
         );
-        let captured = captured.join().unwrap();
-        assert_eq!(captured.len(), 1);
+        let captured = captured.served(1);
         assert_eq!(captured[0].body["jobCreationMode"], "JOB_CREATION_REQUIRED");
         assert_eq!(captured[0].body["timeoutMs"], 10_000);
     }
@@ -169,7 +166,7 @@ fn optional_job_creation_rejects_an_incomplete_response_without_a_job_reference(
         Status::InvalidData,
         &["incomplete", "no job reference to poll"],
     );
-    assert_eq!(captured.join().unwrap().len(), 1);
+    captured.served(1);
 }
 
 #[test]
@@ -180,7 +177,7 @@ fn dry_insert_without_location_is_synchronous_and_does_not_invent_a_job() {
         "statistics":{"query":{"schema":{"fields":[]},"undeclaredQueryParameters":[]}},
         "status":{"state":"DONE"}
     }))]);
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let completed = complete(
         &runtime,
         client,
@@ -202,8 +199,7 @@ fn dry_insert_without_location_is_synchronous_and_does_not_invent_a_job() {
         Some(Vec::new())
     );
 
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 1);
+    let captured = captured.served(1);
     assert!(
         captured[0]
             .path()
@@ -252,8 +248,7 @@ fn non_dry_insert_without_location_polls_where_bigquery_ran_the_job() {
         Some("asia-northeast1")
     );
     assert!(completed.metadata.completed_by_poll);
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 2);
+    let captured = captured.served(2);
     assert!(captured[0].body["jobReference"].get("location").is_none());
     assert_eq!(
         captured[0].body["configuration"]["query"]["priority"],
@@ -302,7 +297,7 @@ fn a_lost_destination_insert_without_location_is_found_in_the_destination_datase
         json!({"jobComplete":true,"jobReference":located,"schema":{"fields":[]}}),
     ));
     let (endpoint, captured) = capture_requests(responses);
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let state = ClientState::for_test_at(ServiceEndpointKind::BigQuery, &endpoint);
     let client = client.with_dataset_locations(state.dataset_locations(&runtime).unwrap());
     complete(
@@ -314,8 +309,7 @@ fn a_lost_destination_insert_without_location_is_found_in_the_destination_datase
     )
     .unwrap();
 
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), attempts + 6);
+    let captured = captured.served(attempts + 6);
     assert!(
         captured[attempts + 3]
             .path()
@@ -364,8 +358,7 @@ fn non_dry_insert_requires_and_uses_the_exact_caller_job_id() {
     assert_eq!(completed.page.rows.len(), 1);
     assert_eq!(completed.page.page_token.as_deref(), Some("next-page"));
 
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 2);
+    let captured = captured.served(2);
     assert_eq!(captured[0].body["jobReference"]["jobId"], job_id);
     // A configured location is sent, and every later request carries it.
     assert_eq!(captured[0].body["jobReference"]["location"], "EU");
@@ -415,7 +408,7 @@ fn destination_insert_requests_no_rows_and_drops_an_unexpected_page() {
             "pageToken":"must-not-be-fetched"
         })),
     ]);
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let completed = complete(
         &runtime,
         client,
@@ -429,8 +422,7 @@ fn destination_insert_requests_no_rows_and_drops_an_unexpected_page() {
     assert!(completed.metadata.schema.is_some());
     assert!(completed.page.rows.is_empty());
     assert!(completed.page.page_token.is_none());
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 2);
+    let captured = captured.served(2);
     assert!(
         captured[1]
             .path()
@@ -474,7 +466,7 @@ fn running_insert_preserves_the_session_its_result_poll_cannot_return() {
         Some(2),
         "the RUNNING insert's partial costs must not replace the completed poll"
     );
-    assert_eq!(captured.join().unwrap().len(), 2);
+    captured.served(2);
 }
 
 #[test]
@@ -482,7 +474,7 @@ fn dry_insert_requires_a_done_status() {
     let (endpoint, captured) = capture_requests(vec![ok(
         json!({"configuration":{"dryRun":true},"status":{"state":"RUNNING"}}),
     )]);
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let failure = complete(
         &runtime,
         client,
@@ -498,7 +490,7 @@ fn dry_insert_requires_a_done_status() {
     )
     .unwrap_err();
     assert_eq!(failure.status, Status::InvalidData);
-    assert_eq!(captured.join().unwrap().len(), 1);
+    captured.served(1);
 }
 
 /// A job stopped by `bigquery.query.job_timeout` is a TIMEOUT naming the option; a `stopped` job

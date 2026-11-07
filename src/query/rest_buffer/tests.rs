@@ -99,7 +99,7 @@ fn delivers_resident_rows_while_the_next_page_is_waiting() {
                 assert!(batches.next().await.is_none());
                 producer.await.unwrap().unwrap();
             });
-            assert_eq!(captured.join().unwrap().len(), 1);
+            captured.served(1);
         }
     }
 }

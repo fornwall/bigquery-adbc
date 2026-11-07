@@ -8,12 +8,11 @@ use serde_json::json;
 
 use super::*;
 use crate::cancellation::{Cancellation, OperationCancelHandle};
-use crate::clients::ClientState;
-use crate::config::ServiceEndpointKind;
 use crate::query::QueryResultMode;
 use crate::query::response::retryable_job_errors;
 use crate::rest::retry::MAX_ATTEMPTS;
-use crate::runtime::{SharedRuntime, new_runtime};
+use crate::runtime::SharedRuntime;
+use crate::test_support::cancellation::{job_client, operation_at};
 use crate::test_support::http::{
     CapturedRequest, capture_requests, capture_requests_until_stopped, error_body, ok,
 };
@@ -21,12 +20,6 @@ use crate::test_support::http::{
 /// The job every fixture below polls.
 fn reference() -> JobReference {
     JobReference::new("project", Some("EU"), "polled-job".to_owned())
-}
-
-fn client(endpoint: &str) -> (SharedRuntime, JobClient) {
-    let runtime = new_runtime().unwrap();
-    let client = JobClient::for_test(endpoint);
-    (runtime, client)
 }
 
 /// Polls the fixture job to completion, ungated, and returns the outcome and what was requested.
@@ -38,7 +31,7 @@ fn poll(
     QueryMetadata,
 ) {
     let (endpoint, requests) = capture_requests(responses);
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let decoder = QueryResponseDecoder::new(&runtime, QueryResultMode::Rows);
     let mut metadata = QueryMetadata::default();
     let outcome = runtime.block_on(poll_until_complete(
@@ -122,13 +115,8 @@ fn verified_terminal_jobs_are_not_cancelled_again() {
             })),
             ok(json!({})),
         ]);
-        let (runtime, client) = client(&endpoint);
-        let cancellation = Cancellation::new(
-            runtime.clone(),
-            ClientState::for_test_at(ServiceEndpointKind::BigQuery, &endpoint),
-            "statement",
-        );
-        let operation = cancellation.begin();
+        let (runtime, client) = job_client(&endpoint);
+        let (cancellation, operation) = operation_at(&runtime, &endpoint);
         let reference = JobReference::new("project", None, "polled-job".to_owned());
         operation.register_job(&reference).unwrap();
         let verdict = runtime.block_on(verify_job(&client, Some(&operation), &reference, "SELECT"));
@@ -251,12 +239,7 @@ fn failed_round() -> Vec<(u16, serde_json::Value)> {
 
 /// A cancellable operation on the fixture job, whose cancellation reaches `endpoint`.
 fn tracked_job(runtime: &SharedRuntime, endpoint: &str) -> (Arc<Cancellation>, Operation) {
-    let cancellation = Cancellation::new(
-        runtime.clone(),
-        ClientState::for_test_at(ServiceEndpointKind::BigQuery, endpoint),
-        "statement",
-    );
-    let operation = cancellation.begin();
+    let (cancellation, operation) = operation_at(runtime, endpoint);
     operation.register_job(&reference()).unwrap();
     (cancellation, operation)
 }
@@ -293,7 +276,7 @@ fn a_wait_outlasts_failed_requests_and_leaves_the_job_alone() {
         responses.push(complete.clone());
         let staged = responses.len();
         let (endpoint, server) = capture_requests_until_stopped(responses);
-        let (runtime, client) = client(&endpoint);
+        let (runtime, client) = job_client(&endpoint);
         let client = client.with_wait_outage(Duration::from_secs(600));
         let (cancellation, operation) = tracked_job(&runtime, &endpoint);
         let decoder = QueryResponseDecoder::new(&runtime, QueryResultMode::Rows);
@@ -352,7 +335,7 @@ fn a_wait_that_gives_up_says_the_job_may_still_be_running() {
     let mut responses = failed_round();
     responses.push(ok(json!({})));
     let (endpoint, requests) = capture_requests(responses);
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let (_cancellation, operation) = tracked_job(&runtime, &endpoint);
     let decoder = QueryResponseDecoder::new(&runtime, QueryResultMode::Rows);
     let outcome = runtime.block_on(poll_until_complete(
@@ -378,8 +361,7 @@ fn a_wait_that_gives_up_says_the_job_may_still_be_running() {
         "{failure:?}"
     );
     operation.finish();
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 2 * READS + 1);
+    let requests = requests.served(2 * READS + 1);
     assert!(
         requests[2 * READS]
             .path()

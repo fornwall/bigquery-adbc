@@ -24,8 +24,7 @@ fn incomplete_warning_polls_same_default_location_job() {
         None
     );
 
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 2);
+    let captured = captured.served(2);
     assert!(captured[0].line.starts_with("POST "));
     assert_eq!(captured[0].body["jobCreationMode"], "JOB_CREATION_OPTIONAL");
     assert_eq!(captured[0].body["timeoutMs"], 10_000);
@@ -103,7 +102,7 @@ fn instant_incomplete_answers_are_paced_rather_than_spun_on() {
             "rows": []
         })),
     ]);
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let started = std::time::Instant::now();
     complete(
         &runtime,
@@ -115,8 +114,7 @@ fn instant_incomplete_answers_are_paced_rather_than_spun_on() {
     .unwrap();
     let elapsed = started.elapsed();
 
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 5);
+    captured.served(5);
     // Three incomplete polls follow the incomplete submission, so three intervals are floored.
     assert!(
         elapsed >= 3 * MINIMUM_POLL_INTERVAL,
@@ -139,8 +137,7 @@ fn completed_warning_is_verified_as_success_without_reissue() {
         })),
     ]);
     run(&endpoint, plan(StatementQueryOptions::default())).unwrap();
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 2);
+    let captured = captured.served(2);
     assert!(captured[0].line.starts_with("POST "));
     assert!(captured[1].line.starts_with("GET "));
 }
@@ -159,5 +156,5 @@ fn completed_no_schema_response_verifies_errors_as_warnings() {
     let completed = run(&endpoint, plan_at(StatementQueryOptions::default(), None)).unwrap();
     assert!(completed.metadata.job_reference.is_some());
     assert!(completed.metadata.schema.is_none());
-    assert_eq!(captured.join().unwrap().len(), 2);
+    captured.served(2);
 }

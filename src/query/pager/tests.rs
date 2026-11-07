@@ -2,14 +2,8 @@ use serde_json::json;
 
 use super::*;
 use crate::rows::RestValue;
-use crate::runtime::{SharedRuntime, new_runtime};
+use crate::test_support::cancellation::job_client;
 use crate::test_support::http::{capture_requests, ok};
-
-fn client(endpoint: &str) -> (SharedRuntime, JobClient) {
-    let runtime = new_runtime().unwrap();
-    let client = JobClient::for_test(endpoint);
-    (runtime, client)
-}
 
 fn row(value: &str) -> RestRow {
     RestRow::new(vec![RestValue::String(value.to_owned())])
@@ -31,7 +25,7 @@ fn values(rows: Vec<RestRow>) -> Vec<String> {
 
 #[test]
 fn a_short_page_reuses_its_row_allocation() {
-    let (runtime, client) = client(crate::test_support::UNREACHABLE_ENDPOINT);
+    let (runtime, client) = job_client(crate::test_support::UNREACHABLE_ENDPOINT);
     let rows = vec![row("first"), row("second")];
     let allocation = rows.as_ptr();
     let mut pager = QueryPager::new(
@@ -58,7 +52,7 @@ fn splits_resident_pages_without_skipping_or_repeating_rows() {
         BATCH_SIZE + 1,
         2 * BATCH_SIZE + 1,
     ] {
-        let (runtime, client) = client(crate::test_support::UNREACHABLE_ENDPOINT);
+        let (runtime, client) = job_client(crate::test_support::UNREACHABLE_ENDPOINT);
         let mut pager = QueryPager::new(
             client,
             None,
@@ -108,7 +102,7 @@ fn consumes_initial_rows_and_opaque_pages_once_in_order() {
             "errors":[{"reason":"warning","message":"successful page warning"}]
         })),
     ]);
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let reference = JobReference::new("project", Some("EU"), "job".to_owned());
     let mut pager = QueryPager::new(
         client,
@@ -128,8 +122,7 @@ fn consumes_initial_rows_and_opaque_pages_once_in_order() {
     let rows = runtime.block_on(pager.next_batch(&sink)).unwrap().unwrap();
     assert!(rows.is_empty(), "the last page has no token to follow");
 
-    let captured = captured.join().unwrap();
-    assert_eq!(captured.len(), 3);
+    let captured = captured.served(3);
     let expected_prefix = "/bigquery/v2/projects/project/queries/job?maxResults=100000&timeoutMs=45000&formatOptions.useInt64Timestamp=true&location=EU&pageToken=";
     assert_eq!(
         captured[0].path(),
@@ -149,7 +142,7 @@ fn repeated_token_is_rejected_even_when_the_page_has_rows() {
         "rows":[{"f":[{"v":"duplicate"}]}],
         "pageToken":"same"
     }))]);
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let mut pager = QueryPager::new(
         client,
         Some(JobReference::new("project", Some("EU"), "job".to_owned())),
@@ -175,7 +168,7 @@ fn repeated_token_is_rejected_even_when_the_page_has_rows() {
     let failure = source.downcast_ref::<adbc_core::error::Error>().unwrap();
     assert_eq!(failure.status, Status::InvalidData);
     assert!(failure.message.ends_with(" (Query: https://console.cloud.google.com/bigquery?project=project&j=bq:EU:job&page=queryresults)"));
-    assert_eq!(captured.join().unwrap().len(), 1);
+    captured.served(1);
 }
 
 #[test]
@@ -185,7 +178,7 @@ fn page_identity_mismatch_is_rejected_before_rows_are_delivered() {
         "jobReference":{"projectId":"project","jobId":"other","location":"EU"},
         "rows":[{"f":[{"v":"poisoned"}]}]
     }))]);
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let mut pager = QueryPager::new(
         client,
         Some(JobReference::new("project", Some("EU"), "job".to_owned())),
@@ -214,5 +207,5 @@ fn page_identity_mismatch_is_rejected_before_rows_are_delivered() {
     // rather than buffered, so the pager has nothing left to deliver and no token to follow.
     let rows = runtime.block_on(pager.next_batch(&sink)).unwrap().unwrap();
     assert!(rows.is_empty(), "a rejected page delivered its rows");
-    assert_eq!(captured.join().unwrap().len(), 1);
+    captured.served(1);
 }

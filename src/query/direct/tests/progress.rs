@@ -45,8 +45,7 @@ fn row_returning_jobs_query_decode_waits_for_the_driver_wide_permit() {
             .recv_timeout(Duration::from_secs(5))
             .expect("jobs.query did not reach the test server");
         release_response.send(()).unwrap();
-        let captured = captured.join().unwrap();
-        assert_eq!(captured.len(), 1);
+        captured.served(1);
         thread::sleep(Duration::from_millis(100));
         assert!(
             !execute.is_finished(),
@@ -160,7 +159,7 @@ fn natural_query_responses_publish_progress_without_an_extra_request() {
         ))
     });
 
-    let (runtime, client) = client(&endpoint);
+    let (runtime, client) = job_client(&endpoint);
     let progress = Arc::new(ExecutionProgress::default());
     let executing_progress = Arc::clone(&progress);
     let execute = thread::spawn(move || {
@@ -194,8 +193,7 @@ fn natural_query_responses_publish_progress_without_an_extra_request() {
     assert_eq!(progress.current(), 29.0);
     assert_eq!(progress.maximum(), 29.0);
 
-    let requests = server.join().unwrap();
-    assert_eq!(requests.len(), 3);
+    let requests = server.served(3);
     assert_eq!(requests[0].path(), "/bigquery/v2/projects/project/queries");
     for request in &requests[1..] {
         assert!(request.path().starts_with(
