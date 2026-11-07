@@ -5,6 +5,8 @@ changes.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-07
+
 ### Added
 
 - A dbt patched to use this driver is built for each release and push to `main`. A release's build
@@ -197,7 +199,8 @@ first to carry its changes too.
 First public release, with wheels on PyPI for Linux x86-64 and AArch64, macOS x86-64 and arm64, and
 Windows x86-64.
 
-[Unreleased]: https://github.com/fornwall/bigquery-adbc/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/fornwall/bigquery-adbc/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/fornwall/bigquery-adbc/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/fornwall/bigquery-adbc/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/fornwall/bigquery-adbc/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/fornwall/bigquery-adbc/compare/v0.1.0...v0.1.1
