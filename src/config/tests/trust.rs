@@ -42,13 +42,14 @@ fn a_custom_rest_endpoint_does_not_authorize_other_services_to_receive_credentia
             "{kind:?}: {}",
             error.message
         );
-        for expected in [
-            BigQueryAuthenticationType::ApplicationDefault.as_str(),
-            "bigquery.allow_untrusted_endpoint",
-            BigQueryAuthenticationType::Anonymous.as_str(),
-        ] {
-            assert_message(&error, &[expected]);
-        }
+        assert_message(
+            &error,
+            &[
+                BigQueryAuthenticationType::ApplicationDefault.as_str(),
+                "bigquery.allow_untrusted_endpoint",
+                BigQueryAuthenticationType::Anonymous.as_str(),
+            ],
+        );
     }
 }
 

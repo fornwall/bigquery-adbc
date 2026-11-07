@@ -2,7 +2,7 @@
 //! options in, and what it refuses.
 
 use super::*;
-use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
+use crate::test_support::errors::{assert_failure, assert_message_omits};
 use crate::test_support::options::{option_string, set_option, set_option_error};
 
 #[test]
@@ -357,9 +357,9 @@ fn set_real_token(database: &mut BigQueryDatabase) {
 /// Asserts the configuration refuses a URI host, as opposed to failing for another reason.
 fn assert_uri_host_refused(database: &BigQueryDatabase, host: &str) {
     let error = connection_error(database);
-    assert_eq!(error.status, Status::InvalidArguments);
-    assert_message(
+    assert_failure(
         &error,
+        Status::InvalidArguments,
         &[
             "BigQuery URI host must be a Google API HTTPS endpoint",
             &format!("host {host:?} over https"),
@@ -513,9 +513,9 @@ fn a_uri_cannot_smuggle_a_credential_document_past_the_destination_check() {
         format!("bigquery:///test-project?OAuthType=2&AuthCredentials={encoded}").as_str(),
     );
     let error = connection_error(&database);
-    assert_eq!(error.status, Status::InvalidArguments);
-    assert_message(
+    assert_failure(
         &error,
+        Status::InvalidArguments,
         &["its token_uri field resolves to host \"attacker.example\""],
     );
     assert_message_omits(&error, &["uri-secret", "uri-token", "uri-key"]);

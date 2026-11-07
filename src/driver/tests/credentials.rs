@@ -344,9 +344,9 @@ fn access_token_options_reject_mismatched_authentication_types() {
         "unused-token",
     );
     let error = database.new_connection().unwrap_err();
-    assert_eq!(error.status, Status::InvalidArguments);
-    assert_message(
+    assert_failure(
         &error,
+        Status::InvalidArguments,
         &["bigquery.auth.access_token", "temporary_access_token"],
     );
 
