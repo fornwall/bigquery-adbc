@@ -190,8 +190,8 @@ All three Arrow interval layouts, and `Duration` in any unit, bind as `INTERVAL`
 time part (two days is `0-0 0 48:0:0`), sub-microsecond components truncate toward zero, and a
 duration beyond 2,562,047 hours fails locally. Go rejects interval and duration parameters. An
 `INTERVAL` result beyond that bound fails on the REST path with a message suggesting
-`CAST(x AS STRING)` or `EXTRACT`; Go reads results through Storage Read and does not meet this
-limit.
+`CAST(x AS STRING)` or `EXTRACT`. Storage Read, which Go reads through, refuses it too, with
+`OUT_OF_RANGE`.
 
 ### G17. Out-of-precision decimal values are rejected locally
 
