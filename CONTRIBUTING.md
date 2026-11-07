@@ -305,7 +305,8 @@ changelog section, so the workflow stops before publishing anything if that sect
 links in changelog entries must be absolute.
 
 The release also carries each platform's compressed library, which release builds of
-[patched dbt](tools/dbt-build/README.md) download. Those builds hash the published file, so they
+[patched dbt](tools/dbt-build/README.md) download, and the `install.sh` that installs and updates
+them, from the tagged commit. Those builds hash the published file, so they
 start after the release is created and attach their archives and a `dbt-SHA256SUMS` file about an
 hour later. PyPI does not wait for them.
 

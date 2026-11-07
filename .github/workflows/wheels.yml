@@ -115,6 +115,10 @@ jobs:
           merge-multiple: true
           path: dist
 
+      # `dbt-bigquery-adbc system update` runs the latest release's copy.
+      - name: Add the dbt installer
+        run: cp tools/dbt-build/install.sh dist/
+
       - name: Write checksums
         working-directory: dist
         run: sha256sum -- * > SHA256SUMS

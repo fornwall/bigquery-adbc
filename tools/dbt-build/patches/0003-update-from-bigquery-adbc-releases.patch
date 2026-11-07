@@ -1,0 +1,100 @@
+Update from bigquery-adbc releases
+
+This distribution's `system update` only said to update dbt-core with a package manager, which would
+install stock dbt. It now runs the install script of bigquery-adbc's latest release, with the same
+`--prefix` or `--to` location that dbt Labs' distribution passes to its own installer. That script
+does not support Windows, so Windows still refuses. The command is no longer hidden.
+
+diff --git a/crates/dbt-features/src/cli.rs b/crates/dbt-features/src/cli.rs
+index c7efc48..6c1725d 100644
+--- a/crates/dbt-features/src/cli.rs
++++ b/crates/dbt-features/src/cli.rs
+@@ -110,8 +110,7 @@ impl CliFeatureBuilder {
+ #[derive(clap::Parser, Debug, Clone, Serialize, Deserialize)]
+ #[command()]
+ pub enum SystemCommand {
+-    /// Informative-only update command for dbt v2 OSS.
+-    #[clap(hide = true)]
++    /// Update to the latest bigquery-adbc release of this dbt
+     Update,
+     /// Informative-only uninstall command for dbt v2 OSS.
+     #[clap(hide = true)]
+@@ -500,18 +499,10 @@ impl CliExtensionHooks for DefaultCliExtensionHooks {
+             }
+             Some(System(args)) => {
+                 match &args.command {
+-                    SystemCommand::Update => {
+-                        let e = fs_err!(
+-                            ErrorCode::NotSupported,
+-                            "`dbt system update` is not supported for this distribution. Upgrade \
+-             dbt-core with the package manager you installed it with:\
+-             \n\n    pip install --pre --upgrade dbt-core\
+-             \n    brew upgrade dbt-core\
+-             \n    winget upgrade --id dbtLabs.dbt-core --exact"
+-                        );
++                    SystemCommand::Update => update_from_bigquery_adbc().map_err(|e| {
+                         emit_error_log_from_fs_error(*e);
+-                        Err(FsError::exit_with_status(1))
+-                    }
++                        FsError::exit_with_status(1)
++                    }),
+                     SystemCommand::Uninstall => {
+                         let e = fs_err!(
+                             ErrorCode::NotSupported,
+@@ -656,6 +647,56 @@ impl CliExtensionHooks for DefaultCliExtensionHooks {
+     }
+ }
+ 
++/// Replaces this binary with bigquery-adbc's latest release by running that release's install.sh,
++/// as dbt Labs' distribution runs its own installer. The script takes the same `--prefix` or `--to`
++/// location, and also reads BIGQUERY_ADBC_RELEASES_URL, which overrides where the releases are.
++fn update_from_bigquery_adbc() -> FsResult<()> {
++    #[allow(clippy::disallowed_methods)]
++    let releases = std::env::var("BIGQUERY_ADBC_RELEASES_URL")
++        .unwrap_or_else(|_| String::from("https://github.com/fornwall/bigquery-adbc/releases"));
++    if cfg!(windows) {
++        return Err(fs_err!(
++            ErrorCode::NotSupported,
++            "`system update` needs install.sh, which does not support Windows. Download the latest \
++             release from {releases}"
++        ));
++    }
++    let exe = std::env::current_exe()
++        .map(|path| dbt_common::stdfs::canonicalize(&path).unwrap_or(path))
++        .map_err(|e| fs_err!(ErrorCode::IoError, "Cannot find this executable: {e}"))?;
++    let Some(bin_dir) = exe.parent() else {
++        return Err(fs_err!(
++            ErrorCode::IoError,
++            "{} has no parent directory",
++            exe.display()
++        ));
++    };
++    let location = dbt_dist::packages::InstallLocation::for_bin_dir(bin_dir);
++    let (option, path) = location.script_option();
++    // Fetching the script first means a failed download fails the update, which piping curl into
++    // sh would hide.
++    let status = std::process::Command::new("sh")
++        .args([
++            "-c",
++            r#"script=$(curl -fsSL "$1/latest/download/install.sh") || exit 1
++exec sh -c "$script" install.sh --update "--$2" "$3""#,
++            "sh",
++            releases.as_str(),
++            option,
++        ])
++        .arg(path)
++        .status()
++        .map_err(|e| fs_err!(ErrorCode::IoError, "Cannot run sh: {e}"))?;
++    if status.success() {
++        Ok(())
++    } else {
++        Err(fs_err!(
++            ErrorCode::IoError,
++            "The install script from {releases} failed ({status})"
++        ))
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;

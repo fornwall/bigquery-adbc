@@ -8,6 +8,14 @@ changes.
 ### Added
 
 - The patched dbt is also built for Windows x86-64.
+- Each release carries `install.sh`, which installs the patched dbt on Linux and macOS:
+  `curl -fsSL https://github.com/fornwall/bigquery-adbc/releases/latest/download/install.sh | sh`.
+
+### Changed
+
+- The patched dbt's binary is named `dbt-bigquery-adbc`, so it no longer takes the place of dbt
+  Labs' `dbt`. Its `system update` installs the latest bigquery-adbc release, where it used to say
+  to update dbt-core with a package manager.
 
 ## [0.4.0] - 2026-11-07
 

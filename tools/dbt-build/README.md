@@ -2,13 +2,32 @@
 
 Builds [dbt](https://github.com/dbt-labs/dbt) at a pinned commit of its `main` branch, patched so
 that BigQuery uses this repository's driver instead of the one dbt downloads from its CDN. Other
-adapters are unchanged. `dbt --version` identifies the build and the dbt commit it came from:
+adapters are unchanged. The binary is named `dbt-bigquery-adbc`, so it can sit beside dbt Labs'
+`dbt` on `PATH`, and `--version` identifies the build and the dbt commit it came from:
 
 ```text
 dbt (modified with bigquery-adbc 0.4.0) 327f526973 2026-11-07
 ```
 
 dbt's own version is unchanged everywhere else, including `dbt_version` in Jinja and artifacts.
+
+## Installing
+
+On Linux and macOS, install the latest release into `~/.local/bin`:
+
+```sh
+curl -fsSL https://github.com/fornwall/bigquery-adbc/releases/latest/download/install.sh | sh
+```
+
+[`install.sh`](install.sh) is dbt's installer adapted to these releases. It takes the same options,
+such as `--version`, `--prefix` and `--update` (pass them after `sh -s --`). It checks the archive
+against the release's `dbt-SHA256SUMS`, and adds the directory to `PATH` in your shell's startup
+file. A `curl` download also avoids macOS quarantine: the binary is not notarized, so macOS refuses
+to run a copy downloaded in a browser until `xattr -dr com.apple.quarantine <directory>` clears it.
+
+`dbt-bigquery-adbc system update` runs the latest release's `install.sh` to replace itself, where
+stock dbt's open-source build only says to use a package manager. Neither the installer nor the
+update supports Windows; download its `.zip` from the release instead.
 
 ## Builds
 
@@ -19,11 +38,12 @@ dbt's own version is unchanged everywhere else, including `dbt_version` in Jinja
 | Driver version | `0.4.0` | `0.3.0-2-g5f7f5be`, with `-dirty` for a modified checkout |
 | Driver | Downloaded on first use | `lib/dbt/` in the archive |
 
-A release build needs only the `dbt` binary. The first BigQuery connection downloads the driver from
-the same GitHub release into dbt's cache, and verifies it against a SHA-256 compiled into the
-binary, so the download cannot be swapped. Non-release builds have no stable public URL to download
-from, so keep `lib/dbt/` next to the binary; a symlink to `dbt` works, but a copy without the library
-fails rather than falling back to dbt's driver. `DBT_ADBC_BIGQUERY_USE_FOUNDRY` has no effect here.
+A release build needs only the `dbt-bigquery-adbc` binary. The first BigQuery connection downloads
+the driver from the same GitHub release into dbt's cache, and verifies it against a SHA-256 compiled
+into the binary, so the download cannot be swapped. Non-release builds have no stable public URL to
+download from, so keep `lib/dbt/` next to the binary; a symlink to the binary works, but a copy
+without the library fails rather than falling back to dbt's driver. `DBT_ADBC_BIGQUERY_USE_FOUNDRY`
+has no effect here.
 
 ## Building
 

@@ -28,6 +28,8 @@ from config import require_project
 PROJECT_DIR = Path(__file__).resolve().parent
 REPO_DIR = PROJECT_DIR.parent.parent
 DBT_BUILD_SCRIPT = REPO_DIR / "tools" / "dbt-build" / "build.sh"
+# tools/dbt-build does not name its binary dbt, so it can sit beside dbt Labs' dbt on PATH.
+DBT_EXECUTABLE = "dbt-bigquery-adbc"
 # The driver version in `dbt --version`, which tools/dbt-build/build.sh checks in full.
 DBT_IDENTIFIER = re.compile(r"dbt \(modified with bigquery-adbc (?P<driver>\S+)\) \S+ \S+")
 LIBRARY_NAME = "libadbc_driver_bigquery.so"
@@ -144,7 +146,7 @@ LOG = Log()
 
 def make_dbt_command(*arguments: str, target_dir: Path, log_dir: Path) -> list[str]:
     return [
-        "dbt",
+        DBT_EXECUTABLE,
         *arguments,
         "--project-dir",
         str(PROJECT_DIR),
@@ -715,6 +717,9 @@ def install_dbt(archive: Path, directory: Path) -> Path:
     with tarfile.open(archive) as source:
         source.extractall(directory, filter="data")
     (install,) = directory.iterdir()
+    # 0.4.0's archives named the binary dbt.
+    if not (install / DBT_EXECUTABLE).exists() and (install / "dbt").is_file():
+        (install / "dbt").rename(install / DBT_EXECUTABLE)
     return install
 
 
@@ -722,7 +727,7 @@ def install_canonical_dbt(install: Path, directory: Path) -> Path:
     """Copy dbt away from its library, which it would otherwise prefer to dbt's own driver."""
     shutil.rmtree(directory, ignore_errors=True)
     directory.mkdir(parents=True)
-    shutil.copy2(install / "dbt", directory / "dbt")
+    shutil.copy2(install / DBT_EXECUTABLE, directory / DBT_EXECUTABLE)
     return directory
 
 
@@ -2359,7 +2364,7 @@ def main() -> int:
     archive = (args.dbt_archive or build_dbt(PROJECT_DIR / ".cache" / "dbt-build")).resolve()
     install = install_dbt(archive, PROJECT_DIR / ".cache" / "dbt" / mode)
     dbt_version = subprocess.run(
-        [install / "dbt", "--version"], check=True, text=True, capture_output=True
+        [install / DBT_EXECUTABLE, "--version"], check=True, text=True, capture_output=True
     ).stdout.strip()
     identifier = DBT_IDENTIFIER.fullmatch(dbt_version)
     if identifier is None:

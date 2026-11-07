@@ -136,19 +136,21 @@ identifier="(modified with bigquery-adbc $driver_version) ${DBT_COMMIT:0:10} $db
     cargo build --release --locked --bin dbt --target-dir "$work/target"
 )
 
-cp "$work/target/release/dbt$exe" "$stage/dbt$exe"
+# Not named dbt, so that it can sit beside dbt Labs' dbt on PATH.
+binary=$stage/dbt-bigquery-adbc$exe
+cp "$work/target/release/dbt$exe" "$binary"
 # MSVC writes a Windows binary's debug information to a separate .pdb, leaving nothing to strip.
 if [ -z "$exe" ]; then
-  strip "$stage/dbt"
+  strip "$binary"
 fi
 if [ "$(uname -s)" = Darwin ]; then
   # Stripping invalidates the linker's ad-hoc signature, and arm64 macOS kills unsigned binaries.
-  codesign --force --sign - "$stage/dbt"
+  codesign --force --sign - "$binary"
 fi
 cp "$source_dir/LICENSE" "$stage/licenses/dbt/"
 cp "${patches[@]}" "$stage/licenses/dbt/patches/"
 
-reported=$("$stage/dbt$exe" --version)
+reported=$("$binary" --version)
 if [ "$reported" != "dbt $identifier" ]; then
   echo "error: dbt --version reported '$reported', expected 'dbt $identifier'" >&2
   exit 1
@@ -165,7 +167,7 @@ cp "$root"/tools/dbt-build/smoke/*.yml "$smoke/"
 if (
   cd "$smoke"
   export DO_NOT_TRACK=1 HOME=$smoke/cache XDG_CACHE_HOME=$smoke/cache
-  "$stage/dbt$exe" debug --project-dir . --profiles-dir . --log-path logs --no-version-check
+  "$binary" debug --project-dir . --profiles-dir . --log-path logs --no-version-check
 ) > "$smoke/output.txt" 2>&1; then
   echo "error: dbt debug connected with a key that cannot work" >&2
   exit 1

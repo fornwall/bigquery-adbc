@@ -14,6 +14,7 @@ from typing import ClassVar
 from unittest import mock
 
 from run import (
+    DBT_EXECUTABLE,
     DBT_IDENTIFIER,
     EPHEMERAL_UNIQUE_ID,
     LIBRARY_NAME,
@@ -122,10 +123,10 @@ class BuiltDbtTest(unittest.TestCase):
         self.root = Path(directory.name)
         self.cache = self.root / "cache"
 
-    def archive(self, *, library: bool) -> Path:
+    def archive(self, *, library: bool, executable: str = DBT_EXECUTABLE) -> Path:
         package = self.root / "package" / "dbt-bigquery-adbc-1.2.3-linux-x86_64"
         (package / "lib" / "dbt").mkdir(parents=True)
-        (package / "dbt").write_text("dbt")
+        (package / executable).write_text("dbt")
         if library:
             (package / "lib" / "dbt" / LIBRARY_NAME).write_text("driver")
         archive = self.root / "dbt.tar.gz"
@@ -163,7 +164,12 @@ class BuiltDbtTest(unittest.TestCase):
     def test_canonical_dbt_is_kept_away_from_the_library(self) -> None:
         install = self.install(library=True)
         canonical = install_canonical_dbt(install, self.root / "canonical")
-        self.assertEqual([path.name for path in canonical.iterdir()], ["dbt"])
+        self.assertEqual([path.name for path in canonical.iterdir()], [DBT_EXECUTABLE])
+
+    def test_an_archive_that_names_the_binary_dbt_still_installs(self) -> None:
+        install = install_dbt(self.archive(library=False, executable="dbt"), self.root / "old")
+        self.assertEqual((install / DBT_EXECUTABLE).read_text(), "dbt")
+        self.assertFalse((install / "dbt").exists())
 
     def test_a_run_that_used_another_driver_fails(self) -> None:
         driver = built_driver(self.install(library=True), self.cache, "1.2.3-1-gabc")
