@@ -48,6 +48,8 @@ changes.
 - A `jobs.query` submission whose retries end without a verdict now reads `failed to submit` and
   says BigQuery may still have run the statement. It read as a rejection, inviting a resubmission
   that could apply DML twice.
+- REST retries leave an HTTP/2 connection whose peer keeps its socket open but stops answering,
+  such as a wedged proxy. They used to reuse it until every attempt had timed out.
 - A job submission refused with HTTP 401 under `temporary_access_token` or `anonymous`
   authentication no longer sends a `jobs.cancel` for a job that was never created.
 - A `replace` whose `TRUNCATE` or `CREATE OR REPLACE TABLE` gets no answer says the old rows may be

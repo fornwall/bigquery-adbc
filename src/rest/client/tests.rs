@@ -164,6 +164,59 @@ fn json_and_media_requests_share_one_http2_connection() {
     });
 }
 
+/// A peer that keeps its socket but stops answering, such as a wedged proxy, looks healthy to TCP
+/// keepalive, and every retry would multiplex onto it. The stream's unanswered ping closes the
+/// connection, so the next attempt opens another.
+#[test]
+fn a_retry_leaves_an_http2_connection_that_stopped_answering() {
+    let runtime = crate::runtime::new_runtime().unwrap();
+    runtime.block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut stalled = h2::server::handshake(socket).await.unwrap();
+            let (_, mut response) = stalled.accept().await.unwrap().unwrap();
+            response
+                .send_response(http::Response::new(()), true)
+                .unwrap();
+            // Reading the next request flushes that answer. Nothing polls the connection after.
+            let _unanswered = stalled.accept().await.unwrap().unwrap();
+
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut connection = h2::server::handshake(socket).await.unwrap();
+            let (_, mut response) = connection.accept().await.unwrap().unwrap();
+            response
+                .send_response(http::Response::new(()), true)
+                .unwrap();
+            connection.graceful_shutdown();
+            assert!(connection.accept().await.is_none());
+        });
+
+        let client = super::build_client(
+            "HTTP/2 test",
+            reqwest::Client::builder()
+                .no_proxy()
+                .http2_prior_knowledge(),
+        )
+        .unwrap();
+        let jobs = crate::rest::jobs::JobClient::new(
+            google_cloud_auth::credentials::anonymous::Builder::new().build(),
+            Some(&endpoint),
+            client,
+        )
+        .with_flat_delays(Duration::from_millis(1));
+        let job = crate::rest::jobs::JobReference::new("p", None, "job".to_owned());
+        jobs.poll(None, &job, "copy").await.unwrap();
+
+        tokio::time::timeout(Duration::from_secs(30), jobs.poll(None, &job, "copy"))
+            .await
+            .expect("the retries stayed on the stalled connection")
+            .unwrap();
+        server.await.unwrap();
+    });
+}
+
 /// Each request carries its own whole-request policy over one shared client, and each timeout
 /// names itself, its length, and that no option sets it.
 #[test]

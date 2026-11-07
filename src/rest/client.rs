@@ -18,6 +18,15 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// (`QUERY_COMPLETION_WAIT_MS`) and leave time to download a row page.
 pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How long a connection with an open stream may stay silent before it is pinged. An unanswered
+/// ping closes it within [`REQUEST_TIMEOUT`], so a retry can leave a peer whose socket lives on but
+/// whose HTTP/2 layer stalled, such as a wedged proxy. Idle connections are not pinged.
+const HTTP2_PING_INTERVAL: Duration = if cfg!(test) {
+    Duration::from_secs(1)
+} else {
+    Duration::from_secs(30)
+};
+
 /// Bounds gaps between upload frames and the wait for response headers after the last frame.
 /// Gigabyte CSV seeds need no whole-request deadline; reqwest's read timeout ignores body progress.
 const UPLOAD_PROGRESS_TIMEOUT: Duration = Duration::from_secs(120);
@@ -229,6 +238,8 @@ fn build_client(what: &str, builder: reqwest::ClientBuilder) -> Result<RestClien
         // result page use the available bandwidth without reserving a large window for every
         // small control-plane response on the shared connection.
         .http2_adaptive_window(true)
+        .http2_keep_alive_interval(HTTP2_PING_INTERVAL)
+        .http2_keep_alive_timeout(HTTP2_PING_INTERVAL / 2)
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .map(|http| RestClient {
