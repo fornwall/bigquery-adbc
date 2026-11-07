@@ -48,7 +48,7 @@ fn concurrent_partition_readers_both_complete() {
     assert!(first.next().is_none());
     assert_eq!(partition_value(&mut second), 2);
     assert!(second.next().is_none());
-    assert_eq!(requests.join().unwrap().len(), 6);
+    requests.served(6);
 }
 
 /// adbc.h: Cancel "can be called during AdbcConnectionGetObjects (or similar), or while

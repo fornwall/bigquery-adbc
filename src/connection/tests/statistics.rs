@@ -21,10 +21,7 @@ fn inaccessible_tables_leave_the_rest_of_the_dataset_discoverable() {
             // A hidden schema uses datasets.list because `_` is a SQL-pattern wildcard.
             responses.insert(
                 0,
-                (
-                    200,
-                    json!({"datasets": [{"datasetReference": {"datasetId": "_hidden"}}]}),
-                ),
+                ok(json!({"datasets": [{"datasetReference": {"datasetId": "_hidden"}}]})),
             );
             for (_, metadata) in &mut responses[2..] {
                 metadata["numRows"] = json!("42");
@@ -191,7 +188,7 @@ fn discovery_does_not_hide_dataset_denials_or_direct_schema_errors() {
         .get_table_schema(None, Some("dataset"), "secret")
         .unwrap_err();
     assert_eq!(failure.status, Status::Unauthorized);
-    assert_eq!(requests.join().unwrap().len(), 1);
+    requests.served(1);
 }
 
 /// With `all=true`, the walk can return a dataset whose tables a custom role without
@@ -243,19 +240,15 @@ fn a_dataset_whose_tables_cannot_be_listed_drops_out_of_the_enumeration() {
 
         // A 403 that does not mean "invisible" still fails the whole call.
         let (endpoint, requests) = capture_requests(vec![
-            (
-                200,
-                json!({"datasets": [{"datasetReference": {"datasetId": "denied"}}]}),
-            ),
+            ok(json!({"datasets": [{"datasetReference": {"datasetId": "denied"}}]})),
             (403, forbidden_response(Some("quotaExceeded"))),
         ]);
         let connection = anonymous_connection_at(&endpoint);
         let failure = discover_metadata(&connection, depth, None, Some("%"), None)
             .err()
             .expect("a quota 403 is not an inaccessible dataset");
-        assert_eq!(failure.status, Status::IO);
-        assert_message(&failure, &["test-project.denied"]);
-        assert_eq!(requests.join().unwrap().len(), 2);
+        assert_failure(&failure, Status::IO, &["test-project.denied"]);
+        requests.served(2);
     }
 }
 
@@ -406,8 +399,7 @@ fn views_and_external_tables_report_no_statistics() {
     assert!(requests[1].path().contains("/tables/stored?"));
 
     for table_type in ["VIEW", "EXTERNAL"] {
-        let (endpoint, requests) = capture_requests(vec![(
-            200,
+        let (endpoint, requests) = capture_requests(vec![ok(
             json!({"type": table_type, "numRows": "0", "numTotalLogicalBytes": "0"}),
         )]);
         let connection = anonymous_connection_at(&endpoint);
@@ -420,6 +412,6 @@ fn views_and_external_tables_report_no_statistics() {
         let schemas = child_structs(batch.column(1));
         assert_eq!(schemas.len(), 1, "{table_type}");
         assert_eq!(child_structs(schemas.column(1)).len(), 0, "{table_type}");
-        assert_eq!(requests.join().unwrap().len(), 1);
+        requests.served(1);
     }
 }

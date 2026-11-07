@@ -2,10 +2,8 @@
 //! and what it must not issue.
 
 use super::*;
-use crate::test_support::errors::{assert_failure, assert_message_omits};
-use crate::test_support::http::{
-    capture_statements, capture_statements_responding, done_job, error_body, ok,
-};
+use crate::test_support::errors::assert_message_omits;
+use crate::test_support::http::{capture_statements, capture_statements_responding, done_job};
 use crate::test_support::options::{option_string, set_option, set_option_error};
 
 /// What every [`connection_with_open_transaction`] exchange opens with.
@@ -114,7 +112,7 @@ fn releasing_a_connection_in_a_forked_child_leaves_the_session_to_the_parent() {
     let (mut connection, requests) = connection_with_open_transaction_then(Vec::new());
     connection.context.runtime = crate::runtime::orphaned_runtime();
     drop(connection);
-    assert_eq!(requests.join().unwrap().len(), 3);
+    requests.served(3);
 }
 
 /// An autocommit connection opened no session, so releasing it must issue nothing at all.

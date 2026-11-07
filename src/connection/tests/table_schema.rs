@@ -177,7 +177,7 @@ fn get_table_schema_keeps_other_bad_requests_as_errors() {
         .unwrap_err();
     assert_eq!(error.status, Status::InvalidArguments, "{}", error.message);
     crate::test_support::errors::assert_message_omits(&error, &["404 Not Found"]);
-    assert_eq!(requests.join().unwrap().len(), 1);
+    requests.served(1);
 }
 
 /// `tables.get` omits `schema` for a table created without columns, which has an empty schema. A
@@ -202,7 +202,7 @@ fn a_table_without_columns_has_an_empty_schema_and_a_broken_view_is_an_error() {
         .unwrap_err();
     assert_eq!(error.status, Status::InvalidData, "{}", error.message);
     assert!(error.message.contains("broken_view"), "{}", error.message);
-    assert_eq!(requests.join().unwrap().len(), 2);
+    requests.served(2);
 }
 
 /// Fields and the schema itself carry the metadata dbt-core 2.0 reconstructs table

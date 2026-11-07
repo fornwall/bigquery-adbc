@@ -2,7 +2,7 @@
 //! and how a listing reports a metadata error.
 
 use super::*;
-use crate::test_support::errors::{assert_failure, assert_message_omits};
+use crate::test_support::errors::assert_message_omits;
 
 /// Cancellation must propagate through the table task, retaining the most recent rejection.
 #[test]
@@ -173,14 +173,8 @@ fn a_table_type_outside_the_advertised_set_is_reported_as_table() {
 fn the_dataset_walk_follows_every_page_token() {
     let dataset = |dataset_id: &str| json!({"datasetReference": {"datasetId": dataset_id}});
     let (endpoint, requests) = capture_requests(vec![
-        (
-            200,
-            json!({"datasets": [dataset("alpha")], "nextPageToken": "page-2"}),
-        ),
-        (
-            200,
-            json!({"datasets": [dataset("_hidden")], "nextPageToken": "page-3"}),
-        ),
+        ok(json!({"datasets": [dataset("alpha")], "nextPageToken": "page-2"})),
+        ok(json!({"datasets": [dataset("_hidden")], "nextPageToken": "page-3"})),
         (200, json!({"datasets": [dataset("gamma")]})),
     ]);
     let connection = anonymous_connection_at(&endpoint);
@@ -208,14 +202,8 @@ fn the_dataset_walk_follows_every_page_token() {
 fn a_repeated_dataset_page_token_is_refused_instead_of_walked_forever() {
     let dataset = |dataset_id: &str| json!({"datasetReference": {"datasetId": dataset_id}});
     let (endpoint, requests) = capture_requests(vec![
-        (
-            200,
-            json!({"datasets": [dataset("alpha")], "nextPageToken": "stuck"}),
-        ),
-        (
-            200,
-            json!({"datasets": [dataset("beta")], "nextPageToken": "stuck"}),
-        ),
+        ok(json!({"datasets": [dataset("alpha")], "nextPageToken": "stuck"})),
+        ok(json!({"datasets": [dataset("beta")], "nextPageToken": "stuck"})),
     ]);
     let connection = anonymous_connection_at(&endpoint);
 
@@ -226,7 +214,7 @@ fn a_repeated_dataset_page_token_is_refused_instead_of_walked_forever() {
     assert_failure(&failure, Status::InvalidData, &["repeated a page token"]);
 
     // The walk stopped at the repeat rather than requesting "stuck" a third time.
-    assert_eq!(requests.join().unwrap().len(), 2);
+    requests.served(2);
 }
 
 /// The table walk's page loop interleaves with the describe fan-out; a dropped page, a reused
@@ -234,14 +222,8 @@ fn a_repeated_dataset_page_token_is_refused_instead_of_walked_forever() {
 #[test]
 fn the_table_walk_follows_every_page_token() {
     let (endpoint, requests) = capture_requests(vec![
-        (
-            200,
-            json!({"tables": [listed_table("alpha")], "nextPageToken": "page-2"}),
-        ),
-        (
-            200,
-            json!({"tables": [listed_table("beta")], "nextPageToken": "page-3"}),
-        ),
+        ok(json!({"tables": [listed_table("alpha")], "nextPageToken": "page-2"})),
+        ok(json!({"tables": [listed_table("beta")], "nextPageToken": "page-3"})),
         (200, json!({"tables": [listed_table("gamma")]})),
     ]);
     let connection = anonymous_connection_at(&endpoint);

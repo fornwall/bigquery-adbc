@@ -15,8 +15,7 @@ fn table_metadata_option_controls_describes_and_constraints_without_exposing_col
                 let describe = depth != ObjectDepth::Tables || !skip;
                 let mut responses = Vec::new();
                 if !exact {
-                    responses.push((
-                        200,
+                    responses.push(ok(
                         json!({"tables": [listed_table("events"), listed_table("excluded")]}),
                     ));
                 }
@@ -45,21 +44,31 @@ fn table_metadata_option_controls_describes_and_constraints_without_exposing_col
                     Some(if exact { "events" } else { "events%" }),
                     Some(vec!["TABLE"]),
                 );
-                let tables = child_structs(child_structs(batch.column(1)).column(1));
+                let schemas = child_structs(batch.column(1));
+                assert_eq!(strings(schemas.column(0)), ["dataset"]);
+                let tables = child_structs(schemas.column(1));
                 assert_eq!(tables.len(), 1);
                 assert_eq!(string_at(tables.column(0), 0), "events");
-                assert_eq!(
-                    list(tables.column(2)).is_null(0),
-                    depth == ObjectDepth::Tables
-                );
+                if depth == ObjectDepth::Tables {
+                    assert!(list(tables.column(2)).is_null(0));
+                } else {
+                    assert_eq!(child_structs(tables.column(2)).len(), 1);
+                }
                 assert_eq!(list(tables.column(3)).is_null(0), !describe);
                 if describe {
                     let constraints = child_structs(tables.column(3));
                     assert_eq!(constraints.len(), 1);
                     assert_eq!(string_at(constraints.column(1), 0), "PRIMARY KEY");
                 }
-                let requests = requests.join().unwrap();
-                assert_eq!(requests.len(), count);
+                // An exact table proves its dataset exists, so no dataset request goes out.
+                let requests = requests.served(count);
+                if exact {
+                    assert!(
+                        requests[0]
+                            .path()
+                            .contains("/datasets/dataset/tables/events")
+                    );
+                }
                 if exact || describe {
                     let fields = if depth != ObjectDepth::Tables {
                         "schema%2CtableConstraints%2CtableReference%28datasetId%2CtableId%29%2Ctype"
@@ -79,70 +88,6 @@ fn table_metadata_option_controls_describes_and_constraints_without_exposing_col
             }
         }
     }
-}
-
-#[test]
-fn exact_get_objects_skips_the_dataset_request_at_table_depths() {
-    for depth in [ObjectDepth::Tables, ObjectDepth::Columns, ObjectDepth::All] {
-        let (endpoint, requests) = capture_requests(vec![(
-            200,
-            json!({
-                "type": "TABLE",
-                "schema": {"fields": [{"name": "id", "type": "INTEGER"}]}
-            }),
-        )]);
-        let connection = anonymous_connection_at(&endpoint);
-
-        let batch = objects_batch(
-            &connection,
-            depth,
-            Some("dataset"),
-            Some("events"),
-            Some(vec!["TABLE"]),
-        );
-        let schemas = child_structs(batch.column(1));
-        assert_eq!(schemas.len(), 1);
-        assert_eq!(string_at(schemas.column(0), 0), "dataset");
-        let tables = child_structs(schemas.column(1));
-        assert_eq!(tables.len(), 1);
-        assert_eq!(string_at(tables.column(0), 0), "events");
-        let columns = list(tables.column(2));
-        if depth == ObjectDepth::Tables {
-            assert!(columns.is_null(0));
-        } else {
-            assert!(!columns.is_null(0));
-            assert_eq!(child_structs(tables.column(2)).len(), 1);
-        }
-
-        let requests = requests.join().unwrap();
-        assert_eq!(requests.len(), 1, "{depth:?}");
-        assert!(
-            requests[0]
-                .path()
-                .contains("/datasets/dataset/tables/events"),
-            "{}",
-            requests[0].line
-        );
-        assert!(requests[0].path().contains("view=BASIC"));
-    }
-}
-
-#[test]
-fn exact_get_objects_type_mismatch_keeps_the_schema_without_a_fallback() {
-    let (endpoint, requests) = capture_requests(vec![(200, json!({"type": "TABLE"}))]);
-    let connection = anonymous_connection_at(&endpoint);
-
-    let batch = objects_batch(
-        &connection,
-        ObjectDepth::Tables,
-        Some("dataset"),
-        Some("events"),
-        Some(vec!["VIEW"]),
-    );
-    let schemas = child_structs(batch.column(1));
-    assert_eq!(schemas.len(), 1);
-    assert_eq!(child_structs(schemas.column(1)).len(), 0);
-    assert_eq!(requests.join().unwrap().len(), 1);
 }
 
 #[test]
@@ -186,7 +131,7 @@ fn a_described_table_type_supersedes_its_listing_type() {
         } else {
             assert!(tables.is_empty());
         }
-        assert_eq!(requests.join().unwrap().len(), 2);
+        requests.served(2);
     }
 }
 
@@ -303,11 +248,13 @@ fn an_exact_lookup_reports_the_names_bigquery_resolved_it_to() {
             BigQueryConnectionOption::GetObjectsSkipTableMetadata,
             skip_table_metadata,
         );
-        let batch = discover_metadata(&connection, depth, None, Some("DATASET"), Some("EVENTS"))
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap();
+        let batch = first_batch(discover_metadata(
+            &connection,
+            depth,
+            None,
+            Some("DATASET"),
+            Some("EVENTS"),
+        ));
         assert_eq!(
             reported_names(&batch),
             names("dataset", &["events"]),
@@ -335,7 +282,7 @@ fn an_exact_lookup_reports_the_names_bigquery_resolved_it_to() {
         Some(vec!["VIEW"]),
     );
     assert_eq!(reported_names(&batch), names("dataset", &[]));
-    assert_eq!(requests.join().unwrap().len(), 1);
+    requests.served(1);
 
     // Answers that name nothing.
     let (endpoint, requests) = capture_requests(vec![(200, json!({})), (200, described_table())]);
@@ -356,7 +303,7 @@ fn an_exact_lookup_reports_the_names_bigquery_resolved_it_to() {
         None,
     );
     assert_eq!(reported_names(&batch), names("DATASET", &["EVENTS"]));
-    assert_eq!(requests.join().unwrap().len(), 2);
+    requests.served(2);
 }
 
 /// An exact table filter is looked up in each listed dataset, and reports the name BigQuery
@@ -366,11 +313,13 @@ fn an_exact_table_in_a_listed_dataset_reports_the_name_bigquery_resolved_it_to()
     for depth in [Some(ObjectDepth::Tables), Some(ObjectDepth::Columns), None] {
         let (endpoint, requests) = case_insensitive_dataset(2);
         let connection = anonymous_connection_at(&endpoint);
-        let batch = discover_metadata(&connection, depth, None, Some("data%"), Some("EVENTS"))
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap();
+        let batch = first_batch(discover_metadata(
+            &connection,
+            depth,
+            None,
+            Some("data%"),
+            Some("EVENTS"),
+        ));
         assert_eq!(
             reported_names(&batch),
             names("dataset", &["events"]),
@@ -413,12 +362,13 @@ fn an_exact_dataset_reports_the_name_its_tables_or_its_lookup_give() {
             let count = responses.len();
             let (endpoint, requests) = capture_requests(responses);
             let connection = anonymous_connection_at(&endpoint);
-            let batch =
-                discover_metadata(&connection, depth, None, Some("DATASET"), Some(table_name))
-                    .unwrap()
-                    .next()
-                    .unwrap()
-                    .unwrap();
+            let batch = first_batch(discover_metadata(
+                &connection,
+                depth,
+                None,
+                Some("DATASET"),
+                Some(table_name),
+            ));
             assert_eq!(reported_names(&batch), names("dataset", tables), "{case}");
             let requests = requests.join().unwrap();
             assert_eq!(requests.len(), count, "{case}");
@@ -452,8 +402,7 @@ fn a_dot_segment_name_is_answered_by_a_listing_rather_than_a_direct_lookup() {
         let responses = if db_schema == "dataset" {
             vec![(200, json!({"tables": [listed_table("events")]}))]
         } else {
-            vec![(
-                200,
+            vec![ok(
                 json!({"datasets": [{"datasetReference": {"datasetId": "dataset"}}]}),
             )]
         };
@@ -518,8 +467,7 @@ fn an_exact_lookup_falls_back_only_to_distinguish_which_object_is_missing() {
                 assert_eq!(child_structs(schemas.column(1)).len(), 0);
             }
 
-            let requests = requests.join().unwrap();
-            assert_eq!(requests.len(), 2);
+            let requests = requests.served(2);
             assert!(requests[0].path().contains("/tables/missing"));
             assert!(requests[1].path().contains("/datasets/dataset"));
             assert!(!requests[1].path().contains("/tables/"));
@@ -532,14 +480,7 @@ fn an_exact_lookup_falls_back_only_to_distinguish_which_object_is_missing() {
 /// name with a wildcard appended does, so both listings report it like a missing table.
 #[test]
 fn an_exact_filter_that_is_not_a_table_id_matches_no_table() {
-    let invalid = json!({
-        "error": {
-            "code": 400,
-            "message": "Invalid table ID \"a*b\".",
-            "errors": [{"message": "Invalid table ID \"a*b\".", "domain": "global", "reason": "invalid"}],
-            "status": "INVALID_ARGUMENT"
-        }
-    });
+    let invalid = error_body("invalid", "Invalid table ID \"a*b\".");
     for listing in [objects_listing as ExactListing, statistics_listing] {
         let (endpoint, requests) = capture_requests(vec![(400, invalid.clone()), (200, json!({}))]);
         let connection = anonymous_connection_at(&endpoint);
@@ -549,21 +490,13 @@ fn an_exact_filter_that_is_not_a_table_id_matches_no_table() {
         assert_eq!(schemas.len(), 1);
         assert_eq!(child_structs(schemas.column(1)).len(), 0);
 
-        let requests = requests.join().unwrap();
-        assert_eq!(requests.len(), 2);
+        let requests = requests.served(2);
         assert!(requests[0].path().contains("/tables/a%2Ab"));
         assert!(requests[1].path().contains("/datasets/dataset"));
     }
 
     // Any other 400 is a request the driver got wrong, which must not read as a missing table.
-    let malformed = json!({
-        "error": {
-            "code": 400,
-            "message": "Invalid field selection nonsense",
-            "errors": [{"message": "Invalid field selection nonsense", "domain": "global", "reason": "invalidParameter"}],
-            "status": "INVALID_ARGUMENT"
-        }
-    });
+    let malformed = error_body("invalidParameter", "Invalid field selection nonsense");
     let (endpoint, requests) = capture_requests(vec![(400, malformed)]);
     let connection = anonymous_connection_at(&endpoint);
     let error = connection
@@ -578,7 +511,7 @@ fn an_exact_filter_that_is_not_a_table_id_matches_no_table() {
         .err()
         .unwrap();
     assert_eq!(error.status, Status::InvalidArguments);
-    assert_eq!(requests.join().unwrap().len(), 1);
+    requests.served(1);
 }
 
 /// `tables.get` resolves a partition (`$`) or snapshot (`@`) decorator to a table description
@@ -624,27 +557,21 @@ fn an_exact_filter_with_a_table_decorator_matches_no_table() {
 /// matches no dataset at table depth, as it does at schema depth and with a wildcard appended.
 #[test]
 fn an_exact_dataset_filter_that_is_not_a_dataset_id_matches_no_dataset() {
-    let invalid = json!({
-        "error": {
-            "code": 400,
-            "message": "Invalid dataset ID \"a b\".",
-            "errors": [{"message": "Invalid dataset ID \"a b\".", "domain": "global", "reason": "invalid"}],
-            "status": "INVALID_ARGUMENT"
-        }
-    });
+    let invalid = error_body("invalid", "Invalid dataset ID \"a b\".");
     for depth in [Some(ObjectDepth::Tables), None] {
         let (endpoint, requests) = capture_requests(vec![(400, invalid.clone())]);
         let connection = anonymous_connection_at(&endpoint);
 
-        let batch = discover_metadata(&connection, depth, None, Some("a b"), None)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap();
+        let batch = first_batch(discover_metadata(
+            &connection,
+            depth,
+            None,
+            Some("a b"),
+            None,
+        ));
         assert_eq!(child_structs(batch.column(1)).len(), 0, "{depth:?}");
 
-        let requests = requests.join().unwrap();
-        assert_eq!(requests.len(), 1);
+        let requests = requests.served(1);
         assert!(requests[0].path().contains("/datasets/a%20b/tables"));
     }
 }
@@ -944,10 +871,7 @@ fn an_exactly_named_catalog_is_enumerated_even_when_it_is_not_the_current_one() 
         ] {
             let (endpoint, requests) = capture_requests(vec![
                 (200, json!({})),
-                (
-                    200,
-                    json!({"datasets": [{"datasetReference": {"datasetId": "analytics"}}]}),
-                ),
+                ok(json!({"datasets": [{"datasetReference": {"datasetId": "analytics"}}]})),
             ]);
             let connection =
                 anonymous_connection_at_with_defaults(&endpoint, configured_project, None);
@@ -1000,8 +924,7 @@ fn an_absent_foreign_catalog_leaves_no_metadata_at_any_depth() {
                     discover_metadata(&connection, depth, FOREIGN, schema, table).unwrap();
                 assert_eq!(reader.next().unwrap().unwrap().num_rows(), 0, "{depth:?}");
                 assert!(reader.next().is_none());
-                let requests = requests.join().unwrap();
-                assert_eq!(requests.len(), 1);
+                let requests = requests.served(1);
                 assert!(
                     requests[0]
                         .path()
@@ -1026,11 +949,13 @@ fn a_foreign_catalog_can_exist_without_any_matching_schemas() {
         }
         let (endpoint, requests) = capture_requests(responses);
         let connection = anonymous_connection_at(&endpoint);
-        let batch = discover_metadata(&connection, depth, FOREIGN, Some("missing"), None)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap();
+        let batch = first_batch(discover_metadata(
+            &connection,
+            depth,
+            FOREIGN,
+            Some("missing"),
+            None,
+        ));
         assert_eq!(batch.num_rows(), 1);
         assert_eq!(string_at(batch.column(0), 0), "other-project");
         if depth == Some(ObjectDepth::Catalogs) {
@@ -1058,17 +983,18 @@ fn exact_foreign_table_metadata_remains_discoverable_after_catalog_validation() 
         table["numRows"] = json!("42");
         let (endpoint, requests) = capture_requests(vec![(200, json!({})), (200, table)]);
         let connection = anonymous_connection_at(&endpoint);
-        let batch = discover_metadata(&connection, depth, FOREIGN, Some("dataset"), Some("events"))
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap();
+        let batch = first_batch(discover_metadata(
+            &connection,
+            depth,
+            FOREIGN,
+            Some("dataset"),
+            Some("events"),
+        ));
         assert_eq!(string_at(batch.column(0), 0), "other-project");
         let schemas = child_structs(batch.column(1));
         assert_eq!(string_at(schemas.column(0), 0), "dataset");
         assert!(!child_structs(schemas.column(1)).is_empty());
-        let requests = requests.join().unwrap();
-        assert_eq!(requests.len(), 2);
+        let requests = requests.served(2);
         assert!(requests[0].path().contains("maxResults=1&"));
         assert!(
             requests[1]
@@ -1170,7 +1096,7 @@ fn foreign_catalog_validation_can_be_cancelled_while_waiting_for_the_service() {
         .expect("metadata lookup must be cancelled");
     assert_eq!(failure.status, Status::Cancelled);
     worker.join().unwrap();
-    assert_eq!(requests.join().unwrap().len(), 1);
+    requests.served(1);
 }
 
 /// BigQuery rejects malformed project spellings with 400. An exact catalog filter still matches
@@ -1204,8 +1130,7 @@ fn a_catalog_filter_that_is_not_a_project_id_lists_nothing() {
             .unwrap();
         assert_eq!(reader.next().unwrap().unwrap().num_rows(), 0, "{catalog}");
         assert!(reader.next().is_none());
-        let requests = requests.join().unwrap();
-        assert_eq!(requests.len(), 2);
+        let requests = requests.served(2);
         assert!(
             requests
                 .iter()
@@ -1344,7 +1269,7 @@ fn xdbc_type_names_are_the_googlesql_types_get_table_schema_reports() {
             field.name()
         );
     }
-    assert_eq!(requests.join().unwrap().len(), 2);
+    requests.served(2);
 }
 
 /// A column of a type the driver cannot convert keeps its REST spelling rather than failing the
@@ -1376,5 +1301,5 @@ fn an_unconvertible_column_type_falls_back_to_the_rest_spelling() {
         .get_table_schema(None, Some("dataset"), "events")
         .unwrap_err();
     assert_eq!(failure.status, Status::NotImplemented);
-    assert_eq!(requests.join().unwrap().len(), 2);
+    requests.served(2);
 }

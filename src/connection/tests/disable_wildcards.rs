@@ -164,13 +164,11 @@ fn disabling_wildcards_keeps_unfiltered_dataset_and_table_listings() {
     for schema_filter in [None, Some("a_b")] {
         let mut responses = Vec::new();
         if schema_filter.is_none() {
-            responses.push((
-                200,
+            responses.push(ok(
                 json!({"datasets": [{"datasetReference": {"datasetId": "a_b"}}]}),
             ));
         }
-        responses.push((
-            200,
+        responses.push(ok(
             json!({"tables": [listed_table("events_2026"), listed_table("other")]}),
         ));
         let (endpoint, requests) = capture_requests(responses);
@@ -214,8 +212,7 @@ fn literal_dataset_filters_preserve_empty_and_missing_results_and_permission_err
             connection.get_objects(ObjectDepth::Schemas, None, Some(name), None, None, None);
         if code == 403 {
             let error = result.err().unwrap();
-            assert_eq!(error.status, Status::Unauthorized);
-            assert_message(&error, &["test-project.a_b"]);
+            assert_failure(&error, Status::Unauthorized, &["test-project.a_b"]);
         } else {
             let batch = result.unwrap().next().unwrap().unwrap();
             assert!(child_structs(batch.column(1)).is_empty());
@@ -232,10 +229,7 @@ fn literal_dataset_filters_preserve_empty_and_missing_results_and_permission_err
 #[test]
 fn disabling_object_wildcards_does_not_change_statistics_filters() {
     let (endpoint, requests) = capture_requests(vec![
-        (
-            200,
-            json!({"datasets": [{"datasetReference": {"datasetId": "axb"}}]}),
-        ),
+        ok(json!({"datasets": [{"datasetReference": {"datasetId": "axb"}}]})),
         (200, json!({"tables": [listed_table("t123")]})),
         (200, json!({"type": "TABLE", "numRows": "42"})),
     ]);
@@ -253,5 +247,5 @@ fn disabling_object_wildcards_does_not_change_statistics_filters() {
     let statistics = child_structs(schemas.column(1));
     assert_eq!(statistics.len(), 1);
     assert_eq!(string_at(statistics.column(0), 0), "t123");
-    assert_eq!(requests.join().unwrap().len(), 3);
+    requests.served(3);
 }

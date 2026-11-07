@@ -21,8 +21,10 @@ use super::{SqlPattern, resolve_table_reference, table_metadata_error, table_sch
 use crate::rest::metadata::{MetadataError, Table};
 use crate::test_support::arrow::{child_structs, list, string_at, strings, typed};
 use crate::test_support::driver::test_connection_at;
-use crate::test_support::errors::assert_message;
-use crate::test_support::http::{CapturedRequest, CapturedServer, capture_requests};
+use crate::test_support::errors::{assert_failure, assert_message};
+use crate::test_support::http::{
+    CapturedRequest, CapturedServer, capture_requests, error_body, ok,
+};
 use crate::test_support::identifiers::project;
 use crate::{BigQueryAuthenticationType, BigQueryDatabaseOption, BigQueryDriver};
 
@@ -72,16 +74,7 @@ fn anonymous_connection_at_with_defaults(
 }
 
 fn not_found_response() -> serde_json::Value {
-    json!({
-        "error": {
-            "code": 404,
-            "message": "Not found",
-            "status": "NOT_FOUND",
-            "errors": [
-                {"message": "Not found", "domain": "global", "reason": "notFound"}
-            ]
-        }
-    })
+    error_body("notFound", "Not found")
 }
 
 /// One `tables.list` entry, as the service spells it.
@@ -126,6 +119,13 @@ fn objects_batch(
         .next()
         .unwrap()
         .unwrap()
+}
+
+/// The one batch a metadata call answers with.
+fn first_batch(
+    reader: adbc_core::error::Result<Box<dyn RecordBatchReader + Send + 'static>>,
+) -> arrow_array::RecordBatch {
+    reader.unwrap().next().unwrap().unwrap()
 }
 
 /// `None` selects statistics; a depth selects object discovery through the same table walker.

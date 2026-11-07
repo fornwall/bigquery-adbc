@@ -46,8 +46,7 @@ fn metadata_options_are_connection_only_and_reject_invalid_values_without_changi
             connection.get_option_double(key.into()).unwrap_err(),
             connection.get_option_bytes(key.into()).unwrap_err(),
         ] {
-            assert_eq!(failure.status, Status::NotFound);
-            assert_message(&failure, &[key.as_str(), "type string"]);
+            assert_failure(&failure, Status::NotFound, &[key.as_str(), "type string"]);
         }
         let mut statement = connection.new_statement().unwrap();
         assert_eq!(
@@ -244,7 +243,7 @@ fn the_bigquery_namespace_aliases_follow_the_standard_keys() {
     set_option(&mut connection, OptionConnection::CurrentSchema, "");
     assert_string_option(&connection, alias("bigquery.dataset_id"), None);
 
-    assert_eq!(requests.join().unwrap().len(), 2);
+    requests.served(2);
 }
 
 /// A current catalog or schema change reaches statements created before it; see
@@ -544,8 +543,11 @@ fn missing_current_catalog_names_the_options_that_would_set_it() {
     let (endpoint, requests) = capture_requests(Vec::new());
     let mut connection = anonymous_connection_at_with_defaults(&endpoint, None, None);
     let error = set_option_error(&mut connection, OptionConnection::CurrentSchema, "dataset");
-    assert_eq!(error.status, Status::InvalidState);
-    assert_message(&error, &["adbc.connection.catalog", "bigquery.project_id"]);
+    assert_failure(
+        &error,
+        Status::InvalidState,
+        &["adbc.connection.catalog", "bigquery.project_id"],
+    );
     assert!(requests.join().unwrap().is_empty());
 }
 
@@ -592,8 +594,7 @@ fn a_cleared_current_catalog_resolves_names_in_the_billing_project() {
 /// than nothing.
 #[test]
 fn metadata_listings_follow_a_cleared_catalog_to_the_billing_project() {
-    let (endpoint, requests) = capture_requests(vec![(
-        200,
+    let (endpoint, requests) = capture_requests(vec![ok(
         json!({"datasets": [{"datasetReference": {"datasetId": "dataset"}}]}),
     )]);
     let mut connection = anonymous_connection_at(&endpoint);
