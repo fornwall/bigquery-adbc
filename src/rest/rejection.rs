@@ -88,15 +88,7 @@ pub(crate) fn service_message(body: &[u8]) -> Option<String> {
     Rejection::read(body).message
 }
 
-/// The service's message (or the status name) followed by ` (HTTP {status})`, without context.
-///
 /// Every rendered rejection ends with the numeric status and shows it nowhere else.
-pub(crate) fn service_rejection(status: reqwest::StatusCode, body: &[u8]) -> String {
-    let mut rendered = Rejection::read(body).detail(status);
-    append_http_status(&mut rendered, status);
-    rendered
-}
-
 fn append_http_status(rendered: &mut String, status: reqwest::StatusCode) {
     write!(rendered, " (HTTP {})", status.as_u16()).expect("writing to a String cannot fail");
 }

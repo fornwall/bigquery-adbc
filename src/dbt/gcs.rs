@@ -5,14 +5,14 @@
 
 use adbc_core::error::Result;
 
+use super::lro::{Delivery, LroPoller, PollBudget};
 use super::text_slots;
 use crate::BigQueryStatementOption;
 use crate::cancellation::Operation;
 use crate::query::ExecutionContext;
 use crate::rest::jobs::next_identity;
 use crate::rest::json::encode_json;
-use crate::rest::rejection::service_error;
-use crate::rest::request::{Request, multipart_related, send};
+use crate::rest::request::{Request, multipart_related};
 use crate::rest::url::escape_url_component;
 
 /// The operation's name in error messages.
@@ -40,7 +40,8 @@ impl GcsWriteOptions {
         self.any_text_option_set()
     }
 
-    /// Uploads the configured content.
+    /// Uploads the configured content, resending after a transient failure: a multipart insert
+    /// replaces the object atomically, and a replay writes the same bytes.
     ///
     /// Unlike the fork, both the bucket and the object name are required: the object is what the
     /// job submitted next reads, so writing to the wrong key silently runs stale code.
@@ -55,7 +56,7 @@ impl GcsWriteOptions {
         // size, with that client's `projection=full` and compact response.
         let url = format!(
             "{endpoint}/upload/storage/v1/b/{}/o?uploadType=multipart&name={}\
-             &projection=full&alt=json&prettyPrint=false",
+             &projection=full&alt=json",
             escape_url_component(bucket),
             escape_url_component(object_name),
         );
@@ -66,33 +67,32 @@ impl GcsWriteOptions {
         // `text/plain` is what the Go client's content sniffer settles on for both a compiled
         // model and a notebook document.
         let boundary = next_identity("adbc_gcs_");
-        let body = multipart_related(
+        let body = bytes::Bytes::from(multipart_related(
             &boundary,
             &metadata,
             content.as_bytes(),
             "text/plain; charset=utf-8",
-        );
+        ));
         let content_type = format!("multipart/related; boundary={boundary}");
+        let label = format!("write Cloud Storage object gs://{bucket}/{object_name}");
+        let poller = LroPoller::new(
+            operation,
+            &configuration.credentials,
+            context.state.rest_client()?,
+            endpoint.to_owned(),
+            PollBudget {
+                what: OPERATION,
+                ..PollBudget::default()
+            },
+        );
         // The object's size is whatever the model compiled to, so the request omits the normal
         // whole-request deadline.
-        let http = context.state.rest_client()?;
-        let context_label = format!("write Cloud Storage object gs://{bucket}/{object_name}");
-
-        let (status, response) = context.runtime.block_on(Box::pin(send(
-            Some(operation),
-            &configuration.credentials,
-            &http,
-            Request::post_media(&url, &content_type, body, &context_label),
-        )))?;
-        if status.is_success() {
-            Ok(())
-        } else {
-            Err(service_error(
-                &format!("failed to {context_label}"),
-                status,
-                &response,
-            ))
-        }
+        context
+            .runtime
+            .block_on(Box::pin(poller.request(Delivery::Idempotent, &|| {
+                Request::post_media(&url, &content_type, body.clone(), &label)
+            })))
+            .map(|_| ())
     }
 }
 

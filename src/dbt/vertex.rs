@@ -19,7 +19,7 @@ use adbc_core::error::{Result, Status};
 use serde_json::Value as JsonValue;
 
 use super::dataproc::DataprocOptions;
-use super::lro::{LroPoller, operation_failure, resource_name, rpc_status_error};
+use super::lro::{Delivery, LroPoller, operation_failure, resource_name, rpc_status_error};
 use super::{region_segment, resource_path, resource_segment, text_slots};
 use crate::BigQueryStatementOption;
 use crate::cancellation::Operation;
@@ -154,10 +154,6 @@ struct NotebookExecutionJob<'a> {
 
 async fn run(poller: &mut LroPoller<'_>, request: &NotebookExecutionJob<'_>) -> Result<String> {
     let template = Box::pin(runtime_template(poller, request)).await?;
-    // A slow template lookup must not start a job after the deadline.
-    if poller.expired() {
-        return Err(poller.timeout());
-    }
     let submitted = Box::pin(create(poller, request, &template)).await?;
     let operation_name = resource_name(&submitted, "Vertex AI notebook execution operation")?;
     let job_name = operation_name
@@ -234,9 +230,10 @@ async fn wait_for_job(poller: &mut LroPoller<'_>, job_name: &str) -> Result<()> 
     let context = format!("read the BigQuery {OPERATION} {job_name}");
     loop {
         let job = poller.poll(&url, &context).await?;
+        // Proto3 JSON omits an enum's zero value, so an absent state is the unspecified one.
         let state = job
             .get("jobState")
-            .and_then(JsonValue::as_str)
+            .map_or(Some("JOB_STATE_UNSPECIFIED"), JsonValue::as_str)
             .unwrap_or_default();
         if let Some(outcome) = job_outcome(state, &job, job_name) {
             return outcome;
@@ -275,7 +272,9 @@ async fn runtime_template(
         request.parent
     );
     loop {
-        let listed = Box::pin(poller.request(true, &|| Request::get(&url, &context))).await?;
+        let listed =
+            Box::pin(poller.request(Delivery::Idempotent, &|| Request::get(&url, &context)))
+                .await?;
         let templates = match listed.get("notebookRuntimeTemplates") {
             None | Some(JsonValue::Null) => None,
             Some(JsonValue::Array(templates)) => templates.first(),
@@ -362,10 +361,11 @@ async fn create(
         "create the BigQuery {OPERATION} {} in {}",
         request.display_name, request.parent
     );
-    // Sent once: unlike the Dataproc submissions, the create has no request ID, so a resend could
-    // start a second job.
     let body = bytes::Bytes::from(body);
-    Box::pin(poller.request(false, &|| Request::post_json(&url, body.clone(), &context))).await
+    Box::pin(poller.request(Delivery::Once, &|| {
+        Request::post_json(&url, body.clone(), &context)
+    }))
+    .await
 }
 
 /// The `JobState` values while the job may still progress. Any other state, known or not, ends
@@ -404,13 +404,9 @@ fn job_outcome(state: &str, job: &JsonValue, job_name: &str) -> Option<Result<()
         state if NON_TERMINAL_JOB_STATES.contains(&state) => None,
         state => Some(Err(error(
             format!(
-                "{} reported {}; the driver knows no outcome for it and waits only on {}",
+                "{} reported the unrecognized state {state:?}; the driver knows no outcome for \
+                 it and waits only on {}",
                 context(),
-                if state.is_empty() {
-                    "no jobState".to_owned()
-                } else {
-                    format!("the unrecognized state {state}")
-                },
                 NON_TERMINAL_JOB_STATES.join(", "),
             ),
             Status::InvalidData,

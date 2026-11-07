@@ -2,7 +2,7 @@
 
 use adbc_core::error::Status;
 
-use super::{precondition_error, service_error, service_rejection};
+use super::{precondition_error, service_error};
 use crate::error::{DETAIL_HTTP_STATUS, DETAIL_LOCATION, DETAIL_REASON};
 use crate::test_support::errors::assert_message_omits;
 
@@ -211,7 +211,7 @@ fn rejections_without_structured_errors_fall_back_to_the_message_then_the_status
     );
     assert_eq!(failure.status, Status::NotFound);
     assert_eq!(
-        service_rejection(reqwest::StatusCode::from_u16(599).unwrap(), b""),
+        service_error("", reqwest::StatusCode::from_u16(599).unwrap(), b"").message,
         "the service sent no message (HTTP 599)",
         "a code with no canonical reason is still reported"
     );

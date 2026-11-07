@@ -1,7 +1,6 @@
 use std::io::Write as _;
 use std::sync::{Arc, Barrier};
 use std::thread;
-use std::time::Duration;
 
 use adbc_core::error::Status;
 use adbc_core::{Connection as _, Statement as _};
@@ -522,6 +521,27 @@ fn a_refused_cancel_still_reports_the_timeout_and_is_not_retried() {
     );
 }
 
+/// A cancel has work to stop, so a transient failure resends it.
+#[test]
+fn a_transiently_failed_cancel_is_resent() {
+    let (endpoint, captured) = capture_requests(vec![
+        (200, running(OPERATION)),
+        (
+            503,
+            error_body("backendError", "The service is unavailable."),
+        ),
+        (200, json!({})),
+    ]);
+    let mut connection = dataproc_connection(&endpoint);
+    let mut statement = batch_statement(&mut connection, Some("1"));
+
+    let error = statement.execute_update().unwrap_err();
+    assert_eq!(error.status, Status::Timeout, "{}", error.message);
+    assert_message(&error, &["was asked to stop"]);
+    let requests = captured.join().unwrap();
+    assert_eq!(requests[1].line, requests[2].line);
+}
+
 /// A 200 whose body is not a JSON object fails on the first attempt without cancelling the
 /// batch: a malformed response says nothing about the batch.
 #[test]
@@ -747,6 +767,29 @@ fn a_transiently_failed_submission_is_resent_under_its_request_id() {
     );
 }
 
+/// A 2xx that cannot be read may answer a submission Dataproc accepted, so it is resent under the
+/// same request ID to learn the operation, as a lost answer is.
+#[test]
+fn an_unreadable_submission_answer_is_resent_under_its_request_id() {
+    // Valid to the mock, which serializes it, but past the decoder's recursion limit.
+    let unreadable = (0..200).fold(json!(0), |value, _| json!([value]));
+    let (endpoint, captured) = capture_requests(vec![
+        (200, unreadable),
+        (
+            200,
+            json!({"name": OPERATION, "done": true, "response": {"state": "SUCCEEDED"}}),
+        ),
+    ]);
+    let mut connection = dataproc_connection(&endpoint);
+
+    batch_statement(&mut connection, None)
+        .execute_update()
+        .unwrap();
+
+    let requests = captured.join().unwrap();
+    assert_eq!(requests[0].line, requests[1].line);
+}
+
 /// One bare request the mock server can capture, marking the end of an exchange whose last
 /// response the driver is expected *not* to answer. The connection is returned so it outlives
 /// the server's reply to it.
@@ -806,10 +849,8 @@ fn cancelling_a_submission_interrupts_the_poll_and_cancels_the_job() {
     let mut statement = cluster_statement(&mut connection, None);
     let handle = statement.get_cancel_handle();
     let canceller = thread::spawn(move || {
-        // The submission is in flight; cancel once its answer has been read and the poll
-        // loop is waiting, which is what leaves a job to cancel remotely.
+        // The submission is in flight, and its answer still names the job to cancel.
         request_seen.wait();
-        thread::sleep(Duration::from_millis(100));
         handle.try_cancel().unwrap();
     });
 

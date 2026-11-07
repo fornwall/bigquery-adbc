@@ -287,6 +287,24 @@ fn only_the_template_listing_is_resent_after_a_transient_failure() {
     );
 }
 
+/// A rate-limit rejection applied nothing, so it alone resends the create.
+#[test]
+fn a_rate_limited_create_is_resent() {
+    let (endpoint, captured) = capture_requests(vec![
+        (429, json!({"error": {"code": 429, "message": "Slow down"}})),
+        (200, lro(true)),
+        (200, job_in_state("JOB_STATE_SUCCEEDED")),
+    ]);
+    let mut connection = connection_running_notebooks_at(endpoint);
+    bigframes_statement(&mut connection, Some("4242"), "3600")
+        .execute_update()
+        .unwrap();
+
+    let requests = captured.join().unwrap();
+    assert_eq!(requests[0].line, requests[1].line);
+    assert_eq!(requests[0].body, requests[1].body);
+}
+
 #[test]
 fn a_template_id_that_reshapes_the_resource_path_is_refused() {
     // An empty value clears the option rather than naming a template, so it is not tested here.
@@ -638,14 +656,16 @@ fn a_pooling_timeout_beyond_the_clock_waits_out_both_phases() {
     );
 }
 
+/// A cancel during the create waits for its answer, which alone names the job to stop.
 #[test]
-fn cancelling_a_notebook_job_stops_the_wait() {
+fn cancelling_during_the_create_stops_the_job_it_started() {
     let request_seen = Arc::new(Barrier::new(2));
     let server_seen = request_seen.clone();
-    let (endpoint, captured) = capture_requests_gated(vec![(200, lro(false))], move || {
-        server_seen.wait();
-        true
-    });
+    let (endpoint, captured) =
+        capture_requests_gated(vec![(200, lro(false)), (200, json!({}))], move || {
+            server_seen.wait();
+            true
+        });
     let mut connection = connection_running_notebooks_at(endpoint);
     let mut statement = bigframes_statement(&mut connection, Some("4242"), "3600");
     let handle = statement.get_cancel_handle();
@@ -656,12 +676,10 @@ fn cancelling_a_notebook_job_stops_the_wait() {
 
     let error = statement.execute_update().unwrap_err();
     assert_eq!(error.status, Status::Cancelled, "{}", error.message);
+    assert_message(&error, &["asked to stop"]);
     canceller.join().unwrap();
-    assert_eq!(
-        captured.join().unwrap().len(),
-        1,
-        "the poll loop stopped instead of continuing to poll"
-    );
+    let requests = captured.join().unwrap();
+    assert_eq!(requests[1].line, format!("POST /v1/{LRO}:cancel HTTP/1.1"));
 }
 
 /// A half-configured job stays active so it names the option it is missing, rather than
@@ -735,18 +753,15 @@ fn terminal_job_states_are_classified_and_running_ones_keep_polling() {
 
     // With no `pooling_timeout`, an unclassifiable state must end the wait or it could poll
     // forever.
-    for (unrecognized, detail) in [
-        (
-            "JOB_STATE_SOMETHING_NEW",
-            "the unrecognized state JOB_STATE_SOMETHING_NEW",
-        ),
-        ("", "reported no jobState"),
-    ] {
+    for unrecognized in ["JOB_STATE_SOMETHING_NEW", ""] {
         let failure = job_outcome(unrecognized, &json!({}), JOB)
             .unwrap()
             .unwrap_err();
         assert_eq!(failure.status, Status::InvalidData);
-        assert_message(&failure, &[JOB, detail]);
+        assert_message(
+            &failure,
+            &[JOB, &format!("the unrecognized state {unrecognized:?}")],
+        );
         assert!(
             failure.message.contains("JOB_STATE_RUNNING"),
             "the message names the states that would have kept the wait going: {}",
@@ -759,6 +774,25 @@ fn terminal_job_states_are_classified_and_running_ones_keep_polling() {
         .unwrap_err();
     assert_eq!(bare.status, Status::Unknown);
     assert_message(&bare, &["no failure detail"]);
+}
+
+/// Proto3 JSON omits `JOB_STATE_UNSPECIFIED`, so a job without a state keeps being polled, while
+/// a `jobState` that is not a string names no state to wait on.
+#[test]
+fn only_an_absent_job_state_reads_as_unspecified() {
+    let (endpoint, captured) = capture_requests(vec![
+        (200, lro(true)),
+        (200, json!({"name": JOB})),
+        (200, job_in_state("JOB_STATE_SUCCEEDED")),
+        (200, lro(true)),
+        (200, json!({"name": JOB, "jobState": 3})),
+    ]);
+    let mut connection = connection_running_notebooks_at(endpoint);
+    let mut run = || bigframes_statement(&mut connection, Some("4242"), "3600").execute_update();
+
+    assert_eq!(run().unwrap(), None);
+    assert_eq!(run().unwrap_err().status, Status::InvalidData);
+    assert_eq!(captured.join().unwrap().len(), 5);
 }
 
 #[test]

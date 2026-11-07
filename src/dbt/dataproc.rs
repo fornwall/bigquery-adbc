@@ -19,7 +19,7 @@ use adbc_core::error::{Result, Status};
 use serde_json::Value as JsonValue;
 use tokio::time::Instant;
 
-use super::lro::{LroPoller, PollBudget, operation_failure, resource_name, resource_url};
+use super::lro::{Delivery, LroPoller, PollBudget, operation_failure, resource_name, resource_url};
 use super::{region_segment, resource_path, resource_segment, text_slots};
 use crate::BigQueryStatementOption;
 use crate::cancellation::Operation;
@@ -227,9 +227,9 @@ impl DataprocOptions {
 
         context.runtime.block_on(Box::pin(async move {
             let context = format!("submit the BigQuery {what} {target}");
-            let submitted = Box::pin(
-                poller.request(true, &|| Request::post_json(&url, body.clone(), &context)),
-            )
+            let submitted = Box::pin(poller.request(Delivery::Deduplicated, &|| {
+                Request::post_json(&url, body.clone(), &context)
+            }))
             .await?;
 
             let running = RunningOperation::new(&submitted, what)?;

@@ -12,6 +12,16 @@ changes.
 - A REST rejection with reason `timeout` now returns `TIMEOUT` and one with `resourceInUse` returns
   `INVALID_STATE`, as both do on a failed job, instead of `INVALID_ARGUMENT`. A job's timeout read
   through a rejected `jobs.query` or `jobs.getQueryResults` answer now reads as a timeout.
+- A python-model job can no longer outlive a cancel that arrives during its submission: the
+  submission finishes, and the job its answer names is asked to stop. A transient failure of that
+  remote cancel is resent instead of leaving the job running.
+- Python-model waits tolerate more glitches: Cloud Storage uploads are resent after a transient
+  failure, a Dataproc submission or poll whose 2xx answer cannot be read is repeated, a rate-limited
+  Vertex AI create is resent, and a notebook job with no reported state keeps being polled.
+- `grant_access_to` backs off between lost `If-Match` races and allows 16 rounds rather than 3, so
+  dbt threads granting on one dataset no longer fail with `INVALID_STATE`.
+- A refused CSV seed upload no longer sends a `jobs.cancel` for a job that does not exist, nor warns
+  that it may keep running.
 
 ## [0.2.0] - 2026-11-06
 

@@ -6,7 +6,7 @@ use adbc_core::error::Status;
 use google_cloud_auth::credentials::Credentials;
 use tokio::time::Instant;
 
-use super::PollBackoff;
+use super::{Delivery, PollBackoff};
 use crate::rest::client::rest_client;
 use crate::rest::request::Request;
 use crate::rest::retry::MAX_ATTEMPTS;
@@ -21,9 +21,9 @@ fn an_expired_request_budget_sends_nothing() {
     poller.backoff.deadline = Some(Instant::now());
     let attempts = std::cell::Cell::new(0);
 
-    for idempotent in [true, false] {
+    for delivery in [Delivery::Idempotent, Delivery::Once] {
         let failure = runtime
-            .block_on(poller.request(idempotent, &|| {
+            .block_on(poller.request(delivery, &|| {
                 attempts.set(attempts.get() + 1);
                 Request::get("invalid-url", "test the deadline")
             }))
@@ -62,7 +62,7 @@ fn request_retries_stop_when_the_deadline_expires_during_backoff() {
             attempts.set(attempts.get() + 1);
             Request::get("invalid-url", "test the retry deadline")
         };
-        let request = poller.request(true, &factory);
+        let request = poller.request(Delivery::Idempotent, &factory);
         tokio::pin!(request);
         assert!(
             request

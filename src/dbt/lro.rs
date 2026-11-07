@@ -14,7 +14,6 @@ use crate::diag::diag;
 use crate::error::{error, record_json_status_details, record_rpc_code, rpc_code_status};
 use crate::rest::client::RestClient;
 use crate::rest::json::decode_json;
-use crate::rest::rejection::service_rejection;
 use crate::rest::request::{Request, send};
 use crate::rest::retry::{MAX_ATTEMPTS, RetryClass, RetryDelays, classify};
 use crate::rest::url::escape_resource_path;
@@ -61,6 +60,19 @@ impl PollBackoff {
     }
 }
 
+/// How [`LroPoller::request`] sends a request and what it may resend.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Delivery {
+    /// A read or a repeatable write: resent after a transient failure, dropped on cancellation.
+    Idempotent,
+    /// A submission the service deduplicates by request ID: resent likewise, but never dropped
+    /// in flight, because only its answer names the work a cancel has to stop.
+    Deduplicated,
+    /// A submission without a request ID: like [`Self::Deduplicated`], but a transient failure
+    /// may have started the work, so only a rate-limit rejection, which applied nothing, resends.
+    Once,
+}
+
 /// A cancellable poll loop and shared client for one regional service.
 pub(super) struct LroPoller<'a> {
     operation: &'a Operation,
@@ -76,7 +88,7 @@ pub(super) struct LroPoller<'a> {
 }
 
 /// Backoff, deadline, and the names a long-running operation's messages use.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(super) struct PollBudget<'a> {
     /// The first delay between polls, doubled up to `maximum`.
     pub(super) initial: Duration,
@@ -127,10 +139,6 @@ impl<'a> LroPoller<'a> {
         }
     }
 
-    pub(super) fn expired(&self) -> bool {
-        self.backoff.expired()
-    }
-
     pub(super) fn set_running(&mut self, name: String) {
         self.name = Some(name);
     }
@@ -168,31 +176,32 @@ impl<'a> LroPoller<'a> {
         failure
     }
 
-    /// Retries idempotent requests within the deadline and [`MAX_ATTEMPTS`] limit; sends others
-    /// once. Reads and submissions with service-deduplicated request IDs are idempotent.
-    /// Errors must not expose raw response bodies.
-    /// The borrowed factory shares one retry state machine across Dataproc and Vertex callers.
+    /// Sends `request` under `delivery`, within the deadline and the [`MAX_ATTEMPTS`] limit. Errors
+    /// must not expose raw response bodies.
+    /// The borrowed factory shares one retry state machine across all callers.
     pub(super) async fn request<'r>(
         &self,
-        idempotent: bool,
+        delivery: Delivery,
         request: &dyn Fn() -> Request<'r>,
     ) -> Result<JsonValue> {
+        let gate = (delivery == Delivery::Idempotent).then_some(self.operation);
         let mut failures = 0;
         loop {
             self.operation.check()?;
             if self.backoff.expired() {
                 return Err(self.timeout());
             }
-            let (class, failure) = match Box::pin(self.attempt(request())).await {
+            let (class, failure) = match Box::pin(self.attempt(gate, request())).await {
                 Ok(answer) => return Ok(answer),
                 Err(rejected) => rejected,
             };
             failures += 1;
-            if !idempotent
-                || class == RetryClass::Final
-                || failures >= MAX_ATTEMPTS
-                || self.backoff.expired()
-            {
+            let resend = match class {
+                RetryClass::Final => false,
+                RetryClass::Transient => delivery != Delivery::Once,
+                RetryClass::RateLimited => true,
+            };
+            if !resend || failures >= MAX_ATTEMPTS || self.backoff.expired() {
                 return Err(failure);
             }
             diag!(
@@ -210,16 +219,18 @@ impl<'a> LroPoller<'a> {
         }
     }
 
-    /// [`Self::request`], also classifying a failure for [`LroPoller::poll`]'s retries.
+    /// One send, with the failure classified for a retry loop. A 2xx body that does not decode
+    /// may be cut short, so it is transient; a JSON document of the wrong shape is final.
     async fn attempt(
         &self,
+        gate: Option<&Operation>,
         request: Request<'_>,
     ) -> std::result::Result<JsonValue, (RetryClass, Error)> {
         let context = request.context;
-        let answer = send(Some(self.operation), self.credentials, &self.http, request).await;
+        let answer = send(gate, self.credentials, &self.http, request).await;
         let body = classify(answer, &format!("failed to {context}"))?;
         let value: JsonValue = decode_json(&body, &format!("the response to {context}"))
-            .map_err(|failure| (RetryClass::Final, failure))?;
+            .map_err(|failure| (RetryClass::Transient, failure))?;
         if value.is_object() {
             Ok(value)
         } else {
@@ -263,7 +274,8 @@ impl<'a> LroPoller<'a> {
             if !self.backoff.pause(self.operation, quota).await? {
                 return Err(self.timeout());
             }
-            let (class, failure) = match Box::pin(self.attempt(Request::get(url, context))).await {
+            let poll = self.attempt(Some(self.operation), Request::get(url, context));
+            let (class, failure) = match Box::pin(poll).await {
                 Ok(polled) => return Ok(polled),
                 Err(rejected) => rejected,
             };
@@ -286,26 +298,33 @@ impl<'a> LroPoller<'a> {
     }
 
     /// Attempts remote cancellation within [`REMOTE_CANCEL_TIMEOUT`], bypassing local
-    /// cancellation. Appends the outcome without changing the original status:
-    /// a failed cancellation may leave work running and billing.
+    /// cancellation and resending after transient failures. Appends the outcome without changing
+    /// the original status: a failed cancellation may leave work running and billing.
     pub(super) async fn cancel(&self, url: &str, mut abandoned: Error) -> Error {
-        let budget = REMOTE_CANCEL_TIMEOUT;
         let what = self.running();
         let context = format!("cancel the BigQuery {what}");
-        let request = send(
-            None,
-            self.credentials,
-            &self.http,
-            Request::post_json(url, b"{}".to_vec(), &context),
-        );
-        let detail = match tokio::time::timeout(budget, Box::pin(request)).await {
-            Ok(Ok((status, _))) if status.is_success() => {
+        let stop = async {
+            let mut failures = 0;
+            loop {
+                let request = Request::post_json(url, &b"{}"[..], &context);
+                let answer = send(None, self.credentials, &self.http, request).await;
+                let Err((class, failure)) = classify(answer, "") else {
+                    return None;
+                };
+                failures += 1;
+                if class == RetryClass::Final || failures >= MAX_ATTEMPTS {
+                    return Some(failure.message);
+                }
+                tokio::time::sleep(RetryDelays::PROMPT.delay(class, failures)).await;
+            }
+        };
+        let detail = match tokio::time::timeout(REMOTE_CANCEL_TIMEOUT, Box::pin(stop)).await {
+            Ok(None) => {
                 let _ = write!(abandoned.message, "; the BigQuery {what} was asked to stop");
                 return abandoned;
             }
-            Ok(Ok((status, response))) => service_rejection(status, &response),
-            Ok(Err(source)) => source.message,
-            Err(_) => format!("no answer within {} s", budget.as_secs()),
+            Ok(Some(detail)) => detail,
+            Err(_) => format!("no answer within {} s", REMOTE_CANCEL_TIMEOUT.as_secs()),
         };
         let _ = write!(
             abandoned.message,

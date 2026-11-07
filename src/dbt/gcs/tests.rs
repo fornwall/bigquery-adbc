@@ -74,7 +74,7 @@ fn dbt_write_gcs_uploads_the_model_source_in_one_multipart_insert() {
     assert_eq!(
         request.path(),
         "/upload/storage/v1/b/dbt-python/o?uploadType=multipart\
-         &name=analytics%2Fmy%20model.py&projection=full&alt=json&prettyPrint=false",
+         &name=analytics%2Fmy%20model.py&projection=full&alt=json",
         "the object name is percent-encoded into the query string"
     );
 
@@ -145,6 +145,22 @@ fn a_failed_upload_reports_the_service_status_over_the_wire() {
     assert_eq!(error.status, Status::Unauthorized);
     assert_message(&error, &["storage.objects.create denied"]);
     assert_eq!(captured.join().unwrap().len(), 1);
+}
+
+/// A replay writes the same bytes, so a transient failure resends the upload.
+#[test]
+fn a_transiently_failed_upload_is_resent() {
+    let (endpoint, captured) = capture_requests(vec![
+        (503, json!({"error": {"code": 503, "message": "Try again"}})),
+        (200, json!({"kind": "storage#object"})),
+    ]);
+    let mut connection = connection_writing_objects_to(endpoint);
+    let mut statement = write_statement(&mut connection, "a/b.py", Some("print(1)"));
+    assert_eq!(statement.execute_update().unwrap(), None);
+
+    let requests = captured.join().unwrap();
+    assert_eq!(requests[0].line, requests[1].line);
+    assert_eq!(requests[0].raw_body, requests[1].raw_body);
 }
 
 /// An unset content option writes the empty object rather than refusing, which is what a

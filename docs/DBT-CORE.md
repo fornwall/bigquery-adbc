@@ -224,8 +224,8 @@ each view to the datasets it may read, and is validated when set:
 
 For each dataset, the driver adds the view to the access list unless it is listed, patching under
 an `If-Match` ETag so parallel builds keep each other's entries. A lost race or an ambiguous
-failure re-reads the list and, unless the view is now listed, patches again under the fresh ETag;
-after three rounds a lost race is `INVALID_STATE`.
+failure backs off, re-reads the list and, unless the view is now listed, patches again under the
+fresh ETag; after 16 rounds a lost race is `INVALID_STATE`.
 
 Use the canonical project ID in an authorized view's name. Like the fork, the driver compares
 existing view references literally, while BigQuery rewrites numeric project numbers to IDs in
@@ -289,10 +289,15 @@ in-flight request may still finish after the deadline.
 - A batch must reach `SUCCEEDED`, a cluster job `DONE` and a notebook job `SUCCEEDED`; any other
   terminal state fails with the service's message.
 - `AdbcStatementCancel` or an expired `pooling_timeout` stops the wait and asks the service to stop
-  the job, and the error says whether that failed. Vertex AI cannot stop a notebook job once its
-  create operation is done, and a failed poll also leaves the job running; such errors say so.
-- Dataproc submissions carry a request ID, so one that failed transiently is resent without
-  starting a second job. The Vertex AI create has no such ID and is sent once.
+  the job, resending after a transient failure, and the error says whether that failed. A cancel
+  during a submission waits for its answer, up to the 60 s request timeout, because only that names
+  the job. Vertex AI cannot stop a notebook job once its create operation is done, and a failed poll
+  also leaves the job running; such errors say so.
+- Dataproc submissions carry a request ID, so one that failed transiently, or whose answer cannot
+  be read, is resent without starting a second job. The Vertex AI create has no such ID, so only a
+  rate-limit rejection resends it.
+- The upload is resent after a transient failure: it replaces the object atomically with the same
+  bytes.
 - The notebook job runs on `template_id`, else the project's first `ONE_CLICK` runtime template,
   following empty pages until a template is found or the listing ends with `NOT_FOUND`. Malformed
   listings return `INVALID_DATA`. It runs as `adbc.bigquery.notebook_execute_job.service_account`
