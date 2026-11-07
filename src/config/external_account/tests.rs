@@ -10,7 +10,10 @@ use crate::config::redaction::redacted_credentials;
 use crate::error::CredentialLayer;
 
 use crate::test_support::errors::{assert_message, assert_message_omits};
-use crate::test_support::http::capture_requests;
+use crate::test_support::http::{
+    accept, capture_requests, capture_requests_responding, capture_requests_until_stopped,
+    loopback_listener, read_captured_request, retire,
+};
 
 const AUDIENCE: &str = "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/provider";
 const REQUEST_DATA: &str = "client_id=client&client_secret=s%2Becret+value&grant_type=client_credentials&scope=api%3A%2F%2Fsubject%2F.default";
@@ -385,12 +388,7 @@ fn external_account_identity_provider_errors_classify_retryability() {
 /// would fail every later query in the process.
 #[test]
 fn a_connection_dropped_before_the_identity_provider_answers_is_transient() {
-    let listener = crate::test_support::http::loopback_listener();
-    let endpoint = format!("http://{}", listener.local_addr().unwrap());
-    let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        crate::test_support::http::read_captured_request(&mut stream).unwrap();
-    });
+    let (endpoint, server) = capture_requests_responding(1, |_| None);
     crate::runtime::new_runtime().unwrap().block_on(async {
         let provider = IdentityProvider {
             client: reqwest::Client::new(),
@@ -399,7 +397,7 @@ fn a_connection_dropped_before_the_identity_provider_answers_is_transient() {
         };
         assert!(provider.subject_token().await.unwrap_err().is_transient());
     });
-    server.join().unwrap();
+    assert_eq!(server.join().unwrap().len(), 1);
 }
 
 #[test]
@@ -460,17 +458,26 @@ fn external_account_rejects_oversized_identity_provider_response() {
 #[test]
 fn external_account_does_not_follow_identity_provider_redirects() {
     use std::io::Write as _;
-    use std::net::TcpListener;
 
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let target = TcpListener::bind("127.0.0.1:0").unwrap();
-    target.set_nonblocking(true).unwrap();
+    let (redirect, target) = capture_requests_until_stopped(vec![(200, json!({}))]);
+    let listener = loopback_listener();
+    listener.set_nonblocking(true).unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
-    let redirect = format!("http://{}/capture-secret", target.local_addr().unwrap());
     let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let request = crate::test_support::http::read_captured_request(&mut stream).unwrap();
-        write!(stream, "HTTP/1.1 307 Temporary Redirect\r\nLocation: {redirect}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        // `capture_requests` cannot send a `Location` header. Skip connections reqwest's pool
+        // opens and closes unused, as it does.
+        let request = loop {
+            let mut stream = accept(&listener, None).unwrap();
+            if let Some(request) = read_captured_request(&mut stream) {
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 307 Temporary Redirect\r\nLocation: {redirect}/capture-secret\r\n\
+                     Content-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                break request;
+            }
+        };
+        retire(listener);
         request
     });
     crate::runtime::new_runtime().unwrap().block_on(async {
@@ -481,9 +488,7 @@ fn external_account_does_not_follow_identity_provider_redirects() {
         assert!(crate::error::chain(&error).any(|cause| cause.to_string().contains("HTTP 307")));
     });
     assert_eq!(server.join().unwrap().raw_body, REQUEST_DATA.as_bytes());
-    assert!(
-        matches!(target.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
-    );
+    assert!(target.stop().is_empty());
 }
 
 /// Runs on a paused clock so the refresh upstream's token cache schedules ten seconds out is

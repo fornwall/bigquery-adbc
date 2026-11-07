@@ -1,6 +1,7 @@
 //! The token exchange follows the process's proxy environment.
 
 use super::*;
+use crate::test_support::http::loopback_listener;
 
 const PROXY_TEST_CHILD: &str = "BIGQUERY_ADBC_PROXY_TEST_CHILD";
 const PROXY_TEST_ENDPOINT: &str = "BIGQUERY_ADBC_PROXY_TEST_ENDPOINT";
@@ -109,7 +110,7 @@ fn user_oauth_token_exchange_honors_https_proxy_and_no_proxy() {
         return;
     }
 
-    let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy = loopback_listener();
     let proxy_address = proxy.local_addr().unwrap();
     let capture = capture_connection(proxy);
     run_proxy_test_child(
@@ -127,10 +128,10 @@ fn user_oauth_token_exchange_honors_https_proxy_and_no_proxy() {
         String::from_utf8_lossy(&request)
     );
 
-    let endpoint = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = loopback_listener();
     let endpoint_address = endpoint.local_addr().unwrap();
     let direct_capture = capture_connection(endpoint);
-    let bypassed_proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let bypassed_proxy = loopback_listener();
     bypassed_proxy.set_nonblocking(true).unwrap();
     let bypassed_proxy_address = bypassed_proxy.local_addr().unwrap();
     run_proxy_test_child(
