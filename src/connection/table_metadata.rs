@@ -57,6 +57,19 @@ pub(super) struct TableScan<'a> {
     pub(super) item: &'static str,
 }
 
+impl TableScan<'_> {
+    /// Whether the scan matches nothing without asking: an empty type set, or an exact table name
+    /// no table can have. BigQuery rejects an empty table ID, and a table ID cannot contain `$` or
+    /// `@`, which `tables.get` resolves as a partition or snapshot decorator of another table.
+    pub(super) fn matches_nothing(&self) -> bool {
+        self.table_types.is_some_and(<[_]>::is_empty)
+            || self
+                .table_name
+                .and_then(SqlPattern::exact)
+                .is_some_and(|table_id| table_id.is_empty() || table_id.contains(['$', '@']))
+    }
+}
+
 /// One table a scan kept.
 pub(super) struct ScannedTable {
     /// The table's ID as BigQuery reported it; see [`resolved_name`].
@@ -212,9 +225,7 @@ impl BigQueryConnection {
                 },
             })
             .collect::<Vec<_>>();
-        // Such a table name, or an empty type set, matches nothing.
-        if exact_table.is_some_and(names_no_table) || scan.table_types.is_some_and(<[_]>::is_empty)
-        {
+        if scan.matches_nothing() {
             return Ok(datasets.into_iter().map(|dataset| dataset.scan).collect());
         }
         let mut lists = VecDeque::new();
@@ -418,13 +429,6 @@ fn rejected_as_invalid(source: &MetadataError) -> bool {
             if *status == reqwest::StatusCode::BAD_REQUEST
                 && service_failure("", *status, body).1.as_deref() == Some("invalid")
     )
-}
-
-/// Whether an exact table filter matches no table without asking: BigQuery rejects an empty table
-/// ID, and a table ID cannot contain `$` or `@`, which `tables.get` resolves as a partition or
-/// snapshot decorator of another table.
-pub(super) fn names_no_table(table_id: &str) -> bool {
-    table_id.is_empty() || table_id.contains(['$', '@'])
 }
 
 /// One dataset's progress through [`BigQueryConnection::scan_tables`].

@@ -48,7 +48,7 @@ use crate::runtime::SharedRuntime;
 use crate::statement::BigQueryStatement;
 use crate::transaction::TransactionState;
 use crate::types::schema::convert_schema;
-use table_metadata::{DatasetScan, ScannedTable, TableScan, names_no_table, table_metadata_error};
+use table_metadata::{DatasetScan, ScannedTable, TableScan, table_metadata_error};
 use table_schema::{resolve_table_reference, table_schema_metadata};
 
 /// An ADBC connection: a current catalog and schema, transaction state, and the metadata calls.
@@ -172,13 +172,7 @@ impl BigQueryConnection {
         scan: Option<TableScan<'_>>,
     ) -> Result<Vec<(String, Option<Vec<ScannedTable>>)>> {
         // A scan that can match nothing sends no request, so it proves nothing about the dataset.
-        let direct = scan.filter(|scan| {
-            !scan.table_types.is_some_and(<[_]>::is_empty)
-                && !scan
-                    .table_name
-                    .and_then(SqlPattern::exact)
-                    .is_some_and(names_no_table)
-        });
+        let direct = scan.filter(|scan| !scan.matches_nothing());
         let exact_dataset = db_schema
             .and_then(SqlPattern::exact)
             .filter(|dataset_id| !dataset_id.is_empty());
@@ -456,17 +450,11 @@ impl Connection for BigQueryConnection {
     // A cancel finds an operation to accept, but neither call is cancellable; see
     // `TransactionContext::run_to_verdict`.
     fn commit(&mut self) -> Result<()> {
-        let operation = self.cancellation.begin();
-        let result = self.finish_transaction(false);
-        operation.finish();
-        result
+        self.cancellation.run(|_| self.finish_transaction(false))
     }
 
     fn rollback(&mut self) -> Result<()> {
-        let operation = self.cancellation.begin();
-        let result = self.finish_transaction(true);
-        operation.finish();
-        result
+        self.cancellation.run(|_| self.finish_transaction(true))
     }
 
     fn read_partition(

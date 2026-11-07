@@ -138,11 +138,8 @@ impl Optionable for BigQueryConnection {
             // The effective value: a cleared catalog resolves names in the billing project. Only
             // a connection with neither reads as NOT_FOUND, never "", as every unset option does.
             OptionConnection::CurrentCatalog => self
-                .context
-                .current_catalog
-                .as_deref()
-                .or(self.context.billing_project_id.as_deref())
-                .map(str::to_owned)
+                .name_catalog()
+                .map(ToString::to_string)
                 .ok_or_else(|| option_not_set(key.as_ref())),
             OptionConnection::CurrentSchema => self
                 .context

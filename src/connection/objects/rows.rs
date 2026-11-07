@@ -31,7 +31,7 @@ pub(in crate::connection) fn object_table(
         });
     };
     let columns = if include_columns {
-        Some(object_columns(&name, metadata.schema, column_name)?)
+        Some(object_columns(metadata.schema, column_name))
     } else {
         None
     };
@@ -48,38 +48,27 @@ pub(in crate::connection) fn object_table(
 /// The columns `column_name` keeps of a described table, numbered by their place in the whole
 /// table.
 fn object_columns(
-    table: &str,
     schema: Option<TableSchema>,
     column_name: Option<SqlPattern<'_>>,
-) -> Result<Vec<ObjectColumn>> {
+) -> Vec<ObjectColumn> {
     // adbc.h gives get_objects no per-object failure, so an object described without a schema
     // (such as a view whose SQL no longer compiles) is listed with no columns. get_table_schema
     // reports the missing schema as an error.
-    let schema = schema.unwrap_or_default();
-    let mut columns = Vec::with_capacity(schema.fields.len());
-    for (index, field) in schema.fields.into_iter().enumerate() {
-        if column_name.is_none_or(|pattern| pattern.matches(&field.name)) {
-            let ordinal_position = i32::try_from(index + 1).map_err(|_| {
-                error(
-                    format!(
-                        "BigQuery table {table} has more than {} columns, which ADBC metadata \
-                         cannot number",
-                        i32::MAX
-                    ),
-                    Status::InvalidData,
-                )
-            })?;
+    let fields = schema.unwrap_or_default().fields;
+    (1..)
+        .zip(fields)
+        .filter(|(_, field)| column_name.is_none_or(|pattern| pattern.matches(&field.name)))
+        .map(|(ordinal_position, field)| {
             // `get_table_schema`'s GoogleSQL spelling, or the REST one for a type the driver does
             // not implement: `get_objects` has no per-object failure to report it with.
             let type_name = googlesql_type_literal(&field).unwrap_or_else(|| field.r#type.clone());
-            columns.push(ObjectColumn {
+            ObjectColumn {
                 field,
                 ordinal_position,
                 type_name,
-            });
-        }
-    }
-    Ok(columns)
+            }
+        })
+        .collect()
 }
 
 /// A reference component BigQuery omitted, as the null the ADBC schema reserves for it.
