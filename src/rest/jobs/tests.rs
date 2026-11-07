@@ -1,5 +1,4 @@
 use std::future::poll_fn;
-use std::io::Write as _;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -20,8 +19,7 @@ use crate::runtime::{SharedRuntime, new_runtime};
 use crate::test_support::errors::assert_message;
 use crate::test_support::http::{
     CapturedRequest, capture_requests, capture_requests_gated, capture_requests_responding,
-    capture_requests_until_stopped, error_body, loopback_listener, read_captured_request, retire,
-    write_response,
+    capture_requests_until_stopped, error_body, ok,
 };
 use crate::test_support::identifiers::project;
 
@@ -1683,33 +1681,10 @@ fn an_accepted_insert_transitions_its_requested_identity_to_confirmed() {
 
 #[test]
 fn cancellation_during_ambiguous_retry_backoff_confirms_the_requested_identity() {
-    let insert_listener = loopback_listener();
-    let insert_endpoint = format!("http://{}", insert_listener.local_addr().unwrap());
-    let (answered, response_written) = mpsc::channel();
-    let insert_server = thread::spawn(move || {
-        let (mut stream, _) = insert_listener.accept().unwrap();
-        read_captured_request(&mut stream).expect("the request reached the mock");
-        let body = br#"{"error":{"errors":[{"reason":"backendError","message":"ambiguous"}]}}"#;
-        write!(
-            stream,
-            "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            body.len()
-        )
-        .unwrap();
-        stream.write_all(body).unwrap();
-        stream.flush().unwrap();
-        answered.send(()).unwrap();
-        retire(insert_listener);
-    });
-    let mut cancel_responses = (0..crate::rest::retry::MAX_ATTEMPTS)
-        .map(|_| {
-            (
-                404,
-                json!({"error":{"errors":[{"reason":"notFound","message":"not visible"}]}}),
-            )
-        })
-        .collect::<Vec<_>>();
-    cancel_responses.push((200, json!({})));
+    let (insert_endpoint, inserts) =
+        capture_requests(vec![(500, error_body("backendError", "ambiguous"))]);
+    let mut cancel_responses = vec![(404, error_body("notFound", "not visible")); MAX_ATTEMPTS];
+    cancel_responses.push(ok(json!({})));
     let (claimed, cancel_claimed) = mpsc::channel();
     let (cancel_endpoint, cancels) = capture_requests_gated(cancel_responses, move || {
         let _ = claimed.send(());
@@ -1737,8 +1712,8 @@ fn cancellation_during_ambiguous_retry_backoff_confirms_the_requested_identity()
         }))
     });
 
-    // Wait until the mock writes the 500. A mock panic drops the sender and unblocks this wait.
-    response_written.recv().unwrap();
+    // The mock finishes once it has written the 500.
+    inserts.join().unwrap();
     // Allow reqwest to deliver the 500 and enter retry backoff before cancelling. If that
     // backoff has already ended, the closed mock endpoint forces another failed attempt and
     // backoff, which exercises the same `confirm_submission` path.
@@ -1753,76 +1728,47 @@ fn cancellation_during_ambiguous_retry_backoff_confirms_the_requested_identity()
     // otherwise supply the sixth request for an insert that never confirmed its identity.
     assert_eq!(cancels.join().unwrap().len(), MAX_ATTEMPTS + 1);
     operation.finish();
-    insert_server.join().unwrap();
 }
 
 #[test]
 fn cancellation_retries_not_found_until_the_in_flight_insert_is_visible() {
-    let insert_listener = loopback_listener();
-    let insert_endpoint = format!("http://{}", insert_listener.local_addr().unwrap());
-    let cancel_listener = loopback_listener();
-    let cancel_endpoint = format!("http://{}", cancel_listener.local_addr().unwrap());
     let (post_seen, post_received) = mpsc::channel();
     let (accept_insert, insert_allowed) = mpsc::channel();
-    let (insert_accepted, accepted) = mpsc::channel();
-    let insert_server = thread::spawn(move || {
-        let (mut stream, _) = insert_listener.accept().unwrap();
-        read_captured_request(&mut stream).expect("the request reached the mock");
-        post_seen.send(()).unwrap();
-        insert_allowed.recv().unwrap();
-        // The locally-cancelled sender is expected to drop its response socket, which
-        // `write_response` tolerates. BigQuery may still have accepted the request, which is
-        // exactly the ambiguous race under test.
-        write_response(&mut stream, 200, &json!({"status":{"state":"DONE"}}));
-        insert_accepted.send(()).unwrap();
-    });
+    // The locally cancelled sender drops its socket, but BigQuery may still have accepted the
+    // request, which is exactly the ambiguous race under test.
+    let (insert_endpoint, inserts) =
+        capture_requests_gated(vec![ok(json!({"status": {"state": "DONE"}}))], move || {
+            post_seen.send(()).unwrap();
+            insert_allowed.recv().unwrap();
+            true
+        });
     let (first_cancel, first_cancelled) = mpsc::channel();
-    let cancel_server = thread::spawn(move || {
-        for attempt in 0..2 {
-            let (mut stream, _) = cancel_listener.accept().unwrap();
-            assert!(
-                read_captured_request(&mut stream)
-                    .expect("the request reached the mock")
-                    .raw_body
-                    .is_empty()
-            );
-            let (status, body): (&str, &[u8]) = if attempt == 0 {
-                (
-                    "404 Not Found",
-                    br#"{"error":{"errors":[{"reason":"notFound","message":"not visible"}]}}"#,
-                )
-            } else {
-                accepted.recv().unwrap();
-                ("200 OK", br#"{}"#)
-            };
-            write!(
-                stream,
-                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            )
-            .unwrap();
-            stream.write_all(body).unwrap();
-            stream.flush().unwrap();
-            if attempt == 0 {
-                first_cancel.send(()).unwrap();
-            }
+    let mut inserts = Some(inserts);
+    let mut attempt = 0;
+    let (cancel_endpoint, cancels) = capture_requests_responding(2, move |_| {
+        attempt += 1;
+        if attempt == 1 {
+            first_cancel.send(()).unwrap();
+            return Some((404, error_body("notFound", "not visible")));
         }
+        // That mock finishes once it has answered the insert.
+        inserts.take().unwrap().join().unwrap();
+        Some(ok(json!({})))
     });
 
     let runtime = new_runtime().unwrap();
     let (cancellation, operation) = operation_at(&runtime, &cancel_endpoint);
     let client = JobClient::for_test(&insert_endpoint);
     let inserting_operation = operation.clone();
-    let inserting_runtime = runtime;
     let insert = thread::spawn(move || {
-        inserting_runtime.block_on(client.insert(
+        runtime.block_on(client.insert(
             Some(&inserting_operation),
             &request("visibility-race", Some("EU"), false),
             "copy",
         ))
     });
-    // Handshakes, not deadlines, for the same reason as above: the joins below already block
-    // on the driver, and a panicking mock drops its sender rather than leaving anyone waiting.
+    // Handshakes, not deadlines: the joins below already block on the driver, and a panicking mock
+    // drops its sender rather than leaving anyone waiting.
     post_received.recv().unwrap();
 
     let cancel = thread::spawn(move || OperationCancelHandle(cancellation).try_cancel());
@@ -1835,8 +1781,8 @@ fn cancellation_retries_not_found_until_the_in_flight_insert_is_visible() {
         Status::Cancelled
     );
     operation.finish();
-    insert_server.join().unwrap();
-    cancel_server.join().unwrap();
+    let cancels = cancels.join().unwrap();
+    assert!(cancels.iter().all(|request| request.raw_body.is_empty()));
 }
 
 #[test]

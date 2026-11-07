@@ -14,7 +14,7 @@ fn redirects_cannot_replay_requests_at_another_endpoint() {
     use std::io::Write as _;
 
     use crate::test_support::http::{
-        accept, capture_requests_until_stopped, loopback_listener, read_captured_request,
+        accept, capture_requests_until_stopped, mock_listener, ok, read_captured_request, retire,
     };
 
     let runtime = crate::runtime::new_runtime().unwrap();
@@ -22,14 +22,17 @@ fn redirects_cannot_replay_requests_at_another_endpoint() {
         super::build_client("redirect test", reqwest::Client::builder().no_proxy()).unwrap();
     let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
     for status in [301, 302, 303, 307, 308] {
-        let (target, redirected) =
-            capture_requests_until_stopped(vec![(200, serde_json::json!({}))]);
-        let listener = loopback_listener();
-        listener.set_nonblocking(true).unwrap();
-        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let (target, redirected) = capture_requests_until_stopped(vec![ok(serde_json::json!({}))]);
+        let (listener, endpoint) = mock_listener();
         let server = std::thread::spawn(move || {
-            let mut stream = accept(&listener, None).unwrap();
-            let request = read_captured_request(&mut stream).unwrap();
+            // Unused connections from reqwest's pool carry no request.
+            let (mut stream, request) = loop {
+                let mut stream = accept(&listener, None).unwrap();
+                if let Some(request) = read_captured_request(&mut stream) {
+                    break (stream, request);
+                }
+            };
+            retire(listener);
             write!(
                 stream,
                 "HTTP/1.1 {status} Redirect\r\nLocation: {target}/untrusted\r\n\
