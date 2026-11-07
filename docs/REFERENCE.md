@@ -579,7 +579,7 @@ ingests release queued payloads before bounded remote stream cleanup.
 | `create` | Requires a new table. If a later step fails, the created table is kept. A failure before commit reports that no rows were committed and suggests retrying with `append`. |
 | `append` | Requires an existing compatible table. |
 | `create_append` | Creates a missing table, or appends to an existing compatible one. |
-| `replace` | With the same schema, uploads before truncating, so an upload failure or cancellation keeps the old rows; a failure after truncation can leave the table empty, and the error says so. With a different schema, recreates the table before uploading, so a later failure leaves the new, empty table, and the error says the old rows are gone. A cancel that reaches a sent `TRUNCATE` or recreation says the old rows may be gone, since BigQuery can finish a cancelled statement. |
+| `replace` | With the same schema, uploads before truncating, so an upload failure or cancellation keeps the old rows; a failure after truncation can leave the table empty, and the error says so. With a different schema, recreates the table before uploading, so a later failure leaves the new, empty table, and the error says the old rows are gone. A cancel or lost response after a `TRUNCATE` or recreation is sent says the old rows may be gone, since BigQuery can finish such a statement. |
 
 Append matches columns by name, ignoring case and order. Omitted nullable columns become NULL, and
 omitted repeated columns become empty arrays. `JSON` and `GEOGRAPHY` columns also accept plain

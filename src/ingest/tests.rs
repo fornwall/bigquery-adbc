@@ -523,14 +523,14 @@ mod replace_statements {
             (
                 recreate,
                 "failed to replace BigQuery ingest target project.dataset.events",
-                "BigQuery may have replaced project.dataset.events before the cancel took effect, \
-                 in which case its previous rows are gone",
+                "BigQuery may still have replaced project.dataset.events, in which case its \
+                 previous rows are gone",
             ),
             (
                 truncate,
                 "failed to empty BigQuery ingest target project.dataset.events",
-                "BigQuery may have emptied project.dataset.events before the cancel took effect, \
-                 in which case its previous rows are gone",
+                "BigQuery may still have emptied project.dataset.events, in which case its \
+                 previous rows are gone",
             ),
         ] {
             for sent in [false, true] {
@@ -581,6 +581,46 @@ mod replace_statements {
                 );
             }
         }
+    }
+
+    /// A statement whose answer is lost may still have run, like one cancelled once it was sent:
+    /// a `replace` whose `TRUNCATE` went unanswered, with its new rows still uncommitted, cannot
+    /// let the caller believe the old rows stand.
+    #[test]
+    fn a_truncate_without_an_answer_warns_that_the_old_rows_may_be_gone() {
+        use crate::test_support::http::capture_requests_gated;
+
+        let (endpoint, captured) = capture_requests_gated(vec![ddl_answer()], || false);
+        let runtime = crate::runtime::new_runtime().unwrap();
+        let clients = ClientState::for_test_at(ServiceEndpointKind::BigQuery, &endpoint);
+        let cancellation = Cancellation::new(runtime.clone(), clients.clone(), "statement");
+        let operation = cancellation.begin();
+        let billing_project = ProjectIdentifier::try_new("billing-project").unwrap();
+        let failure = truncate_table(
+            &IngestContext {
+                runtime: &runtime,
+                state: &clients,
+                billing_project_id: Some(&billing_project),
+                current_catalog: None,
+                current_schema: None,
+                location: None,
+                operation: &operation,
+            },
+            TARGET,
+            None,
+        )
+        .unwrap_err();
+        operation.finish();
+        captured.join().unwrap();
+        assert_eq!(failure.status, Status::IO, "{}", failure.message);
+        assert_message(
+            &failure,
+            &[
+                "failed to empty BigQuery ingest target project.dataset.events",
+                "BigQuery may still have emptied project.dataset.events",
+                "its previous rows are gone",
+            ],
+        );
     }
 
     /// An ingest whose bound schema cannot be spelled as DDL is refused before anything mutates.

@@ -45,6 +45,8 @@ changes.
   that could apply DML twice.
 - A job submission refused with HTTP 401 under `temporary_access_token` or `anonymous`
   authentication no longer sends a `jobs.cancel` for a job that was never created.
+- A `replace` whose `TRUNCATE` or `CREATE OR REPLACE TABLE` gets no answer says the old rows may be
+  gone, as a cancelled one already did, rather than implying they stand.
 
 ## [0.2.0] - 2026-11-06
 

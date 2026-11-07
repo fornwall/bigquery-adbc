@@ -449,7 +449,7 @@ fn truncate_table(
         operation,
         &format!("TRUNCATE TABLE {}", quoted_table_name(table)),
         table,
-        DdlEffect::Empty,
+        ("empty", "emptied"),
     )
 }
 
@@ -465,34 +465,24 @@ fn recreate_table(
         Some(context.operation),
         &ddl,
         table,
-        DdlEffect::Replace,
+        ("replace", "replaced"),
     )
-}
-
-/// What an ingest statement does to its target's rows.
-#[derive(Clone, Copy)]
-enum DdlEffect {
-    Empty,
-    Replace,
 }
 
 /// Runs ingest DDL with only the configured location. User query options such as
 /// destination tables, batch priority and session creation do not apply to these statements.
+/// `verb` and `done` say what the statement does to its target's rows.
 ///
-/// A cancel that arrives once the statement may have been sent cannot say the target is
-/// untouched: BigQuery can finish a statement it was asked to cancel. One that arrived before
-/// changed nothing, and says nothing more.
+/// A statement that was sent and then cancelled or left unanswered cannot say the target is
+/// untouched: BigQuery can finish a statement it was asked to cancel, or whose answer was lost.
+/// A cancel that arrived before it was sent changed nothing, and says nothing more.
 fn run_ingest_ddl(
     context: &IngestContext<'_>,
     operation: Option<&Operation>,
     statement: &str,
     table: TableId<'_>,
-    effect: DdlEffect,
+    (verb, done): (&str, &str),
 ) -> Result<()> {
-    let (verb, done) = match effect {
-        DdlEffect::Empty => ("empty", "emptied"),
-        DdlEffect::Replace => ("replace", "replaced"),
-    };
     let labelled = |mut source: adbc_core::error::Error| {
         source.message = format!(
             "failed to {verb} BigQuery ingest target {table}: {}",
@@ -517,10 +507,13 @@ fn run_ingest_ddl(
     )
     .map_err(|source| {
         let mut failure = labelled(source);
-        if failure.status == Status::Cancelled {
+        if matches!(
+            failure.status,
+            Status::Cancelled | Status::IO | Status::Timeout | Status::Unknown
+        ) {
             failure.message = format!(
-                "{}; BigQuery may have {done} {table} before the cancel took effect, in which \
-                 case its previous rows are gone",
+                "{}; BigQuery may still have {done} {table}, in which case its previous rows are \
+                 gone",
                 failure.message
             );
         }
