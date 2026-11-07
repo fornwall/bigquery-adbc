@@ -20,6 +20,7 @@ use arrow_array::{
     Time32SecondArray, Time64MicrosecondArray, Time64NanosecondArray, UInt8Array, UInt16Array,
     UInt32Array, UInt64Array,
 };
+use arrow_buffer::ArrowNativeType;
 use arrow_schema::{DataType, IntervalUnit, TimeUnit};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -64,15 +65,10 @@ pub(super) fn parameter_value(
         ),
         DataType::FixedSizeList(_, _) => {
             let list = downcast::<FixedSizeListArray>(array)?;
-            let length = offset_to_usize(at, list.value_length(), "FixedSizeList")?;
-            // `value_offset_at` multiplies unchecked; an offset the platform cannot address is
-            // refused rather than wrapped.
-            let start = row.checked_mul(length).ok_or_else(|| {
-                invalid_value(format!(
-                    "{at} is an Arrow FixedSizeList whose offset is too large to address"
-                ))
-            })?;
-            let end = list_slice_end(at, start, length, "FixedSizeList")?;
+            let length = list.value_length().as_usize();
+            // `value_offset_at` multiplies unchecked; a saturated span is refused by `list_value`.
+            let start = row.saturating_mul(length);
+            let end = start.saturating_add(length);
             list_value(at, parameter_type, list.values().as_ref(), start, end)
         }
         DataType::Dictionary(_, _) => downcast_dictionary_array! {
@@ -263,6 +259,8 @@ fn dictionary_value<K: ArrowDictionaryKeyType>(
     parameter_value(at, parameter_type, array.values().as_ref(), key)
 }
 
+/// Renders the elements at `start..end` of `values`. The Arrow layouts feed their offsets in
+/// unconverted, so this bounds check also refuses a negative offset, which is a huge `usize`.
 fn list_value(
     at: &ValueAt<'_>,
     parameter_type: &QueryParameterType,
@@ -362,65 +360,32 @@ fn range_value(at: &ValueAt<'_>, array: &StructArray, row: usize) -> Result<Quer
 }
 
 /// One row of either offset-encoded list layout, `List` or `LargeList`.
-fn offset_list_value<O: OffsetSizeTrait + std::fmt::Display + TryInto<usize>>(
+fn offset_list_value<O: OffsetSizeTrait>(
     at: &ValueAt<'_>,
     parameter_type: &QueryParameterType,
     list: &GenericListArray<O>,
     row: usize,
 ) -> Result<QueryParameterValue> {
-    let kind = if O::IS_LARGE { "LargeList" } else { "List" };
     let offsets = list.value_offsets();
     #[expect(
         clippy::indexing_slicing,
         reason = "a list array stores len + 1 offsets, and row < len"
     )]
-    let (start, end) = (offsets[row], offsets[row + 1]);
-    list_value(
-        at,
-        parameter_type,
-        list.values().as_ref(),
-        offset_to_usize(at, start, kind)?,
-        offset_to_usize(at, end, kind)?,
-    )
+    let (start, end) = (offsets[row].as_usize(), offsets[row + 1].as_usize());
+    list_value(at, parameter_type, list.values().as_ref(), start, end)
 }
 
 /// One row of either list-view layout, which addresses its values by start and size rather than
 /// by consecutive offsets.
-fn list_view_value<O: OffsetSizeTrait + std::fmt::Display + TryInto<usize>>(
+fn list_view_value<O: OffsetSizeTrait>(
     at: &ValueAt<'_>,
     parameter_type: &QueryParameterType,
     list: &GenericListViewArray<O>,
     row: usize,
 ) -> Result<QueryParameterValue> {
-    let kind = if O::IS_LARGE {
-        "LargeListView"
-    } else {
-        "ListView"
-    };
-    let start = offset_to_usize(at, list.value_offset(row), kind)?;
-    let length = offset_to_usize(at, list.value_size(row), kind)?;
-    let end = list_slice_end(at, start, length, kind)?;
+    let start = list.value_offset(row).as_usize();
+    let end = start.saturating_add(list.value_size(row).as_usize());
     list_value(at, parameter_type, list.values().as_ref(), start, end)
-}
-
-fn list_slice_end(at: &ValueAt<'_>, start: usize, length: usize, kind: &str) -> Result<usize> {
-    start.checked_add(length).ok_or_else(|| {
-        invalid_value(format!(
-            "{at} is an Arrow {kind} whose offset range is too large to address"
-        ))
-    })
-}
-
-fn offset_to_usize<O: Copy + std::fmt::Display + TryInto<usize>>(
-    at: &ValueAt<'_>,
-    offset: O,
-    kind: &str,
-) -> Result<usize> {
-    offset.try_into().map_err(|_| {
-        invalid_value(format!(
-            "{at} is an Arrow {kind} with an invalid offset {offset}"
-        ))
-    })
 }
 
 /// Views a parameter column as the concrete Arrow array its `DataType` promises.
@@ -514,31 +479,27 @@ fn format_date(at: &ValueAt<'_>, days: i64) -> Result<String> {
     Ok(format!("{year:04}-{month:02}-{day:02}"))
 }
 
-/// The `.ffffff` tail of a formatted TIME, DATETIME, or INTERVAL: BigQuery accepts a whole
-/// second with no fractional part at all, so a zero remainder writes nothing.
-struct FractionalSeconds(u64);
-
-impl std::fmt::Display for FractionalSeconds {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.0 == 0 {
-            return Ok(());
-        }
-        write!(formatter, ".{:06}", self.0)
-    }
+/// `micros` as hours, minutes, seconds and the `.ffffff` tail of a TIME, DATETIME or INTERVAL,
+/// which a whole second omits.
+fn clock_parts(micros: u64) -> (u64, u64, u64, String) {
+    let fraction = match micros % 1_000_000 {
+        0 => String::new(),
+        fraction => format!(".{fraction:06}"),
+    };
+    (
+        micros / 3_600_000_000,
+        micros / 60_000_000 % 60,
+        micros / 1_000_000 % 60,
+        fraction,
+    )
 }
 
 fn format_time(at: &ValueAt<'_>, micros: i64) -> Result<String> {
-    // A time of day is non-negative by definition, so the split runs on the unsigned value the
-    // range check leaves behind rather than mixing signed and unsigned arithmetic.
-    let time = u64::try_from(micros)
-        .ok()
-        .filter(|time| *time < MICROSECONDS_PER_DAY.unsigned_abs())
-        .ok_or_else(|| invalid_value(format!("{at} is a time outside a day")))?;
-    let hours = time / 3_600_000_000;
-    let minutes = time / 60_000_000 % 60;
-    let seconds = time / 1_000_000 % 60;
-    let fractional = FractionalSeconds(time % 1_000_000);
-    Ok(format!("{hours:02}:{minutes:02}:{seconds:02}{fractional}"))
+    if !(0..MICROSECONDS_PER_DAY).contains(&micros) {
+        return Err(invalid_value(format!("{at} is a time outside a day")));
+    }
+    let (hours, minutes, seconds, fraction) = clock_parts(micros.unsigned_abs());
+    Ok(format!("{hours:02}:{minutes:02}:{seconds:02}{fraction}"))
 }
 
 fn format_interval(at: &ValueAt<'_>, months: i32, days: i32, micros: i64) -> Result<String> {
@@ -555,14 +516,10 @@ fn format_interval(at: &ValueAt<'_>, months: i32, days: i32, micros: i64) -> Res
     // negative sub-hour interval therefore carries its sign on a zero hour.
     let absolute_months = months.unsigned_abs();
     let year_month_sign = if months < 0 { "-" } else { "" };
-    let absolute_micros = micros.unsigned_abs();
     let time_sign = if micros < 0 { "-" } else { "" };
-    let hours = absolute_micros / 3_600_000_000;
-    let minutes = absolute_micros / 60_000_000 % 60;
-    let seconds = absolute_micros / 1_000_000 % 60;
-    let fractional = FractionalSeconds(absolute_micros % 1_000_000);
+    let (hours, minutes, seconds, fraction) = clock_parts(micros.unsigned_abs());
     Ok(format!(
-        "{year_month_sign}{}-{} {days} {time_sign}{hours}:{minutes}:{seconds}{fractional}",
+        "{year_month_sign}{}-{} {days} {time_sign}{hours}:{minutes}:{seconds}{fraction}",
         absolute_months / 12,
         absolute_months % 12,
     ))
