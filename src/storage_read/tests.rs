@@ -1,135 +1,7 @@
 use super::*;
+use crate::test_support::errors::assert_failure;
 
-/// Allocate responses only when polled, as the SDK materializes each protobuf message.
-#[derive(Debug)]
-struct LazyRead {
-    responses: Arc<std::sync::atomic::AtomicUsize>,
-    payload_bytes: usize,
-    stalled: bool,
-}
-
-impl google_cloud_bigquery::stub::Read for LazyRead {
-    async fn read_rows(
-        &self,
-        request: google_cloud_bigquery::model::ReadRowsRequest,
-        _options: google_cloud_gax::options::RequestOptions,
-    ) -> std::result::Result<ResponseStream<ReadRowsResponse>, GoogleError> {
-        assert_eq!(request.offset, 0);
-        Ok(ResponseStream::from_stream(Self {
-            responses: self.responses.clone(),
-            payload_bytes: self.payload_bytes,
-            stalled: self.stalled,
-        }))
-    }
-}
-
-impl futures_core::Stream for LazyRead {
-    type Item = std::result::Result<ReadRowsResponse, GoogleError>;
-
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        _context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        self.responses
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if self.stalled {
-            return std::task::Poll::Pending;
-        }
-        std::task::Poll::Ready(Some(Ok(ReadRowsResponse::new()
-            .set_row_count(1)
-            .set_arrow_record_batch(
-                google_cloud_bigquery::model::ArrowRecordBatch::new()
-                    .set_serialized_record_batch(vec![0_u8; self.payload_bytes]),
-            ))))
-    }
-}
-
-#[test]
-fn a_full_wire_queue_does_not_materialize_another_response() {
-    use std::future::Future;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::task::{Context, Poll, Waker};
-
-    const PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
-    let runtime = crate::runtime::new_runtime().unwrap();
-    runtime.block_on(async {
-        for cancel in [false, true] {
-            let responses = Arc::new(AtomicUsize::new(0));
-            let client = Read::from_stub(LazyRead {
-                responses: responses.clone(),
-                payload_bytes: PAYLOAD_BYTES,
-                stalled: false,
-            });
-            let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-            let sink = ResultSink::for_test();
-            let request = client.read_rows().set_read_stream("stream");
-            let mut receiving = std::pin::pin!(receive_rows(&request, "stream", sender, &sink));
-            let mut context = Context::from_waker(Waker::noop());
-
-            assert!(receiving.as_mut().poll(&mut context).is_pending());
-            assert_eq!(receiver.len(), 1);
-            assert_eq!(responses.load(Ordering::Relaxed), 1);
-            let (payload, rows) = receiver.try_recv().unwrap();
-            assert_eq!((payload.len(), rows), (PAYLOAD_BYTES, 1));
-            drop(payload);
-
-            assert!(receiving.as_mut().poll(&mut context).is_pending());
-            assert_eq!(receiver.len(), 1);
-            assert_eq!(responses.load(Ordering::Relaxed), 2);
-
-            if cancel {
-                sink.cancellation.cancel_local();
-            } else {
-                receiver.close();
-            }
-            assert!(matches!(
-                receiving.as_mut().poll(&mut context),
-                Poll::Ready(Ok(()))
-            ));
-            assert_eq!(responses.load(Ordering::Relaxed), 2);
-        }
-    });
-}
-
-#[test]
-fn a_stopped_decoder_releases_a_pending_wire_response() {
-    use std::future::Future;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::task::{Context, Poll, Waker};
-
-    let runtime = crate::runtime::new_runtime().unwrap();
-    runtime.block_on(async {
-        for cancel in [false, true] {
-            let responses = Arc::new(AtomicUsize::new(0));
-            let client = Read::from_stub(LazyRead {
-                responses: responses.clone(),
-                payload_bytes: 0,
-                stalled: true,
-            });
-            let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
-            let sink = ResultSink::for_test();
-            let request = client.read_rows().set_read_stream("stream");
-            let mut receiving = std::pin::pin!(receive_rows(&request, "stream", sender, &sink));
-            let mut context = Context::from_waker(Waker::noop());
-            assert!(receiving.as_mut().poll(&mut context).is_pending());
-            assert_eq!(responses.load(Ordering::Relaxed), 1);
-            assert!(receiver.is_empty());
-
-            if cancel {
-                sink.cancellation.cancel_local();
-            } else {
-                receiver.close();
-            }
-            assert!(matches!(
-                receiving.as_mut().poll(&mut context),
-                Poll::Ready(Ok(()))
-            ));
-            assert_eq!(responses.load(Ordering::Relaxed), 1);
-        }
-    });
-}
-
-/// What one `ReadRows` call does in the tests where time passes.
+/// What one `ReadRows` call does.
 #[derive(Clone, Copy, Debug)]
 enum ReadCall {
     /// The open never answers.
@@ -142,11 +14,29 @@ enum ReadCall {
     Refuse(Code),
 }
 
-/// Serves `ReadRows` calls from a script, recording the offset each one asked for.
+/// What a [`ScriptedRead`] saw: each call's offset, and how many responses were asked for.
+#[derive(Debug, Default)]
+struct ReadLog {
+    offsets: std::sync::Mutex<Vec<i64>>,
+    polls: std::sync::atomic::AtomicUsize,
+}
+
+impl ReadLog {
+    fn offsets(&self) -> Vec<i64> {
+        self.offsets.lock().unwrap().clone()
+    }
+
+    fn polls(&self) -> usize {
+        self.polls.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Serves `ReadRows` calls from a script. Responses exist only once polled, as the SDK
+/// materializes each protobuf message.
 #[derive(Debug)]
 struct ScriptedRead {
     calls: std::sync::Mutex<std::collections::VecDeque<ReadCall>>,
-    offsets: Arc<std::sync::Mutex<Vec<i64>>>,
+    log: Arc<ReadLog>,
 }
 
 impl google_cloud_bigquery::stub::Read for ScriptedRead {
@@ -155,7 +45,7 @@ impl google_cloud_bigquery::stub::Read for ScriptedRead {
         request: google_cloud_bigquery::model::ReadRowsRequest,
         _options: google_cloud_gax::options::RequestOptions,
     ) -> std::result::Result<ResponseStream<ReadRowsResponse>, GoogleError> {
-        self.offsets.lock().unwrap().push(request.offset);
+        self.log.offsets.lock().unwrap().push(request.offset);
         let call = self.calls.lock().unwrap().pop_front();
         let (rows, stall) = match call.expect("the script covers every call") {
             ReadCall::Hang => std::future::pending().await,
@@ -163,13 +53,19 @@ impl google_cloud_bigquery::stub::Read for ScriptedRead {
             ReadCall::Finish(rows) => (rows, false),
             ReadCall::Refuse(code) => return Err(service_failure(code)),
         };
-        Ok(ResponseStream::from_stream(ScriptedRows { rows, stall }))
+        let log = self.log.clone();
+        Ok(ResponseStream::from_stream(ScriptedRows {
+            rows,
+            stall,
+            log,
+        }))
     }
 }
 
 struct ScriptedRows {
     rows: usize,
     stall: bool,
+    log: Arc<ReadLog>,
 }
 
 impl futures_core::Stream for ScriptedRows {
@@ -180,6 +76,9 @@ impl futures_core::Stream for ScriptedRows {
         _context: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         use std::task::Poll;
+        self.log
+            .polls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if self.rows == 0 {
             return if self.stall {
                 Poll::Pending
@@ -197,14 +96,22 @@ impl futures_core::Stream for ScriptedRows {
     }
 }
 
-/// One scripted client and the offsets its calls asked for.
-fn scripted_client(script: &[ReadCall]) -> (Read, Arc<std::sync::Mutex<Vec<i64>>>) {
-    let offsets = Arc::<std::sync::Mutex<Vec<i64>>>::default();
+/// The ADBC error a failed read carries.
+fn adbc_failure(failure: &ArrowError) -> &adbc_core::error::Error {
+    let ArrowError::ExternalError(source) = failure else {
+        panic!("expected an ADBC error: {failure}");
+    };
+    source.downcast_ref().expect("expected an ADBC error")
+}
+
+/// One scripted client and the log of what it saw.
+fn scripted_client(script: &[ReadCall]) -> (Read, Arc<ReadLog>) {
+    let log = Arc::<ReadLog>::default();
     let client = Read::from_stub(ScriptedRead {
         calls: std::sync::Mutex::new(script.iter().copied().collect()),
-        offsets: offsets.clone(),
+        log: log.clone(),
     });
-    (client, offsets)
+    (client, log)
 }
 
 /// A runtime whose clock jumps to the next timer whenever every task is idle.
@@ -214,6 +121,48 @@ fn paused_runtime() -> tokio::runtime::Runtime {
         .start_paused(true)
         .build()
         .unwrap()
+}
+
+/// Reserving a queue slot before polling means a full wire queue materializes no further response.
+/// Either way of stopping the stage then releases a pending poll without making another.
+#[test]
+fn a_stopped_stage_polls_no_further_responses() {
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+
+    // A stream that always has another response, then one that never does.
+    for (call, queued) in [(ReadCall::Finish(usize::MAX), 1), (ReadCall::Stall(0), 0)] {
+        for cancel in [false, true] {
+            let (client, log) = scripted_client(&[call]);
+            crate::runtime::new_runtime().unwrap().block_on(async {
+                let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+                let sink = ResultSink::for_test();
+                let request = client.read_rows().set_read_stream("stream");
+                let mut receiving = std::pin::pin!(receive_rows(&request, "stream", sender, &sink));
+                let mut context = Context::from_waker(Waker::noop());
+
+                assert!(receiving.as_mut().poll(&mut context).is_pending());
+                assert_eq!((receiver.len(), log.polls()), (queued, 1));
+                if queued == 1 {
+                    assert_eq!(receiver.try_recv().unwrap().1, 1);
+                    assert!(receiving.as_mut().poll(&mut context).is_pending());
+                    assert_eq!((receiver.len(), log.polls()), (1, 2));
+                }
+
+                let polls = log.polls();
+                if cancel {
+                    sink.cancellation.cancel_local();
+                } else {
+                    receiver.close();
+                }
+                assert!(matches!(
+                    receiving.as_mut().poll(&mut context),
+                    Poll::Ready(Ok(()))
+                ));
+                assert_eq!(log.polls(), polls);
+            });
+        }
+    }
 }
 
 /// Neither the SDK nor its channel bounds a silent call, so a connection that died without a reset
@@ -238,7 +187,7 @@ fn a_silent_read_stream_resumes_and_then_exhausts_its_allowance() {
         (&stalled, &exhausted, 0, false),
     ];
     for (script, expected_offsets, expected_rows, completes) in cases {
-        let (client, offsets) = scripted_client(script);
+        let (client, log) = scripted_client(script);
         let (result, rows) = paused_runtime().block_on(async {
             let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
             let sink = ResultSink::for_test();
@@ -252,17 +201,12 @@ fn a_silent_read_stream_resumes_and_then_exhausts_its_allowance() {
             };
             tokio::join!(receive_rows(&request, "stream", sender, &sink), draining)
         });
-        assert_eq!(*offsets.lock().unwrap(), expected_offsets, "{script:?}");
+        assert_eq!(log.offsets(), expected_offsets, "{script:?}");
         assert_eq!(rows, expected_rows, "{script:?}");
         if completes {
             result.unwrap();
         } else {
-            let failure = result.unwrap_err();
-            let ArrowError::ExternalError(source) = &failure else {
-                panic!("expected an ADBC error: {failure}");
-            };
-            let source = source.downcast_ref::<adbc_core::error::Error>().unwrap();
-            assert_eq!(source.status, Status::Timeout, "{source}");
+            assert_failure(adbc_failure(&result.unwrap_err()), Status::Timeout, &[]);
         }
     }
 }
@@ -293,7 +237,7 @@ fn a_read_stream_is_not_stalled_while_the_reader_holds_it_back() {
         vec![huge],
     ];
     for batches in full_pipelines {
-        let (client, offsets) = scripted_client(&[ReadCall::Stall(0), ReadCall::Finish(1)]);
+        let (client, log) = scripted_client(&[ReadCall::Stall(0), ReadCall::Finish(1)]);
         paused_runtime().block_on(async {
             let (sink, mut delivered) = ResultSink::for_test_reading(schema.clone());
             for batch in batches {
@@ -307,16 +251,16 @@ fn a_read_stream_is_not_stalled_while_the_reader_holds_it_back() {
                 result = &mut receiving => panic!("the read ended early: {result:?}"),
                 () = tokio::time::sleep(silence) => {}
             }
-            assert_eq!(*offsets.lock().unwrap(), [0]);
+            assert_eq!(log.offsets(), [0]);
 
             delivered.next().await.unwrap();
             receiving.await.unwrap();
-            assert_eq!(*offsets.lock().unwrap(), [0, 0]);
+            assert_eq!(log.offsets(), [0, 0]);
         });
     }
 
     // One response fills the wire queue, so the next one is not even being waited for.
-    let (client, offsets) = scripted_client(&[ReadCall::Finish(2)]);
+    let (client, log) = scripted_client(&[ReadCall::Finish(2)]);
     paused_runtime().block_on(async {
         let (sender, _receiver) = tokio::sync::mpsc::channel(1);
         let sink = ResultSink::for_test();
@@ -328,7 +272,7 @@ fn a_read_stream_is_not_stalled_while_the_reader_holds_it_back() {
             () = tokio::time::sleep(silence) => {}
         }
     });
-    assert_eq!(*offsets.lock().unwrap(), [0]);
+    assert_eq!(log.offsets(), [0]);
 }
 
 /// One stream of a parallel read failing unresumably fails the whole read and stops the others.
@@ -343,7 +287,7 @@ fn one_stream_failing_unresumably_fails_the_parallel_read_and_stops_the_rest() {
         ReadCall::Stall(0),
         ReadCall::Refuse(Code::InvalidArgument),
     ];
-    let (client, offsets) = scripted_client(&script);
+    let (client, log) = scripted_client(&script);
     paused_runtime().block_on(async {
         let schema = Arc::new(arrow_schema::Schema::empty());
         let plan = Arc::new(reshape_plans(&schema, &schema).unwrap());
@@ -360,7 +304,7 @@ fn one_stream_failing_unresumably_fails_the_parallel_read_and_stops_the_rest() {
 
         tokio::time::sleep(STALL_TIMEOUT * 2).await;
     });
-    assert_eq!(offsets.lock().unwrap().len(), script.len());
+    assert_eq!(log.offsets().len(), script.len());
 }
 
 /// The unordered stream request stays a sane "units of work" bound on any machine.
@@ -383,22 +327,12 @@ fn refusal(code: Code) -> Option<SessionRefusal> {
 /// path that happens to work.
 #[test]
 fn only_refusals_rest_can_read_past_fall_back_to_rest() {
-    assert!(matches!(
-        refusal(Code::PermissionDenied),
-        Some(SessionRefusal::Permanent)
-    ));
-    assert!(matches!(
-        refusal(Code::Unimplemented),
-        Some(SessionRefusal::Permanent)
-    ));
-    assert!(matches!(
-        refusal(Code::ResourceExhausted),
-        Some(SessionRefusal::Transient)
-    ));
-    assert!(matches!(
-        refusal(Code::InvalidArgument),
-        Some(SessionRefusal::Transient)
-    ));
+    for code in [Code::PermissionDenied, Code::Unimplemented] {
+        assert!(matches!(refusal(code), Some(SessionRefusal::Permanent)));
+    }
+    for code in [Code::ResourceExhausted, Code::InvalidArgument] {
+        assert!(matches!(refusal(code), Some(SessionRefusal::Transient)));
+    }
 
     for code in [
         Code::Unavailable,
@@ -427,7 +361,7 @@ fn transient_and_quota_failures_resume_a_broken_read_stream() {
         Code::ResourceExhausted,
     ] {
         assert!(
-            read_rows_is_resumable(&service_failure(code)),
+            google_error_is_transient(&service_failure(code)),
             "{code:?} ends a read that could have continued"
         );
     }
@@ -440,7 +374,7 @@ fn transient_and_quota_failures_resume_a_broken_read_stream() {
         Code::Unauthenticated,
     ] {
         assert!(
-            !read_rows_is_resumable(&service_failure(code)),
+            !google_error_is_transient(&service_failure(code)),
             "{code:?} must be reported, not replayed"
         );
     }
@@ -513,8 +447,8 @@ mod mock_reads {
     use arrow_array::RecordBatchReader;
 
     use super::{
-        Opened, READ_ROWS_RESUME_ATTEMPTS, ReshapePlan, create_read_session, decode_batches,
-        reader, reshape_plans,
+        Opened, READ_ROWS_RESUME_ATTEMPTS, ReshapePlan, adbc_failure, assert_failure,
+        create_read_session, decode_batches, reader, reshape_plans,
     };
     use crate::cancellation::{Cancellation, Operation, OperationCancelHandle, operation_reader};
     use crate::clients::ClientState;
@@ -645,6 +579,23 @@ mod mock_reads {
             }
         }
 
+        /// Opens a session on `table` at `clients`, keeping the fallback decision for the test.
+        fn open(
+            &self,
+            clients: &Arc<ClientState>,
+            table: TableReference,
+        ) -> adbc_core::error::Result<Opened> {
+            reader(
+                &self.runtime,
+                clients,
+                None,
+                QueryResultOptions::default(),
+                &JobReference::new("project", None, "job".to_owned()),
+                table,
+                self.schema.clone(),
+            )
+        }
+
         /// A server scripted with the whole-read plan, after `edit` has adjusted it.
         fn mock(&self, edit: impl FnOnce(&mut MockPlan)) -> StorageMock {
             let mut plan = read_plan(&self.schema, &self.batches);
@@ -701,15 +652,7 @@ mod mock_reads {
 
         for (encoded, fallback) in [(dictionary_ipc, true), (vec![0xff; 3], false)] {
             let mock = fixture.mock(|plan| plan.read_schema = encoded);
-            let result = reader(
-                &fixture.runtime,
-                &clients(&mock),
-                None,
-                QueryResultOptions::default(),
-                &JobReference::new("project", None, "job".to_owned()),
-                destination(),
-                fixture.schema.clone(),
-            );
+            let result = fixture.open(&clients(&mock), destination());
             if fallback {
                 assert_eq!(fallback_status(result), Status::NotImplemented);
             } else {
@@ -804,18 +747,11 @@ mod mock_reads {
     fn a_destination_naming_one_partition_is_read_over_rest() {
         let fixture = Fixture::new();
         let mock = fixture.mock(|_| {});
-        let result = reader(
-            &fixture.runtime,
-            &clients(&mock),
-            None,
-            QueryResultOptions::default(),
-            &JobReference::new("project", None, "job".to_owned()),
-            TableReference {
-                table_id: "results$20240101".to_owned(),
-                ..destination()
-            },
-            fixture.schema.clone(),
-        );
+        let table = TableReference {
+            table_id: "results$20240101".to_owned(),
+            ..destination()
+        };
+        let result = fixture.open(&clients(&mock), table);
         assert_eq!(fallback_status(result), Status::NotImplemented);
         assert!(mock.read_offsets().is_empty());
     }
@@ -828,15 +764,7 @@ mod mock_reads {
         let fixture = Fixture::new();
         let mock = fixture.mock(|plan| plan.session_refusals = vec![INVALID_ARGUMENT]);
         let clients = clients(&mock);
-        let result = reader(
-            &fixture.runtime,
-            &clients,
-            None,
-            QueryResultOptions::default(),
-            &JobReference::new("project", None, "job".to_owned()),
-            destination(),
-            fixture.schema.clone(),
-        );
+        let result = fixture.open(&clients, destination());
         assert_eq!(fallback_status(result), Status::InvalidArguments);
         assert!(!clients.storage_read_disabled("project"));
         assert!(mock.read_offsets().is_empty());
@@ -860,7 +788,7 @@ mod mock_reads {
         let table = destination();
         let failure = paused.block_on(async {
             let client = clients.read_client(&runtime, None).await.unwrap();
-            let creating = create_read_session(&client, &clients, &None, &job, &table, 1);
+            let creating = create_read_session(&client, &clients, None, &job, &table, 1);
             tokio::time::timeout(Duration::from_secs(3600), creating)
                 .await
                 .expect("the stalled call was never bounded")
@@ -919,19 +847,21 @@ mod mock_reads {
         );
     }
 
-    /// A status that does not say the stream ended for a reason unrelated to the request is
-    /// reported, not replayed: the read fails and no second `ReadRows` is opened.
+    /// A status unrelated to a transient failure is reported, not replayed, whether it ends an
+    /// established stream or refuses the first open: no second `ReadRows` is opened.
     #[test]
-    fn a_read_stream_ended_by_an_unresumable_status_is_not_reopened() {
+    fn an_unresumable_status_is_reported_without_reopening() {
         let fixture = Fixture::new();
-        let mock = fixture.mock(|plan| plan.read_breaks = vec![(2, INVALID_ARGUMENT)]);
-
-        let failure = fixture.read(&mock).unwrap_err();
-        assert!(
-            failure.to_string().contains("Storage Read rows"),
-            "{failure}"
-        );
-        assert_eq!(mock.read_offsets(), vec![0]);
+        let plans: [fn(&mut MockPlan); 2] = [
+            |plan| plan.read_breaks = vec![(2, INVALID_ARGUMENT)],
+            |plan| plan.read_open_refusals = vec![INVALID_ARGUMENT],
+        ];
+        for edit in plans {
+            let mock = fixture.mock(edit);
+            let failure = fixture.read(&mock).unwrap_err().to_string();
+            assert!(failure.contains("Storage Read rows"), "{failure}");
+            assert_eq!(mock.read_offsets(), vec![0]);
+        }
     }
 
     /// A session granting several streams reads them all in parallel, through the `JoinSet`
@@ -1052,21 +982,6 @@ mod mock_reads {
         }
     }
 
-    /// An open refused for a reason a second attempt cannot improve on is reported, not retried:
-    /// the same classification the mid-stream resumes use, applied to the first call.
-    #[test]
-    fn a_first_read_rows_open_refused_unresumably_is_reported_without_a_retry() {
-        let fixture = Fixture::new();
-        let mock = fixture.mock(|plan| plan.read_open_refusals = vec![INVALID_ARGUMENT]);
-
-        let failure = fixture.read(&mock).unwrap_err();
-        assert!(
-            failure.to_string().contains("Storage Read rows"),
-            "{failure}"
-        );
-        assert_eq!(mock.read_offsets(), vec![0]);
-    }
-
     /// The resume budget is finite. A stream that fails again every time it is reopened, with no
     /// row in between to earn a fresh budget, ends the read after a bounded number of attempts
     /// instead of reconnecting forever.
@@ -1104,18 +1019,10 @@ mod mock_reads {
         // The spliced-in stats-only response, now claiming rows it carries nothing for.
         let mock = fixture.mock(|plan| plan.read_responses[1] = (3, Vec::new()));
 
-        let failure = fixture.read(&mock).unwrap_err();
-        let ArrowError::ExternalError(source) = &failure else {
-            panic!("expected an ADBC error: {failure}");
-        };
-        let source = source
-            .downcast_ref::<adbc_core::error::Error>()
-            .expect("expected an ADBC error");
-        assert_eq!(source.status, Status::InvalidData, "{source}");
-        assert!(
-            source.message.contains("carried no Arrow record batch")
-                && source.message.contains("3 rows at offset 2"),
-            "{source}"
+        assert_failure(
+            adbc_failure(&fixture.read(&mock).unwrap_err()),
+            Status::InvalidData,
+            &["carried no Arrow record batch", "3 rows at offset 2"],
         );
         assert_eq!(
             mock.read_offsets(),
@@ -1140,14 +1047,10 @@ mod mock_reads {
                 fixture.schema.clone(),
             );
             let failure = reader.next().expect("invalid count must fail").unwrap_err();
-            let ArrowError::ExternalError(source) = &failure else {
-                panic!("expected an ADBC error: {failure}");
-            };
-            let source = source.downcast_ref::<adbc_core::error::Error>().unwrap();
-            assert_eq!(source.status, Status::InvalidData, "{source}");
-            assert!(
-                source.message.contains(&format!("{row_count} rows")),
-                "{source}"
+            assert_failure(
+                adbc_failure(&failure),
+                Status::InvalidData,
+                &[&format!("{row_count} rows")],
             );
             assert_eq!(
                 mock.read_offsets(),
@@ -1219,16 +1122,6 @@ mod mock_reads {
             .next()
             .expect("a cancelled read must report the cancellation, not end")
             .unwrap_err();
-        let ArrowError::ExternalError(source) = &failure else {
-            panic!("expected an ADBC cancellation: {failure}");
-        };
-        assert_eq!(
-            source
-                .downcast_ref::<adbc_core::error::Error>()
-                .expect("expected an ADBC cancellation")
-                .status,
-            Status::Cancelled,
-            "{source}"
-        );
+        assert_failure(adbc_failure(&failure), Status::Cancelled, &[]);
     }
 }

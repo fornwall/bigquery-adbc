@@ -63,12 +63,6 @@ const READ_ROWS_RESUME_DELAY_BUDGET: Duration = Duration::from_secs(30);
 /// `ReadRows` expiry is an ordinary failed attempt, so a false alarm costs one exact-offset resume.
 const STALL_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Transient failures, including quota/fairness closures and a stream reset at the transport,
-/// permit an exact-offset resume. Cancellation must stop the read.
-fn read_rows_is_resumable(source: &GoogleError) -> bool {
-    google_error_is_transient(source)
-}
-
 /// Request no more streams than the available decode parallelism, capped at 32.
 /// The service may grant fewer depending on table size.
 fn unordered_max_stream_count() -> i32 {
@@ -110,13 +104,12 @@ pub(crate) fn reader(
     destination: TableReference,
     schema: SchemaRef,
 ) -> Result<Opened> {
-    let runtime = runtime.clone();
-    runtime.clone().block_on(open_reader(
+    runtime.block_on(open_reader(
         runtime,
-        clients.clone(),
-        operation.cloned(),
+        clients,
+        operation,
         options,
-        job_reference.clone(),
+        job_reference,
         destination,
         schema,
     ))
@@ -133,11 +126,11 @@ pub(crate) enum Opened {
 }
 
 async fn open_reader(
-    runtime: SharedRuntime,
-    clients: Arc<ClientState>,
-    operation: Option<Operation>,
+    runtime: &SharedRuntime,
+    clients: &Arc<ClientState>,
+    operation: Option<&Operation>,
     options: QueryResultOptions,
-    job_reference: JobReference,
+    job_reference: &JobReference,
     destination: TableReference,
     schema: SchemaRef,
 ) -> Result<Opened> {
@@ -154,12 +147,12 @@ async fn open_reader(
     } else {
         ORDERED_MAX_STREAM_COUNT
     };
-    let read_client = clients.read_client(&runtime, operation.as_ref()).await?;
+    let read_client = clients.read_client(runtime, operation).await?;
     let session = match create_read_session(
         &read_client,
-        &clients,
-        &operation,
-        &job_reference,
+        clients,
+        operation,
+        job_reference,
         &destination,
         max_streams,
     )
@@ -220,9 +213,9 @@ async fn open_reader(
         .with_user_agent(clients.user_agent());
 
     Ok(Opened::Reader(spawn_result_reader(
-        runtime,
+        runtime.clone(),
         schema,
-        operation,
+        operation.cloned(),
         |sink| read_streams(read_rows, streams, session_schema, plan, sink),
     )))
 }
@@ -290,7 +283,7 @@ fn session_refusal(source: &GoogleError) -> Option<SessionRefusal> {
 async fn create_read_session(
     client: &Read,
     clients: &Arc<ClientState>,
-    operation: &Option<Operation>,
+    operation: Option<&Operation>,
     job_reference: &JobReference,
     destination: &TableReference,
     max_streams: i32,
@@ -319,7 +312,7 @@ async fn create_read_session(
         .with_user_agent(clients.user_agent())
         .send();
     let request = tokio::time::timeout(STALL_TIMEOUT, request);
-    let response = gate(operation.as_ref(), request).await?;
+    let response = gate(operation, request).await?;
     match response.unwrap_or_else(|_| Err(stalled())) {
         Ok(session) => Ok(Ok(session)),
         Err(source) => match session_refusal(&source) {
@@ -526,7 +519,9 @@ async fn open_with_resumes(
         },
     };
     loop {
-        if !budget.has_attempt_left() || !read_rows_is_resumable(&failure) {
+        // Quota closures and transport resets are transient too, so they resume at the exact
+        // offset; cancellation is not, and must stop the read.
+        if !budget.has_attempt_left() || !google_error_is_transient(&failure) {
             return Err(read_rows_failure(failure));
         }
         let waited = budget.spend_attempt();
