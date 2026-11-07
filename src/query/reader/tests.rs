@@ -81,7 +81,7 @@ fn a_resident_result_reports_invalid_cells_on_iteration_once() {
 }
 
 #[test]
-fn resident_results_preserve_every_row_despite_stale_total_rows() {
+fn results_either_side_of_the_resident_limit_keep_every_row() {
     let execution = execution_at(
         &crate::runtime::new_runtime().unwrap(),
         crate::test_support::UNREACHABLE_ENDPOINT,
@@ -91,28 +91,21 @@ fn resident_results_preserve_every_row_despite_stale_total_rows() {
             .map(|value| value.to_string())
             .collect::<Vec<_>>();
         let values = values.iter().map(String::as_str).collect::<Vec<_>>();
-        for total_rows in [None, Some(0), Some(1), Some(100)] {
-            let mut complete = integer_result(&values);
-            complete.metadata.total_rows = total_rows;
-            let reader = reader_from_rest_query(&execution, complete, None, None).unwrap();
-            let actual = reader
-                .flat_map(|batch| {
-                    batch
-                        .unwrap()
-                        .column(0)
-                        .as_any()
-                        .downcast_ref::<Int64Array>()
-                        .unwrap()
-                        .values()
-                        .to_vec()
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(
-                actual,
-                (0..row_count).collect::<Vec<i64>>(),
-                "row_count={row_count}, total_rows={total_rows:?}"
-            );
-        }
+        let reader =
+            reader_from_rest_query(&execution, integer_result(&values), None, None).unwrap();
+        let actual = reader
+            .flat_map(|batch| {
+                batch
+                    .unwrap()
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, (0..row_count).collect::<Vec<i64>>(), "{row_count}");
     }
 }
 
@@ -660,7 +653,7 @@ fn a_result_read_over_further_rest_pages_reports_it_once() {
 }
 
 /// A narrow first page cannot predict a later row's width. The entire result must come from
-/// Storage Read, even with a small, missing or stale total, before the first REST row is emitted.
+/// Storage Read before the first REST row is emitted.
 #[test]
 fn a_paginated_result_uses_storage_read_before_emitting_any_rest_rows() {
     use arrow_array::RecordBatch;
@@ -669,96 +662,91 @@ fn a_paginated_result_uses_storage_read_before_emitting_any_rest_rows() {
     use crate::test_support::http::{capture_requests_responding, error_body};
 
     let runtime = crate::runtime::new_runtime().unwrap();
-    for total_rows in [Some("2"), None, Some("1")] {
-        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Utf8, true)]));
-        let wide = "x".repeat(21_000_000);
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(StringArray::from(vec!["first", wide.as_str()]))],
-        )
-        .unwrap();
-        let (read_schema, messages) = ipc_messages(&schema, &[batch]);
-        let storage = StorageMock::start(
-            &runtime,
-            MockPlan {
-                read_schema,
-                read_responses: messages.into_iter().map(|message| (2, message)).collect(),
-                ..MockPlan::default()
-            },
-        );
-        let (endpoint, server) = capture_requests_responding(1, |request| {
-            Some(
-                if request
-                    .path()
-                    .starts_with("/bigquery/v2/projects/project/jobs/job?")
-                {
-                    (
-                        200,
-                        json!({
-                            "jobReference":{"projectId":"project","jobId":"job","location":"US"},
-                            "status":{"state":"DONE"},
-                            "configuration":{"query":{"destinationTable":
-                                {"projectId":"project","datasetId":"_anon","tableId":"results"}}}
-                        }),
-                    )
-                } else {
-                    (
-                        403,
-                        error_body("responseTooLarge", "a later row exceeds the REST limit"),
-                    )
-                },
-            )
-        });
-        let mut config = crate::config::DatabaseConfig {
-            authentication_type: crate::BigQueryAuthenticationType::Anonymous,
-            ..crate::config::DatabaseConfig::default()
-        };
-        config.endpoints.set(
-            ServiceEndpointKind::BigQuery,
-            Some(Arc::from(endpoint.as_str())),
-        );
-        config.endpoints.set(
-            ServiceEndpointKind::Storage,
-            Some(Arc::from(storage.endpoint())),
-        );
-        let execution = ExecutionContext {
-            state: ClientState::new(&config),
-            ..execution_at(&runtime, &endpoint)
-        };
-        let mut body = json!({
-            "jobComplete":true,
-            "jobReference":{"projectId":"project","jobId":"job","location":"US"},
-            "statementType":"SELECT",
-            "schema":{"fields":[{"name":"value","type":"STRING"}]},
-            "rows":[{"f":[{"v":"first"}]}],
-            "pageToken":"wide"
-        });
-        if let Some(total_rows) = total_rows {
-            body["totalRows"] = json!(total_rows);
-        }
-        let complete = completed(&serde_json::to_vec(&body).unwrap(), true);
-        let mut reader = reader_from_rest_query(&execution, complete, None, None).unwrap();
-        let batch = reader.next().unwrap().unwrap();
-        assert_eq!(
-            batch.num_rows(),
-            2,
-            "the first REST row was emitted separately"
-        );
-        let values = batch
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        assert_eq!(values.value(0), "first");
-        assert_eq!(values.value(1), wide);
-        assert!(reader.next().is_none());
-        let requests = server.join().unwrap();
-        assert!(
-            requests[0]
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Utf8, true)]));
+    let wide = "x".repeat(21_000_000);
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(StringArray::from(vec!["first", wide.as_str()]))],
+    )
+    .unwrap();
+    let (read_schema, messages) = ipc_messages(&schema, &[batch]);
+    let storage = StorageMock::start(
+        &runtime,
+        MockPlan {
+            read_schema,
+            read_responses: messages.into_iter().map(|message| (2, message)).collect(),
+            ..MockPlan::default()
+        },
+    );
+    let (endpoint, server) = capture_requests_responding(1, |request| {
+        Some(
+            if request
                 .path()
                 .starts_with("/bigquery/v2/projects/project/jobs/job?")
-        );
-    }
+            {
+                (
+                    200,
+                    json!({
+                        "jobReference":{"projectId":"project","jobId":"job","location":"US"},
+                        "status":{"state":"DONE"},
+                        "configuration":{"query":{"destinationTable":
+                            {"projectId":"project","datasetId":"_anon","tableId":"results"}}}
+                    }),
+                )
+            } else {
+                (
+                    403,
+                    error_body("responseTooLarge", "a later row exceeds the REST limit"),
+                )
+            },
+        )
+    });
+    let mut config = crate::config::DatabaseConfig {
+        authentication_type: crate::BigQueryAuthenticationType::Anonymous,
+        ..crate::config::DatabaseConfig::default()
+    };
+    config.endpoints.set(
+        ServiceEndpointKind::BigQuery,
+        Some(Arc::from(endpoint.as_str())),
+    );
+    config.endpoints.set(
+        ServiceEndpointKind::Storage,
+        Some(Arc::from(storage.endpoint())),
+    );
+    let execution = ExecutionContext {
+        state: ClientState::new(&config),
+        ..execution_at(&runtime, &endpoint)
+    };
+    let body = json!({
+        "jobComplete":true,
+        "jobReference":{"projectId":"project","jobId":"job","location":"US"},
+        "statementType":"SELECT",
+        "schema":{"fields":[{"name":"value","type":"STRING"}]},
+        "rows":[{"f":[{"v":"first"}]}],
+        "pageToken":"wide"
+    });
+    let complete = completed(&serde_json::to_vec(&body).unwrap(), true);
+    let mut reader = reader_from_rest_query(&execution, complete, None, None).unwrap();
+    let batch = reader.next().unwrap().unwrap();
+    assert_eq!(
+        batch.num_rows(),
+        2,
+        "the first REST row was emitted separately"
+    );
+    let values = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(values.value(0), "first");
+    assert_eq!(values.value(1), wide);
+    assert!(reader.next().is_none());
+    let requests = server.join().unwrap();
+    assert!(
+        requests[0]
+            .path()
+            .starts_with("/bigquery/v2/projects/project/jobs/job?")
+    );
 }
 
 #[test]

@@ -54,7 +54,7 @@ fn delivers_resident_rows_while_the_next_page_is_waiting() {
             options
                 .set_prefetch_concurrency("prefetch", concurrency)
                 .unwrap();
-            let producer = runtime.spawn(buffer_rest_query_results(pager, sink, options, None));
+            let producer = runtime.spawn(buffer_rest_query_results(pager, sink, options));
             runtime.block_on(async {
                 tokio::time::timeout(Duration::from_secs(5), request_received)
                     .await
@@ -93,61 +93,6 @@ fn delivers_resident_rows_while_the_next_page_is_waiting() {
             assert_eq!(captured.join().unwrap().len(), 1);
         }
     }
-}
-
-/// `totalRows` only sizes the first batch; a short or stale count must not end the result early.
-#[test]
-fn a_short_total_row_count_does_not_truncate_the_result() {
-    use std::sync::Arc;
-
-    use arrow_array::Int64Array;
-    use arrow_schema::{DataType, Field, Schema};
-
-    use super::{QueryPager, QueryResultOptions, buffer_rest_query_results};
-    use crate::pipeline::ResultSink;
-    use crate::query::response::QueryPage;
-    use crate::rest::jobs::JobClient;
-    use crate::rows::{RestRow, RestValue};
-    use crate::runtime::new_runtime;
-
-    let runtime = new_runtime().unwrap();
-    // The single resident page carries no token, so no request is ever sent here.
-    let client = JobClient::for_test(crate::test_support::UNREACHABLE_ENDPOINT);
-    let pager = QueryPager::new(
-        client,
-        None,
-        None,
-        QueryPage {
-            rows: (0..3)
-                .map(|index| RestRow::new(vec![RestValue::String(index.to_string())]))
-                .collect(),
-            page_token: None,
-            encoded_len: 0,
-        },
-    );
-    let schema = Arc::new(Schema::new(vec![Field::new("n", DataType::Int64, true)]));
-    let (sink, mut batches) = ResultSink::for_test_reading(schema);
-    let producer = runtime.spawn(buffer_rest_query_results(
-        pager,
-        sink,
-        QueryResultOptions::default(),
-        Some(1),
-    ));
-    runtime.block_on(async {
-        let mut values: Vec<i64> = Vec::new();
-        while let Some(batch) = batches.next().await {
-            values.extend(
-                batch
-                    .column(0)
-                    .as_any()
-                    .downcast_ref::<Int64Array>()
-                    .unwrap()
-                    .values(),
-            );
-        }
-        producer.await.unwrap().unwrap();
-        assert_eq!(values, [0_i64, 1, 2]);
-    });
 }
 
 #[test]
@@ -294,11 +239,11 @@ fn a_skewed_page_charges_the_wide_batch_its_retained_allocation() {
         None,
         page,
     );
-    let (batch, exhausted) = runtime
-        .block_on(pager.next_batch(&ResultSink::for_test(), BATCH_SIZE))
+    let batch = runtime
+        .block_on(pager.next_batch(&ResultSink::for_test()))
         .unwrap()
         .unwrap();
-    assert!(!exhausted);
+    assert_eq!(batch.len(), BATCH_SIZE);
     // The first row's initially unsized cell vector has capacity four; every later row learns
     // its single-cell width. Inline nulls allocate nothing outside those vectors.
     let expected = PAYLOAD_BYTES
@@ -436,7 +381,6 @@ fn a_reader_pausing_past_the_request_timeout_does_not_repeat_a_page_request() {
             pager,
             sink,
             QueryResultOptions::default(),
-            None,
         ));
         tokio::task::spawn_blocking(move || received.recv_timeout(EVENT_TIMEOUT))
             .await

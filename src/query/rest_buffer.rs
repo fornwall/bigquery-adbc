@@ -7,9 +7,7 @@ use arrow_schema::{ArrowError, SchemaRef};
 use tokio::task::JoinHandle;
 
 use crate::cancellation::Operation;
-use crate::pipeline::{
-    BATCH_SIZE, QueryResultOptions, ResultPipelineCancellation, ResultSink, task_failure,
-};
+use crate::pipeline::{QueryResultOptions, ResultPipelineCancellation, ResultSink, task_failure};
 use crate::rows::{RestRow, rest_rows_to_record_batch};
 use crate::runtime::SharedRuntime;
 
@@ -88,7 +86,6 @@ pub(super) async fn buffer_rest_query_results(
     mut pager: QueryPager,
     sink: ResultSink,
     options: QueryResultOptions,
-    mut remaining_rows: Option<usize>,
 ) -> Result<(), ArrowError> {
     let mut conversions = ConversionTasks::new(sink.cancellation.clone());
     let mut exhausted = false;
@@ -97,13 +94,8 @@ pub(super) async fn buffer_rest_query_results(
 
     loop {
         while !exhausted && conversions.may_start(options.prefetch_concurrency()) {
-            // `totalRows` only sizes the batch vector. An exhausted count falls back to the full
-            // batch size, because asking for zero rows would drop rows a stale count missed.
-            let capacity = remaining_rows
-                .filter(|rows| *rows > 0)
-                .map_or(BATCH_SIZE, |rows| rows.min(BATCH_SIZE));
             let next = {
-                let next_batch = pager.next_batch(&sink, capacity);
+                let next_batch = pager.next_batch(&sink);
                 tokio::pin!(next_batch);
                 loop {
                     tokio::select! {
@@ -138,15 +130,12 @@ pub(super) async fn buffer_rest_query_results(
             // The same page future stays alive while completed conversions are delivered:
             // dropping and restarting it would lose a token already taken by the pager, or repeat
             // a GET.
-            let Some((batch_rows, input_exhausted)) = next else {
+            let Some(batch_rows) = next else {
                 return Ok(());
             };
-            exhausted = input_exhausted;
             if batch_rows.is_empty() {
+                exhausted = true;
                 break;
-            }
-            if let Some(remaining_rows) = &mut remaining_rows {
-                *remaining_rows = remaining_rows.saturating_sub(batch_rows.len());
             }
             let batch_first_row = first_row;
             first_row += batch_rows.len();

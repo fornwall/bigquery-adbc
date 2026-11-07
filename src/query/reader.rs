@@ -29,9 +29,6 @@ pub(super) fn reader_from_rest_query(
         returns_rows,
     } = complete;
     let result_options = execution.result_options;
-    let total_rows = metadata
-        .total_rows
-        .and_then(|total_rows| usize::try_from(total_rows).ok());
     let rest_reference = metadata.job_reference.clone();
     let link = |failure| with_job_link(failure, rest_reference.as_ref());
     let preliminary_schema = result_schema(
@@ -175,7 +172,7 @@ pub(super) fn reader_from_rest_query(
         execution.runtime.clone(),
         schema,
         operation,
-        |sink| buffer_rest_query_results(pager, sink, result_options, total_rows),
+        |sink| buffer_rest_query_results(pager, sink, result_options),
     ))
 }
 

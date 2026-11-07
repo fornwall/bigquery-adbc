@@ -8,7 +8,7 @@ use arrow_schema::ArrowError;
 use crate::cancellation::Operation;
 use crate::diag::diag;
 use crate::error::{error, job_name, with_job_link};
-use crate::pipeline::ResultSink;
+use crate::pipeline::{BATCH_SIZE, ResultSink};
 use crate::rest::jobs::{JobClient, JobReference, QueryResultsRead};
 use crate::rows::RestRow;
 
@@ -48,31 +48,29 @@ impl QueryPager {
         }
     }
 
-    /// Takes at most `capacity` rows from the current page, fetching only when it is empty.
-    /// Short pages must be delivered before waiting for another network response.
+    /// Takes at most [`BATCH_SIZE`] rows from the current page, fetching only when it is empty.
+    /// Short pages must be delivered before waiting for another network response. An empty batch
+    /// ends the result, and `None` means cancellation.
     ///
     /// `sink` supplies the cancellation and the driver-wide conversion permit for page decoding;
     /// the pager delivers nothing itself.
     pub(super) async fn next_batch(
         &mut self,
         sink: &ResultSink,
-        capacity: usize,
-    ) -> Result<Option<(Vec<RestRow>, bool)>, ArrowError> {
+    ) -> Result<Option<Vec<RestRow>>, ArrowError> {
         loop {
-            if self.rows.len() != 0 || capacity == 0 {
-                let batch = if self.rows.len() <= capacity {
+            if self.rows.len() != 0 {
+                return Ok(Some(if self.rows.len() <= BATCH_SIZE {
                     // An intact short page reuses its allocation, avoiding a second row vector
                     // and space for a full-sized batch.
                     std::mem::take(&mut self.rows).collect()
                 } else {
-                    self.rows.by_ref().take(capacity).collect()
-                };
-                let exhausted = self.rows.len() == 0 && self.page_token.is_none();
-                return Ok(Some((batch, exhausted)));
+                    self.rows.by_ref().take(BATCH_SIZE).collect()
+                }));
             }
 
             let Some(page_token) = self.page_token.take() else {
-                return Ok(Some((Vec::new(), true)));
+                return Ok(Some(Vec::new()));
             };
             let Some(reference) = self.reference.as_ref() else {
                 return Err(external(error(

@@ -45,25 +45,28 @@ fn a_short_page_reuses_its_row_allocation() {
         },
     );
     let sink = ResultSink::for_test();
-    let (batch, exhausted) = runtime
-        .block_on(pager.next_batch(&sink, crate::pipeline::BATCH_SIZE))
-        .unwrap()
-        .unwrap();
+    let batch = runtime.block_on(pager.next_batch(&sink)).unwrap().unwrap();
     assert_eq!(batch.as_ptr(), allocation);
     assert_eq!(values(batch), ["first", "second"]);
-    assert!(exhausted);
 }
 
 #[test]
 fn splits_resident_pages_without_skipping_or_repeating_rows() {
-    for capacity in [1, 2, 3, 5, 8] {
+    for row_count in [
+        BATCH_SIZE - 1,
+        BATCH_SIZE,
+        BATCH_SIZE + 1,
+        2 * BATCH_SIZE + 1,
+    ] {
         let (runtime, client) = client(crate::test_support::UNREACHABLE_ENDPOINT);
         let mut pager = QueryPager::new(
             client,
             None,
             None,
             QueryPage {
-                rows: (0..5).map(|index| row(&index.to_string())).collect(),
+                rows: (0..row_count)
+                    .map(|index| row(&index.to_string()))
+                    .collect(),
                 page_token: None,
                 encoded_len: 100,
             },
@@ -71,26 +74,16 @@ fn splits_resident_pages_without_skipping_or_repeating_rows() {
         let sink = ResultSink::for_test();
         let mut actual = Vec::new();
         loop {
-            let (batch, exhausted) = runtime
-                .block_on(pager.next_batch(&sink, capacity))
-                .unwrap()
-                .unwrap();
-            assert!(!batch.is_empty());
-            assert!(batch.len() <= capacity);
-            actual.extend(values(batch));
-            assert_eq!(exhausted, actual.len() == 5);
-            if exhausted {
+            let batch = runtime.block_on(pager.next_batch(&sink)).unwrap().unwrap();
+            if batch.is_empty() {
+                assert_eq!(batch.capacity(), 0);
                 break;
             }
+            assert!(batch.len() <= BATCH_SIZE);
+            actual.extend(values(batch));
         }
-        assert_eq!(actual, ["0", "1", "2", "3", "4"]);
-        let (batch, exhausted) = runtime
-            .block_on(pager.next_batch(&sink, capacity))
-            .unwrap()
-            .unwrap();
-        assert!(batch.is_empty());
-        assert_eq!(batch.capacity(), 0);
-        assert!(exhausted);
+        let expected = (0..row_count).map(|index| index.to_string());
+        assert_eq!(actual, expected.collect::<Vec<_>>());
     }
 }
 
@@ -137,14 +130,12 @@ fn consumes_initial_rows_and_opaque_pages_once_in_order() {
         },
     );
     let sink = ResultSink::for_test();
-    for (expected, is_last) in [("first", false), ("second", false), ("third", true)] {
-        let (rows, exhausted) = runtime
-            .block_on(pager.next_batch(&sink, 10))
-            .unwrap()
-            .unwrap();
-        assert_eq!(exhausted, is_last);
+    for expected in ["first", "second", "third"] {
+        let rows = runtime.block_on(pager.next_batch(&sink)).unwrap().unwrap();
         assert_eq!(values(rows), [expected]);
     }
+    let rows = runtime.block_on(pager.next_batch(&sink)).unwrap().unwrap();
+    assert!(rows.is_empty(), "the last page has no token to follow");
 
     let captured = captured.join().unwrap();
     assert_eq!(captured.len(), 3);
@@ -182,13 +173,9 @@ fn repeated_token_is_rejected_even_when_the_page_has_rows() {
         },
     );
     let sink = ResultSink::for_test();
-    let (rows, exhausted) = runtime
-        .block_on(pager.next_batch(&sink, 10))
-        .unwrap()
-        .unwrap();
+    let rows = runtime.block_on(pager.next_batch(&sink)).unwrap().unwrap();
     assert_eq!(values(rows), ["first"]);
-    assert!(!exhausted);
-    let failure = runtime.block_on(pager.next_batch(&sink, 10)).unwrap_err();
+    let failure = runtime.block_on(pager.next_batch(&sink)).unwrap_err();
     assert!(
         failure
             .to_string()
@@ -225,7 +212,7 @@ fn page_identity_mismatch_is_rejected_before_rows_are_delivered() {
         },
     );
     let sink = ResultSink::for_test();
-    let failure = runtime.block_on(pager.next_batch(&sink, 10)).unwrap_err();
+    let failure = runtime.block_on(pager.next_batch(&sink)).unwrap_err();
     assert!(
         failure
             .to_string()
@@ -240,11 +227,7 @@ fn page_identity_mismatch_is_rejected_before_rows_are_delivered() {
 
     // The refusal comes before the page is handed on: the rejected page's rows are dropped
     // rather than buffered, so the pager has nothing left to deliver and no token to follow.
-    let (rows, exhausted) = runtime
-        .block_on(pager.next_batch(&sink, 10))
-        .unwrap()
-        .unwrap();
+    let rows = runtime.block_on(pager.next_batch(&sink)).unwrap().unwrap();
     assert!(rows.is_empty(), "a rejected page delivered its rows");
-    assert!(exhausted);
     assert_eq!(captured.join().unwrap().len(), 1);
 }
