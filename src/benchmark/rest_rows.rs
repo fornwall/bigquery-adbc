@@ -139,18 +139,25 @@ fn render_page(row: &[Cell], row_count: usize) -> Vec<u8> {
     page.into_bytes()
 }
 
+fn required(name: &str, kind: &str) -> TableFieldSchema {
+    TableFieldSchema {
+        name: name.to_owned(),
+        r#type: kind.to_owned(),
+        mode: "REQUIRED".to_owned(),
+        ..Default::default()
+    }
+}
+
 /// Alternating INTEGER and STRING columns, and the one row template that fills them.
 fn integer_and_string_columns(column_count: usize) -> (Vec<TableFieldSchema>, Vec<Cell>) {
     let fields = (0..column_count)
-        .map(|index| TableFieldSchema {
-            name: format!("column_{index}"),
-            r#type: if index.is_multiple_of(2) {
-                "INTEGER".to_owned()
+        .map(|index| {
+            let kind = if index.is_multiple_of(2) {
+                "INTEGER"
             } else {
-                "STRING".to_owned()
-            },
-            mode: "REQUIRED".to_owned(),
-            ..Default::default()
+                "STRING"
+            };
+            required(&format!("column_{index}"), kind)
         })
         .collect();
     let row = (0..column_count)
@@ -173,37 +180,26 @@ fn integer_and_string_columns(column_count: usize) -> (Vec<TableFieldSchema>, Ve
 /// strings, a REPEATED field is an array of `v`-wrapped elements, and a RECORD repeats the row's
 /// positional `f` envelope.
 fn typed_columns() -> (Vec<TableFieldSchema>, Vec<Cell>) {
-    let scalar = |name: &str, kind: &str| TableFieldSchema {
-        name: name.to_owned(),
-        r#type: kind.to_owned(),
-        mode: "REQUIRED".to_owned(),
-        ..Default::default()
-    };
     let fields = vec![
-        scalar("timestamp_value", "TIMESTAMP"),
-        scalar("date_value", "DATE"),
-        scalar("time_value", "TIME"),
-        scalar("datetime_value", "DATETIME"),
-        scalar("numeric_value", "NUMERIC"),
-        scalar("bignumeric_value", "BIGNUMERIC"),
-        scalar("bytes_value", "BYTES"),
-        scalar("interval_value", "INTERVAL"),
+        required("timestamp_value", "TIMESTAMP"),
+        required("date_value", "DATE"),
+        required("time_value", "TIME"),
+        required("datetime_value", "DATETIME"),
+        required("numeric_value", "NUMERIC"),
+        required("bignumeric_value", "BIGNUMERIC"),
+        required("bytes_value", "BYTES"),
+        required("interval_value", "INTERVAL"),
         TableFieldSchema {
-            name: "struct_value".to_owned(),
-            r#type: "RECORD".to_owned(),
-            mode: "REQUIRED".to_owned(),
             fields: vec![
-                scalar("id", "INTEGER"),
-                scalar("label", "STRING"),
-                scalar("weight", "NUMERIC"),
+                required("id", "INTEGER"),
+                required("label", "STRING"),
+                required("weight", "NUMERIC"),
             ],
-            ..Default::default()
+            ..required("struct_value", "RECORD")
         },
         TableFieldSchema {
-            name: "array_value".to_owned(),
-            r#type: "INTEGER".to_owned(),
             mode: "REPEATED".to_owned(),
-            ..Default::default()
+            ..required("array_value", "INTEGER")
         },
     ];
     let row = vec![

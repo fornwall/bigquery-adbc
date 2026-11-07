@@ -87,14 +87,7 @@ impl IpcFixture {
 
     /// Selects a row window, retaining its nonzero offsets as ingest chunking does.
     pub fn sliced(&self, offset: usize, length: usize) -> Self {
-        let batch = self.batch.slice(offset, length);
-        let encoded = Writer::new()
-            .plan_batch(&batch)
-            .expect("the benchmark batch is canonical")
-            .write()
-            .expect("the benchmark batch fits in memory")
-            .into();
-        Self { batch, encoded }
+        Self::from_batch(self.batch.slice(offset, length))
     }
 
     /// The uncompressed record-batch message the writer produced for this fixture's batch.
