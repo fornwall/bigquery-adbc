@@ -350,14 +350,12 @@ fn a_table_that_vanishes_mid_fan_out_leaves_the_rest_of_the_dataset_listed() {
 /// listing has arrived, which a sequential walk never reaches.
 #[test]
 fn datasets_are_listed_concurrently() {
-    use std::net::TcpListener;
-
-    use crate::test_support::http::{accept, read_captured_request, retire, write_response};
+    use crate::test_support::http::{
+        accept, mock_listener, read_captured_request, retire, write_response,
+    };
 
     const DATASETS: usize = 4;
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let (listener, endpoint) = mock_listener();
     let server = thread::spawn(move || {
         let mut held = Vec::new();
         while held.len() < DATASETS {
