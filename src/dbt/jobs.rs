@@ -176,7 +176,7 @@ pub(super) async fn wait_for_submitted(
         Ok(resolved) => resolved,
         Err(failure) => {
             let recovered = client
-                .reconcile_submission(Some(operation), requested, what, failure)
+                .reconcile_submission(Some(operation), requested, what, Some(failure))
                 .await?;
             decode_resolved_job(&recovered, requested, what)?
         }

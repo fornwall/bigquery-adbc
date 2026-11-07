@@ -2123,7 +2123,8 @@ fn request_construction_requires_the_callers_job_identity() {
             },
             "the test job",
         )
-        .unwrap_err();
+        .err()
+        .unwrap();
         assert_eq!(failure.status, Status::InvalidArguments);
     }
 }

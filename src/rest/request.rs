@@ -38,11 +38,9 @@ pub(crate) struct RequestBody {
 impl<T: Into<bytes::Bytes>> From<T> for RequestBody {
     fn from(body: T) -> Self {
         let body = body.into();
-        let content_length = u64::try_from(body.len())
-            .expect("a byte buffer's usize length fits in u64 on every supported target");
         Self {
+            content_length: body.len() as u64,
             body: body.into(),
-            content_length,
         }
     }
 }
@@ -66,9 +64,7 @@ impl MultipartRelatedFileBody {
     fn frame(&mut self, bytes: bytes::Bytes) -> http_body::Frame<bytes::Bytes> {
         self.remaining = self
             .remaining
-            .checked_sub(u64::try_from(bytes.len()).expect(
-                "a streamed multipart chunk's usize length fits in u64 on every supported target",
-            ))
+            .checked_sub(bytes.len() as u64)
             .expect("a streamed multipart chunk cannot exceed the body's declared remaining size");
         http_body::Frame::data(bytes)
     }
@@ -203,8 +199,7 @@ impl http_body::Body for WatchedUpload {
 
     fn size_hint(&self) -> http_body::SizeHint {
         let inner = self.body.size_hint();
-        let pending = u64::try_from(self.pending.len())
-            .expect("a byte buffer's usize length fits in u64 on every supported target");
+        let pending = self.pending.len() as u64;
         let mut hint = http_body::SizeHint::new();
         if let Some(upper) = inner.upper() {
             hint.set_upper(upper.saturating_add(pending));
@@ -221,7 +216,7 @@ impl http_body::Body for WatchedUpload {
 /// body.
 pub(crate) struct Request<'a> {
     method: reqwest::Method,
-    url: &'a str,
+    pub(crate) url: &'a str,
     /// The `Content-Type` and body, or `None` to send neither.
     body: Option<(&'a str, RequestBody)>,
     /// An `If-Match` precondition, or the empty string to send none.
@@ -553,8 +548,7 @@ pub(crate) fn multipart_related_file(
     media_content_type: &str,
 ) -> Result<RequestBody> {
     let (prefix, closing) = multipart_framing(boundary, metadata, media_content_type);
-    let framing_length = u64::try_from(prefix.len() + closing.len())
-        .expect("multipart framing's usize length fits in u64 on every supported target");
+    let framing_length = (prefix.len() + closing.len()) as u64;
     let content_length = framing_length.checked_add(media_length).ok_or_else(|| {
         invalid_argument("BigQuery CSV seed multipart body exceeds the HTTP content-length limit")
     })?;

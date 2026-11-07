@@ -117,7 +117,7 @@ async fn submit_csv_load(
         return Err(failure);
     }
     let recovered = jobs
-        .reconcile_submission(Some(operation), requested, WHAT, failure)
+        .reconcile_submission(Some(operation), requested, WHAT, Some(failure))
         .await?;
     wait_for_submitted(jobs, operation, requested, &recovered, WHAT).await
 }
