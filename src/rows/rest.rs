@@ -415,8 +415,8 @@ impl<'de> Visitor<'de> for ValueVisitor {
 
 /// Extracts the positional `f` array shared by a top-level row and a nested record.
 ///
-/// [`CellVisitor`] keeps its own copy of this loop: one generic loop serving both measured about
-/// 15% slower in the `rest_rows` decode benchmark.
+/// [`CellVisitor`] keeps its own copy of this loop: one generic loop serving both costs 2-3% more
+/// instructions in the `rest_rows` decode cases.
 fn decode_cells<'de, A>(
     mut map: A,
     context: &'static str,
