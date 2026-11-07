@@ -62,9 +62,6 @@ changes.
 - A bulk ingest no longer hangs on a connection that dies silently: an append unanswered for five
   minutes is replayed on a new connection, and a stream call unanswered for a minute fails with
   `TIMEOUT`.
-- A token service that accepts a connection and never answers fails the request with `IO` after
-  about two minutes instead of hanging it. Retries and later requests then fail within seconds until
-  a token arrives. This covers the OAuth, STS and metadata-server exchanges.
 - A token service that accepts a connection and never answers fails a request with `IO` after about
   two minutes instead of hanging it. Retries and later requests then fail within seconds until a
   token arrives, and a wait for a running job outlasts it like any other outage. This covers the
