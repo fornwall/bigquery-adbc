@@ -965,7 +965,7 @@ fn parameter_schema_cache_tracks_the_session_and_rejects_a_released_connection()
     else {
         panic!("expected an active transaction")
     };
-    finish.succeeded().unwrap();
+    finish.autocommit().unwrap();
     assert_eq!(statement.get_parameter_schema().unwrap(), outside);
 
     statement.transaction.disable_autocommit().unwrap();

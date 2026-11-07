@@ -3,11 +3,11 @@ use std::sync::Arc;
 use adbc_core::error::Status;
 
 use super::{
-    EnableAutocommit, FinishTransaction, QueryStart, QueryTransaction, State, TransactionState,
-    googlesql_string_literal, outcome_unknown, unexpected_transition,
+    EnableAutocommit, FinishTransaction, QueryStart, QueryTransaction, TransactionState,
+    googlesql_string_literal, outcome_unknown,
 };
 use crate::error::error;
-use crate::test_support::errors::{assert_message, assert_message_omits};
+use crate::test_support::errors::assert_message;
 
 /// GoogleSQL escapes with backslashes: a doubled quote lexes as two adjacent literals, and an
 /// unescaped trailing backslash would escape the closing quote.
@@ -160,7 +160,7 @@ fn enabling_autocommit_distinguishes_idle_and_active_transactions() {
     let EnableAutocommit::Active(_, finish) = active.begin_enable_autocommit().unwrap() else {
         panic!("active transaction was not returned")
     };
-    finish.succeeded().unwrap();
+    finish.autocommit().unwrap();
     assert!(active.is_autocommit().unwrap());
 
     let active = active_state();
@@ -225,41 +225,6 @@ fn dropped_transitions_restore_a_settled_state() {
         state.begin_query().unwrap(),
         QueryTransaction::Active(session_id) if session_id.as_ref() == "shared-session"
     ));
-}
-
-/// The message names the state in words, never as `Debug` of the private enum, which would
-/// expose the BigQuery session ID.
-#[test]
-fn transaction_state_errors_name_the_state_without_the_session_id() {
-    let session_id = || Arc::from("secret-session-id");
-    for (state, label) in [
-        (State::Autocommit, "autocommit"),
-        (
-            State::ManualIdle {
-                session_id: Some(session_id()),
-            },
-            "an idle transaction",
-        ),
-        (State::ManualStarting, "a transaction being started"),
-        (
-            State::ManualActive {
-                session_id: session_id(),
-                joined: false,
-            },
-            "an active transaction",
-        ),
-        (State::ManualFinishing, "a transaction being finished"),
-    ] {
-        let error = unexpected_transition("commit", &state);
-        assert_eq!(
-            error.message,
-            format!(
-                "cannot commit: the BigQuery connection is in {label}; this is a driver defect, \
-                 report it at https://github.com/fornwall/bigquery-adbc/issues"
-            )
-        );
-        assert_message_omits(&error, &["secret-session-id", "session_id"]);
-    }
 }
 
 /// Releasing a connection hands back the session to end and leaves nothing behind that a

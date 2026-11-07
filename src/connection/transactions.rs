@@ -31,7 +31,7 @@ impl BigQueryConnection {
                         Err(source)
                     }
                     outcome => {
-                        finish.succeeded()?;
+                        finish.autocommit()?;
                         let ended = context.abort(&session_id);
                         outcome.map_err(|source| {
                             ended_session_error(source, true, ended, "autocommit is now enabled")

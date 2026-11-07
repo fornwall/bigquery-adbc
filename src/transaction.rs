@@ -51,21 +51,6 @@ impl State {
             joined: true,
         }
     }
-
-    /// The user-facing name of this state.
-    ///
-    /// `Debug` must never reach a message: it would expose the private variant and the BigQuery
-    /// session ID, which names a live server-side resource.
-    fn label(&self) -> &'static str {
-        match self {
-            Self::Autocommit => "autocommit",
-            Self::ManualIdle { .. } => "an idle transaction",
-            Self::ManualStarting => "a transaction being started",
-            Self::ManualActive { .. } => "an active transaction",
-            Self::ManualFinishing => "a transaction being finished",
-            Self::Released => "a released transaction",
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -78,14 +63,14 @@ pub(crate) enum QueryTransaction<'a> {
 #[derive(Debug)]
 pub(crate) enum FinishTransaction<'a> {
     Idle,
-    Active(Arc<str>, TransactionFinish<'a>),
+    Active(Arc<str>, Finish<'a>),
 }
 
 #[derive(Debug)]
 pub(crate) enum EnableAutocommit<'a> {
     AlreadyEnabled,
     Idle(Option<Arc<str>>),
-    Active(Arc<str>, AutocommitFinish<'a>),
+    Active(Arc<str>, Finish<'a>),
 }
 
 /// An in-progress two-phase transition.
@@ -108,16 +93,13 @@ impl<'a> Transition<'a> {
         }
     }
 
-    /// Completes the transition: the state must still be an in-progress marker, which is
-    /// replaced by `next`, unless the connection was released meanwhile.
-    fn complete(mut self, operation: &str, next: State) -> Result<()> {
+    /// Replaces the in-progress marker with `next`, unless the connection was released meanwhile,
+    /// the only change a marker allows.
+    fn complete(mut self, next: State) -> Result<()> {
         self.on_drop = None;
         let mut state = self.owner.state();
         if matches!(*state, State::Released) {
             return Err(connection_released());
-        }
-        if !matches!(*state, State::ManualStarting | State::ManualFinishing) {
-            return Err(unexpected_transition(operation, &state));
         }
         *state = next;
         Ok(())
@@ -142,64 +124,44 @@ pub(crate) struct QueryStart<'a>(Transition<'a>);
 
 impl QueryStart<'_> {
     pub(crate) fn started(self, session_id: Arc<str>) -> Result<()> {
-        self.0.complete(
-            "finish starting a transaction",
-            State::ManualActive {
-                session_id,
-                joined: false,
-            },
-        )
+        self.0.complete(State::ManualActive {
+            session_id,
+            joined: false,
+        })
     }
 
     /// Stays in manual mode with no transaction, keeping `session_id` for the next statement.
     pub(crate) fn failed(self, session_id: Option<Arc<str>>) -> Result<()> {
-        self.0.complete(
-            "fail starting a transaction",
-            State::ManualIdle { session_id },
-        )
+        self.0.complete(State::ManualIdle { session_id })
     }
 }
 
-/// The commit/rollback half of [`TransactionState::begin_finish`].
+/// The ending half of [`TransactionState::begin_finish`] and
+/// [`TransactionState::begin_enable_autocommit`].
 #[derive(Debug)]
-pub(crate) struct TransactionFinish<'a>(Transition<'a>);
+pub(crate) struct Finish<'a>(Transition<'a>);
 
-impl TransactionFinish<'_> {
+impl Finish<'_> {
+    /// Stays in manual mode, keeping `session_id` for the next transaction.
     pub(crate) fn succeeded(self, session_id: Arc<str>) -> Result<()> {
-        self.0.complete(
-            "finish a transaction",
-            State::ManualIdle {
-                session_id: Some(session_id),
-            },
-        )
+        self.0.complete(State::ManualIdle {
+            session_id: Some(session_id),
+        })
     }
 
+    /// Restores the transaction active in `session_id`, which BigQuery refused to commit.
     pub(crate) fn failed(self, session_id: Arc<str>) -> Result<()> {
-        self.0
-            .complete("restore a failed transaction", State::joined(session_id))
+        self.0.complete(State::joined(session_id))
     }
 
     /// Stays in manual mode without a session, for a caller that ends the session itself.
     pub(crate) fn abandoned(self) -> Result<()> {
-        self.0.complete(
-            "abandon a transaction",
-            State::ManualIdle { session_id: None },
-        )
-    }
-}
-
-/// The committing half of [`TransactionState::begin_enable_autocommit`].
-#[derive(Debug)]
-pub(crate) struct AutocommitFinish<'a>(Transition<'a>);
-
-impl AutocommitFinish<'_> {
-    pub(crate) fn succeeded(self) -> Result<()> {
-        self.0.complete("enable autocommit", State::Autocommit)
+        self.0.complete(State::ManualIdle { session_id: None })
     }
 
-    pub(crate) fn failed(self, session_id: Arc<str>) -> Result<()> {
-        self.0
-            .complete("restore autocommit state", State::joined(session_id))
+    /// Enters autocommit, for a caller that ends the session itself.
+    pub(crate) fn autocommit(self) -> Result<()> {
+        self.0.complete(State::Autocommit)
     }
 }
 
@@ -350,11 +312,8 @@ impl TransactionState {
                 let session_id = session_id.clone();
                 *state = State::ManualFinishing;
                 drop(state);
-                let transition = Transition::new(self, State::joined(session_id.clone()));
-                Ok(FinishTransaction::Active(
-                    session_id,
-                    TransactionFinish(transition),
-                ))
+                let finish = Finish(Transition::new(self, State::joined(session_id.clone())));
+                Ok(FinishTransaction::Active(session_id, finish))
             }
             State::ManualStarting | State::ManualFinishing => Err(transition_in_progress()),
             State::Released => Err(connection_released()),
@@ -405,11 +364,8 @@ impl TransactionState {
                 let session_id = session_id.clone();
                 *state = State::ManualFinishing;
                 drop(state);
-                let transition = Transition::new(self, State::joined(session_id.clone()));
-                Ok(EnableAutocommit::Active(
-                    session_id,
-                    AutocommitFinish(transition),
-                ))
+                let finish = Finish(Transition::new(self, State::joined(session_id.clone())));
+                Ok(EnableAutocommit::Active(session_id, finish))
             }
             State::ManualStarting | State::ManualFinishing => Err(transition_in_progress()),
             State::Released => Err(connection_released()),
@@ -519,13 +475,6 @@ fn transition_in_progress() -> adbc_core::error::Error {
         "the BigQuery transaction state is being changed by another operation on this connection; \
          retry once it has finished",
     )
-}
-
-fn unexpected_transition(operation: &str, state: &State) -> adbc_core::error::Error {
-    driver_defect(format_args!(
-        "cannot {operation}: the BigQuery connection is in {}",
-        state.label()
-    ))
 }
 
 pub(crate) struct TransactionContext<'a> {
