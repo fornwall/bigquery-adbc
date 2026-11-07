@@ -2,6 +2,7 @@
 //! and what it must not issue.
 
 use super::*;
+use crate::test_support::errors::assert_message_omits;
 use crate::test_support::http::capture_statements;
 use crate::test_support::options::{option_string, set_option, set_option_error};
 
@@ -963,6 +964,42 @@ fn a_control_statement_whose_answer_is_lost_reports_what_it_did() {
         assert_eq!(replays[0], replays[1], "{lost}");
         assert!(replays[0].is_string(), "{lost}");
     }
+}
+
+/// `CALL BQ.ABORT_SESSION` queues behind whatever its session is running, and no one can cancel
+/// it, so the caller stops waiting for it, and does not claim the session ended.
+#[test]
+fn a_session_end_that_gets_no_answer_does_not_hold_the_caller_or_read_as_done() {
+    let (release, released) = std::sync::mpsc::channel();
+    let mut served = 0;
+    let (endpoint, requests) =
+        crate::test_support::http::capture_statements_responding(5, move |request| {
+            served += 1;
+            if served == 1 {
+                return Some((200, session_created("mock-session")));
+            }
+            if request.sql() == "COMMIT TRANSACTION" {
+                return Some((400, transaction_lost()));
+            }
+            if request.sql().starts_with("CALL") {
+                released.recv().unwrap();
+            }
+            Some((200, complete()))
+        });
+    let mut connection = test_connection_at(&endpoint);
+    set_option(&mut connection, OptionConnection::AutoCommit, false);
+    let mut statement = connection.new_statement().unwrap();
+    statement
+        .set_sql_query("INSERT dataset.table VALUES (42)")
+        .unwrap();
+    statement.execute_update().unwrap();
+    drop(statement);
+
+    let failure = connection.commit().unwrap_err();
+    release.send(()).unwrap();
+    assert_message(&failure, &["could not end the session", "keeps its locks"]);
+    assert_message_omits(&failure, &["session was ended"]);
+    assert_transaction_cleanup(requests, "COMMIT TRANSACTION");
 }
 
 /// The location is a placement hint: a default dataset that cannot be read leaves the session

@@ -32,9 +32,9 @@ impl BigQueryConnection {
                     }
                     outcome => {
                         finish.succeeded()?;
-                        context.abort(&session_id);
+                        let ended = context.abort(&session_id);
                         outcome.map_err(|source| {
-                            ended_session_error(source, true, "autocommit is now enabled")
+                            ended_session_error(source, true, ended, "autocommit is now enabled")
                         })
                     }
                 }
@@ -67,10 +67,11 @@ impl BigQueryConnection {
             }
             Err(source) => {
                 finish.abandoned()?;
-                context.abort(&session_id);
+                let ended = context.abort(&session_id);
                 Err(ended_session_error(
                     source,
                     !rollback,
+                    ended,
                     "the next statement starts a new transaction",
                 ))
             }
@@ -134,8 +135,8 @@ fn commit_refused(failure: &adbc_core::error::Error) -> bool {
     !transaction_lost(failure) && !outcome_unknown(failure)
 }
 
-/// Explains `failure` of a `COMMIT` (`committing`) or `ROLLBACK` after which the driver ended the
-/// session, and says what the connection does `next`.
+/// Explains `failure` of a `COMMIT` (`committing`) or `ROLLBACK` after which the driver tried to
+/// end the session, says whether that `ended` it, and what the connection does `next`.
 ///
 /// A lost transaction ended outside the driver's view: its session expired, which rolled it
 /// back, or a script ended it and then failed or could not be inspected (see
@@ -144,6 +145,7 @@ fn commit_refused(failure: &adbc_core::error::Error) -> bool {
 fn ended_session_error(
     mut failure: adbc_core::error::Error,
     committing: bool,
+    ended: bool,
     next: &str,
 ) -> adbc_core::error::Error {
     let what = if transaction_lost(&failure) {
@@ -157,9 +159,12 @@ fn ended_session_error(
     } else {
         "ending the session discards the transaction's changes"
     };
-    failure.message = format!(
-        "{}; {what}. The session was ended and {next}",
-        failure.message
-    );
+    let session = if ended {
+        "The session was ended"
+    } else {
+        "The driver could not end the session, which BigQuery ends when it expires, so any open \
+         transaction keeps its locks until then,"
+    };
+    failure.message = format!("{}; {what}. {session} and {next}", failure.message);
     failure
 }

@@ -454,7 +454,7 @@ impl Connection for BigQueryConnection {
     }
 
     // A cancel finds an operation to accept, but neither call is cancellable; see
-    // `TransactionContext::finish`.
+    // `TransactionContext::run_to_verdict`.
     fn commit(&mut self) -> Result<()> {
         let operation = self.cancellation.begin();
         let result = self.finish_transaction(false);

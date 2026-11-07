@@ -480,6 +480,10 @@ fn dataset_location(context: &ExecutionContext, dataset: &DatasetKey) -> Option<
 /// cancellation, so this also bounds how long a cancel waits for it.
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// How long a caller waits for its session to end. The job keeps running after that, but no caller
+/// needs its answer, and it queues behind whatever the session is still running.
+const ABORT_WAIT: Duration = Duration::from_secs(if cfg!(test) { 3 } else { 10 });
+
 /// Whether a failed `BEGIN`, `COMMIT` or `ROLLBACK` may still have taken effect: BigQuery gave
 /// no verdict on it, only a transport failure, a server error or a timeout
 /// ([`retryable_failure`]).
@@ -625,11 +629,14 @@ impl<'a> TransactionContext<'a> {
                 ),
                 Err(source) if !outcome_unknown(&source) => return Err((source, Some(session_id))),
                 Err(mut source) => {
-                    self.abort(&session_id);
-                    source.message.push_str(
+                    source.message.push_str(if self.abort(&session_id) {
                         "; whether the transaction began is unknown, so the BigQuery session was \
-                         ended, with its temporary tables and variables",
-                    );
+                         ended, with its temporary tables and variables"
+                    } else {
+                        "; whether the transaction began is unknown, so the BigQuery session was \
+                         abandoned, with its temporary tables and variables; the driver could \
+                         not end it, so BigQuery ends it when it expires"
+                    });
                     return Err((source, None));
                 }
             }
@@ -699,15 +706,32 @@ impl<'a> TransactionContext<'a> {
     /// after it landed would leave the transaction active in the driver while BigQuery autocommits
     /// every later statement in the session. [`outcome_unknown`] says when a failure leaves the
     /// outcome open.
-    pub(crate) fn run_to_verdict(&self, session_id: &Arc<str>, sql: &'static str) -> Result<()> {
+    pub(crate) fn run_to_verdict(&self, session_id: &Arc<str>, sql: &str) -> Result<()> {
+        self.run_within(CONTROL_TIMEOUT, session_id, sql)
+    }
+
+    /// Runs `sql` in `session_id` on the blocking pool, waiting for at most `timeout`.
+    fn run_within(&self, timeout: Duration, session_id: &Arc<str>, sql: &str) -> Result<()> {
         let context = self.context.clone();
         let session_id = session_id.clone();
+        let statement = sql.to_owned();
         let (finished, receiver) = oneshot::channel();
         self.context
             .runtime
             .spawn_detached_blocking(Box::new(move || {
-                let outcome =
-                    TransactionContext::new(&context, context.defaults()).execute(&session_id, sql);
+                let outcome = execute_driver_statement(
+                    &context.runtime,
+                    &context.state,
+                    context.billing_project_id.as_ref(),
+                    QueryContext {
+                        defaults: context.defaults(),
+                        location: context.location.as_deref(),
+                        session_id: Some(&session_id),
+                        operation: None,
+                    },
+                    &statement,
+                    0,
+                );
                 // The caller stopped waiting at the deadline and reports the outcome as unknown.
                 let _ = finished.send(outcome);
             }));
@@ -715,7 +739,7 @@ impl<'a> TransactionContext<'a> {
         match self
             .context
             .runtime
-            .block_on(async { tokio::time::timeout(CONTROL_TIMEOUT, receiver).await })
+            .block_on(async { tokio::time::timeout(timeout, receiver).await })
         {
             Ok(Ok(outcome)) => outcome,
             Ok(Err(_)) => Err(driver_defect(format_args!(
@@ -724,44 +748,33 @@ impl<'a> TransactionContext<'a> {
             Err(_) => Err(error(
                 format!(
                     "BigQuery did not finish {sql} within {} s",
-                    CONTROL_TIMEOUT.as_secs()
+                    timeout.as_secs()
                 ),
                 Status::Timeout,
             )),
         }
     }
 
-    /// Ends the session, best-effort: every caller is already reporting something else, or no
-    /// one, so a failure is only written as a diagnostic.
-    pub(crate) fn abort(&self, session_id: &str) {
+    /// Ends the session and says whether it ended, for at most [`ABORT_WAIT`]. Best-effort: a
+    /// failure is only written as a diagnostic, and a caller that reports on the session says so.
+    pub(crate) fn abort(&self, session_id: &Arc<str>) -> bool {
         let sql = format!(
             "CALL BQ.ABORT_SESSION({})",
             googlesql_string_literal(session_id)
         );
-        if let Err(failure) = self.execute(session_id, &sql) {
-            // Service error messages may contain SQL or other user data, so only the status.
-            diag!(
-                Warn,
-                "failed to end a BigQuery session (status {:?}); BigQuery ends it when it expires",
-                failure.status
-            );
+        match self.run_within(ABORT_WAIT, session_id, &sql) {
+            Err(failure) if !session_expired(&failure) => {
+                // Service error messages may contain SQL or other user data, so only the status.
+                diag!(
+                    Warn,
+                    "failed to end a BigQuery session (status {:?}); BigQuery ends it when it \
+                     expires",
+                    failure.status
+                );
+                false
+            }
+            _ => true,
         }
-    }
-
-    fn execute(&self, session_id: &str, sql: &str) -> Result<()> {
-        execute_driver_statement(
-            &self.context.runtime,
-            &self.context.state,
-            self.context.billing_project_id.as_ref(),
-            QueryContext {
-                defaults: self.defaults,
-                location: self.context.location.as_deref(),
-                session_id: Some(session_id),
-                operation: None,
-            },
-            sql,
-            0,
-        )
     }
 }
 

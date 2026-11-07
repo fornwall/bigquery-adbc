@@ -74,6 +74,9 @@ changes.
   not deduplicate these by request ID, so a retry ran them again: a commit that took effect failed
   as a lost transaction, and a transaction that began left every later statement failing. They now
   run as named jobs, and a retry reads the first job's verdict.
+- Ending a BigQuery session no longer blocks without limit: the caller waits at most ten seconds,
+  which bounds commit, rollback, autocommit changes and connection release. An error now says when
+  the session could not be ended, instead of claiming it was.
 
 ## [0.2.0] - 2026-11-06
 
