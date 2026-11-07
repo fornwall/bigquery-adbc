@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run one ignored test by bare or module-qualified name, from tests/bigquery/ or the Cargo test
 # target named by BIGQUERY_ADBC_TEST_TARGET.
-# Require a one-test success result: cargo also exits successfully for no matches.
+# Cargo also exits successfully for no matches, so require that one test ran.
 #
 # Usage: run-one-live-test.sh <test name> [cargo test arguments...]
 set -euo pipefail
@@ -45,9 +45,11 @@ if ! qualified_name=$(printf '%s\n' "$listing" | awk -v name="$test_name" '
     exit 1
 fi
 
+# pipefail reports a failure. The result line cannot: under --nocapture, stderr lands inside it.
+# libtest prints this line before any test starts.
 cargo test --locked --test "$test_target" "$qualified_name" \
     -- --ignored --exact "$@" 2>&1 | tee "$log_file"
-if ! grep -q '^test result: ok\. 1 passed' "$log_file"; then
-    echo "$qualified_name did not pass" >&2
+if ! grep -qx 'running 1 test' "$log_file"; then
+    echo "$qualified_name did not run" >&2
     exit 1
 fi

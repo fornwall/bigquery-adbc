@@ -91,6 +91,49 @@ def test_project_preflight_exports_the_explicit_value() -> None:
     assert result.stdout == "chosen-project"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX Bash")
+@pytest.mark.parametrize(
+    ("output", "cargo_status", "status"),
+    [
+        pytest.param("running 1 test\ntest result: ok. 1 passed\n", 0, 0, id="passed"),
+        # Under --nocapture, stderr lands inside libtest's result line.
+        pytest.param("running 1 test\ntest result: ok.. 1 passed\n", 0, 0, id="interleaved"),
+        pytest.param("running 1 test\ntest result: ok\nnoise\n. 1 passed\n", 0, 0, id="split"),
+        pytest.param("running 1 test\ntest result: FAILED. 0 passed\n", 101, 101, id="failed"),
+        pytest.param("running 0 tests\ntest result: ok. 0 passed\n", 0, 1, id="nothing-ran"),
+    ],
+)
+def test_one_live_test_runner_trusts_cargo_once_the_test_ran(
+    tmp_path: Path, output: str, cargo_status: int, status: int
+) -> None:
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    (tools / "cargo").write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ " $* " == *" --list "* ]]; then echo "query::case: test"; exit; fi\n'
+        'printf "%s" "$CARGO_OUTPUT"\n'
+        'exit "$CARGO_STATUS"\n',
+        encoding="utf-8",
+    )
+    (tools / "cargo").chmod(0o755)
+
+    result = subprocess.run(
+        [str(REPOSITORY_ROOT / "scripts/run-one-live-test.sh"), "case", "--nocapture"],
+        env={
+            **os.environ,
+            "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}",
+            "BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT": "chosen-project",
+            "CARGO_OUTPUT": output,
+            "CARGO_STATUS": str(cargo_status),
+        },
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == status, result.stderr
+
+
 FAKE_EMULATOR = """\
 import http.server
 import json
