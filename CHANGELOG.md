@@ -79,8 +79,11 @@ changes.
 - Ending a BigQuery session no longer blocks without limit: the caller waits at most ten seconds,
   which bounds commit, rollback, autocommit changes and connection release. An error now says when
   the session could not be ended, instead of claiming it was.
-- A `BEGIN`, `COMMIT` or `ROLLBACK` answered with something the driver cannot read now counts as an
-  unknown outcome, instead of a refusal that kept a possibly committed transaction open.
+- A `BEGIN`, `COMMIT` or `ROLLBACK` now counts as refused only on proof: the job's own failure, or a
+  submission BigQuery refused or never received. Anything else, such as an unreadable answer or a
+  failed job lookup, is an unknown outcome that returns `IO` and ends the session, instead of
+  keeping a possibly committed transaction open. The new `bigquery.job.verdict` error detail shows
+  which it was.
 - After a statement fails with "No active transaction found", the next one begins a new transaction
   instead of autocommitting in the session.
 - A metadata listing whose page token repeats now returns `INVALID_DATA` instead of `IO`, which

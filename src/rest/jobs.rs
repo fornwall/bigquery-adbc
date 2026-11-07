@@ -21,6 +21,7 @@ use crate::clients::{DatasetKey, DatasetLocations};
 use crate::diag::diag;
 use crate::error::{
     append_remedy, error, failure_reason, invalid_argument, job_name, with_job_link,
+    with_job_verdict,
 };
 use crate::identifiers::ProjectIdentifier;
 use crate::rest::client::RestClient;
@@ -510,6 +511,7 @@ impl JobClient {
             if class == RetryClass::Final || (attempt == MAX_ATTEMPTS && !may_exist) {
                 if !may_exist {
                     settle_submission(operation, &request.reference, false);
+                    return Err(with_job_verdict(failure, "not_created"));
                 }
                 return Err(failure);
             }
@@ -978,6 +980,14 @@ impl Unlocated {
             job_may_exist: true,
         }
     }
+
+    fn into_failure(self) -> adbc_core::error::Error {
+        if self.job_may_exist {
+            self.failure
+        } else {
+            with_job_verdict(self.failure, "not_created")
+        }
+    }
 }
 
 /// The job's identity with its location, and the job resource that named it.
@@ -991,7 +1001,7 @@ impl InferredSubmission {
                 .run()
                 .await
                 .map(|(_, body)| body)
-                .map_err(|unlocated| unlocated.failure);
+                .map_err(Unlocated::into_failure);
         };
         // Until the location is known, a cancel addresses the job without one, which reaches a
         // job in the US or EU multi-region. The located identity replaces it.
@@ -1034,7 +1044,7 @@ impl InferredSubmission {
                     if !unlocated.job_may_exist {
                         let _ = operation.register_completed_job(&reference);
                     }
-                    unlocated.failure
+                    unlocated.into_failure()
                 })?;
                 operation.register_job(&located)?;
                 Ok(body)

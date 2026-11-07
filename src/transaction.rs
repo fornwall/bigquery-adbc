@@ -11,7 +11,7 @@ use tokio::sync::oneshot;
 use crate::cancellation::Operation;
 use crate::clients::DatasetKey;
 use crate::diag::diag;
-use crate::error::{driver_defect, error, invalid_state};
+use crate::error::{driver_defect, error, has_job_verdict, invalid_state};
 use crate::query::{
     ExecutionContext, QueryContext, QueryDefaults, create_session, execute_driver_statement,
 };
@@ -440,12 +440,13 @@ const CONTROL_TIMEOUT: Duration = Duration::from_secs(60);
 /// needs its answer, and it queues behind whatever the session is still running.
 const ABORT_WAIT: Duration = Duration::from_secs(if cfg!(test) { 3 } else { 10 });
 
-/// Whether a failed `BEGIN`, `COMMIT` or `ROLLBACK` may still have taken effect: BigQuery gave no
-/// verdict on it, only a transport failure, a server error or a timeout ([`retryable_failure`]),
-/// an answer the driver could not read, or a defect on the driver's side.
+/// Whether a failed `BEGIN`, `COMMIT` or `ROLLBACK` may still have taken effect.
+///
+/// Only proof rules that out ([`has_job_verdict`]), never a status: a statement recovered after a
+/// lost answer can fail on a request about something else, such as a job lookup or a listing. A
+/// job's own transient failure ([`retryable_failure`]) is no refusal either.
 pub(crate) fn outcome_unknown(failure: &adbc_core::error::Error) -> bool {
-    retryable_failure(failure.status)
-        || matches!(failure.status, Status::InvalidData | Status::Internal)
+    !has_job_verdict(failure) || retryable_failure(failure.status)
 }
 
 /// Whether BigQuery answered that its session has no transaction, which proves it whatever the
@@ -697,7 +698,13 @@ impl<'a> TransactionContext<'a> {
             .runtime
             .block_on(async { tokio::time::timeout(timeout, receiver).await })
         {
-            Ok(Ok(outcome)) => outcome,
+            // Callers branch on the status, and one from a job lookup says nothing of `sql`.
+            Ok(Ok(outcome)) => outcome.map_err(|mut failure| {
+                if outcome_unknown(&failure) && !retryable_failure(failure.status) {
+                    failure.status = Status::IO;
+                }
+                failure
+            }),
             Ok(Err(_)) => Err(driver_defect(format_args!(
                 "BigQuery {sql} ended without a result"
             ))),

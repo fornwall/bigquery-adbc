@@ -13,7 +13,7 @@ use super::{JobClient, JobReference, JobRequest, QueryAnswer, QueryResultsRead};
 use crate::cancellation::OperationCancelHandle;
 use crate::clients::{ClientState, DatasetKey};
 use crate::config::ServiceEndpointKind;
-use crate::error::DETAIL_JOB_ID;
+use crate::error::{DETAIL_JOB_ID, has_job_verdict};
 use crate::rest::request::RequestStart;
 use crate::runtime::{SharedRuntime, new_runtime};
 use crate::test_support::cancellation::{job_client, operation, operation_at};
@@ -1553,6 +1553,29 @@ fn a_non_dry_run_is_registered_before_the_post_can_answer() {
         cancels[0].path(),
         "/bigquery/v2/projects/billing%2Fproject/jobs/registered/cancel?location=EU"
     );
+}
+
+/// A refusal proves no job exists only if no earlier attempt could have created one, on both
+/// submission routes. The verdict is what a caller may trust; the status alone cannot say.
+#[test]
+fn only_a_submission_with_no_ambiguous_attempt_proves_its_job_was_not_created() {
+    let denied = (403, error_body("accessDenied", "denied"));
+    let unavailable = (503, error_body("backendError", "unavailable"));
+    for location in [Some("EU"), None] {
+        for (answers, proven) in [
+            (vec![denied.clone()], true),
+            (vec![unavailable.clone(), denied.clone()], false),
+        ] {
+            let count = answers.len();
+            let (endpoint, requests) = capture_requests(answers);
+            let (runtime, client) = job_client(&endpoint);
+            let failure = runtime
+                .block_on(client.insert(None, &request("refused", location, false), "query"))
+                .unwrap_err();
+            assert_eq!(has_job_verdict(&failure), proven, "{location:?} {count}");
+            requests.served(count);
+        }
+    }
 }
 
 #[test]

@@ -199,7 +199,7 @@ pub(crate) fn job_error(
         ),
         None => bigquery_errors(context, errors, status),
     };
-    with_job_link(failure, reference)
+    with_job_verdict(with_job_link(failure, reference), "failed")
 }
 
 /// Name the job a failure came from: [`DETAIL_JOB_ID`] when the job is known, plus a console link
@@ -248,6 +248,23 @@ pub(crate) fn append_remedy(failure: &mut Error, remedy: &str) {
     failure.message.insert_str(at, &format!("; {remedy}"));
 }
 
+/// Records what `failure` proves about its job; see [`DETAIL_JOB_VERDICT`].
+pub(crate) fn with_job_verdict(mut failure: Error, verdict: &str) -> Error {
+    failure
+        .details
+        .get_or_insert_default()
+        .push((DETAIL_JOB_VERDICT.to_owned(), verdict.as_bytes().to_vec()));
+    failure
+}
+
+/// Whether `failure` proves what became of its job; see [`DETAIL_JOB_VERDICT`].
+pub(crate) fn has_job_verdict(failure: &Error) -> bool {
+    failure
+        .details
+        .as_ref()
+        .is_some_and(|details| details.iter().any(|(key, _)| key == DETAIL_JOB_VERDICT))
+}
+
 /// The BigQuery `reason` a failure carries as [`DETAIL_REASON`], if any.
 pub(crate) fn failure_reason(failure: &Error) -> Option<&str> {
     failure
@@ -266,6 +283,11 @@ pub(crate) const DETAIL_LOCATION: &str = "bigquery.error.location";
 
 /// The ADBC 1.1.0 detail key carrying the job a failure came from, as [`job_name`] spells it.
 pub(crate) const DETAIL_JOB_ID: &str = "bigquery.job_id";
+
+/// The ADBC 1.1.0 detail key saying what a failure proves about its job: `failed` when the job
+/// reported it, `not_created` when BigQuery refused the submission or never received it. A failure
+/// without one proves nothing, whatever its status: the job may have run.
+pub(crate) const DETAIL_JOB_VERDICT: &str = "bigquery.job.verdict";
 
 /// The ADBC 1.1.0 detail key carrying, in decimal, the HTTP status the service answered with.
 pub(crate) const DETAIL_HTTP_STATUS: &str = "bigquery.error.http_status";

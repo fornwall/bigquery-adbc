@@ -2,6 +2,7 @@
 //! and what it must not issue.
 
 use super::*;
+use crate::test_support::driver::unlocated_connection_at;
 use crate::test_support::errors::assert_message_omits;
 use crate::test_support::http::{capture_statements, capture_statements_responding, done_job};
 use crate::test_support::options::{option_string, set_option, set_option_error};
@@ -874,6 +875,184 @@ fn a_control_statement_whose_answer_is_lost_reports_what_it_did() {
             .collect::<Vec<_>>();
         assert_eq!(attempts, [attempts[0]; 2], "{lost}");
     }
+}
+
+/// How BigQuery answers a request about `sql` in `mock-session` after its first `skip` runs, and
+/// every `GET`, through `answer`. Serves `count` requests, handing out two sessions.
+fn bigquery_giving_no_verdict_on(
+    sql: &'static str,
+    skip: usize,
+    count: usize,
+    mut answer: impl FnMut(&CapturedRequest) -> Option<(u16, serde_json::Value)> + Send + 'static,
+) -> (String, CapturedServer) {
+    let mut sessions = vec!["fresh-session", "mock-session"];
+    let mut runs = 0;
+    capture_statements_responding(count, move |request| {
+        if request.line.starts_with("GET") {
+            return answer(request);
+        }
+        if request.sql() == "SELECT 1" {
+            return Some((200, session_created(sessions.pop().unwrap())));
+        }
+        if request.sql() == sql && request.connection_properties()[0]["value"] == "mock-session" {
+            runs += 1;
+            if runs > skip {
+                return answer(request);
+            }
+        }
+        Some((200, complete()))
+    })
+}
+
+/// A statement whose job BigQuery accepted but never shows: its first answer is lost, the replay's
+/// 409 names the job, and `jobs.get` keeps answering 404 through the propagation delay.
+fn a_lost_answer_and_an_invisible_job()
+-> impl FnMut(&CapturedRequest) -> Option<(u16, serde_json::Value)> + Send + 'static {
+    let mut sent = false;
+    move |request| {
+        if request.line.starts_with("GET") {
+            return Some((404, not_found_response()));
+        }
+        if !std::mem::replace(&mut sent, true) {
+            return None;
+        }
+        let job = request.body["jobReference"]["jobId"].as_str().unwrap();
+        let message = format!("Already Exists: Job fixture-project:EU.{job}");
+        Some((409, error_body("duplicate", &message)))
+    }
+}
+
+/// Runs a transaction whose `COMMIT`, sent `commits` times, gets no verdict, and asserts the session
+/// ended: a commit that landed would leave every later statement autocommitting in it.
+fn assert_a_commit_without_a_verdict_ends_the_session(
+    mut connection: crate::BigQueryConnection,
+    requests: CapturedServer,
+    commits: usize,
+) {
+    set_option(&mut connection, OptionConnection::AutoCommit, false);
+    execute(&mut connection, "INSERT dataset.table VALUES (42)").unwrap();
+    let failure = connection.commit().unwrap_err();
+    assert_failure(
+        &failure,
+        Status::IO,
+        &[
+            "did not say whether the transaction was committed",
+            "The session was ended",
+        ],
+    );
+    execute(&mut connection, "INSERT dataset.table VALUES (43)").unwrap();
+    drop(connection);
+
+    let mut expected = PREAMBLE.to_vec();
+    expected.extend(vec!["COMMIT TRANSACTION"; commits]);
+    expected.extend([
+        "CALL BQ.ABORT_SESSION('mock-session')",
+        "SELECT 1",
+        "BEGIN TRANSACTION",
+        "INSERT dataset.table VALUES (43)",
+        "ROLLBACK TRANSACTION",
+        "CALL BQ.ABORT_SESSION('fresh-session')",
+    ]);
+    assert_sql(requests, &expected);
+}
+
+/// The 409 proves the job exists, so a job `jobs.get` cannot see yet says nothing about the commit.
+#[test]
+fn a_commit_whose_job_stays_invisible_has_no_verdict() {
+    let (endpoint, requests) = bigquery_giving_no_verdict_on(
+        "COMMIT TRANSACTION",
+        0,
+        14,
+        a_lost_answer_and_an_invisible_job(),
+    );
+    assert_a_commit_without_a_verdict_ends_the_session(test_connection_at(&endpoint), requests, 2);
+}
+
+/// Without a location the job is searched for, and a principal without `bigquery.jobs.list` is
+/// refused the search. That refusal is about the listing, not the commit.
+#[test]
+fn a_refused_search_for_a_commit_is_no_verdict() {
+    let (endpoint, requests) =
+        bigquery_giving_no_verdict_on("COMMIT TRANSACTION", 0, 18, |request| {
+            Some(if !request.line.starts_with("GET") {
+                (503, error_body("backendError", "Service unavailable"))
+            } else if request.path().contains("/jobs/") {
+                (404, not_found_response())
+            } else {
+                (403, error_body("accessDenied", "needs bigquery.jobs.list"))
+            })
+        });
+    assert_a_commit_without_a_verdict_ends_the_session(
+        unlocated_connection_at(&endpoint),
+        requests,
+        crate::rest::retry::MAX_ATTEMPTS as usize,
+    );
+}
+
+/// Kept, a session whose `BEGIN` landed would hold an open transaction the driver does not know
+/// of, and every later `BEGIN` there would be refused with "Only one transaction at a time".
+#[test]
+fn a_begin_without_a_verdict_ends_the_session_rather_than_wedging_it() {
+    let (endpoint, requests) = bigquery_giving_no_verdict_on(
+        "BEGIN TRANSACTION",
+        1,
+        15,
+        a_lost_answer_and_an_invisible_job(),
+    );
+    let mut connection = test_connection_at(&endpoint);
+    set_option(&mut connection, OptionConnection::AutoCommit, false);
+    execute(&mut connection, "INSERT dataset.table VALUES (42)").unwrap();
+    connection.commit().unwrap();
+
+    let sql = "INSERT dataset.table VALUES (43)";
+    let failure = execute(&mut connection, sql).unwrap_err();
+    assert_failure(
+        &failure,
+        Status::IO,
+        &["whether the transaction began is unknown"],
+    );
+    execute(&mut connection, sql).unwrap();
+    drop(connection);
+    assert_sql_after_preamble(
+        requests,
+        &[
+            "COMMIT TRANSACTION",
+            "BEGIN TRANSACTION",
+            "BEGIN TRANSACTION",
+            "CALL BQ.ABORT_SESSION('mock-session')",
+            "SELECT 1",
+            "BEGIN TRANSACTION",
+            sql,
+            "ROLLBACK TRANSACTION",
+            "CALL BQ.ABORT_SESSION('fresh-session')",
+        ],
+    );
+}
+
+/// A job that reports its own failure is a verdict: the transaction stays open for a retry or a
+/// rollback, and the next statement joins it without a `BEGIN`.
+#[test]
+fn a_commit_bigquery_refused_keeps_the_transaction() {
+    let (mut connection, requests) = connection_with_open_transaction_then(vec![
+        (400, error_body("invalidQuery", "mock refusal")),
+        (200, complete()),
+        (200, complete()),
+        (200, complete()),
+    ]);
+    let failure = connection.commit().unwrap_err();
+    assert_message(&failure, &["mock refusal"]);
+    assert_message_omits(&failure, &["session was ended"]);
+    execute(&mut connection, "INSERT dataset.table VALUES (43)").unwrap();
+    drop(connection);
+    assert_sql_after_preamble(
+        requests,
+        &[
+            "COMMIT TRANSACTION",
+            "INSERT dataset.table VALUES (43)",
+            "ROLLBACK TRANSACTION",
+            "CALL BQ.ABORT_SESSION('mock-session')",
+        ],
+    );
 }
 
 /// A `COMMIT TRANSACTION` in the caller's SQL runs on `jobs.query`, so losing its answer reports

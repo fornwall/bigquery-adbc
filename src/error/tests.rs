@@ -112,12 +112,16 @@ fn structured_fields_and_sqlstate_follow_what_the_service_sent() {
         if location {
             details.push(detail(DETAIL_LOCATION, &entry.location));
         }
+        details.push(detail(DETAIL_JOB_VERDICT, "failed"));
         let converted = failed(std::slice::from_ref(&entry));
         assert_eq!(converted.details, Some(details), "{}", entry.reason);
         assert_eq!(converted.sqlstate, sqlstate, "{}", entry.reason);
     }
     let converted = failed(&[]);
-    assert_eq!(converted.details, None);
+    assert_eq!(
+        converted.details,
+        Some(vec![detail(DETAIL_JOB_VERDICT, "failed")])
+    );
     assert_eq!(converted.sqlstate, [0; 5]);
 }
 
@@ -151,6 +155,7 @@ fn a_failed_job_names_itself_in_the_message_and_the_details() {
             detail(DETAIL_REASON, "invalidQuery"),
             detail(DETAIL_LOCATION, "query"),
             detail(DETAIL_JOB_ID, "billing-project:US.adbc_job_1"),
+            detail(DETAIL_JOB_VERDICT, "failed"),
         ])
     );
 }
@@ -164,12 +169,18 @@ fn a_failure_without_error_entries_keeps_what_identity_it_has() {
     let converted = job_error(CONTEXT, Some(&reference), &[]);
     assert_eq!(
         converted.details,
-        Some(vec![detail(DETAIL_JOB_ID, "billing-project:adbc_job_1")])
+        Some(vec![
+            detail(DETAIL_JOB_ID, "billing-project:adbc_job_1"),
+            detail(DETAIL_JOB_VERDICT, "failed"),
+        ])
     );
 
     let converted = failed(&[]);
     assert_eq!(converted.status, Status::Unknown);
-    assert_eq!(converted.details, None);
+    assert_eq!(
+        converted.details,
+        Some(vec![detail(DETAIL_JOB_VERDICT, "failed")])
+    );
     assert_eq!(
         converted.message,
         "BigQuery query execution failed: the job failed without error details"

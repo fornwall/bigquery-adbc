@@ -6,7 +6,7 @@ use super::{
     EnableAutocommit, FinishTransaction, QueryStart, QueryTransaction, TransactionState,
     googlesql_string_literal, outcome_unknown,
 };
-use crate::error::error;
+use crate::error::{error, with_job_verdict};
 use crate::test_support::errors::assert_message;
 
 /// GoogleSQL escapes with backslashes: a doubled quote lexes as two adjacent literals, and an
@@ -30,22 +30,28 @@ fn a_session_id_is_spelled_as_a_googlesql_literal() {
     }
 }
 
-/// Only BigQuery refusing a statement is a verdict. An answer the driver could not read, or a
-/// defect on its side, says as little as a lost one: a commit may have landed behind either.
+/// A status proves nothing about a control statement: a commit may have landed behind any failure
+/// without a verdict, including ones from a job lookup or a listing. A verdict settles it, unless
+/// the job's own failure was transient.
 #[test]
-fn only_a_refusal_settles_a_control_statement() {
-    for (status, unknown) in [
-        (Status::IO, true),
-        (Status::Timeout, true),
-        (Status::InvalidData, true),
-        (Status::Internal, true),
-        (Status::InvalidArguments, false),
-        (Status::Unauthorized, false),
-        (Status::Unauthenticated, false),
+fn only_a_verdict_settles_a_control_statement() {
+    for status in [
+        Status::IO,
+        Status::Timeout,
+        Status::InvalidData,
+        Status::Internal,
+        Status::AlreadyExists,
+        Status::NotFound,
+        Status::Unauthorized,
+        Status::Unauthenticated,
+        Status::InvalidArguments,
+        Status::Unknown,
     ] {
+        assert!(outcome_unknown(&error("failed", status)), "{status:?}");
+        let verdict = with_job_verdict(error("failed", status), "failed");
         assert_eq!(
-            outcome_unknown(&error("failed", status)),
-            unknown,
+            outcome_unknown(&verdict),
+            matches!(status, Status::IO | Status::Timeout),
             "{status:?}"
         );
     }
