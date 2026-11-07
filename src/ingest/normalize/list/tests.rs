@@ -10,12 +10,12 @@ use super::{checked_list_length_add, compact_list_ranges, gather_retained_values
 fn contiguous_and_empty_lists_keep_range_scratch_small() {
     let length = 16_384;
     let (offsets, ranges) =
-        compact_list_ranges(length, length, "values", |row| Ok(Some((row, row + 1)))).unwrap();
+        compact_list_ranges(length, "values", |row| Some((row, row + 1))).unwrap();
     assert_eq!(offsets.len(), length + 1);
     assert_eq!(ranges, [(0, length)]);
     assert!(ranges.capacity() < length);
 
-    let (offsets, ranges) = compact_list_ranges(length, 0, "values", |_| Ok(None)).unwrap();
+    let (offsets, ranges) = compact_list_ranges(length, "values", |_| None).unwrap();
     assert!(offsets.iter().all(|&offset| offset == 0));
     assert_eq!(ranges.capacity(), 0);
 }

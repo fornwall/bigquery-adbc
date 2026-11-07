@@ -12,7 +12,7 @@ use arrow_array::{
     Array, ArrayRef, FixedSizeListArray, LargeListArray, LargeListViewArray, ListArray,
     ListViewArray, RecordBatch, StructArray, new_null_array,
 };
-use arrow_buffer::NullBuffer;
+use arrow_buffer::{ArrowNativeType, NullBuffer};
 use arrow_schema::{DataType, Field, IntervalUnit, SchemaRef};
 
 use crate::error::{driver_defect, error};
@@ -220,9 +220,8 @@ fn normalize_column(column: &ArrayRef, field: &Field, site: &ValueSite<'_>) -> R
         }
         (DataType::LargeList(_), DataType::List(item)) => {
             let array = downcast_array::<LargeListArray>(column, site.name())?;
-            let offsets = array.value_offsets();
             normalize_noncanonical_list_column(array.values(), array.len(), item, site, |index| {
-                offset_value_range(array, offsets, index, site.name())
+                offset_value_range(array, index)
             })
         }
         (DataType::ListView(_), DataType::List(item)) => {
@@ -233,34 +232,13 @@ fn normalize_column(column: &ArrayRef, field: &Field, site: &ValueSite<'_>) -> R
             let array = downcast_array::<LargeListViewArray>(column, site.name())?;
             normalize_list_view_column(array, item, site)
         }
-        (DataType::FixedSizeList(_, _), DataType::List(item)) => {
+        (DataType::FixedSizeList(_, size), DataType::List(item)) => {
             let array = downcast_array::<FixedSizeListArray>(column, site.name())?;
-            let value_length = usize::try_from(array.value_length()).map_err(|_| {
-                error(
-                    format!(
-                        "BigQuery ingest fixed-size list field {:?} has an invalid length {}",
-                        site.name(),
-                        array.value_length()
-                    ),
-                    Status::InvalidData,
-                )
-            })?;
-            let overflow = || {
-                error(
-                    format!(
-                        "BigQuery ingest fixed-size list field {:?} offset exceeds usize",
-                        site.name()
-                    ),
-                    Status::InvalidData,
-                )
-            };
+            let size = size.as_usize();
             normalize_noncanonical_list_column(array.values(), array.len(), item, site, |index| {
-                if array.is_null(index) {
-                    return Ok(None);
-                }
-                let start = index.checked_mul(value_length).ok_or_else(overflow)?;
-                let end = start.checked_add(value_length).ok_or_else(overflow)?;
-                Ok(Some((start, end)))
+                array
+                    .is_valid(index)
+                    .then(|| (index * size, (index + 1) * size))
             })
         }
         (DataType::Duration(unit), DataType::Interval(IntervalUnit::MonthDayNano)) => {

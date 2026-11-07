@@ -5,15 +5,18 @@
 //! address only a window of its child. All are rewritten into one shape: i32 offsets, no null
 //! buffer, and a child holding exactly the values the offsets address, in row order.
 //!
-//! The offset arithmetic lives in [`compact_list_ranges`]; every layout feeds it ranges.
+//! The offset arithmetic lives in [`compact_list_ranges`]; every layout feeds it ranges. Offsets
+//! and sizes are trusted: safe code only builds arrays with valid ones, and the C data interface
+//! validates every imported batch in full (`src/ffi/import.rs`).
 
 use std::sync::Arc;
 
 use adbc_core::error::{Result, Status};
 use arrow_array::{
-    Array, ArrayRef, GenericListViewArray, ListArray, OffsetSizeTrait, new_empty_array,
+    Array, ArrayRef, GenericListArray, GenericListViewArray, ListArray, OffsetSizeTrait,
+    new_empty_array,
 };
-use arrow_buffer::{OffsetBuffer, ScalarBuffer};
+use arrow_buffer::{ArrowNativeType, OffsetBuffer, ScalarBuffer};
 use arrow_data::transform::MutableArrayData;
 use arrow_schema::{DataType, Field};
 
@@ -36,10 +39,10 @@ pub(super) fn normalize_list_column(
             array.len(),
             item,
             site,
-            |index| offset_value_range(array, array.value_offsets(), index, field_name),
+            |index| offset_value_range(array, index),
         );
     }
-    let (start, child) = list_value_window(array, field_name)?;
+    let (start, child) = list_value_window(array);
     // The child holds every entry's values end to end, so a rejection below this point is
     // located by the offsets that address them rather than by an index into the child.
     let values = normalize_column(
@@ -101,15 +104,18 @@ fn nulls_hide_values(array: &ListArray) -> bool {
 /// returns the whole child. Checks and rebuilds must see only the window, or a NULL element or
 /// out-of-calendar date outside this batch would be reported against it. An unsliced list keeps
 /// both buffers, so the common case copies nothing.
-fn list_value_window(array: &ListArray, field_name: &str) -> Result<(usize, ArrayRef)> {
-    let offsets = array.value_offsets();
-    let first = offsets.first().copied().unwrap_or(0);
-    let start = usize_list_offset(first, field_name)?;
-    let end = usize_list_offset(offsets.last().copied().unwrap_or(0), field_name)?;
+fn list_value_window(array: &ListArray) -> (usize, ArrayRef) {
+    let (start, end) = addressed_range(array);
     if start == 0 && end == array.values().len() {
-        return Ok((start, array.values().clone()));
+        return (start, array.values().clone());
     }
-    Ok((start, array.values().slice(start, end - start)))
+    (start, array.values().slice(start, end - start))
+}
+
+/// The child range a list's offsets address, end to end.
+fn addressed_range(array: &ListArray) -> (usize, usize) {
+    let offsets = array.offsets();
+    (offsets.first().as_usize(), offsets.last().as_usize())
 }
 
 /// BigQuery arrays hold no NULL elements, so a normalized list's child values must carry none.
@@ -126,13 +132,11 @@ fn reject_null_list_elements(column: &ArrayRef, site: &ValueSite<'_>) -> Result<
     // A sliced list keeps the whole child array (see `list_value_window`), so only the elements
     // its offsets address belong to this batch. Those offsets are in the child's own coordinates,
     // which is what the element site needs to name the entry holding a NULL.
-    let offsets = list.value_offsets();
-    let start = usize_list_offset(offsets.first().copied().unwrap_or(0), field_name)?;
-    let end = usize_list_offset(offsets.last().copied().unwrap_or(0), field_name)?;
+    let (start, end) = addressed_range(list);
     let Some(element) = (start..end).find(|&index| values.is_null(index)) else {
         return Ok(());
     };
-    let row = site.list_elements(offsets, 0).row(element);
+    let row = site.list_elements(list.value_offsets(), 0).row(element);
     Err(error(
         format!(
             "BigQuery ingest list field {field_name:?} contains a NULL array element at row \
@@ -151,12 +155,11 @@ type CompactedListLayout = (Vec<i32>, Vec<(usize, usize)>);
 /// offset arithmetic.
 fn compact_list_ranges<F>(
     length: usize,
-    values_len: usize,
     field_name: &str,
     mut value_range: F,
 ) -> Result<CompactedListLayout>
 where
-    F: FnMut(usize) -> Result<Option<(usize, usize)>>,
+    F: FnMut(usize) -> Option<(usize, usize)>,
 {
     let mut normalized_offsets = Vec::with_capacity(length + 1);
     // Adjacent rows usually coalesce to one range; reserving one per row wastes 16 bytes per
@@ -165,25 +168,9 @@ where
     let mut normalized_length = 0_i32;
     normalized_offsets.push(normalized_length);
     for index in 0..length {
-        if let Some((start, end)) = value_range(index)? {
-            let value_length = end.checked_sub(start).ok_or_else(|| {
-                error(
-                    format!(
-                        "BigQuery ingest list field {field_name:?} has an invalid value range {start}..{end}"
-                    ),
-                    Status::InvalidData,
-                )
-            })?;
-            if end > values_len {
-                return Err(error(
-                    format!(
-                        "BigQuery ingest list field {field_name:?} value range {start}..{end} exceeds its child array length {values_len}"
-                    ),
-                    Status::InvalidData,
-                ));
-            }
+        if let Some((start, end)) = value_range(index) {
             normalized_length =
-                checked_list_length_add(normalized_length, value_length, field_name)?;
+                checked_list_length_add(normalized_length, end - start, field_name)?;
             if start != end {
                 if let Some((_, retained_end)) = retained_ranges.last_mut()
                     && *retained_end == start
@@ -204,8 +191,6 @@ where
 /// This is `arrow_select::concat::concat` narrowed to the one gather the driver needs: slices of
 /// a single source array. `MutableArrayData` copies ranges type-erased, so every value type stays
 /// supported without linking arrow-select's per-type concat and interleave kernels.
-/// [`compact_list_ranges`] has already validated every range against the child array, so the
-/// slicing arithmetic here cannot go out of bounds.
 fn gather_retained_values(
     values: &ArrayRef,
     ranges: &[(usize, usize)],
@@ -241,11 +226,11 @@ pub(super) fn normalize_noncanonical_list_column<F>(
     value_range: F,
 ) -> Result<ArrayRef>
 where
-    F: FnMut(usize) -> Result<Option<(usize, usize)>>,
+    F: FnMut(usize) -> Option<(usize, usize)>,
 {
     let field_name = site.name();
     let (normalized_offsets, retained_ranges) =
-        compact_list_ranges(length, values.len(), field_name, value_range)?;
+        compact_list_ranges(length, field_name, value_range)?;
     let values = gather_retained_values(values, &retained_ranges, item.data_type(), field_name)?;
     let values = if retained_ranges.is_empty() {
         // An empty gather already carries the normalized item type.
@@ -280,28 +265,16 @@ where
 /// List views may address their child values out of order or more than once. The range compactor
 /// gathers each row's range in row order, so overlapping and non-monotonic views keep their
 /// logical values in the canonical offset-encoded layout.
-pub(super) fn normalize_list_view_column<O>(
+pub(super) fn normalize_list_view_column<O: OffsetSizeTrait>(
     array: &GenericListViewArray<O>,
     item: &Arc<Field>,
     site: &ValueSite<'_>,
-) -> Result<ArrayRef>
-where
-    O: OffsetSizeTrait + std::fmt::Display + TryInto<usize>,
-{
-    let field_name = site.name();
+) -> Result<ArrayRef> {
     normalize_noncanonical_list_column(array.values(), array.len(), item, site, |index| {
-        if array.is_null(index) {
-            return Ok(None);
-        }
-        let start = usize_list_offset(array.value_offset(index), field_name)?;
-        let size = usize_list_offset(array.value_size(index), field_name)?;
-        let end = start.checked_add(size).ok_or_else(|| {
-            error(
-                format!("BigQuery ingest list field {field_name:?} value offset and size overflow"),
-                Status::InvalidData,
-            )
-        })?;
-        Ok(Some((start, end)))
+        array.is_valid(index).then(|| {
+            let start = array.value_offset(index).as_usize();
+            (start, start + array.value_size(index).as_usize())
+        })
     })
 }
 
@@ -317,39 +290,18 @@ fn checked_list_length_add(current: i32, additional: usize, field_name: &str) ->
 }
 
 /// Returns the child value range of offset-encoded list entry `index`, `None` for a null entry.
-pub(super) fn offset_value_range<O>(
-    array: &dyn Array,
-    offsets: &[O],
+pub(super) fn offset_value_range<O: OffsetSizeTrait>(
+    array: &GenericListArray<O>,
     index: usize,
-    field_name: &str,
-) -> Result<Option<(usize, usize)>>
-where
-    O: Copy + std::fmt::Display + TryInto<usize>,
-{
-    if array.is_null(index) {
-        return Ok(None);
-    }
+) -> Option<(usize, usize)> {
+    let offsets = array.value_offsets();
     #[expect(
         clippy::indexing_slicing,
         reason = "a list array stores len + 1 offsets, and index < len"
     )]
-    let (start, end) = (offsets[index], offsets[index + 1]);
-    Ok(Some((
-        usize_list_offset(start, field_name)?,
-        usize_list_offset(end, field_name)?,
-    )))
-}
-
-fn usize_list_offset<O>(offset: O, field_name: &str) -> Result<usize>
-where
-    O: Copy + std::fmt::Display + TryInto<usize>,
-{
-    offset.try_into().map_err(|_| {
-        error(
-            format!("BigQuery ingest list field {field_name:?} has an invalid offset {offset}"),
-            Status::InvalidData,
-        )
-    })
+    array
+        .is_valid(index)
+        .then(|| (offsets[index].as_usize(), offsets[index + 1].as_usize()))
 }
 
 #[cfg(test)]
