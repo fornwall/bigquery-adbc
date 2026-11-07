@@ -2,9 +2,18 @@
 //! and what it must not issue.
 
 use super::*;
-use crate::test_support::errors::assert_message_omits;
-use crate::test_support::http::capture_statements;
+use crate::test_support::errors::{assert_failure, assert_message_omits};
+use crate::test_support::http::{
+    capture_statements, capture_statements_responding, done_job, error_body, ok,
+};
 use crate::test_support::options::{option_string, set_option, set_option_error};
+
+/// What every [`connection_with_open_transaction`] exchange opens with.
+const PREAMBLE: [&str; 3] = [
+    "SELECT 1",
+    "BEGIN TRANSACTION",
+    "INSERT dataset.table VALUES (42)",
+];
 
 /// A connection carrying an open transaction with one statement already executed inside it,
 /// and the handle that yields the requests the mock captured.
@@ -41,28 +50,29 @@ fn connection_with_open_transaction_then(
     let (endpoint, requests) = capture_statements(responses);
     let mut connection = test_connection_at(&endpoint);
     set_option(&mut connection, OptionConnection::AutoCommit, false);
-    let mut statement = connection.new_statement().unwrap();
-    statement
-        .set_sql_query("INSERT dataset.table VALUES (42)")
-        .unwrap();
-    statement.execute_update().unwrap();
-    drop(statement);
+    execute(&mut connection, "INSERT dataset.table VALUES (42)").unwrap();
     (connection, requests)
+}
+
+/// Runs `sql` in a statement of its own.
+fn execute(
+    connection: &mut crate::BigQueryConnection,
+    sql: &str,
+) -> adbc_core::error::Result<Option<i64>> {
+    let mut statement = connection.new_statement().unwrap();
+    statement.set_sql_query(sql).unwrap();
+    statement.execute_update()
 }
 
 /// Asserts that the exchange was exactly the preamble, `finish` (the statement that ended the
 /// transaction), and the session abort.
 fn assert_transaction_cleanup(requests: CapturedServer, finish: &str) {
-    assert_sql(
-        requests,
-        &[
-            "SELECT 1",
-            "BEGIN TRANSACTION",
-            "INSERT dataset.table VALUES (42)",
-            finish,
-            "CALL BQ.ABORT_SESSION('mock-session')",
-        ],
-    );
+    assert_sql_after_preamble(requests, &[finish, "CALL BQ.ABORT_SESSION('mock-session')"]);
+}
+
+/// [`assert_sql`] for an exchange that opens with [`PREAMBLE`].
+fn assert_sql_after_preamble(requests: CapturedServer, rest: &[&str]) {
+    assert_sql(requests, &[&PREAMBLE, rest].concat());
 }
 
 /// Asserts the SQL of every statement the mock captured, in order.
@@ -133,22 +143,24 @@ fn releasing_a_connection_inside_a_tokio_host_still_ends_its_session() {
 /// BigQuery's answer to `COMMIT` or `ROLLBACK` once the session's transaction is gone: the
 /// session expired, or a script's own `COMMIT`/`ROLLBACK` ended it.
 fn transaction_lost() -> serde_json::Value {
-    json!({"error": {
-        "code": 400,
-        "message": "No active transaction found",
-        "errors": [{"reason": "invalidQuery", "message": "No active transaction found"}]
-    }})
+    error_body("invalidQuery", "No active transaction found")
 }
 
 /// BigQuery's answer to any query in a session that has ended: after 24 idle hours, or once
 /// `BQ.ABORT_SESSION` ended it (verified live).
 fn session_expired() -> serde_json::Value {
-    let message = "Session mock-session has expired and is no longer available.";
-    json!({"error": {
-        "code": 400,
-        "message": message,
-        "errors": [{"reason": "resourcesExceeded", "message": message}]
-    }})
+    error_body(
+        "resourcesExceeded",
+        "Session mock-session has expired and is no longer available.",
+    )
+}
+
+/// The answers of a fresh session: its creation, `BEGIN`, one statement, and the release's
+/// `ROLLBACK` and abort.
+fn a_fresh_session() -> Vec<(u16, serde_json::Value)> {
+    let mut answers = vec![(200, session_created("fresh-session"))];
+    answers.extend(vec![(200, complete()); 4]);
+    answers
 }
 
 /// The responses after the preamble when `finish` (a `COMMIT` or `ROLLBACK`) finds the
@@ -157,15 +169,7 @@ fn session_expired() -> serde_json::Value {
 fn transaction_lost_then_a_fresh_session(
     failure: serde_json::Value,
 ) -> Vec<(u16, serde_json::Value)> {
-    vec![
-        (400, failure),
-        (200, complete()),
-        (200, session_created("fresh-session")),
-        (200, complete()),
-        (200, complete()),
-        (200, complete()),
-        (200, complete()),
-    ]
+    [vec![(400, failure), (200, complete())], a_fresh_session()].concat()
 }
 
 /// Runs one more INSERT on `connection` after `finish` found the transaction gone, releases the
@@ -175,20 +179,12 @@ fn assert_the_next_statement_runs_in_a_fresh_session(
     requests: CapturedServer,
     finish: &str,
 ) {
-    let mut statement = connection.new_statement().unwrap();
-    statement
-        .set_sql_query("INSERT dataset.table VALUES (43)")
-        .unwrap();
-    statement.execute_update().unwrap();
-    drop(statement);
+    execute(&mut connection, "INSERT dataset.table VALUES (43)").unwrap();
     drop(connection);
 
-    assert_sql(
+    assert_sql_after_preamble(
         requests,
         &[
-            "SELECT 1",
-            "BEGIN TRANSACTION",
-            "INSERT dataset.table VALUES (42)",
             &format!("{finish} TRANSACTION"),
             "CALL BQ.ABORT_SESSION('mock-session')",
             "SELECT 1",
@@ -210,9 +206,9 @@ fn a_failed_rollback_ends_the_session_and_the_next_statement_starts_afresh() {
     );
 
     let failure = connection.rollback().unwrap_err();
-    assert_eq!(failure.status, Status::InvalidState);
-    assert_message(
+    assert_failure(
         &failure,
+        Status::InvalidState,
         &["No active transaction found", "session was ended"],
     );
     assert_eq!(
@@ -235,9 +231,9 @@ fn a_commit_that_finds_the_transaction_gone_ends_the_session() {
     );
 
     let failure = connection.commit().unwrap_err();
-    assert_eq!(failure.status, Status::InvalidState);
-    assert_message(
+    assert_failure(
         &failure,
+        Status::InvalidState,
         &[
             "No active transaction found",
             "a script ran COMMIT or ROLLBACK",
@@ -261,9 +257,9 @@ fn a_commit_in_an_expired_session_reports_the_transaction_gone() {
     );
 
     let failure = connection.commit().unwrap_err();
-    assert_eq!(failure.status, Status::InvalidState);
-    assert_message(
+    assert_failure(
         &failure,
+        Status::InvalidState,
         &[
             "has expired and is no longer available",
             "its session expired, which rolled it back",
@@ -283,16 +279,17 @@ fn a_dry_run_in_an_expired_idle_session_describes_outside_it() {
         "statistics": {"query": {"statementType": "INSERT"}},
         "status": {"state": "DONE"}
     });
-    let (mut connection, requests) = connection_with_open_transaction_then(vec![
-        (200, complete()),
-        (400, session_expired()),
-        (200, described),
-        (200, session_created("fresh-session")),
-        (200, complete()),
-        (200, complete()),
-        (200, complete()),
-        (200, complete()),
-    ]);
+    let (mut connection, requests) = connection_with_open_transaction_then(
+        [
+            vec![
+                (200, complete()),
+                (400, session_expired()),
+                (200, described),
+            ],
+            a_fresh_session(),
+        ]
+        .concat(),
+    );
     connection.commit().unwrap();
     let mut statement = connection.new_statement().unwrap();
     statement
@@ -337,31 +334,21 @@ fn a_dry_run_in_an_expired_idle_session_describes_outside_it() {
 /// statement begins its transaction in a new session instead of failing.
 #[test]
 fn a_transaction_begins_in_a_new_session_when_the_previous_one_expired() {
-    let (mut connection, requests) = connection_with_open_transaction_then(vec![
-        (200, complete()),
-        (400, session_expired()),
-        (200, session_created("fresh-session")),
-        (200, complete()),
-        (200, complete()),
-        (200, complete()),
-        (200, complete()),
-    ]);
+    let (mut connection, requests) = connection_with_open_transaction_then(
+        [
+            vec![(200, complete()), (400, session_expired())],
+            a_fresh_session(),
+        ]
+        .concat(),
+    );
     connection.commit().unwrap();
 
-    let mut statement = connection.new_statement().unwrap();
-    statement
-        .set_sql_query("INSERT dataset.table VALUES (43)")
-        .unwrap();
-    statement.execute_update().unwrap();
-    drop(statement);
+    execute(&mut connection, "INSERT dataset.table VALUES (43)").unwrap();
     drop(connection);
 
-    assert_sql(
+    assert_sql_after_preamble(
         requests,
         &[
-            "SELECT 1",
-            "BEGIN TRANSACTION",
-            "INSERT dataset.table VALUES (42)",
             "COMMIT TRANSACTION",
             "BEGIN TRANSACTION",
             "SELECT 1",
@@ -378,23 +365,19 @@ fn a_transaction_begins_in_a_new_session_when_the_previous_one_expired() {
 /// so the statement begins it again in a new session and runs there, once, as a new request.
 #[test]
 fn a_statement_refused_right_after_its_begin_runs_again_in_a_new_session() {
-    let (mut connection, requests) = connection_with_open_transaction_then(vec![
-        (200, complete()),
-        (200, complete()),
-        (400, session_expired()),
-        (200, session_created("fresh-session")),
-        (200, complete()),
-        (200, complete()),
-        (200, complete()),
-        (200, complete()),
-    ]);
+    let (mut connection, requests) = connection_with_open_transaction_then(
+        [
+            vec![
+                (200, complete()),
+                (200, complete()),
+                (400, session_expired()),
+            ],
+            a_fresh_session(),
+        ]
+        .concat(),
+    );
     connection.commit().unwrap();
-    let mut statement = connection.new_statement().unwrap();
-    statement
-        .set_sql_query("INSERT dataset.table VALUES (43)")
-        .unwrap();
-    statement.execute_update().unwrap();
-    drop(statement);
+    execute(&mut connection, "INSERT dataset.table VALUES (43)").unwrap();
     drop(connection);
 
     let requests = requests.join().unwrap();
@@ -432,20 +415,12 @@ fn a_later_statement_refused_in_an_ended_session_is_not_run_again() {
         (200, complete()),
         (200, complete()),
     ]);
-    let mut statement = connection.new_statement().unwrap();
-    statement
-        .set_sql_query("INSERT dataset.table VALUES (43)")
-        .unwrap();
-    let failure = statement.execute_update().unwrap_err();
+    let failure = execute(&mut connection, "INSERT dataset.table VALUES (43)").unwrap_err();
     assert_message(&failure, &["has expired and is no longer available"]);
-    drop(statement);
     drop(connection);
-    assert_sql(
+    assert_sql_after_preamble(
         requests,
         &[
-            "SELECT 1",
-            "BEGIN TRANSACTION",
-            "INSERT dataset.table VALUES (42)",
             "INSERT dataset.table VALUES (43)",
             "ROLLBACK TRANSACTION",
             "CALL BQ.ABORT_SESSION('mock-session')",
@@ -510,12 +485,10 @@ fn a_later_row_refused_in_an_ended_session_is_not_run_again() {
 /// `invalidQuery`, after its earlier statements ran and perhaps committed: it never runs again.
 #[test]
 fn a_script_stopped_by_its_session_ending_is_not_run_again() {
-    let message = "Session mock-session has expired and is no longer available. at [2:1]";
-    let stopped = json!({"error": {
-        "code": 400,
-        "message": message,
-        "errors": [{"reason": "invalidQuery", "message": message}]
-    }});
+    let stopped = error_body(
+        "invalidQuery",
+        "Session mock-session has expired and is no longer available. at [2:1]",
+    );
     let script = "INSERT dataset.table VALUES (43); COMMIT TRANSACTION";
     let (failure, sql) = first_statement_refused(script, None, stopped);
     assert_message(&failure, &["has expired and is no longer available"]);
@@ -538,8 +511,11 @@ fn enabling_autocommit_over_a_lost_transaction_reports_it_and_enables_autocommit
         connection_with_open_transaction_then(vec![(400, transaction_lost()), (200, complete())]);
 
     let failure = set_option_error(&mut connection, OptionConnection::AutoCommit, "true");
-    assert_eq!(failure.status, Status::InvalidState);
-    assert_message(&failure, &["autocommit is now enabled"]);
+    assert_failure(
+        &failure,
+        Status::InvalidState,
+        &["autocommit is now enabled"],
+    );
     assert_eq!(
         option_string(&connection, OptionConnection::AutoCommit),
         ADBC_OPTION_VALUE_ENABLED
@@ -562,8 +538,11 @@ fn a_statement_outliving_a_manual_commit_connection_refuses_to_run() {
         .set_sql_query("INSERT dataset.table VALUES (42)")
         .unwrap();
     let failure = statement.execute_update().unwrap_err();
-    assert_eq!(failure.status, Status::InvalidState);
-    assert_message(&failure, &["was released with autocommit disabled"]);
+    assert_failure(
+        &failure,
+        Status::InvalidState,
+        &["was released with autocommit disabled"],
+    );
     assert!(requests.join().unwrap().is_empty());
 }
 
@@ -583,12 +562,7 @@ fn first_transaction_without_a_location(dataset: (u16, serde_json::Value)) -> Ve
         ],
     );
     set_option(&mut connection, OptionConnection::AutoCommit, false);
-    let mut statement = connection.new_statement().unwrap();
-    statement
-        .set_sql_query("INSERT events VALUES (42)")
-        .unwrap();
-    statement.execute_update().unwrap();
-    drop(statement);
+    execute(&mut connection, "INSERT events VALUES (42)").unwrap();
     drop(connection);
 
     let requests = requests.join().unwrap();
@@ -627,55 +601,61 @@ fn a_session_without_a_configured_location_is_created_where_the_default_dataset_
     }
 }
 
+/// The two ends of a request a [`holding`] mock is sitting on.
+struct Held {
+    seen: std::sync::mpsc::Receiver<()>,
+    resume: std::sync::mpsc::SyncSender<()>,
+}
+
+impl Held {
+    /// Cancels through `cancel` once the request arrives, then lets it finish.
+    fn cancel_with(self, cancel: Box<dyn adbc_core::CancelHandle>) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            self.seen.recv().unwrap();
+            cancel.try_cancel().unwrap();
+            self.resume.send(()).unwrap();
+        })
+    }
+}
+
+/// A mock of `count` statements that opens a session and holds `sql` until told to answer it.
+fn holding(sql: &'static str, count: usize) -> (String, CapturedServer, Held) {
+    let (arrived, seen) = std::sync::mpsc::sync_channel(0);
+    let (resume, resumed) = std::sync::mpsc::sync_channel(0);
+    let mut served = 0;
+    let (endpoint, requests) = capture_statements_responding(count, move |request| {
+        served += 1;
+        if served == 1 {
+            return Some((200, session_created("mock-session")));
+        }
+        if request.sql() == sql {
+            arrived.send(()).unwrap();
+            resumed.recv().unwrap();
+        }
+        Some((200, complete()))
+    });
+    (endpoint, requests, Held { seen, resume })
+}
+
 /// A `COMMIT` already sent can land after its caller is cancelled. Reporting it cancelled would
 /// leave the transaction active in the driver while BigQuery autocommits every later statement in
 /// the session, so a cancel waits for the commit and the next statement begins a new transaction.
 #[test]
 fn a_cancel_during_commit_waits_for_its_outcome() {
-    let (commit_seen, wait_for_commit) = std::sync::mpsc::sync_channel(0);
-    let (release_commit, commit_released) = std::sync::mpsc::sync_channel(0);
-    let mut served = 0;
-    let (endpoint, requests) =
-        crate::test_support::http::capture_statements_responding(8, move |request| {
-            served += 1;
-            if served == 1 {
-                return Some((200, session_created("mock-session")));
-            }
-            if request.sql() == "COMMIT TRANSACTION" {
-                commit_seen.send(()).unwrap();
-                commit_released.recv().unwrap();
-            }
-            Some((200, complete()))
-        });
+    let (endpoint, requests, held) = holding("COMMIT TRANSACTION", 8);
     let mut connection = test_connection_at(&endpoint);
     set_option(&mut connection, OptionConnection::AutoCommit, false);
-    let mut statement = connection.new_statement().unwrap();
-    statement
-        .set_sql_query("INSERT dataset.table VALUES (42)")
-        .unwrap();
-    statement.execute_update().unwrap();
-    let cancel = connection.get_cancel_handle();
-    let canceller = thread::spawn(move || {
-        wait_for_commit.recv().unwrap();
-        cancel.try_cancel().unwrap();
-        release_commit.send(()).unwrap();
-    });
+    execute(&mut connection, "INSERT dataset.table VALUES (42)").unwrap();
+    let canceller = held.cancel_with(connection.get_cancel_handle());
 
     connection.commit().unwrap();
     canceller.join().unwrap();
-    statement
-        .set_sql_query("INSERT dataset.table VALUES (43)")
-        .unwrap();
-    statement.execute_update().unwrap();
-    drop(statement);
+    execute(&mut connection, "INSERT dataset.table VALUES (43)").unwrap();
     drop(connection);
 
-    assert_sql(
+    assert_sql_after_preamble(
         requests,
         &[
-            "SELECT 1",
-            "BEGIN TRANSACTION",
-            "INSERT dataset.table VALUES (42)",
             "COMMIT TRANSACTION",
             "BEGIN TRANSACTION",
             "INSERT dataset.table VALUES (43)",
@@ -692,31 +672,24 @@ fn a_cancel_during_commit_waits_for_its_outcome() {
 fn a_refused_begin_keeps_the_session_for_the_next_statement() {
     let (mut connection, requests) = connection_with_open_transaction_then(vec![
         (200, complete()),
-        (
-            400,
-            crate::test_support::http::error_body("invalidQuery", "mock refusal"),
-        ),
+        (400, error_body("invalidQuery", "mock refusal")),
         (200, complete()),
         (200, complete()),
         (200, complete()),
         (200, complete()),
     ]);
     connection.commit().unwrap();
-    let mut statement = connection.new_statement().unwrap();
-    statement
-        .set_sql_query("INSERT dataset.table VALUES (43)")
-        .unwrap();
-    assert_message(&statement.execute_update().unwrap_err(), &["mock refusal"]);
-    statement.execute_update().unwrap();
-    drop(statement);
+    let sql = "INSERT dataset.table VALUES (43)";
+    assert_message(
+        &execute(&mut connection, sql).unwrap_err(),
+        &["mock refusal"],
+    );
+    execute(&mut connection, sql).unwrap();
     drop(connection);
 
-    assert_sql(
+    assert_sql_after_preamble(
         requests,
         &[
-            "SELECT 1",
-            "BEGIN TRANSACTION",
-            "INSERT dataset.table VALUES (42)",
             "COMMIT TRANSACTION",
             "BEGIN TRANSACTION",
             "BEGIN TRANSACTION",
@@ -732,33 +705,14 @@ fn a_refused_begin_keeps_the_session_for_the_next_statement() {
 /// the next one runs in the transaction that began.
 #[test]
 fn a_cancel_during_begin_keeps_the_transaction_it_began() {
-    let (begin_seen, wait_for_begin) = std::sync::mpsc::sync_channel(0);
-    let (release_begin, begin_released) = std::sync::mpsc::sync_channel(0);
-    let mut served = 0;
-    let (endpoint, requests) =
-        crate::test_support::http::capture_statements_responding(5, move |request| {
-            served += 1;
-            if served == 1 {
-                return Some((200, session_created("mock-session")));
-            }
-            if request.sql() == "BEGIN TRANSACTION" {
-                begin_seen.send(()).unwrap();
-                begin_released.recv().unwrap();
-            }
-            Some((200, complete()))
-        });
+    let (endpoint, requests, held) = holding("BEGIN TRANSACTION", 5);
     let mut connection = test_connection_at(&endpoint);
     set_option(&mut connection, OptionConnection::AutoCommit, false);
     let mut statement = connection.new_statement().unwrap();
     statement
         .set_sql_query("INSERT dataset.table VALUES (42)")
         .unwrap();
-    let cancel = statement.get_cancel_handle();
-    let canceller = thread::spawn(move || {
-        wait_for_begin.recv().unwrap();
-        cancel.try_cancel().unwrap();
-        release_begin.send(()).unwrap();
-    });
+    let canceller = held.cancel_with(statement.get_cancel_handle());
 
     let failure = statement.execute_update().unwrap_err();
     canceller.join().unwrap();
@@ -767,12 +721,9 @@ fn a_cancel_during_begin_keeps_the_transaction_it_began() {
     drop(statement);
     drop(connection);
 
-    assert_sql(
+    assert_sql_after_preamble(
         requests,
         &[
-            "SELECT 1",
-            "BEGIN TRANSACTION",
-            "INSERT dataset.table VALUES (42)",
             "ROLLBACK TRANSACTION",
             "CALL BQ.ABORT_SESSION('mock-session')",
         ],
@@ -782,11 +733,7 @@ fn a_cancel_during_begin_keeps_the_transaction_it_began() {
 /// The answers to a `COMMIT` that meets a server error on every attempt and whose job never
 /// appears, which leaves BigQuery's verdict unknown.
 fn commit_without_a_verdict() -> Vec<(u16, serde_json::Value)> {
-    let unavailable = json!({"error": {
-        "code": 503,
-        "message": "Service unavailable",
-        "errors": [{"reason": "backendError", "message": "Service unavailable"}]
-    }});
+    let unavailable = error_body("backendError", "Service unavailable");
     let mut answers = vec![(503, unavailable); crate::rest::retry::MAX_ATTEMPTS as usize];
     answers.extend(vec![
         (404, not_found_response());
@@ -804,9 +751,9 @@ fn enabling_autocommit_over_a_commit_without_a_verdict_says_the_outcome_is_unkno
     let (mut connection, requests) = connection_with_open_transaction_then(then);
 
     let failure = set_option_error(&mut connection, OptionConnection::AutoCommit, "true");
-    assert_eq!(failure.status, Status::IO);
-    assert_message(
+    assert_failure(
         &failure,
+        Status::IO,
         &[
             "did not say whether the transaction was committed",
             "autocommit is now enabled",
@@ -829,32 +776,23 @@ fn enabling_autocommit_over_a_commit_without_a_verdict_says_the_outcome_is_unkno
 /// caller is told the outcome is unknown, and the next statement begins in a fresh session.
 #[test]
 fn a_commit_without_a_verdict_ends_the_session_and_says_the_outcome_is_unknown() {
-    let mut then = commit_without_a_verdict();
-    then.extend([
-        (200, complete()),
-        (200, session_created("fresh-session")),
-        (200, complete()),
-        (200, complete()),
-        (200, complete()),
-        (200, complete()),
-    ]);
-    let (mut connection, requests) = connection_with_open_transaction_then(then);
+    let then = [
+        commit_without_a_verdict(),
+        vec![(200, complete())],
+        a_fresh_session(),
+    ];
+    let (mut connection, requests) = connection_with_open_transaction_then(then.concat());
 
     let failure = connection.commit().unwrap_err();
-    assert_eq!(failure.status, Status::IO);
-    assert_message(
+    assert_failure(
         &failure,
+        Status::IO,
         &[
             "did not say whether the transaction was committed",
             "next statement starts a new transaction",
         ],
     );
-    let mut statement = connection.new_statement().unwrap();
-    statement
-        .set_sql_query("INSERT dataset.table VALUES (43)")
-        .unwrap();
-    statement.execute_update().unwrap();
-    drop(statement);
+    execute(&mut connection, "INSERT dataset.table VALUES (43)").unwrap();
     drop(connection);
 
     let commits = vec!["COMMIT TRANSACTION"; crate::rest::retry::MAX_ATTEMPTS as usize];
@@ -882,18 +820,11 @@ fn a_commit_without_a_verdict_ends_the_session_and_says_the_outcome_is_unknown()
 fn bigquery_losing_the_answer_to(lost: &'static str, count: usize) -> (String, CapturedServer) {
     let mut served = 0;
     let mut ran = false;
-    crate::test_support::http::capture_statements_responding(count, move |request| {
+    capture_statements_responding(count, move |request| {
         served += 1;
         if request.line.starts_with("GET") {
             let job = request.path().rsplit('/').next().unwrap();
-            let job = job.split('?').next().unwrap();
-            return Some((
-                200,
-                json!({
-                    "jobReference": {"projectId": "fixture-project", "jobId": job, "location": "EU"},
-                    "status": {"state": "DONE"}
-                }),
-            ));
+            return Some(done_job(job.split('?').next().unwrap(), json!({})));
         }
         if served == 1 {
             return Some((200, session_created("mock-session")));
@@ -904,23 +835,15 @@ fn bigquery_losing_the_answer_to(lost: &'static str, count: usize) -> (String, C
         if !std::mem::replace(&mut ran, true) {
             return None;
         }
-        let job = &request.body["jobReference"]["jobId"];
-        Some(if let Some(job) = job.as_str() {
-            let message = format!("Already Exists: Job fixture-project:EU.{job}");
-            (
+        Some(match request.body["jobReference"]["jobId"].as_str() {
+            Some(job) => (
                 409,
-                crate::test_support::http::error_body("duplicate", &message),
-            )
-        } else if lost == "BEGIN TRANSACTION" {
-            (
-                400,
-                crate::test_support::http::error_body(
-                    "invalidQuery",
-                    "Only one transaction at a time is supported",
+                error_body(
+                    "duplicate",
+                    &format!("Already Exists: Job fixture-project:EU.{job}"),
                 ),
-            )
-        } else {
-            (400, transaction_lost())
+            ),
+            None => (400, transaction_lost()),
         })
     })
 }
@@ -937,12 +860,7 @@ fn a_control_statement_whose_answer_is_lost_reports_what_it_did() {
         let (endpoint, requests) = bigquery_losing_the_answer_to(lost, 7);
         let mut connection = test_connection_at(&endpoint);
         set_option(&mut connection, OptionConnection::AutoCommit, false);
-        let mut statement = connection.new_statement().unwrap();
-        statement
-            .set_sql_query("INSERT dataset.table VALUES (42)")
-            .unwrap();
-        statement.execute_update().unwrap();
-        drop(statement);
+        execute(&mut connection, "INSERT dataset.table VALUES (42)").unwrap();
         if rollback {
             connection.rollback().unwrap();
         } else {
@@ -951,18 +869,12 @@ fn a_control_statement_whose_answer_is_lost_reports_what_it_did() {
         drop(connection);
 
         let requests = requests.join().unwrap();
-        let sent = requests
+        let attempts = requests
             .iter()
-            .filter(|request| request.line.starts_with("POST"))
+            .filter(|request| request.line.starts_with("POST") && request.sql() == lost)
+            .map(|request| request.body["jobReference"]["jobId"].as_str().unwrap())
             .collect::<Vec<_>>();
-        let replays = sent
-            .iter()
-            .filter(|request| request.sql() == lost)
-            .map(|request| &request.body["jobReference"]["jobId"])
-            .collect::<Vec<_>>();
-        assert_eq!(replays.len(), 2, "{lost}");
-        assert_eq!(replays[0], replays[1], "{lost}");
-        assert!(replays[0].is_string(), "{lost}");
+        assert_eq!(attempts, [attempts[0]; 2], "{lost}");
     }
 }
 
@@ -974,27 +886,14 @@ fn a_statement_told_no_transaction_is_active_makes_the_next_one_begin_again() {
     let (endpoint, requests) = bigquery_losing_the_answer_to("COMMIT TRANSACTION", 9);
     let mut connection = test_connection_at(&endpoint);
     set_option(&mut connection, OptionConnection::AutoCommit, false);
-    let mut statement = connection.new_statement().unwrap();
-    for (sql, failure) in [
-        ("INSERT dataset.table VALUES (42)", None),
-        ("COMMIT TRANSACTION", Some("No active transaction found")),
-        ("INSERT dataset.table VALUES (43)", None),
-    ] {
-        statement.set_sql_query(sql).unwrap();
-        match (statement.execute_update(), failure) {
-            (Ok(_), None) => {}
-            (Err(error), Some(failure)) => assert_message(&error, &[failure]),
-            (outcome, _) => panic!("{sql}: {outcome:?}"),
-        }
-    }
-    drop(statement);
+    execute(&mut connection, "INSERT dataset.table VALUES (42)").unwrap();
+    let failure = execute(&mut connection, "COMMIT TRANSACTION").unwrap_err();
+    assert_message(&failure, &["No active transaction found"]);
+    execute(&mut connection, "INSERT dataset.table VALUES (43)").unwrap();
     drop(connection);
-    assert_sql(
+    assert_sql_after_preamble(
         requests,
         &[
-            "SELECT 1",
-            "BEGIN TRANSACTION",
-            "INSERT dataset.table VALUES (42)",
             "COMMIT TRANSACTION",
             "COMMIT TRANSACTION",
             "BEGIN TRANSACTION",
@@ -1011,28 +910,22 @@ fn a_statement_told_no_transaction_is_active_makes_the_next_one_begin_again() {
 fn a_session_end_that_gets_no_answer_does_not_hold_the_caller_or_read_as_done() {
     let (release, released) = std::sync::mpsc::channel();
     let mut served = 0;
-    let (endpoint, requests) =
-        crate::test_support::http::capture_statements_responding(5, move |request| {
-            served += 1;
-            if served == 1 {
-                return Some((200, session_created("mock-session")));
-            }
-            if request.sql() == "COMMIT TRANSACTION" {
-                return Some((400, transaction_lost()));
-            }
-            if request.sql().starts_with("CALL") {
-                released.recv().unwrap();
-            }
-            Some((200, complete()))
-        });
+    let (endpoint, requests) = capture_statements_responding(5, move |request| {
+        served += 1;
+        if served == 1 {
+            return Some((200, session_created("mock-session")));
+        }
+        if request.sql() == "COMMIT TRANSACTION" {
+            return Some((400, transaction_lost()));
+        }
+        if request.sql().starts_with("CALL") {
+            released.recv().unwrap();
+        }
+        Some((200, complete()))
+    });
     let mut connection = test_connection_at(&endpoint);
     set_option(&mut connection, OptionConnection::AutoCommit, false);
-    let mut statement = connection.new_statement().unwrap();
-    statement
-        .set_sql_query("INSERT dataset.table VALUES (42)")
-        .unwrap();
-    statement.execute_update().unwrap();
-    drop(statement);
+    execute(&mut connection, "INSERT dataset.table VALUES (42)").unwrap();
 
     let failure = connection.commit().unwrap_err();
     release.send(()).unwrap();
@@ -1054,35 +947,23 @@ fn a_default_dataset_whose_location_is_unknown_leaves_the_session_location_to_bi
 #[test]
 fn a_commit_statement_in_the_callers_sql_makes_the_next_statement_begin_again() {
     let (mut connection, requests) = connection_with_open_transaction_then(vec![
-        (
-            200,
-            json!({
-                "jobComplete": true,
-                "jobReference": {"projectId":"fixture-project","jobId":"commit-job"},
-                "statementType": "COMMIT_TRANSACTION"
-            }),
-        ),
+        ok(json!({
+            "jobComplete": true,
+            "jobReference": {"projectId":"fixture-project","jobId":"commit-job"},
+            "statementType": "COMMIT_TRANSACTION"
+        })),
         (200, complete()),
         (200, complete()),
         (200, complete()),
         (200, complete()),
     ]);
-    let mut statement = connection.new_statement().unwrap();
-    statement.set_sql_query("COMMIT TRANSACTION").unwrap();
-    statement.execute_update().unwrap();
-    statement
-        .set_sql_query("INSERT dataset.table VALUES (43)")
-        .unwrap();
-    statement.execute_update().unwrap();
-    drop(statement);
+    execute(&mut connection, "COMMIT TRANSACTION").unwrap();
+    execute(&mut connection, "INSERT dataset.table VALUES (43)").unwrap();
     drop(connection);
 
-    assert_sql(
+    assert_sql_after_preamble(
         requests,
         &[
-            "SELECT 1",
-            "BEGIN TRANSACTION",
-            "INSERT dataset.table VALUES (42)",
             "COMMIT TRANSACTION",
             "BEGIN TRANSACTION",
             "INSERT dataset.table VALUES (43)",
