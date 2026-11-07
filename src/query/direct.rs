@@ -213,14 +213,15 @@ pub(super) async fn complete_query_with_progress(
         progress.begin_job();
     }
     let decoder = QueryResponseDecoder::new(runtime, result_mode);
-    for reissues in 0..=MAX_JOB_REISSUES {
-        let failure = match Box::pin(execute_once(
+    let mut reissues = 0;
+    loop {
+        match Box::pin(execute_once(
             &client, &decoder, &plan, operation, progress, context,
         ))
         .await
         {
             Ok(completed) => return Ok(completed),
-            Err(AttemptFailure::Request(failure)) => failure,
+            Err(AttemptFailure::Request(failure)) => return Err(failure),
             Err(AttemptFailure::Terminal(terminal))
                 if reissues < MAX_JOB_REISSUES && terminal.may_reissue() =>
             {
@@ -231,15 +232,13 @@ pub(super) async fn complete_query_with_progress(
                     .await
                     .map_err(|failure| with_job_link(failure, terminal.job.as_ref()))?;
                 plan = plan.reissue();
-                continue;
+                reissues += 1;
             }
             Err(AttemptFailure::Terminal(terminal)) => {
-                job_error(context, terminal.job.as_ref(), &terminal.errors)
+                return Err(job_error(context, terminal.job.as_ref(), &terminal.errors));
             }
-        };
-        return Err(failure);
+        }
     }
-    unreachable!("the bounded query reissue loop returns on its final attempt")
 }
 
 /// Adds the option name to BigQuery's "Job timed out" error for a caller's statement stopped at
@@ -365,7 +364,7 @@ async fn pause_before_reissue(operation: Option<&Operation>, reissues: usize) ->
     let delay = if cfg!(test) {
         Duration::ZERO
     } else {
-        Duration::from_secs(1_u64 << reissues.min(5))
+        Duration::from_secs(1 << reissues)
     };
     cancellation::sleep(operation, delay).await
 }

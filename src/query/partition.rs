@@ -29,14 +29,7 @@ pub(super) fn encode_partition(
         reference.job_id.as_str(),
         reference.location.as_deref().unwrap_or_default(),
     ];
-    let mut partition = Vec::with_capacity(
-        PARTITION_MAGIC.len()
-            + 3 * size_of::<u32>()
-            + fields.iter().map(|s| s.len()).sum::<usize>()
-            + 1
-            + size_of::<u32>(),
-    );
-    partition.extend_from_slice(PARTITION_MAGIC);
+    let mut partition = PARTITION_MAGIC.to_vec();
     for field in fields {
         let length = u32::try_from(field.len()).map_err(|_| {
             error(
