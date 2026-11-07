@@ -1,13 +1,13 @@
 //! Value normalization: what a batch is rewritten to before it is written, and which canonical
 //! columns are passed through without a copy.
 
+use arrow_array::{Date64Array, Time32SecondArray};
+
 use super::*;
+use crate::test_support::errors::assert_message_omits;
 
 #[test]
 fn invalid_ingest_values_do_not_appear_in_errors() {
-    use crate::test_support::errors::assert_message_omits;
-    use arrow_array::{Date64Array, Time32SecondArray};
-
     let cases: [(ArrayRef, &str, &str); 11] = [
         (
             Arc::new(Date32Array::from(vec![12_345_678])),
@@ -82,8 +82,7 @@ fn invalid_ingest_values_do_not_appear_in_errors() {
         let batch = RecordBatch::try_new(schema.clone(), vec![column]).unwrap();
         let normalized = Arc::new(normalize_schema(&schema).unwrap());
         let failure = normalize_batch(batch, normalized).unwrap_err();
-        assert_eq!(failure.status, Status::InvalidData);
-        assert_message(&failure, &["\"value\"", reason]);
+        assert_failure(&failure, Status::InvalidData, &["\"value\"", reason]);
         assert_message_omits(&failure, &[secret]);
     }
 }

@@ -48,8 +48,7 @@ fn ingest_rejects_scalar_metadata_that_contradicts_its_arrow_type() {
         "STRING",
     )]);
     let failure = arrow_schema_to_bigquery(&mislabelled).unwrap_err();
-    assert_eq!(failure.status, Status::InvalidArguments);
-    assert_message(&failure, &["incompatible"]);
+    assert_failure(&failure, Status::InvalidArguments, &["incompatible"]);
 
     let unknown = Schema::new(vec![bigquery_typed(
         Field::new("value", DataType::Int64, true),
@@ -62,11 +61,7 @@ fn ingest_rejects_scalar_metadata_that_contradicts_its_arrow_type() {
 
     // A composite field's metadata must describe a composite, not be quietly ignored.
     let list = Schema::new(vec![bigquery_typed(
-        Field::new(
-            "values",
-            DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
-            true,
-        ),
+        Field::new("values", DataType::new_list(DataType::Float64, true), true),
         "FLOAT64",
     )]);
     assert_eq!(
@@ -92,11 +87,7 @@ fn ingest_rejects_scalar_metadata_that_contradicts_its_arrow_type() {
 fn ingest_array_element_metadata_must_use_googlesql_names() {
     let list = |rich_type: &str| {
         Schema::new(vec![bigquery_typed(
-            Field::new(
-                "values",
-                DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
-                true,
-            ),
+            Field::new("values", DataType::new_list(DataType::Float64, true), true),
             rich_type,
         )])
     };
@@ -105,6 +96,5 @@ fn ingest_array_element_metadata_must_use_googlesql_names() {
     assert_eq!(accepted.fields[0].mode, "REPEATED");
 
     let rejected = arrow_schema_to_bigquery(&list("ARRAY<FLOAT>")).unwrap_err();
-    assert_eq!(rejected.status, Status::InvalidArguments);
-    assert_message(&rejected, &["FLOAT64"]);
+    assert_failure(&rejected, Status::InvalidArguments, &["FLOAT64"]);
 }

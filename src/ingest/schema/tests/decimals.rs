@@ -96,11 +96,7 @@ fn preserves_explicit_decimal_ingest_types() {
     let repeated = bigquery_typed(
         Field::new(
             "repeated",
-            DataType::List(Arc::new(Field::new(
-                "item",
-                DataType::Decimal256(38, 9),
-                true,
-            ))),
+            DataType::new_list(DataType::Decimal256(38, 9), true),
             false,
         ),
         "ARRAY<BIGNUMERIC>",
@@ -148,11 +144,7 @@ fn the_widest_bignumeric_ingests_back_as_a_parameter_free_column() {
         Field::new("widest", DataType::Decimal256(76, 38), false),
         Field::new(
             "widest_array",
-            DataType::List(Arc::new(Field::new(
-                "item",
-                DataType::Decimal256(76, 38),
-                true,
-            ))),
+            DataType::new_list(DataType::Decimal256(76, 38), true),
             true,
         ),
         Field::new("narrower", DataType::Decimal256(75, 38), true),

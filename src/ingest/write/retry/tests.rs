@@ -1,6 +1,10 @@
 use adbc_core::error::Status;
-use google_cloud_bigquery::error::AppendError;
+use google_cloud_bigquery::error::{AppendError, WriterBuilderError};
+use google_cloud_bigquery::model::StorageError;
 use google_cloud_bigquery::model::row_error::RowErrorCode;
+use google_cloud_bigquery::model::storage_error::StorageErrorCode;
+use google_cloud_gax::error::Error as GoogleError;
+use google_cloud_gax::error::rpc::{Code, Status as GoogleStatus};
 
 use super::*;
 use crate::error::{REPORTED_ERRORS, summarize_errors};
@@ -9,9 +13,6 @@ use crate::test_support::errors::assert_message_omits;
 
 /// One `AppendError::Rpc` carrying `code`.
 fn rpc_append_error(code: Code) -> AppendError {
-    use google_cloud_gax::error::Error as GoogleError;
-    use google_cloud_gax::error::rpc::Status as GoogleStatus;
-
     AppendError::from(GoogleError::service(GoogleStatus::default().set_code(code)))
 }
 
@@ -19,10 +20,6 @@ fn rpc_append_error(code: Code) -> AppendError {
 /// resolves to `UnexpectedEndOfStream`, which reconnecting exists to replay.
 #[test]
 fn classifies_retryable_append_errors_for_replay() {
-    use google_cloud_bigquery::error::WriterBuilderError;
-    use google_cloud_gax::error::Error as GoogleError;
-    use google_cloud_gax::error::rpc::{Code, Status as GoogleStatus};
-
     // The explicit offset makes a replay exactly-once, so every transient status upstream's own
     // append retry policy replays is replayed here too, INTERNAL and ABORTED included.
     for code in [
@@ -83,8 +80,6 @@ fn an_unanswered_append_ends_its_call() {
 /// one is this driver's own earlier send of the very same request.
 #[test]
 fn recognizes_an_append_that_already_landed() {
-    use google_cloud_gax::error::rpc::Code;
-
     let landed = rpc_append_error(Code::AlreadyExists);
     assert!(replay_landed(true, &landed));
     assert!(!replay_landed(false, &landed));
@@ -164,9 +159,6 @@ fn stream_error_summaries_are_capped_and_count_the_rest() {
 /// has to name the stream that failed.
 #[test]
 fn commit_stream_errors_are_classified_by_their_storage_code() {
-    use google_cloud_bigquery::model::StorageError;
-    use google_cloud_bigquery::model::storage_error::StorageErrorCode;
-
     for (code, expected) in [
         (
             StorageErrorCode::SchemaMismatchExtraFields,
@@ -213,10 +205,6 @@ fn commit_stream_errors_are_classified_by_their_storage_code() {
 /// `CANCELLED`, which here is the caller's own `AdbcStatementCancel`.
 #[test]
 fn classifies_the_control_plane_statuses_worth_another_attempt() {
-    use google_cloud_bigquery::error::WriterBuilderError;
-    use google_cloud_gax::error::Error as GoogleError;
-    use google_cloud_gax::error::rpc::{Code, Status as GoogleStatus};
-
     let refused = |code| GoogleError::service(GoogleStatus::default().set_code(code));
     for code in [
         Code::Unavailable,

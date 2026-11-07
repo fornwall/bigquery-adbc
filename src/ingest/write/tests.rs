@@ -11,7 +11,7 @@ use crate::cancellation::{Cancellation, OperationCancelHandle};
 
 use super::retry::CONTROL_PLANE_TIMEOUT;
 use super::{close_stream_call, commit_already_landed};
-use crate::test_support::errors::assert_message;
+use crate::test_support::errors::{assert_failure, assert_message};
 
 /// One live `Operation`, already cancelled, standing in for a statement whose caller called
 /// `AdbcStatementCancel` while the ingest was closing its stream.
@@ -106,8 +106,11 @@ fn an_unanswered_close_times_out() {
             "projects/p/datasets/d/tables/t",
         ))
         .unwrap_err();
-    assert_eq!(failure.status, Status::Timeout);
-    assert_message(&failure, &["commit", "streams/s", "no answer within 60 s"]);
+    assert_failure(
+        &failure,
+        Status::Timeout,
+        &["commit", "streams/s", "no answer within 60 s"],
+    );
     let elapsed = runtime.block_on(async { started.elapsed() });
     assert_eq!(elapsed, CONTROL_PLANE_TIMEOUT);
 }

@@ -1,8 +1,12 @@
 use std::sync::Arc;
 
 use adbc_core::error::Status;
+use arrow_array::cast::AsArray;
 use arrow_array::types::Int64Type;
 use arrow_array::{Array, ArrayRef, Int64Array, ListArray, StringArray, StructArray};
+use arrow_buffer::{NullBuffer, OffsetBuffer};
+use arrow_schema::{DataType, Field};
+use arrow_select::concat::concat;
 
 use super::{checked_list_length_add, compact_list_ranges, gather_retained_values};
 
@@ -22,8 +26,6 @@ fn contiguous_and_empty_lists_keep_range_scratch_small() {
 
 #[test]
 fn gathered_list_values_match_arrow_select_concat() {
-    use arrow_select::concat::concat;
-
     let sources: Vec<ArrayRef> = vec![
         Arc::new(StringArray::from(vec![
             Some("a"),
@@ -50,11 +52,7 @@ fn gathered_list_values_match_arrow_select_concat() {
             Some(vec![Some(3)]),
         ])),
         Arc::new(StructArray::from(vec![(
-            Arc::new(arrow_schema::Field::new(
-                "a",
-                arrow_schema::DataType::Int64,
-                true,
-            )),
+            Arc::new(Field::new("a", DataType::Int64, true)),
             Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5, 6])) as ArrayRef,
         )])),
     ];
@@ -108,10 +106,6 @@ fn rejects_canonical_list_offset_overflow() {
 
 #[test]
 fn rewriting_null_list_windows_rebases_only_the_addressed_values() {
-    use arrow_array::cast::AsArray;
-    use arrow_buffer::{NullBuffer, OffsetBuffer};
-    use arrow_schema::{DataType, Field};
-
     let item = Arc::new(Field::new("item", DataType::Int64, false));
     let list = ListArray::new(
         item.clone(),

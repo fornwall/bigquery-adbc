@@ -12,11 +12,11 @@ use arrow_array::{
     IntervalMonthDayNanoArray, LargeListArray, LargeListViewArray, ListArray, RecordBatch,
     StructArray, Time64MicrosecondArray, TimestampMicrosecondArray, TimestampNanosecondArray,
 };
-use arrow_buffer::{IntervalMonthDayNano, i256};
+use arrow_buffer::{IntervalMonthDayNano, OffsetBuffer, i256};
 use arrow_schema::{DataType as ArrowDataType, Field as ArrowField, Schema, SchemaRef, TimeUnit};
 
 use super::normalize_batch;
-use crate::test_support::errors::assert_message;
+use crate::test_support::errors::assert_failure;
 
 fn one_field(name: &str, data_type: ArrowDataType, nullable: bool) -> SchemaRef {
     Arc::new(Schema::new(vec![ArrowField::new(
@@ -150,8 +150,7 @@ fn bignumeric_ingest_uses_its_physical_domain_only_for_its_canonical_shape() {
     ) as ArrayRef;
     let (batch, schema) = single_column_batch("ordinary", column);
     let error = normalize_batch(batch, schema).unwrap_err();
-    assert_eq!(error.status, Status::InvalidData);
-    assert_message(&error, &["declared precision"]);
+    assert_failure(&error, Status::InvalidData, &["declared precision"]);
 }
 
 /// A `Date32` or a microsecond `Timestamp` that already matches the bound schema is still checked
@@ -183,8 +182,7 @@ fn rejects_dates_and_timestamps_outside_the_bigquery_calendar() {
     ] {
         let (batch, schema) = single_column_batch(name, column);
         let error = normalize_batch(batch, schema).unwrap_err();
-        assert_eq!(error.status, Status::InvalidData, "{name}");
-        assert_message(&error, &[name, "row 0"]);
+        assert_failure(&error, Status::InvalidData, &[name, "row 0"]);
     }
 
     // 0001-01-01 and 9999-12-31 are inside the range, at both ends and in both types.
@@ -239,8 +237,7 @@ fn rejects_null_elements_inside_ingested_arrays() {
     ])) as ArrayRef;
     let (batch, schema) = single_column_batch("values", canonical);
     let error = normalize_batch(batch, schema).unwrap_err();
-    assert_eq!(error.status, Status::InvalidData);
-    assert_message(&error, &["values", "row 1"]);
+    assert_failure(&error, Status::InvalidData, &["values", "row 1"]);
 
     // The same holds for a layout that has to be rebuilt rather than passed through.
     let large = Arc::new(LargeListArray::from_iter_primitive::<Int64Type, _, _>(
@@ -249,16 +246,11 @@ fn rejects_null_elements_inside_ingested_arrays() {
     let (batch, _) = single_column_batch("values", large);
     let schema = one_field(
         "values",
-        ArrowDataType::List(Arc::new(ArrowField::new(
-            "item",
-            ArrowDataType::Int64,
-            true,
-        ))),
+        ArrowDataType::new_list(ArrowDataType::Int64, true),
         false,
     );
     let error = normalize_batch(batch, schema).unwrap_err();
-    assert_eq!(error.status, Status::InvalidData);
-    assert_message(&error, &["row 0"]);
+    assert_failure(&error, Status::InvalidData, &["row 0"]);
 
     let view = Arc::new(LargeListViewArray::new(
         Arc::new(ArrowField::new("item", ArrowDataType::Int64, true)),
@@ -270,16 +262,11 @@ fn rejects_null_elements_inside_ingested_arrays() {
     let (batch, _) = single_column_batch("values", view);
     let schema = one_field(
         "values",
-        ArrowDataType::List(Arc::new(ArrowField::new(
-            "item",
-            ArrowDataType::Int64,
-            true,
-        ))),
+        ArrowDataType::new_list(ArrowDataType::Int64, true),
         false,
     );
     let error = normalize_batch(batch, schema).unwrap_err();
-    assert_eq!(error.status, Status::InvalidData);
-    assert_message(&error, &["row 0"]);
+    assert_failure(&error, Status::InvalidData, &["row 0"]);
 }
 
 #[test]
@@ -300,8 +287,11 @@ fn mismatched_batch_column_counts_are_rejected() {
         )
         .unwrap();
         let failure = normalize_batch(batch, schema(target_count)).unwrap_err();
-        assert_eq!(failure.status, Status::InvalidData);
-        assert_message(&failure, &["failed to normalize BigQuery ingest batch"]);
+        assert_failure(
+            &failure,
+            Status::InvalidData,
+            &["failed to normalize BigQuery ingest batch"],
+        );
     }
 }
 
@@ -325,9 +315,9 @@ fn mismatched_struct_child_counts_are_rejected() {
         let (batch, _) = single_column_batch("record", record);
         let schema = one_field("record", ArrowDataType::Struct(fields(target_count)), false);
         let error = normalize_batch(batch, schema).unwrap_err();
-        assert_eq!(error.status, Status::InvalidData);
-        assert_message(
+        assert_failure(
             &error,
+            Status::InvalidData,
             &[
                 "BigQuery ingest struct field \"record\" is invalid: ",
                 "the bound column needs one child array per struct field",
@@ -440,7 +430,7 @@ fn a_sliced_list_is_judged_only_by_the_values_its_offsets_address() {
     let item = Arc::new(ArrowField::new("item", ArrowDataType::Date32, true));
     let list = ListArray::new(
         item,
-        arrow_buffer::OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(vec![0, 1, 3])),
+        OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(vec![0, 1, 3])),
         Arc::new(dates) as ArrayRef,
         None,
     );
@@ -468,8 +458,6 @@ fn a_sliced_list_is_judged_only_by_the_values_its_offsets_address() {
 
 #[test]
 fn nested_sliced_list_validation_preserves_batch_row_locations() {
-    use arrow_buffer::OffsetBuffer;
-
     // Empty entries repeat offsets at both levels. Only the final date is invalid within the
     // selected outer window; the earlier invalid date belongs to a different batch window.
     let dates: ArrayRef = Arc::new(Date32Array::from(vec![3_000_000, 0, 3_000_000]));
@@ -511,13 +499,13 @@ fn values_behind_a_null_list_entry_are_never_validated() {
     let entries = arrow_buffer::NullBuffer::from(vec![true, false]);
     let canonical = Arc::new(ListArray::new(
         item.clone(),
-        arrow_buffer::OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(vec![0_i32, 1, 2])),
+        OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(vec![0_i32, 1, 2])),
         dates.clone(),
         Some(entries.clone()),
     )) as ArrayRef;
     let large = Arc::new(LargeListArray::new(
         item.clone(),
-        arrow_buffer::OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(vec![0_i64, 1, 2])),
+        OffsetBuffer::new(arrow_buffer::ScalarBuffer::from(vec![0_i64, 1, 2])),
         dates,
         Some(entries),
     )) as ArrayRef;
@@ -547,7 +535,7 @@ fn sliced_lists_gather_visible_ranges_before_validating() {
         let dates = Date32Array::from(vec![Some(3_000_000), Some(1), None, visible, None]);
         let list = ListArray::new(
             item.clone(),
-            arrow_buffer::OffsetBuffer::from_lengths([1, 1, 1, 1, 1]),
+            OffsetBuffer::from_lengths([1, 1, 1, 1, 1]),
             Arc::new(dates),
             Some(arrow_buffer::NullBuffer::from(vec![
                 true, true, false, true, true,

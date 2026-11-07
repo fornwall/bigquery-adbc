@@ -1,17 +1,22 @@
+use std::sync::Arc;
 use std::time::Duration;
 
+use adbc_core::CancelHandle as _;
+use arrow_array::{Int64Array, RecordBatch};
+use arrow_schema::{DataType, Field, Schema};
+use google_cloud_bigquery::model::ArrowSchema;
+use google_cloud_bigquery::write::stream_type::CommittedStream;
+use tokio::sync::Notify;
+
 use super::*;
+use crate::cancellation::{Cancellation, OperationCancelHandle};
+use crate::clients::ClientState;
+use crate::config::ServiceEndpointKind;
+use crate::test_support::grpc::{MockPlan, StorageMock, ipc_messages};
 
 /// Upstream's non-exhaustive builder errors must be obtained through its public API.
 #[test]
 fn a_stream_type_mismatch_is_not_a_retryable_transport_failure() {
-    use google_cloud_bigquery::model::ArrowSchema;
-    use google_cloud_bigquery::write::stream_type::CommittedStream;
-
-    use crate::clients::ClientState;
-    use crate::config::ServiceEndpointKind;
-    use crate::test_support::grpc::{MockPlan, StorageMock};
-
     let runtime = crate::runtime::new_runtime().unwrap();
     let mock = StorageMock::start(&runtime, MockPlan::default());
     let clients = ClientState::for_test_at(ServiceEndpointKind::Storage, mock.endpoint());
@@ -121,18 +126,6 @@ fn the_table_visibility_budget_spans_every_step_of_one_wait() {
 
 #[test]
 fn cancelling_visibility_reattachment_finalizes_the_pending_stream() {
-    use std::sync::Arc;
-
-    use adbc_core::CancelHandle as _;
-    use arrow_array::{Int64Array, RecordBatch};
-    use arrow_schema::{DataType, Field, Schema};
-    use tokio::sync::Notify;
-
-    use crate::cancellation::{Cancellation, OperationCancelHandle};
-    use crate::clients::ClientState;
-    use crate::config::ServiceEndpointKind;
-    use crate::test_support::grpc::{MockPlan, StorageMock, ipc_messages};
-
     let runtime = crate::runtime::new_runtime().unwrap();
     let gate = Arc::new((Notify::new(), Notify::new()));
     let mock = StorageMock::start(
@@ -153,7 +146,7 @@ fn cancelling_visibility_reattachment_finalizes_the_pending_stream() {
     let (schema, mut batches) = ipc_messages(&schema, &[batch]);
     let target = AppendTarget {
         client: &client,
-        schema: google_cloud_bigquery::model::ArrowSchema::new().set_serialized_schema(schema),
+        schema: ArrowSchema::new().set_serialized_schema(schema),
         table_path: "projects/p/datasets/d/tables/t",
         operation: &operation,
     };

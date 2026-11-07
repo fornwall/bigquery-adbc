@@ -33,7 +33,7 @@ use super::{
     arrow_schema_to_bigquery, canonical_mode, create_or_replace_table_ddl, normalize_schema,
     schemas_match, storage_write_schema, validate_existing_schema, validate_ingestible_target,
 };
-use crate::test_support::errors::assert_message;
+use crate::test_support::errors::{assert_failure, assert_message};
 
 mod comparison;
 mod conversion;

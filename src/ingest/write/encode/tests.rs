@@ -1,14 +1,19 @@
 use std::sync::Arc;
 
 use adbc_core::error::Status;
-use arrow_array::types::Int64Type;
-use arrow_array::{ArrayRef, Int64Array, IntervalMonthDayNanoArray, ListArray, StringArray};
+use arrow_array::cast::AsArray as _;
+use arrow_array::types::{Int8Type, Int64Type};
+use arrow_array::{
+    Array as _, ArrayRef, BinaryArray, BinaryViewArray, Date32Array, Decimal32Array,
+    DictionaryArray, Float32Array, Float64Array, Int8Array, Int64Array, IntervalMonthDayNanoArray,
+    LargeBinaryArray, LargeListViewArray, LargeStringArray, ListArray, ListViewArray, NullArray,
+    StringArray, StringViewArray, StructArray,
+};
 use arrow_buffer::{Buffer, IntervalMonthDayNano};
 use arrow_schema::{DataType, Field, IntervalUnit, Schema};
 
-use crate::arrow_ipc_bigquery::reader::{decode_record_batch_message, decode_schema};
-
 use super::*;
+use crate::arrow_ipc_bigquery::reader::{decode_record_batch_message, decode_schema};
 use crate::test_support::errors::assert_message;
 
 /// An encoder with explicit budgets and a fresh Arrow IPC stream state.
@@ -24,8 +29,6 @@ fn limited_encoder(schema: SchemaRef, target: usize, max: usize) -> ChunkEncoder
 
 #[test]
 fn encoded_chunks_release_their_normalized_window() {
-    use arrow_array::{Float32Array, Float64Array};
-
     let input = RecordBatch::try_from_iter([(
         "value",
         Arc::new(Float32Array::from(vec![1.25; 1024 * 1024])) as ArrayRef,
@@ -412,8 +415,6 @@ fn a_chunk_encoded_at_the_target_size_leaves_a_whole_request_under_the_service_l
 /// an ingest needs. A rejection in a later window still names the row of the input batch.
 #[test]
 fn a_large_batch_is_normalized_one_request_sized_window_at_a_time() {
-    use arrow_array::{Array as _, Date32Array, LargeStringArray};
-
     const ROWS: usize = 20_000;
     const BAD_ROW: usize = 15_000;
     let label = "x".repeat(100);
@@ -476,9 +477,6 @@ fn a_large_batch_is_normalized_one_request_sized_window_at_a_time() {
 
 #[test]
 fn repeated_dictionary_values_and_list_views_normalize_in_bounded_windows() {
-    use arrow_array::cast::AsArray as _;
-    use arrow_array::{Array as _, DictionaryArray, LargeListViewArray, ListViewArray};
-
     let label = "x".repeat(1_000);
     let values = Arc::new(StringArray::from_iter_values(
         std::iter::once(label.as_str()).chain(std::iter::repeat_n("", 99)),
@@ -530,12 +528,6 @@ fn repeated_dictionary_values_and_list_views_normalize_in_bounded_windows() {
 
 #[test]
 fn repeated_empty_list_values_bound_their_normalized_offsets() {
-    use arrow_array::cast::AsArray as _;
-    use arrow_array::{
-        Array as _, BinaryArray, BinaryViewArray, LargeBinaryArray, LargeStringArray,
-        ListViewArray, StringViewArray,
-    };
-
     let values: Vec<ArrayRef> = vec![
         Arc::new(StringArray::from(vec![""; 1_000])),
         Arc::new(LargeStringArray::from(vec![""; 1_000])),
@@ -574,9 +566,6 @@ fn repeated_empty_list_values_bound_their_normalized_offsets() {
 
 #[test]
 fn resolved_null_columns_normalize_in_bounded_windows() {
-    use arrow_array::types::Int8Type;
-    use arrow_array::{DictionaryArray, Int8Array, NullArray, StructArray};
-
     let scalar: ArrayRef = Arc::new(NullArray::new(1_000));
     let resolved = DataType::Struct(vec![Field::new("child", DataType::Utf8, true)].into());
     let nested: ArrayRef = Arc::new(StructArray::from(vec![(
@@ -598,10 +587,7 @@ fn resolved_null_columns_normalize_in_bounded_windows() {
         (scalar, resolved.clone()),
         (nested, resolved.clone()),
         (dictionary, resolved.clone()),
-        (
-            lists,
-            DataType::List(Arc::new(Field::new("item", resolved, false))),
-        ),
+        (lists, DataType::new_list(resolved, false)),
     ] {
         let input = RecordBatch::try_from_iter([("value", column)]).unwrap();
         let schema = Arc::new(Schema::new(vec![Field::new("value", target_type, true)]));
@@ -618,8 +604,6 @@ fn resolved_null_columns_normalize_in_bounded_windows() {
 
 #[test]
 fn widened_columns_are_sized_at_their_normalized_width() {
-    use arrow_array::{Decimal32Array, DictionaryArray, Int8Array};
-
     let decimal: ArrayRef = Arc::new(
         Decimal32Array::from(vec![123; 1_000])
             .with_precision_and_scale(9, 0)

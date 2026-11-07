@@ -24,7 +24,7 @@ fn converts_range_ingest_schema() {
     let repeated_date = bigquery_typed(
         Field::new(
             "date_ranges",
-            DataType::List(Arc::new(Field::new("item", date.data_type().clone(), true))),
+            DataType::new_list(date.data_type().clone(), true),
             true,
         ),
         "ARRAY<RANGE<DATE>>",
@@ -128,8 +128,11 @@ fn rejects_empty_and_reversed_ranges_after_normalization() {
             let batch = range_batch(kind, start, end, None);
             let schema = Arc::new(normalize_schema(batch.schema_ref()).unwrap());
             let failure = normalize_batch(batch, schema).unwrap_err();
-            assert_eq!(failure.status, Status::InvalidData);
-            assert_message(&failure, &["RANGE", "period", "lower bound", "row 0"]);
+            assert_failure(
+                &failure,
+                Status::InvalidData,
+                &["RANGE", "period", "lower bound", "row 0"],
+            );
         }
     }
 
@@ -214,6 +217,9 @@ fn invalid_repeated_ranges_report_the_sliced_input_row() {
     let failure =
         crate::ingest::normalize::normalize_rows(batch.slice(1, 2), normalized_schema, 20)
             .unwrap_err();
-    assert_eq!(failure.status, Status::InvalidData);
-    assert_message(&failure, &["periods", "row 21", "lower bound"]);
+    assert_failure(
+        &failure,
+        Status::InvalidData,
+        &["periods", "row 21", "lower bound"],
+    );
 }

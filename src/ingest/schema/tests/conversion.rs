@@ -2,7 +2,6 @@
 //! and what a refusal names.
 
 use super::*;
-use crate::test_support::errors::assert_message;
 
 #[test]
 fn a_query_result_schema_ingests_back_into_the_same_bigquery_types() {
@@ -64,8 +63,11 @@ fn rejects_deeply_nested_ingest_schemas() {
     let schema = Schema::new(vec![Field::new("record", data_type, true)]);
 
     let error = normalize_schema(&schema).unwrap_err();
-    assert_eq!(error.status, Status::InvalidArguments);
-    assert_message(&error, &["nested", &MAX_SCHEMA_NESTING_DEPTH.to_string()]);
+    assert_failure(
+        &error,
+        Status::InvalidArguments,
+        &["nested", &MAX_SCHEMA_NESTING_DEPTH.to_string()],
+    );
 
     // A schema at the bound still normalizes.
     let mut data_type = DataType::Utf8;
@@ -87,8 +89,11 @@ fn rejects_deeply_nested_table_schemas() {
     let schema = Schema::new(vec![Field::new("record", data_type, true)]);
 
     let error = arrow_schema_to_bigquery(&schema).unwrap_err();
-    assert_eq!(error.status, Status::InvalidArguments);
-    assert_message(&error, &[&MAX_SCHEMA_NESTING_DEPTH.to_string()]);
+    assert_failure(
+        &error,
+        Status::InvalidArguments,
+        &[&MAX_SCHEMA_NESTING_DEPTH.to_string()],
+    );
 
     let mut data_type = DataType::Utf8;
     for _ in 0..MAX_SCHEMA_NESTING_DEPTH - 1 {
@@ -124,7 +129,7 @@ fn rejects_uint64_instead_of_implicitly_narrowing_it_to_int64() {
     assert_rejected(
         Schema::new(vec![Field::new(
             "values",
-            DataType::List(Arc::new(Field::new("item", DataType::UInt64, true))),
+            DataType::new_list(DataType::UInt64, true),
             true,
         )]),
         "values",
@@ -142,11 +147,7 @@ fn normalizes_ingest_types_and_converts_table_schema() {
             true,
         ),
         json,
-        Field::new(
-            "tags",
-            DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
-            true,
-        ),
+        Field::new("tags", DataType::new_list(DataType::Utf8, true), true),
     ]);
     let normalized = normalize_schema(&schema).unwrap();
     assert_eq!(normalized.field(0).data_type(), &DataType::Int64);
@@ -261,8 +262,11 @@ fn list_item_names_are_not_checked_as_column_names() {
     let record = DataType::Struct(vec![Field::new("total-sales", DataType::Int64, true)].into());
     let failure =
         normalize_schema(&Schema::new(list("records", "$data$", record).to_vec())).unwrap_err();
-    assert_eq!(failure.status, Status::InvalidArguments);
-    assert_message(&failure, &["\"total-sales\" contains \"-\""]);
+    assert_failure(
+        &failure,
+        Status::InvalidArguments,
+        &["\"total-sales\" contains \"-\""],
+    );
 }
 
 /// An Arrow extension annotation describes its storage type, and Storage Write checks the ones it
@@ -549,11 +553,7 @@ fn converts_interval_and_duration_ingest_schemas() {
     let repeated_intervals = bigquery_typed(
         Field::new(
             "intervals",
-            DataType::List(Arc::new(Field::new(
-                "item",
-                DataType::Interval(IntervalUnit::MonthDayNano),
-                true,
-            ))),
+            DataType::new_list(DataType::Interval(IntervalUnit::MonthDayNano), true),
             true,
         ),
         "ARRAY<INTERVAL>",
@@ -649,11 +649,7 @@ fn converts_constrained_string_ingest_schema() {
     let schema = Schema::new(vec![
         constrained("text", DataType::Utf8, "32"),
         constrained("data", DataType::Binary, "64"),
-        constrained(
-            "tags",
-            DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
-            "16",
-        ),
+        constrained("tags", DataType::new_list(DataType::Utf8, true), "16"),
         Field::new(
             "record",
             DataType::Struct(vec![constrained("label", DataType::Utf8, "8")].into()),

@@ -9,7 +9,7 @@ use arrow_buffer::{NullBuffer, ScalarBuffer};
 
 use super::super::site::ValueSite;
 use super::validate_scalar_values;
-use crate::test_support::errors::{assert_message, assert_message_omits};
+use crate::test_support::errors::{assert_failure, assert_message_omits};
 
 fn check_timestamp_boundaries<T: ArrowPrimitiveType<Native = i64>>(per_second: i64) {
     let minimum = -62_135_596_800 * per_second;
@@ -53,8 +53,11 @@ fn date_calendar_boundaries_and_extreme_null_values() {
     for value in [i32::MIN, -719_163, 2_932_897, i32::MAX] {
         let column: ArrayRef = Arc::new(Date32Array::from(vec![value]));
         let error = validate_scalar_values(&column, &site).unwrap_err();
-        assert_eq!(error.status, Status::InvalidData);
-        assert_message(&error, &["\"day\"", "row 0", "years 1 to 9999"]);
+        assert_failure(
+            &error,
+            Status::InvalidData,
+            &["\"day\"", "row 0", "years 1 to 9999"],
+        );
         assert_message_omits(&error, &[&value.to_string()]);
     }
 }

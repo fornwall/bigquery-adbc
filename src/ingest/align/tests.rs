@@ -7,8 +7,10 @@ use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
 
 use super::*;
 use crate::ingest::normalize::normalize_batch;
+use crate::ingest::schema::{arrow_schema_to_bigquery, normalize_schema, validate_existing_schema};
+use crate::rest::metadata::TableId;
 use crate::test_support::schema::{field, field_mode, record, table_schema};
-use crate::types::BIGQUERY_TYPE_METADATA_KEY;
+use crate::types::{ARROW_EXTENSION_NAME_KEY, BIGQUERY_TYPE_METADATA_KEY};
 
 fn max_length(field: &Field) -> Option<&str> {
     field
@@ -172,12 +174,6 @@ fn plain_strings_take_the_columns_maximum_length() {
 
 #[test]
 fn unknown_extensions_do_not_hide_column_length_limits() {
-    use crate::ingest::schema::{
-        arrow_schema_to_bigquery, normalize_schema, validate_existing_schema,
-    };
-    use crate::rest::metadata::TableId;
-    use crate::types::ARROW_EXTENSION_NAME_KEY;
-
     let target = TableId {
         project_id: "p",
         dataset_id: "d",
@@ -294,7 +290,7 @@ fn a_null_field_takes_its_decimal_columns_declared_shape() {
     let aligned = align_with_table(&bound, &table).unwrap();
     assert_eq!(aligned.field(0).data_type(), &DataType::Decimal128(10, 2));
     assert_eq!(item_type(aligned.field(1)), &DataType::Decimal128(10, 2));
-    let checked = crate::ingest::schema::arrow_schema_to_bigquery(&aligned).unwrap();
+    let checked = arrow_schema_to_bigquery(&aligned).unwrap();
     assert!(checked.fields.iter().all(|field| field.precision == 10));
 }
 
@@ -302,9 +298,6 @@ fn a_null_field_takes_its_decimal_columns_declared_shape() {
 /// goes with it keeps it parameterized, so an append into it is admitted.
 #[test]
 fn an_append_into_a_bignumeric_76_38_column_keeps_its_shape() {
-    use crate::ingest::schema::{arrow_schema_to_bigquery, validate_existing_schema};
-    use crate::rest::metadata::TableId;
-
     let table = table_schema([decimal_column("big", "BIGNUMERIC", 76, 38)]);
     let bound = Schema::new(vec![Field::new("big", DataType::Decimal128(10, 2), true)]);
     let aligned = align_with_table(&bound, &table).unwrap();
