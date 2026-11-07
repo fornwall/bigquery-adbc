@@ -3,11 +3,11 @@ use std::sync::Arc;
 use adbc_core::error::Status;
 use arrow_array::types::{Float16Type, Int32Type};
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, BinaryViewArray, Date32Array, Date64Array, Decimal32Array,
-    Decimal64Array, Decimal128Array, Decimal256Array, DictionaryArray, FixedSizeBinaryArray,
-    Float16Array, Float32Array, Float64Array, Int8Array, Int32Array, Int64Array,
-    IntervalDayTimeArray, IntervalMonthDayNanoArray, IntervalYearMonthArray, LargeBinaryArray,
-    LargeStringArray, StringArray, StringViewArray, Time32MillisecondArray, Time32SecondArray,
+    Array, ArrayRef, BinaryArray, BinaryViewArray, Date32Array, Date64Array, Decimal128Array,
+    Decimal256Array, DictionaryArray, FixedSizeBinaryArray, Float16Array, Float32Array,
+    Float64Array, Int8Array, Int32Array, Int64Array, IntervalDayTimeArray,
+    IntervalMonthDayNanoArray, IntervalYearMonthArray, LargeBinaryArray, LargeStringArray,
+    StringArray, StringViewArray, Time32MillisecondArray, Time32SecondArray,
     Time64MicrosecondArray, Time64NanosecondArray, TimestampMicrosecondArray,
     TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt32Array,
     UInt64Array,
@@ -295,35 +295,20 @@ fn date64_requires_exact_days_and_rejects_out_of_range_days() {
 }
 
 #[test]
-fn decimals_change_physical_width_and_normalize_negative_scale_exactly() {
-    let decimal32 = Decimal32Array::from(vec![Some(123), None])
-        .with_precision_and_scale(3, 2)
+fn decimals_widen_to_a_wider_physical_type_and_a_larger_scale() {
+    let decimal128 = Decimal128Array::from(vec![Some(123), None])
+        .with_precision_and_scale(38, 20)
         .unwrap();
-    let decimal128 = cast(Arc::new(decimal32), &DataType::Decimal128(3, 2));
-    let decimal128 = typed::<Decimal128Array>(&decimal128);
-    assert_eq!(decimal128.value(0), 123);
-    assert!(decimal128.is_null(1));
+    let decimal256 = cast(Arc::new(decimal128), &DataType::Decimal256(38, 20));
+    let decimal256 = typed::<Decimal256Array>(&decimal256);
+    assert_eq!(decimal256.value(0), i256::from_i128(123));
+    assert!(decimal256.is_null(1));
 
-    let negative_scale = Decimal64Array::from(vec![-12])
+    let negative_scale = Decimal128Array::from(vec![-12])
         .with_precision_and_scale(2, -3)
         .unwrap();
     let normalized = cast(Arc::new(negative_scale), &DataType::Decimal128(5, 0));
     assert_eq!(typed::<Decimal128Array>(&normalized).value(0), -12_000);
-
-    let decimal128 = Decimal128Array::from(vec![123])
-        .with_precision_and_scale(38, 20)
-        .unwrap();
-    let decimal256 = cast(Arc::new(decimal128), &DataType::Decimal256(38, 20));
-    assert_eq!(
-        typed::<Decimal256Array>(&decimal256).value(0),
-        i256::from_i128(123)
-    );
-
-    let decimal256 = Decimal256Array::from(vec![i256::from_i128(-123)])
-        .with_precision_and_scale(38, 9)
-        .unwrap();
-    let decimal128 = cast(Arc::new(decimal256), &DataType::Decimal128(38, 9));
-    assert_eq!(typed::<Decimal128Array>(&decimal128).value(0), -123);
 }
 
 /// A null slot's payload is arbitrary after an FFI import or a `MutableArrayData` gather.
@@ -388,48 +373,29 @@ fn bignumeric_casts_span_its_full_physical_domain() {
     );
 }
 
-/// Rescaling only adds fractional digits; dropping one would silently change the value. A target
-/// scale below the source's is refused even when the values would survive, naming both scales.
+/// These casts only widen: dropping a fractional digit or an integer one could change the value,
+/// so a pair that needs to is refused even when the values would survive.
 #[test]
-fn a_decimal_scale_reduction_is_refused_rather_than_truncated() {
-    let exact_at_the_lower_scale = Decimal128Array::from(vec![120])
+fn a_decimal_cast_that_would_narrow_is_refused() {
+    let at_scale_two = Decimal128Array::from(vec![120])
         .with_precision_and_scale(10, 2)
         .unwrap();
-    let message = cast_error(
-        Arc::new(exact_at_the_lower_scale),
-        &DataType::Decimal128(10, 1),
-    );
+    let message = cast_error(Arc::new(at_scale_two), &DataType::Decimal128(10, 1));
     assert_eq!(
         message,
         "failed to normalize BigQuery ingest column \"field\" from Decimal128(10, 2) to \
-         Decimal128(10, 1): decimal scale 2 cannot be reduced to 1 without dropping fractional \
-         digits"
+         Decimal128(10, 1): the cast is not supported"
     );
 
-    let message = cast_error(
-        Arc::new(
-            Decimal256Array::from(vec![i256::from_i128(1)])
-                .with_precision_and_scale(10, 9)
-                .unwrap(),
-        ),
-        &DataType::Decimal256(10, 0),
-    );
-    assert!(
-        message.contains("decimal scale 9 cannot be reduced to 0"),
-        "{message}"
-    );
-}
-
-#[test]
-fn decimal_narrowing_rejects_values_outside_the_declared_precision() {
-    let malformed = Decimal256Array::from(vec![i256::from_i128(i128::MAX)])
-        .with_precision_and_scale(38, 9)
-        .unwrap();
-    let message = cast_error(Arc::new(malformed), &DataType::Decimal128(38, 9));
-    assert!(
-        message.contains("value exceeds decimal precision 38"),
-        "{message}"
-    );
+    let wide = || {
+        Decimal256Array::from(vec![i256::from_i128(1)])
+            .with_precision_and_scale(10, 9)
+            .unwrap()
+    };
+    for target in [DataType::Decimal256(10, 0), DataType::Decimal128(10, 9)] {
+        let message = cast_error(Arc::new(wide()), &target);
+        assert!(message.ends_with("the cast is not supported"), "{message}");
+    }
 }
 
 #[test]

@@ -1,8 +1,9 @@
-//! The Arrow casts BigQuery bulk ingest needs.
+//! The Arrow casts BigQuery bulk ingest and Storage Read results need.
 //!
-//! Ingest only casts into the small closed set of types `normalized_data_type` produces.
-//! `arrow-cast` would link every string, decimal and temporal parsing kernel to reach a handful of
-//! type pairs; these kernels cover exactly those pairs.
+//! Ingest only casts into the small closed set of types `normalized_data_type` produces, and
+//! Storage Read only the pairs its reshape plan accepts. `arrow-cast` would link every string,
+//! decimal and temporal parsing kernel to reach a handful of type pairs; these kernels cover
+//! exactly those pairs.
 
 use std::sync::Arc;
 
@@ -10,19 +11,19 @@ use adbc_core::error::{Result, Status};
 use arrow_array::builder::GenericByteBuilder;
 use arrow_array::cast::AsArray;
 use arrow_array::types::{
-    BinaryType, BinaryViewType, ByteArrayType, ByteViewType, Date32Type, Date64Type, Decimal32Type,
-    Decimal64Type, Decimal128Type, Decimal256Type, DecimalType, Float16Type, Float32Type,
-    Float64Type, Int8Type, Int16Type, Int32Type, Int64Type, IntervalDayTimeType,
-    IntervalMonthDayNanoType, IntervalYearMonthType, LargeBinaryType, LargeUtf8Type,
-    StringViewType, Time32MillisecondType, Time32SecondType, Time64MicrosecondType,
-    Time64NanosecondType, TimestampMicrosecondType, TimestampMillisecondType,
-    TimestampNanosecondType, TimestampSecondType, UInt8Type, UInt16Type, UInt32Type, Utf8Type,
+    BinaryType, BinaryViewType, ByteArrayType, ByteViewType, Date32Type, Date64Type,
+    Decimal128Type, Decimal256Type, DecimalType, Float16Type, Float32Type, Float64Type, Int8Type,
+    Int16Type, Int32Type, Int64Type, IntervalDayTimeType, IntervalMonthDayNanoType,
+    IntervalYearMonthType, LargeBinaryType, LargeUtf8Type, StringViewType, Time32MillisecondType,
+    Time32SecondType, Time64MicrosecondType, Time64NanosecondType, TimestampMicrosecondType,
+    TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt8Type, UInt16Type,
+    UInt32Type, Utf8Type,
 };
 use arrow_array::{
     Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, BinaryArray, FixedSizeBinaryArray,
     GenericByteArray, GenericByteViewArray, PrimitiveArray, downcast_dictionary_array,
 };
-use arrow_buffer::{IntervalMonthDayNano, NullBuffer, OffsetBuffer, ScalarBuffer, i256};
+use arrow_buffer::{IntervalMonthDayNano, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow_data::transform::MutableArrayData;
 use arrow_schema::{DataType, IntervalUnit, TimeUnit};
 
@@ -78,11 +79,14 @@ fn cast_array(column: &ArrayRef, data_type: &DataType) -> CastResult {
         (_, DataType::Utf8) => to_utf8(column),
         (_, DataType::Binary) => to_binary(column),
         (DataType::Date64, DataType::Date32) => to_date32(column),
-        (_, DataType::Decimal128(precision, scale)) => {
-            to_decimal::<Decimal128Type>(column, *precision, *scale)
+        (DataType::Decimal128(_, source_scale), DataType::Decimal128(precision, scale)) => {
+            to_decimal::<Decimal128Type, Decimal128Type>(column, *source_scale, *precision, *scale)
         }
-        (_, DataType::Decimal256(precision, scale)) => {
-            to_decimal::<Decimal256Type>(column, *precision, *scale)
+        (DataType::Decimal128(_, source_scale), DataType::Decimal256(precision, scale)) => {
+            to_decimal::<Decimal128Type, Decimal256Type>(column, *source_scale, *precision, *scale)
+        }
+        (DataType::Decimal256(_, source_scale), DataType::Decimal256(precision, scale)) => {
+            to_decimal::<Decimal256Type, Decimal256Type>(column, *source_scale, *precision, *scale)
         }
         (_, DataType::Time64(TimeUnit::Microsecond)) => to_time64_micros(column),
         (DataType::Timestamp(unit, _), DataType::Timestamp(TimeUnit::Microsecond, timezone)) => {
@@ -451,55 +455,26 @@ fn to_date32(column: &ArrayRef) -> CastResult {
     Ok(Arc::new(values))
 }
 
-fn decimal_scale_up(data_type: &DataType, target_scale: i8) -> std::result::Result<u32, String> {
-    let source_scale = match data_type {
-        DataType::Decimal32(_, scale)
-        | DataType::Decimal64(_, scale)
-        | DataType::Decimal128(_, scale)
-        | DataType::Decimal256(_, scale) => *scale,
-        _ => return Err(unsupported()),
-    };
-    // Normalization only pads fractional digits, so the refusal names that rule.
-    u32::try_from(i16::from(target_scale) - i16::from(source_scale)).map_err(|_| {
-        format!(
-            "decimal scale {source_scale} cannot be reduced to {target_scale} without dropping \
-             fractional digits"
-        )
-    })
-}
-
-/// A decimal width a column is normalized into: NUMERIC's `Decimal128` or BIGNUMERIC's
-/// `Decimal256`. Every narrower source widens into either infallibly; an `i256` source may not.
-trait TargetDecimal: DecimalType<Native: From<i32> + From<i64> + From<i128>> {
-    fn from_i256(value: i256) -> Option<Self::Native>;
-}
-
-impl TargetDecimal for Decimal128Type {
-    fn from_i256(value: i256) -> Option<i128> {
-        value.to_i128()
-    }
-}
-
-impl TargetDecimal for Decimal256Type {
-    fn from_i256(value: i256) -> Option<i256> {
-        Some(value)
-    }
-}
-
-/// Casts a decimal of any physical width into `T`, padding it to `scale` and validating every
-/// value against `precision`.
+/// Widens a decimal into `T`, padding it to `scale` and validating every value against
+/// `precision`. Only a Storage Read column gets here: ingest rescales decimals to their field's
+/// declared shape itself (`rescale_decimal_column`).
 ///
 /// A target whose physical domain outruns its declared precision is not validated, because no
 /// precision expresses that domain; see `spans_full_physical_domain`.
-fn to_decimal<T: TargetDecimal>(column: &ArrayRef, precision: u8, scale: i8) -> CastResult {
-    let scale_up = decimal_scale_up(column.data_type(), scale)?;
+fn to_decimal<S, T>(column: &ArrayRef, source_scale: i8, precision: u8, scale: i8) -> CastResult
+where
+    S: DecimalType,
+    T: DecimalType<Native: From<i32> + From<S::Native>>,
+{
+    let scale_up =
+        u32::try_from(i16::from(scale) - i16::from(source_scale)).map_err(|_| unsupported())?;
     let multiplier = T::Native::from(10_i32)
         .pow_checked(scale_up)
         .map_err(|_| format!("decimal scale increase {scale_up} overflows {}", T::PREFIX))?;
     let validate = !spans_full_physical_domain(precision, scale);
     let invalid_precision = |_| format!("value exceeds decimal precision {precision}");
     // A same-width source at the target scale is only relabelled: validate in place and reuse
-    // the buffers. As in the rescaling kernels, only non-null values are validated, since a null
+    // the buffers. As in the rescaling kernel, only non-null values are validated, since a null
     // slot's payload is arbitrary after an FFI import or a `MutableArrayData` gather.
     if scale_up == 0
         && let Some(array) = column.as_primitive_opt::<T>()
@@ -511,28 +486,15 @@ fn to_decimal<T: TargetDecimal>(column: &ArrayRef, precision: u8, scale: i8) -> 
         }
         return with_precision_and_scale(array.clone(), precision, scale);
     }
-    let rescale = |value: T::Native| -> std::result::Result<T::Native, String> {
-        let value = value.mul_checked(multiplier).map_err(|_| out_of_range())?;
+    let values = column.as_primitive::<S>().try_unary::<_, T, _>(|value| {
+        let value = T::Native::from(value)
+            .mul_checked(multiplier)
+            .map_err(|_| out_of_range())?;
         if validate {
             T::validate_decimal_precision(value, precision, scale).map_err(invalid_precision)?;
         }
-        Ok(value)
-    };
-    let values = match column.data_type() {
-        DataType::Decimal32(_, _) => column
-            .as_primitive::<Decimal32Type>()
-            .try_unary::<_, T, _>(|value| rescale(value.into()))?,
-        DataType::Decimal64(_, _) => column
-            .as_primitive::<Decimal64Type>()
-            .try_unary::<_, T, _>(|value| rescale(value.into()))?,
-        DataType::Decimal128(_, _) => column
-            .as_primitive::<Decimal128Type>()
-            .try_unary::<_, T, _>(|value| rescale(value.into()))?,
-        DataType::Decimal256(_, _) => column
-            .as_primitive::<Decimal256Type>()
-            .try_unary::<_, T, _>(|value| rescale(T::from_i256(value).ok_or_else(out_of_range)?))?,
-        _ => return Err(unsupported()),
-    };
+        Ok::<_, String>(value)
+    })?;
     with_precision_and_scale(values, precision, scale)
 }
 
