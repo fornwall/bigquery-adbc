@@ -131,8 +131,10 @@ pub(crate) fn parse_bigquery_uri(uri: &str) -> Result<Vec<(O, String)>> {
     ];
     // Validated by their options when applied, which marks a rejection as coming from the URI.
     options.extend(QUERY_PARAMETERS.iter().filter_map(|parameter| {
-        let value = parameters.get(parameter.name)?;
-        Some((parameter.option?, value.clone())).filter(|_| !value.is_empty())
+        let value = parameters
+            .get(parameter.name)
+            .filter(|value| !value.is_empty())?;
+        Some((parameter.option?, value.clone()))
     }));
     Ok(options)
 }
