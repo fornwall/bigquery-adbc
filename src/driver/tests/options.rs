@@ -2,7 +2,8 @@
 //! is allowed to say about a rejected value.
 
 use super::*;
-use crate::test_support::errors::assert_message_omits;
+use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
+use crate::test_support::http::ok;
 use crate::test_support::options::{
     assert_string_option, option_string, set_option, set_option_error,
 };
@@ -74,13 +75,7 @@ fn unreadable_database_options_are_reported_by_their_own_key() {
         let Err(error) = database.get_option_string(option.into()) else {
             continue;
         };
-        assert_eq!(error.status, Status::NotFound, "{}", option.as_str());
-        assert!(
-            error.message.contains(option.as_str()),
-            "{}: {}",
-            option.as_str(),
-            error.message
-        );
+        assert_failure(&error, Status::NotFound, &[option.as_str()]);
     }
 }
 
@@ -336,13 +331,10 @@ fn allow_untrusted_endpoint_round_trips_and_rejects_other_values() {
 
     for value in ["1", "yes", "on", ""] {
         let error = set_option_error(&mut database, key.clone(), value);
-        assert_eq!(error.status, Status::InvalidArguments, "{value:?}");
-        assert!(
-            error
-                .message
-                .contains("bigquery.allow_untrusted_endpoint must be"),
-            "{value:?}: {}",
-            error.message
+        assert_failure(
+            &error,
+            Status::InvalidArguments,
+            &["bigquery.allow_untrusted_endpoint must be"],
         );
     }
     assert_eq!(
@@ -415,24 +407,8 @@ fn rejected_option_values_name_their_key_and_the_accepted_form() {
         ),
     ] {
         let error = set_option_error(&mut database, option, value);
-        assert_eq!(
-            error.status,
-            Status::InvalidArguments,
-            "{}",
-            option.as_str()
-        );
-        assert!(
-            error.message.contains(option.as_str()),
-            "{}: {}",
-            option.as_str(),
-            error.message
-        );
-        assert!(
-            error.message.contains(accepted_form),
-            "{}: {}",
-            option.as_str(),
-            error.message
-        );
+        assert_failure(&error, Status::InvalidArguments, &[option.as_str()]);
+        assert_message(&error, &[accepted_form]);
         assert_message_omits(&error, &[SECRET]);
     }
 }
@@ -536,7 +512,7 @@ fn the_user_agent_option_extends_the_drivers_own() {
     assert_string_option(&database, OPTION, Some("my-app/1.0 (team data)"));
 
     let (endpoint, captured) =
-        crate::test_support::http::capture_requests(vec![(200, serde_json::json!({}))]);
+        crate::test_support::http::capture_requests(vec![ok(serde_json::json!({}))]);
     let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
     let client = database.clients().rest_client().unwrap();
     database

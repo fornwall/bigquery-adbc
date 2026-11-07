@@ -9,10 +9,10 @@ use crate::BigQueryAuthenticationType;
 use crate::config::redaction::redacted_credentials;
 use crate::error::CredentialLayer;
 
-use crate::test_support::errors::{assert_message, assert_message_omits};
+use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
 use crate::test_support::http::{
     accept, capture_requests, capture_requests_responding, capture_requests_until_stopped,
-    loopback_listener, read_captured_request, retire,
+    loopback_listener, ok, read_captured_request, retire,
 };
 
 const AUDIENCE: &str = "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/provider";
@@ -53,10 +53,7 @@ fn sts_response() -> serde_json::Value {
 #[test]
 fn external_account_posts_opaque_form_exchanges_jwt_and_shares_cached_headers() {
     let (endpoint, server) = capture_requests(vec![
-        (
-            200,
-            json!({"access_token":"idp.jwt-token", "id_token":"wrong-token"}),
-        ),
+        ok(json!({"access_token":"idp.jwt-token", "id_token":"wrong-token"})),
         (200, sts_response()),
     ]);
     let runtime = crate::runtime::new_runtime().unwrap();
@@ -147,8 +144,7 @@ fn external_account_requires_discrete_inputs_and_rejects_unused_ones() {
             _ => unreachable!("only the three required options are dropped above"),
         }
         let error = external_account_builder(&settings).err().unwrap();
-        assert_eq!(error.status, Status::InvalidArguments);
-        assert_message(&error, &[option.as_str()]);
+        assert_failure(&error, Status::InvalidArguments, &[option.as_str()]);
     }
     for (value, option) in settings("https://idp.example").external_account.values() {
         let mut config = DatabaseConfig::default();
@@ -180,8 +176,7 @@ fn external_account_requires_discrete_inputs_and_rejects_unused_ones() {
             _ => unreachable!("every external-account option is covered above"),
         }
         let error = config.validate_authentication().unwrap_err();
-        assert_eq!(error.status, Status::InvalidArguments);
-        assert_message(&error, &[option.as_str()]);
+        assert_failure(&error, Status::InvalidArguments, &[option.as_str()]);
         assert_message_omits(&error, &[REQUEST_DATA]);
     }
 }
@@ -228,10 +223,10 @@ fn external_account_rejects_bad_idp_responses_without_exposing_body_or_url() {
     let runtime = crate::runtime::new_runtime().unwrap();
     for (status, response) in [
         (401, json!({"error_description":REQUEST_DATA})),
-        (200, json!({"id_token":"secret-id-token"})),
-        (200, json!({"access_token":7})),
-        (200, json!({"access_token":"  "})),
-        (200, json!("secret-nonobject-response")),
+        ok(json!({"id_token":"secret-id-token"})),
+        ok(json!({"access_token":7})),
+        ok(json!({"access_token":"  "})),
+        ok(json!("secret-nonobject-response")),
     ] {
         let (endpoint, server) = capture_requests(vec![(status, response)]);
         runtime.block_on(async {
@@ -248,14 +243,14 @@ fn external_account_rejects_bad_idp_responses_without_exposing_body_or_url() {
             }
             assert!(!error.is_transient());
         });
-        assert_eq!(server.join().unwrap().len(), 1);
+        server.served(1);
     }
 }
 
 #[test]
 fn external_account_redacts_sts_errors_that_echo_subject_tokens() {
     let (endpoint, server) = capture_requests(vec![
-        (200, json!({"access_token":"secret-subject-token"})),
+        ok(json!({"access_token":"secret-subject-token"})),
         (
             400,
             json!({"error":"invalid_grant", "error_description":"secret-subject-token"}),
@@ -270,7 +265,7 @@ fn external_account_redacts_sts_errors_that_echo_subject_tokens() {
             assert!(!format!("{cause:?} {cause}").contains("secret-subject-token"));
         }
     });
-    assert_eq!(server.join().unwrap().len(), 2);
+    server.served(2);
 }
 
 /// A redacted failure still says which credential could not mint, so the remedy names this
@@ -278,7 +273,7 @@ fn external_account_redacts_sts_errors_that_echo_subject_tokens() {
 #[test]
 fn a_redacted_external_account_failure_is_answered_with_the_external_account_remedy() {
     let (endpoint, server) = capture_requests(vec![
-        (200, json!({"access_token":"secret-subject-token"})),
+        ok(json!({"access_token":"secret-subject-token"})),
         (
             400,
             json!({"error":"invalid_grant", "error_description":"secret-subject-token"}),
@@ -300,7 +295,7 @@ fn a_redacted_external_account_failure_is_answered_with_the_external_account_rem
         );
         assert_message_omits(&failure, &["gcloud auth application-default login"]);
     });
-    assert_eq!(server.join().unwrap().len(), 2);
+    server.served(2);
 }
 
 /// An identity provider answering with a retryable status is an outage, so the failure is `IO`
@@ -326,7 +321,7 @@ fn an_unavailable_identity_provider_is_an_io_failure() {
             ],
         );
     });
-    assert_eq!(server.join().unwrap().len(), 1);
+    server.served(1);
 }
 
 #[test]
@@ -397,7 +392,7 @@ fn a_connection_dropped_before_the_identity_provider_answers_is_transient() {
         };
         assert!(provider.subject_token().await.unwrap_err().is_transient());
     });
-    assert_eq!(server.join().unwrap().len(), 1);
+    server.served(1);
 }
 
 #[test]
@@ -407,7 +402,7 @@ fn external_account_retries_transient_identity_provider_failure() {
             503,
             json!({"error_description": "temporary provider failure"}),
         ),
-        (200, json!({"access_token": "recovered-subject-token"})),
+        ok(json!({"access_token": "recovered-subject-token"})),
         (200, sts_response()),
     ]);
     crate::runtime::new_runtime().unwrap().block_on(async {
@@ -433,15 +428,14 @@ fn external_account_retries_transient_identity_provider_failure() {
             "Bearer google-access-token"
         );
     });
-    let requests = server.join().unwrap();
-    assert_eq!(requests.len(), 3);
+    let requests = server.served(3);
     assert_eq!(requests[0].raw_body, requests[1].raw_body);
 }
 
 #[test]
 fn external_account_rejects_oversized_identity_provider_response() {
     let (endpoint, server) =
-        capture_requests(vec![(200, json!({"access_token":"x".repeat(1024 * 1024)}))]);
+        capture_requests(vec![ok(json!({"access_token":"x".repeat(1024 * 1024)}))]);
     crate::runtime::new_runtime().unwrap().block_on(async {
         let error = credentials(&settings(&endpoint), &endpoint)
             .headers(Extensions::new())
@@ -459,7 +453,7 @@ fn external_account_rejects_oversized_identity_provider_response() {
 fn external_account_does_not_follow_identity_provider_redirects() {
     use std::io::Write as _;
 
-    let (redirect, target) = capture_requests_until_stopped(vec![(200, json!({}))]);
+    let (redirect, target) = capture_requests_until_stopped(vec![ok(json!({}))]);
     let listener = loopback_listener();
     listener.set_nonblocking(true).unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -502,9 +496,9 @@ fn external_account_refreshes_subject_and_google_tokens_without_rebuilding_crede
     let mut refreshed = sts_response();
     refreshed["access_token"] = json!("refreshed-google-token");
     let (endpoint, server) = capture_requests(vec![
-        (200, json!({"access_token":"initial-subject"})),
+        ok(json!({"access_token":"initial-subject"})),
         (200, short_lived),
-        (200, json!({"access_token":"refreshed-subject"})),
+        ok(json!({"access_token":"refreshed-subject"})),
         (200, refreshed),
     ]);
     crate::runtime::install_crypto_provider();
@@ -561,7 +555,7 @@ fn external_account_refreshes_subject_and_google_tokens_without_rebuilding_crede
 #[test]
 fn an_opaque_subject_token_type_and_a_scope_list_reach_the_token_exchange() {
     let (endpoint, server) = capture_requests(vec![
-        (200, json!({"access_token":"idp.opaque-token"})),
+        ok(json!({"access_token":"idp.opaque-token"})),
         (200, sts_response()),
     ]);
     let runtime = crate::runtime::new_runtime().unwrap();

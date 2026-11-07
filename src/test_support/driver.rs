@@ -70,7 +70,6 @@ pub(crate) fn test_statement_at(endpoint: &str) -> BigQueryStatement {
 }
 
 /// A [`test_statement_at`] with `sql` set.
-#[allow(dead_code, reason = "adopted by the test modules that run one query")]
 pub(crate) fn test_query_at(endpoint: &str, sql: &str) -> BigQueryStatement {
     let mut statement = test_statement_at(endpoint);
     statement.set_sql_query(sql).unwrap();

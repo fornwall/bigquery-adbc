@@ -4,7 +4,7 @@ use super::*;
 use crate::config::rejections::{
     application_default_credentials_failure, unreadable_credential_file,
 };
-use crate::test_support::errors::{assert_message, assert_message_omits};
+use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
 
 /// The execution principal an operation may name, per authentication type.
 ///
@@ -239,11 +239,7 @@ fn a_credential_document_in_the_file_path_option_is_refused_without_echoing_it()
         let error = ClientConfiguration::build(&settings).unwrap_err();
         assert_eq!(error.status, Status::InvalidArguments);
         for secret in ["private_key", "not-a-real-key", "BEGIN PRIVATE KEY", EMAIL] {
-            assert!(
-                !error.message.contains(secret),
-                "{secret} leaked into: {}",
-                error.message
-            );
+            assert_message_omits(&error, &[secret]);
         }
         assert!(
             error
@@ -566,7 +562,7 @@ fn an_unavailable_token_endpoint_is_an_io_failure_and_a_refusal_is_not() {
             .unwrap_err();
         assert_eq!(failure.status, expected, "{status}: {}", failure.message);
         assert_message(&failure, &["failed to authenticate to describe it", remedy]);
-        assert_eq!(captured.join().unwrap().len(), 1);
+        captured.served(1);
     }
 
     // Explicit user credentials cannot fall back to a metadata server. A connection failure
@@ -584,7 +580,10 @@ fn an_unavailable_token_endpoint_is_an_io_failure_and_a_refusal_is_not() {
             Request::get("http://127.0.0.1:1/unused", "describe it"),
         ))
         .unwrap_err();
-    assert_eq!(failure.status, Status::IO, "{}", failure.message);
-    assert_message(&failure, &["could not complete a token exchange"]);
+    assert_failure(
+        &failure,
+        Status::IO,
+        &["could not complete a token exchange"],
+    );
     assert_message_omits(&failure, &["refresh token", "127.0.0.1"]);
 }

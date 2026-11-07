@@ -8,7 +8,7 @@ use serde_json::json;
 
 use super::job_outcome;
 use crate::BigQueryStatementOption as Key;
-use crate::test_support::credentials::TEST_PRIVATE_KEY;
+use crate::test_support::credentials::service_account_json;
 use crate::test_support::driver::{test_connection_with, test_statement};
 use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
 use crate::test_support::http::{
@@ -39,14 +39,7 @@ fn connection_running_notebooks_at(endpoint: String) -> BigQueryConnection {
 const SERVICE_ACCOUNT: &str = "dbt-runner@data-project.iam.gserviceaccount.com";
 
 fn service_account_key() -> String {
-    json!({
-        "type": "service_account",
-        "project_id": "data-project",
-        "private_key_id": "0123456789abcdef",
-        "private_key": TEST_PRIVATE_KEY,
-        "client_email": SERVICE_ACCOUNT,
-    })
-    .to_string()
+    service_account_json(SERVICE_ACCOUNT).to_string()
 }
 
 /// The mock is plaintext loopback, which a credential-bearing configuration refuses unless

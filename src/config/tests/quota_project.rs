@@ -8,8 +8,8 @@ use serde_json::json;
 
 use super::*;
 use crate::BigQueryDriver;
-use crate::test_support::credentials::TEST_PRIVATE_KEY;
-use crate::test_support::http::capture_requests;
+use crate::test_support::credentials::service_account_json;
+use crate::test_support::http::{capture_requests, ok};
 
 const ADC_CHILD: &str = "BIGQUERY_ADBC_QUOTA_TEST_CHILD";
 const QUOTA_ENV: &str = "GOOGLE_CLOUD_QUOTA_PROJECT";
@@ -26,21 +26,12 @@ fn assert_adc_quota_projects() {
             for authentication_type in [None, Some("adbc.bigquery.sql.auth_type.auth_bigquery")] {
                 let mut responses = Vec::new();
                 if credential_type != "service_account" {
-                    responses.push((
-                        200,
-                        json!({"access_token": "user-token", "expires_in": 3600, "token_type": "Bearer"}),
-                    ));
+                    responses.push(ok(json!({"access_token": "user-token", "expires_in": 3600, "token_type": "Bearer"})));
                 }
                 if credential_type == "impersonated_service_account" {
-                    responses.push((
-                        200,
-                        json!({"accessToken": "target-token", "expireTime": "2099-01-01T00:00:00Z"}),
-                    ));
+                    responses.push(ok(json!({"accessToken": "target-token", "expireTime": "2099-01-01T00:00:00Z"})));
                 }
-                responses.push((
-                    200,
-                    json!({"type": "TABLE", "schema": {"fields": [{"name": "id", "type": "INTEGER"}]}}),
-                ));
+                responses.push(ok(json!({"type": "TABLE", "schema": {"fields": [{"name": "id", "type": "INTEGER"}]}})));
                 let (endpoint, server) = capture_requests(responses);
                 let user = json!({
                     "type": "authorized_user", "client_id": "client-id",
@@ -48,11 +39,9 @@ fn assert_adc_quota_projects() {
                     "token_uri": format!("{endpoint}/token"), "quota_project_id": "file-quota",
                 });
                 let document = match credential_type {
-                    "service_account" => json!({
-                        "type": "service_account", "project_id": "data-project",
-                        "private_key_id": "synthetic-quota-test-key", "private_key": TEST_PRIVATE_KEY,
-                        "client_email": "quota-test@data-project.iam.gserviceaccount.com",
-                    }),
+                    "service_account" => {
+                        service_account_json("quota-test@data-project.iam.gserviceaccount.com")
+                    }
                     "authorized_user" => user,
                     _ => json!({
                         "type": "impersonated_service_account", "source_credentials": user,
@@ -149,10 +138,7 @@ fn quota_override_preserves_refresh_cache_tags_and_universe() {
     let (endpoint, server) = capture_requests(
         ["first-token", "refreshed-token"]
             .map(|token| {
-                (
-                    200,
-                    json!({"access_token": token, "expires_in": 3600, "token_type": "Bearer"}),
-                )
+                ok(json!({"access_token": token, "expires_in": 3600, "token_type": "Bearer"}))
             })
             .into(),
     );
@@ -206,5 +192,5 @@ fn quota_override_preserves_refresh_cache_tags_and_universe() {
         drop(hold);
         let _ = inhibitor.await;
     });
-    assert_eq!(server.join().unwrap().len(), 2);
+    server.served(2);
 }

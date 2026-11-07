@@ -8,8 +8,8 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::BigQueryDriver;
-use crate::test_support::credentials::TEST_PRIVATE_KEY;
-use crate::test_support::http::capture_requests;
+use crate::test_support::credentials::service_account_json;
+use crate::test_support::http::{capture_requests, ok};
 
 const DBT_SCOPES: &str = "https://www.googleapis.com/auth/bigquery,\
                         https://www.googleapis.com/auth/cloud-platform,\
@@ -33,8 +33,7 @@ fn user_refresh_requests_send_the_configured_scope_subset() {
             (DBT_SCOPES, "", Some(DBT_SCOPES)),
             (DBT_SCOPES, DRIVE_SCOPE, Some(DRIVE_SCOPE)),
         ] {
-            let (endpoint, server) = capture_requests(vec![(
-                200,
+            let (endpoint, server) = capture_requests(vec![ok(
                 json!({"access_token": "user-token", "expires_in": 3600, "token_type": "Bearer"}),
             )]);
             let document = json!({
@@ -75,8 +74,7 @@ fn user_refresh_requests_send_the_configured_scope_subset() {
             runtime
                 .block_on(configuration.credentials.headers(http::Extensions::new()))
                 .unwrap();
-            let requests = server.join().unwrap();
-            assert_eq!(requests.len(), 1);
+            let requests = server.served(1);
             assert_eq!(
                 requests[0].body.get("scope").and_then(Value::as_str),
                 expected.map(|scopes| scopes.replace(',', " ")).as_deref(),
@@ -90,14 +88,7 @@ fn user_refresh_requests_send_the_configured_scope_subset() {
 }
 
 fn signing_key() -> String {
-    json!({
-        "type": "service_account",
-        "project_id": "data-project",
-        "private_key_id": "synthetic-scope-test-key",
-        "private_key": TEST_PRIVATE_KEY,
-        "client_email": "scope-test@data-project.iam.gserviceaccount.com",
-    })
-    .to_string()
+    service_account_json("scope-test@data-project.iam.gserviceaccount.com").to_string()
 }
 
 /// Inspect the actual signed token. Checking only configured options would miss a builder that
@@ -124,8 +115,7 @@ fn assert_database_scopes(authentication_type: &str, credential: Option<&str>) {
         (DBT_SCOPES, "", DBT_SCOPES),
         (DBT_SCOPES, DRIVE_SCOPE, DRIVE_SCOPE),
     ] {
-        let (endpoint, server) = capture_requests(vec![(
-            200,
+        let (endpoint, server) = capture_requests(vec![ok(
             json!({"type": "TABLE", "schema": {"fields": [{"name":"id", "type":"INTEGER"}]}}),
         )]);
         let mut driver = BigQueryDriver::try_new().unwrap();
@@ -154,8 +144,7 @@ fn assert_database_scopes(authentication_type: &str, credential: Option<&str>) {
         connection
             .get_table_schema(Some("data-project"), Some("dataset"), "table")
             .unwrap();
-        let requests = server.join().unwrap();
-        assert_eq!(requests.len(), 1);
+        let requests = server.served(1);
         assert_jwt_scopes(requests[0].header("authorization").unwrap(), expected);
     }
 }

@@ -64,10 +64,10 @@ fn anonymous_mock_configuration_builds_every_client_and_invalidates_atomically()
 #[test]
 fn warmed_job_clients_keep_their_configuration_after_database_changes() {
     use crate::rest::jobs::JobReference;
-    use crate::test_support::http::capture_requests;
+    use crate::test_support::http::{capture_requests, ok};
 
-    let (first_endpoint, first_requests) = capture_requests(vec![(200, serde_json::json!({})); 2]);
-    let (second_endpoint, second_requests) = capture_requests(vec![(200, serde_json::json!({}))]);
+    let (first_endpoint, first_requests) = capture_requests(vec![ok(serde_json::json!({})); 2]);
+    let (second_endpoint, second_requests) = capture_requests(vec![ok(serde_json::json!({}))]);
     let mut database = new_database();
     set_option(
         &mut database,

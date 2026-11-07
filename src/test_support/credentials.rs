@@ -3,7 +3,6 @@
 use serde_json::{Value as JsonValue, json};
 
 /// A service-account key document for `client_email` that can really sign a token.
-#[allow(dead_code, reason = "adopted by the test modules that mint a token")]
 pub(crate) fn service_account_json(client_email: &str) -> JsonValue {
     json!({
         "type": "service_account",
@@ -18,7 +17,7 @@ pub(crate) fn service_account_json(client_email: &str) -> JsonValue {
 ///
 /// It has to be a real key: service-account credentials mint their bearer token by signing a
 /// JWT locally, so an unparsable key would fail the request before it reached the mock.
-pub(crate) const TEST_PRIVATE_KEY: &str = concat!(
+const TEST_PRIVATE_KEY: &str = concat!(
     "-----BEGIN PRIVATE KEY-----\n",
     "MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCYtPWhLUVCR0ox\n",
     "dt35g42+qK+Lf+CbCdrANlWnZA2nos/XAGximbwkbj1lTknAGuD6NEl2TrCgDY0w\n",

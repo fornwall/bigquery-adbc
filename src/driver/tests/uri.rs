@@ -2,7 +2,7 @@
 //! options in, and what it refuses.
 
 use super::*;
-use crate::test_support::errors::{assert_message, assert_message_omits};
+use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
 use crate::test_support::options::{option_string, set_option, set_option_error};
 
 #[test]
@@ -295,8 +295,7 @@ fn the_database_uri_reads_back_exactly_as_it_was_set() {
     const URI: &str = "bigquery://uri.example/uri-project?DatasetId=uri_dataset&Location=EU";
     let mut database = new_database();
     let error = database.get_option_string(OptionDatabase::Uri).unwrap_err();
-    assert_eq!(error.status, Status::NotFound);
-    assert_message(&error, &["uri"]);
+    assert_failure(&error, Status::NotFound, &["uri"]);
 
     set_option(&mut database, OptionDatabase::Uri, URI);
     assert_eq!(option_string(&database, OptionDatabase::Uri), URI);
@@ -396,8 +395,11 @@ fn a_uri_host_outside_the_google_api_domain_is_refused_with_real_credentials() {
         let mut database = new_database();
         set_option(&mut database, OptionDatabase::Uri, uri);
         let error = connection_error(&database);
-        assert_eq!(error.status, Status::InvalidArguments, "{uri}");
-        assert_message(&error, &["BigQuery URI host must be"]);
+        assert_failure(
+            &error,
+            Status::InvalidArguments,
+            &["BigQuery URI host must be"],
+        );
         assert_message_omits(&error, &["uri-secret", "uri-token"]);
     }
     assert_uri_host_refused(
@@ -477,8 +479,7 @@ fn a_uri_cannot_relax_the_untrusted_endpoint_check() {
     ] {
         let uri = format!("bigquery://private.example/test-project?{parameter}=true");
         let error = set_option_error(&mut database, OptionDatabase::Uri, uri.as_str());
-        assert_eq!(error.status, Status::InvalidArguments, "{parameter}");
-        assert_message(&error, &["is not one of"]);
+        assert_failure(&error, Status::InvalidArguments, &["is not one of"]);
     }
     assert!(!database.config.allow_untrusted_endpoint);
 

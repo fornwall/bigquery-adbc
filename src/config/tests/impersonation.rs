@@ -1,12 +1,13 @@
 //! The impersonation layer over the configured credential.
 
 use super::*;
+use crate::test_support::http::ok;
 
 /// The driver must use the selected source credential even when it fails. A refused OAuth
 /// refresh stops before IAM and retains the source's remedy without falling back to ADC.
 #[test]
 fn impersonation_uses_the_configured_source_and_preserves_its_failure() {
-    use crate::test_support::errors::{assert_message, assert_message_omits};
+    use crate::test_support::errors::{assert_failure, assert_message_omits};
 
     let (endpoint, server) = crate::test_support::http::capture_requests(vec![
         (
@@ -54,8 +55,7 @@ fn impersonation_uses_the_configured_source_and_preserves_its_failure() {
             "authenticate",
             google_cloud_gax::error::Error::authentication(failure),
         );
-        assert_eq!(failure.status, Status::Unauthenticated);
-        assert_message(&failure, &[remedy]);
+        assert_failure(&failure, Status::Unauthenticated, &[remedy]);
         assert_message_omits(
             &failure,
             &[
@@ -67,8 +67,7 @@ fn impersonation_uses_the_configured_source_and_preserves_its_failure() {
             ],
         );
     }
-    let requests = server.join().unwrap();
-    assert_eq!(requests.len(), 3);
+    let requests = server.served(3);
     for request in requests {
         assert_eq!(request.path(), "/token");
         for (field, expected) in [
@@ -105,12 +104,10 @@ fn impersonated_document(endpoint: &str) -> serde_json::Value {
 #[test]
 fn impersonation_delegates_are_sent_as_iam_resource_names() {
     let (endpoint, server) = crate::test_support::http::capture_requests(vec![
-        (
-            200,
+        ok(
             serde_json::json!({"access_token": "source-token", "expires_in": 3600, "token_type": "Bearer"}),
         ),
-        (
-            200,
+        ok(
             serde_json::json!({"accessToken": "target-token", "expireTime": "2099-01-01T00:00:00Z"}),
         ),
     ]);
@@ -154,16 +151,12 @@ fn impersonation_refreshes_with_default_and_explicit_lifetimes() {
 
     for lifetime in [None, Some(3_600), Some(7_200)] {
         let mut index = 0;
-        let (endpoint, server) = crate::test_support::http::capture_requests_responding(
-            3,
-            move |_request| {
+        let (endpoint, server) =
+            crate::test_support::http::capture_requests_responding(3, move |_request| {
                 let response = match index {
-                    0 => (
-                        200,
-                        json!({
-                            "access_token": "source-token", "expires_in": 3600, "token_type": "Bearer"
-                        }),
-                    ),
+                    0 => ok(json!({
+                        "access_token": "source-token", "expires_in": 3600, "token_type": "Bearer"
+                    })),
                     _ => {
                         let expiry = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -176,18 +169,14 @@ fn impersonation_refreshes_with_default_and_explicit_lifetimes() {
                         .unwrap()
                         .and_utc()
                         .to_rfc3339();
-                        (
-                            200,
-                            json!({
-                                "accessToken": format!("target-token-{index}"), "expireTime": expiry
-                            }),
-                        )
+                        ok(json!({
+                            "accessToken": format!("target-token-{index}"), "expireTime": expiry
+                        }))
                     }
                 };
                 index += 1;
                 Some(response)
-            },
-        );
+            });
         let settings = settings(|config| {
             config.impersonation.target_principal = Some(Arc::from("target@example.com"));
             config.impersonation.lifetime = lifetime.map(Duration::from_secs);

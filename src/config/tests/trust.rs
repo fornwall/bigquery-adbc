@@ -6,8 +6,9 @@ use serde_json::json;
 
 use super::*;
 use crate::BigQueryDriver;
-use crate::test_support::credentials::TEST_PRIVATE_KEY;
-use crate::test_support::http::capture_requests;
+use crate::test_support::credentials::service_account_json;
+use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
+use crate::test_support::http::{capture_requests, ok};
 
 /// Configuring a BigQuery REST endpoint authorizes only that service to receive credentials.
 ///
@@ -46,11 +47,7 @@ fn a_custom_rest_endpoint_does_not_authorize_other_services_to_receive_credentia
             "bigquery.allow_untrusted_endpoint",
             BigQueryAuthenticationType::Anonymous.as_str(),
         ] {
-            assert!(
-                error.message.contains(expected),
-                "{kind:?}: {expected:?} missing from {}",
-                error.message
-            );
+            assert_message(&error, &[expected]);
         }
     }
 }
@@ -81,13 +78,10 @@ fn look_alike_hosts_and_plaintext_schemes_do_not_pass_as_google_api_endpoints() 
             outcome.unwrap_or_else(|error| panic!("{scheme}://{host}: {error}"));
         } else {
             let error = outcome.unwrap_err();
-            assert_eq!(error.status, Status::InvalidArguments, "{scheme}://{host}");
-            assert!(
-                error
-                    .message
-                    .contains(&format!("host {host:?} over {scheme}")),
-                "{scheme}://{host}: {}",
-                error.message
+            assert_failure(
+                &error,
+                Status::InvalidArguments,
+                &[&format!("host {host:?} over {scheme}")],
             );
             // Plaintext is called out as such: the same host over HTTPS is trusted.
             assert_eq!(
@@ -196,14 +190,13 @@ fn the_legacy_google_oauth_token_endpoint_is_trusted_for_the_token_exchange_alon
         let error = user_authentication_via(endpoint, false)
             .validate_endpoints()
             .unwrap_err();
-        assert_eq!(error.status, Status::InvalidArguments, "{endpoint}");
-        assert!(
-            error.message.contains(
+        assert_failure(
+            &error,
+            Status::InvalidArguments,
+            &[
                 "BigQuery option bigquery.auth.access_token_endpoint must be an HTTPS endpoint \
-                 on googleapis.com or accounts.google.com"
-            ),
-            "{endpoint}: {}",
-            error.message
+                 on googleapis.com or accounts.google.com",
+            ],
         );
     }
 
@@ -337,14 +330,8 @@ fn an_endpoint_from_a_uri_must_be_https_on_a_google_api_host() {
 
 #[test]
 fn custom_rest_endpoint_options_send_credentials_without_an_extra_opt_in() {
-    let service_account = json!({
-        "type": "service_account",
-        "project_id": "data-project",
-        "private_key_id": "synthetic-endpoint-test-key",
-        "private_key": TEST_PRIVATE_KEY,
-        "client_email": "endpoint-test@data-project.iam.gserviceaccount.com",
-    })
-    .to_string();
+    let service_account =
+        service_account_json("endpoint-test@data-project.iam.gserviceaccount.com").to_string();
     for endpoint_option in [
         "bigquery.endpoint",
         "adbc.bigquery.sql.endpoint",
@@ -362,8 +349,7 @@ fn custom_rest_endpoint_options_send_credentials_without_an_extra_opt_in() {
                 service_account.as_str(),
             ),
         ] {
-            let (endpoint, server) = capture_requests(vec![(
-                200,
+            let (endpoint, server) = capture_requests(vec![ok(
                 json!({"type":"TABLE", "schema":{"fields":[{"name":"id", "type":"INTEGER"}]}}),
             )]);
             let mut driver = BigQueryDriver::try_new().unwrap();
@@ -383,8 +369,7 @@ fn custom_rest_endpoint_options_send_credentials_without_an_extra_opt_in() {
                 .get_table_schema(Some("data-project"), Some("dataset"), "table")
                 .unwrap();
             assert_eq!(schema.fields().len(), 1);
-            let requests = server.join().unwrap();
-            assert_eq!(requests.len(), 1);
+            let requests = server.served(1);
             assert_eq!(
                 requests[0].path().split('?').next(),
                 Some("/bigquery/v2/projects/data-project/datasets/dataset/tables/table")
@@ -613,27 +598,16 @@ fn a_credential_document_cannot_send_a_credential_outside_google() {
         let (_file, modes) = in_both_credential_modes("document-refused", &document);
         for settings in modes {
             let error = ClientConfiguration::build(&settings).unwrap_err();
-            assert_eq!(error.status, Status::InvalidArguments, "{field}");
-            assert!(
-                error.message.contains(&format!(
+            assert_failure(
+                &error,
+                Status::InvalidArguments,
+                &[&format!(
                     "its {field} field resolves to host \"attacker.example\" over https;"
-                )),
-                "{field}: {}",
-                error.message
+                )],
             );
-            assert!(
-                error
-                    .message
-                    .contains("bigquery.allow_untrusted_endpoint=true"),
-                "{field}: {}",
-                error.message
-            );
+            assert_message(&error, &["bigquery.allow_untrusted_endpoint=true"]);
             for quoted in NEVER_QUOTED {
-                assert!(
-                    !error.message.contains(quoted),
-                    "{field}: {quoted:?} in {}",
-                    error.message
-                );
+                assert_message_omits(&error, &[quoted]);
             }
         }
     }
@@ -677,11 +651,7 @@ fn a_custom_rest_endpoint_does_not_trust_a_documents_destinations() {
         Some(Arc::from("http://127.0.0.1:9050")),
     );
     let error = ClientConfiguration::build(&settings).unwrap_err();
-    assert!(
-        error.message.contains("its token_uri field"),
-        "{}",
-        error.message
-    );
+    assert_message(&error, &["its token_uri field"]);
 }
 
 /// The rule is the one option-supplied URLs meet, look-alikes and plaintext included.
@@ -716,12 +686,11 @@ fn document_destinations_follow_the_credential_url_rule() {
         for (field, document) in documents_sending_a_credential_to(url) {
             let error =
                 ClientConfiguration::build(&json_credentials(document.to_string())).unwrap_err();
-            assert!(
-                error.message.contains(&format!(
+            assert_message(
+                &error,
+                &[&format!(
                     "its {field} field resolves to host {host:?} over {scheme};"
-                )),
-                "{url}: {}",
-                error.message
+                )],
             );
             assert_eq!(
                 error.message.contains("in cleartext"),
@@ -743,11 +712,7 @@ fn document_destinations_follow_the_credential_url_rule() {
                 outcome.unwrap_or_else(|error| panic!("{field}: {error}"));
             } else {
                 let error = outcome.unwrap_err();
-                assert!(
-                    error.message.contains("over HTTPS to googleapis.com, but"),
-                    "{field}: {}",
-                    error.message
-                );
+                assert_message(&error, &["over HTTPS to googleapis.com, but"]);
             }
         }
     }
@@ -767,13 +732,12 @@ fn a_malformed_document_destination_is_refused_without_echoing_it() {
         for (field, document) in documents_sending_a_credential_to(value) {
             let error =
                 ClientConfiguration::build(&json_credentials(document.to_string())).unwrap_err();
-            assert_eq!(error.status, Status::InvalidArguments, "{value}");
-            assert!(
-                error.message.contains(&format!(
+            assert_failure(
+                &error,
+                Status::InvalidArguments,
+                &[&format!(
                     "has a {field} field that does not resolve to a host (value not echoed)"
-                )),
-                "{value}: {}",
-                error.message
+                )],
             );
             assert!(
                 !error.message.contains("document-secret")
@@ -912,13 +876,12 @@ fn a_documents_universe_cannot_redirect_impersonation() {
         ),
     ] {
         let error = ClientConfiguration::build(&impersonating(&document)).unwrap_err();
-        assert_eq!(error.status, Status::InvalidArguments, "{document}");
-        assert!(
-            error.message.contains(&format!(
+        assert_failure(
+            &error,
+            Status::InvalidArguments,
+            &[&format!(
                 "its {field} field resolves to host \"iamcredentials.attacker.example\" over https"
-            )),
-            "{document}: {}",
-            error.message
+            )],
         );
     }
     for value in ["user@attacker.example", "attacker.example#.googleapis.com"] {

@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::test_support::UNREACHABLE_ENDPOINT;
-use crate::test_support::errors::{assert_message, assert_message_omits};
+use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
 use crate::test_support::options::{option_string, set_option, set_option_error};
 
 /// A connection's derived `Debug` reaches the shared `ClientState` through `ExecutionContext` and
@@ -221,8 +221,7 @@ fn user_authentication_requires_all_discrete_inputs() {
         }
 
         let error = database.new_connection().unwrap_err();
-        assert_eq!(error.status, Status::InvalidArguments);
-        assert_message(&error, &[missing_option.as_str()]);
+        assert_failure(&error, Status::InvalidArguments, &[missing_option.as_str()]);
         assert_message_omits(&error, &["oauth-client-secret", "oauth-refresh-token"]);
     }
 }
@@ -327,8 +326,11 @@ fn temporary_access_token_is_write_only_and_opens_connections() {
         "",
     );
     let missing = database.new_connection().unwrap_err();
-    assert_eq!(missing.status, Status::InvalidArguments);
-    assert_message(&missing, &["bigquery.auth.access_token"]);
+    assert_failure(
+        &missing,
+        Status::InvalidArguments,
+        &["bigquery.auth.access_token"],
+    );
 }
 
 /// The access token and its endpoint are refused when the authentication type would silently
@@ -453,8 +455,7 @@ fn external_account_accepts_dbt_profile_options_and_preserves_execution_principa
     let error = crate::config::ClientConfiguration::build(&database.config)
         .err()
         .unwrap();
-    assert_eq!(error.status, Status::InvalidArguments);
-    assert_message(&error, &["request_data"]);
+    assert_failure(&error, Status::InvalidArguments, &["request_data"]);
 }
 
 /// External-account option values are rejected by the call that sets them, not later by
@@ -492,12 +493,7 @@ fn external_account_option_values_are_rejected_where_they_are_set() {
             option.as_str()
         );
         assert_eq!(error.message, expected);
-        assert!(
-            !error.message.contains("url-secret"),
-            "{}: {}",
-            option.as_str(),
-            error.message
-        );
+        assert_message_omits(&error, &["url-secret"]);
     }
 }
 
