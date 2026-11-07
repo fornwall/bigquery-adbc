@@ -334,7 +334,6 @@ enum ColumnBuilder {
     List {
         item_field: Arc<Field>,
         offsets: OffsetBufferBuilder<i32>,
-        nulls: NullBufferBuilder,
         values: Box<Self>,
     },
     Struct {
@@ -403,7 +402,6 @@ impl ColumnBuilder {
                 return Ok(Self::List {
                     item_field: item_field.clone(),
                     offsets: OffsetBufferBuilder::new(capacity),
-                    nulls: NullBufferBuilder::new(capacity),
                     values: Box::new(Self::new(item_field, estimated_child_capacity(capacity))?),
                 });
             }
@@ -492,10 +490,7 @@ impl ColumnBuilder {
         match self {
             Self::Leaf(leaf) => leaf.append_value(value).map_err(located)?,
             Self::List {
-                offsets,
-                nulls,
-                values,
-                ..
+                offsets, values, ..
             } => {
                 let RestValue::Repeated(items) = value else {
                     return Err(located(type_mismatch("array", value)));
@@ -508,7 +503,6 @@ impl ColumnBuilder {
                 check_offset_room(appended, items.len(), "ARRAY").map_err(located)?;
                 values.append_elements(items, at, cancellation)?;
                 offsets.push_length(items.len());
-                nulls.append_non_null();
             }
             Self::Struct {
                 fields,
@@ -537,13 +531,10 @@ impl ColumnBuilder {
     fn append_null(&mut self) {
         match self {
             Self::Leaf(leaf) => leaf.append_null(),
-            Self::List { offsets, nulls, .. } => {
-                offsets.push_length(0);
-                // BigQuery arrays themselves are never NULL: a NULL array expression is returned
-                // as an empty array. Normalize the same shape defensively if a REST-compatible
-                // endpoint sends a literal JSON null instead of BigQuery's canonical `[]`.
-                nulls.append_non_null();
-            }
+            // BigQuery arrays themselves are never NULL: a NULL array expression is returned as
+            // an empty array. Normalize the same shape defensively if a REST-compatible endpoint
+            // sends a literal JSON null instead of BigQuery's canonical `[]`.
+            Self::List { offsets, .. } => offsets.push_length(0),
             Self::Struct {
                 children, nulls, ..
             } => {
@@ -563,16 +554,10 @@ impl ColumnBuilder {
             Self::List {
                 item_field,
                 offsets,
-                mut nulls,
                 values,
-            } => ListArray::try_new(
-                item_field,
-                offsets.finish(),
-                values.finish()?,
-                nulls.finish(),
-            )
-            .map(|array| Arc::new(array) as ArrayRef)
-            .map_err(|source| malformed_column(&source)),
+            } => ListArray::try_new(item_field, offsets.finish(), values.finish()?, None)
+                .map(|array| Arc::new(array) as ArrayRef)
+                .map_err(|source| malformed_column(&source)),
             Self::Struct {
                 fields,
                 children,
