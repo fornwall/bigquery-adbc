@@ -28,7 +28,11 @@ use crate::query::ExecutionContext;
 use crate::rest::jobs::next_identity;
 use crate::rest::json::encode_json;
 use crate::rest::request::Request;
-use crate::rest::url::escape_url_component;
+use crate::rest::url::{escape_resource_path, escape_url_component};
+
+/// A `requestId` allows letters, digits, `_` and `-`, at most 40 characters, which this prefix and
+/// [`next_identity`]'s 32 hex digits keep to.
+const REQUEST_ID_PREFIX: &str = "adbc_";
 
 /// Poll from 1 s to 10 s; Spark jobs often run for minutes or hours.
 const INITIAL_POLL_DELAY: Duration = Duration::from_secs(1);
@@ -60,11 +64,6 @@ text_slots!(DataprocOptions {
     CreateBatchBatchYml => create_batch_batch_yml,
     CreateBatchBatchId => create_batch_batch_id,
 });
-
-/// Builds a submission's URL and body from the regional endpoint and the request ID. A trait
-/// object, so [`DataprocOptions::submit`] and its whole poll loop compile once for both
-/// submissions.
-type BuildRequest<'a> = dyn Fn(&str, &str) -> Result<(String, Vec<u8>)> + 'a;
 
 impl DataprocOptions {
     /// `batch_id` alone does not select this operation because notebook jobs also use it.
@@ -128,30 +127,27 @@ impl DataprocOptions {
         let what = Submission::Batch.what();
         let parent = self.required(what, BigQueryStatementOption::CreateBatchParent)?;
         let batch_yml = self.required(what, BigQueryStatementOption::CreateBatchBatchYml)?;
-        let region = self.region(what)?;
         let parent = resource_path(parent, BigQueryStatementOption::CreateBatchParent)?;
         let batch = batch_resource(batch_yml)?;
-        let batch_id = self.create_batch_batch_id.as_deref();
-        let target = match batch_id {
-            Some(batch_id) => format!("{batch_id} in {parent}"),
-            None => format!("in {parent}"),
+        let (target, batch_id) = match self.create_batch_batch_id.as_deref() {
+            Some(batch_id) => (
+                format!("{batch_id} in {parent}"),
+                format!("batchId={}&", escape_url_component(batch_id)),
+            ),
+            None => (format!("in {parent}"), String::new()),
         };
+        let path = format!(
+            "{}/batches?{batch_id}requestId={}",
+            escape_resource_path(parent),
+            next_identity(REQUEST_ID_PREFIX)
+        );
         self.submit(
             context,
             operation,
             Submission::Batch,
-            region,
             &target,
-            &|endpoint, request_id| {
-                let collection = match batch_id {
-                    Some(batch_id) => format!(
-                        "/batches?batchId={}&requestId={request_id}",
-                        escape_url_component(batch_id)
-                    ),
-                    None => format!("/batches?requestId={request_id}"),
-                };
-                Ok((resource_url(endpoint, parent, &collection), encode(&batch)?))
-            },
+            &path,
+            encode(&batch)?,
         )
     }
 
@@ -170,53 +166,52 @@ impl DataprocOptions {
         let region = self.region(what)?;
         let project = self.required(what, BigQueryStatementOption::DataprocProject)?;
         let project = resource_segment(project, BigQueryStatementOption::DataprocProject)?;
+        let path = format!(
+            "projects/{}/regions/{}/jobs:submitAsOperation",
+            escape_url_component(project),
+            escape_url_component(region)
+        );
+        // `SubmitJobRequest` binds `projectId` and `region` to the path with `body: "*"`, so the
+        // body is the request minus those fields: the `Job` under a `job` key, unlike
+        // `batches.create` (`body: "batch"`). Repeating the bound fields in the body may be
+        // refused as a duplicate binding.
+        let body = encode(&serde_json::json!({
+            "job": {
+                "placement": {"clusterName": cluster_name},
+                "pysparkJob": {"mainPythonFileUri": gcs_path},
+            },
+            "requestId": next_identity(REQUEST_ID_PREFIX),
+        }))?;
         self.submit(
             context,
             operation,
             Submission::ClusterJob,
-            region,
             &format!("to cluster {cluster_name} in projects/{project}/regions/{region}"),
-            &|endpoint, request_id| {
-                let url = format!(
-                    "{endpoint}/v1/projects/{}/regions/{}/jobs:submitAsOperation",
-                    escape_url_component(project),
-                    escape_url_component(region)
-                );
-                // `SubmitJobRequest` binds `projectId` and `region` to the path with `body: "*"`,
-                // so the body is the request minus those fields: the `Job` under a `job` key,
-                // unlike `batches.create` (`body: "batch"`). Repeating the bound fields in the
-                // body may be refused as a duplicate binding.
-                let body = encode(&serde_json::json!({
-                    "job": {
-                        "placement": {"clusterName": cluster_name},
-                        "pysparkJob": {"mainPythonFileUri": gcs_path},
-                    },
-                    "requestId": request_id,
-                }))?;
-                Ok((url, body))
-            },
+            &path,
+            body,
         )
     }
 
     /// Both submission methods deduplicate `requestId`, so retries after transient or lost
-    /// responses recover the original operation without starting another job.
+    /// responses recover the original operation without starting another job. `path` follows
+    /// `/v1/`, escaped.
     fn submit(
         &self,
         context: &ExecutionContext,
         operation: &Operation,
         submission: Submission,
-        region: &str,
         target: &str,
-        request: &BuildRequest<'_>,
+        path: &str,
+        body: Vec<u8>,
     ) -> Result<String> {
+        let what = submission.what();
+        let region = self.region(what)?;
         let configuration = context.state.configuration(&context.runtime)?;
         let endpoint = configuration
             .endpoints
             .dataproc(region, BigQueryStatementOption::DataprocComputeRegion)?;
-        // Dataproc allows letters, digits, `_` and `-`, at most 40 characters.
-        let (url, body) = request(&endpoint, &next_identity("adbc_"))?;
+        let url = format!("{endpoint}/v1/{path}");
         let body = bytes::Bytes::from(body);
-        let what = submission.what();
         let mut poller = LroPoller::new(
             operation,
             &configuration.credentials,
