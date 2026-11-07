@@ -339,23 +339,7 @@ fn partial_success_response_is_reconciled_as_an_accepted_upload() {
 }
 
 #[test]
-fn missing_location_and_nonretryable_errors_never_replay_the_upload() {
-    let (endpoint, absent_requests) = capture_requests(Vec::new());
-    let requested = reference(None);
-    let (runtime, operation, jobs) = submit_at(&endpoint);
-    let failure = submit(
-        &runtime,
-        &operation,
-        &jobs,
-        "unused",
-        bytes::Bytes::new().into(),
-        &requested,
-    )
-    .unwrap_err();
-    operation.finish();
-    assert_eq!(failure.status, Status::InvalidState);
-    assert!(absent_requests.join().unwrap().is_empty());
-
+fn nonretryable_errors_never_replay_the_upload() {
     let (endpoint, captured) = capture_requests(vec![(
         400,
         json!({"error":{"errors":[{"reason":"invalid","message":"bad load"}]}}),

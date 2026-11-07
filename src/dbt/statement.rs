@@ -272,8 +272,8 @@ impl DbtStatementState {
                 None
             }
             BigQueryStatementOption::UpdateDescription => {
-                let value = string_value(key, value)?;
-                self.table_mutation.set_description(&value);
+                self.table_mutation
+                    .set_description(string_value(key, value)?);
                 None
             }
             BigQueryStatementOption::DataprocPoolingTimeout => {
@@ -486,15 +486,12 @@ impl DbtStatementState {
                     BigQueryStatementOption::DestinationTable.as_str()
                 ))
             })?;
-        // A dry run validates the seed's schema without reading it or sending anything; nothing
-        // is loaded, so the count is unknown rather than 0.
+        let (csv, schema) = self.csv_seed.open_seed()?;
+        // A dry run stops at the seed's schema, reading and sending nothing; nothing is loaded, so
+        // the count is unknown rather than 0.
         if statement.query_options.dry_run {
-            return self
-                .csv_seed
-                .load_schema()
-                .map(|_| OptionOnlyOutcome::rows(None));
+            return Ok(OptionOnlyOutcome::rows(None));
         }
-        let (csv, schema, delimiter) = self.csv_seed.open_for_load()?;
         statement
             .cancellation
             .run(|operation| {
@@ -504,8 +501,8 @@ impl DbtStatementState {
                     destination,
                     operation,
                     csv,
-                    schema.as_ref(),
-                    &delimiter,
+                    schema,
+                    &self.csv_seed.delimiter(),
                 )
             })
             .map(OptionOnlyOutcome::from)

@@ -19,7 +19,7 @@ fn load_fields(fields: Vec<Field>) -> JsonValue {
     options
         .set_schema(encode_schema_fixture(&Schema::new(fields)))
         .unwrap();
-    serde_json::to_value(options.schema.unwrap().as_ref()).unwrap()["fields"].take()
+    serde_json::to_value(options.schema.unwrap()).unwrap()["fields"].take()
 }
 
 /// One nullable load column of `type`, with `parameters` such as a precision.
@@ -101,15 +101,10 @@ fn a_missing_seed_file_is_rejected_without_reading_the_seed() {
     let mut directory = options.clone();
     directory.set_filepath(std::env::temp_dir().to_string_lossy().into_owned());
     // A directory opens on Unix and is refused as no regular file; Windows refuses to open it.
-    for error in [
-        options.load_schema().unwrap_err(),
-        options.open_for_load().unwrap_err(),
-        directory.load_schema().unwrap_err(),
-        directory.open_for_load().unwrap_err(),
-    ] {
-        assert_eq!(error.status, Status::InvalidArguments, "{}", error.message);
-    }
-    let error = options.load_schema().unwrap_err();
+    let error = directory.open_seed().unwrap_err();
+    assert_eq!(error.status, Status::InvalidArguments, "{}", error.message);
+    let error = options.open_seed().unwrap_err();
+    assert_eq!(error.status, Status::InvalidArguments, "{}", error.message);
     assert!(
         // The message quotes the path, which doubles a Windows path's backslashes.
         error
@@ -120,13 +115,12 @@ fn a_missing_seed_file_is_rejected_without_reading_the_seed() {
     );
 
     std::fs::write(&path, b"id\n1\n").unwrap();
-    assert_eq!(options.load_schema().unwrap().fields.len(), 1);
-    let (mut seed, _, delimiter) = options.open_for_load().unwrap();
+    let (mut seed, schema) = options.open_seed().unwrap();
+    assert_eq!(schema.fields.len(), 1);
     let mut data = Vec::new();
     std::io::Read::read_to_end(&mut seed.file, &mut data).unwrap();
     assert_eq!(data, b"id\n1\n", "the seed reaches BigQuery byte for byte");
     assert_eq!(seed.length, data.len() as u64);
-    assert_eq!(delimiter, ",");
     std::fs::remove_file(&path).unwrap();
 
     #[cfg(unix)]
@@ -143,7 +137,10 @@ fn a_missing_seed_file_is_rejected_without_reading_the_seed() {
                 .success()
         );
         let (send, receive) = mpsc::channel();
-        let worker = std::thread::spawn(move || send.send(options.open_for_load()).unwrap());
+        let worker = std::thread::spawn(move || {
+            send.send(options.open_seed().map(|_| ()).unwrap_err())
+                .unwrap();
+        });
         let result = receive.recv_timeout(Duration::from_secs(1));
         // Release a blocking reader before asserting, so a regression cannot hang the suite.
         let _writer = std::fs::OpenOptions::new()
@@ -154,7 +151,6 @@ fn a_missing_seed_file_is_rejected_without_reading_the_seed() {
         assert_eq!(
             result
                 .expect("opening a FIFO must not wait for a writer")
-                .unwrap_err()
                 .status,
             Status::InvalidArguments
         );

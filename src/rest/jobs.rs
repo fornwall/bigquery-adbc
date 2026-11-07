@@ -20,7 +20,7 @@ use crate::cancellation::{self, Operation};
 use crate::clients::{DatasetKey, DatasetLocations};
 use crate::diag::diag;
 use crate::error::{
-    append_remedy, error, failure_reason, invalid_argument, invalid_state, job_name, with_job_link,
+    append_remedy, error, failure_reason, invalid_argument, job_name, with_job_link,
 };
 use crate::identifiers::ProjectIdentifier;
 use crate::rest::client::RestClient;
@@ -126,23 +126,6 @@ impl JobReference {
                 .filter(|location| !location.is_empty())
                 .map(ToOwned::to_owned),
         }
-    }
-
-    /// Requires the regional identity a job needs when it cannot be found without one: a CSV load
-    /// is never resubmitted, so nothing else can reveal where BigQuery put it.
-    pub(crate) fn require_location(&self, what: &str) -> Result<()> {
-        if self
-            .location
-            .as_deref()
-            .is_some_and(|location| !location.is_empty())
-        {
-            return Ok(());
-        }
-        Err(invalid_state(format!(
-            "BigQuery option {} must be set to run a {what} job, so the driver can find and \
-             cancel the job it submitted",
-            BigQueryDatabaseOption::Location.as_str()
-        )))
     }
 
     /// Checks that `returned`, the job reference in `response`, names this job, and returns the

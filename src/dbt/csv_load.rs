@@ -83,9 +83,9 @@ pub(crate) fn execute_csv_load(
 
 /// Sends the one-shot media `jobs.insert` and waits for the load it submitted.
 ///
-/// The media upload is never replayed, so the load requires a regional job identity up front, and
-/// an outcome that may have created the job (a transport failure, a 5xx, or a 409) is reconciled
-/// by fetching it.
+/// The media upload is never replayed, so `requested` carries a regional identity from
+/// [`in_job_location`], and an outcome that may have created the job (a transport failure, a 5xx,
+/// or a 409) is reconciled by fetching it.
 async fn submit_csv_load(
     operation: &Operation,
     credentials: &google_cloud_auth::credentials::Credentials,
@@ -94,7 +94,6 @@ async fn submit_csv_load(
     upload_request: Request<'_>,
     requested: &JobReference,
 ) -> Result<LoadOrCopyJob> {
-    requested.require_location(WHAT)?;
     let context = upload_request.context;
     // Register before the upload so cancellation can address the job if the response is lost or
     // the caller cancels mid-upload.

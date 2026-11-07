@@ -27,7 +27,7 @@ type ColumnPolicyTags = BTreeMap<String, Vec<String>>;
 /// read-back is deterministic. An empty string or empty object clears a value.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TableMutationOptions {
-    description: Option<Arc<str>>,
+    description: Option<String>,
     descriptions: Option<Arc<ColumnDescriptions>>,
     policy_tags: Option<Arc<ColumnPolicyTags>>,
 }
@@ -54,8 +54,8 @@ impl TableMutationOptions {
 
     /// Sets the table description; an empty value clears the option. This operation cannot clear
     /// a table's description, and neither can the fork, which dispatches on a non-empty string.
-    pub(crate) fn set_description(&mut self, value: &str) {
-        self.description = (!value.is_empty()).then(|| Arc::from(value));
+    pub(crate) fn set_description(&mut self, value: String) {
+        self.description = (!value.is_empty()).then_some(value);
     }
 
     pub(crate) fn description(&self) -> Option<&str> {

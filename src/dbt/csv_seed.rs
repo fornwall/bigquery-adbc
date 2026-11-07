@@ -1,7 +1,5 @@
 //! dbt-core 2.0's option-only CSV seed ingestion adapter.
 
-use std::sync::Arc;
-
 use adbc_core::error::Result;
 use arrow_schema::{DataType, Field};
 
@@ -27,7 +25,7 @@ pub(crate) struct CsvSeedOptions {
     delimiter: u8,
     encoded_schema: Option<Vec<u8>>,
     /// The load job's schema, built from the declared one when it is set.
-    schema: Option<Arc<TableSchema>>,
+    schema: Option<TableSchema>,
 }
 
 impl std::fmt::Debug for CsvSeedOptions {
@@ -97,27 +95,15 @@ impl CsvSeedOptions {
         self.encoded_schema.as_deref()
     }
 
-    /// Opens the seed without reading it, recording the length that frames the streamed upload.
-    /// The bytes are sent unmodified; BigQuery owns CSV parsing (quoting, nulls, numbers,
-    /// temporals, malformed rows).
-    pub(crate) fn open_for_load(&self) -> Result<(CsvSeedFile, Arc<TableSchema>, String)> {
-        let (file, schema) = self.open_seed()?;
-        Ok((file, schema, self.delimiter()))
-    }
-
-    /// The load job's schema, with the seed opened but not read. A dry run sends nothing, but
-    /// opening the file still makes a missing or unreadable seed fail early.
-    pub(crate) fn load_schema(&self) -> Result<Arc<TableSchema>> {
-        self.open_seed().map(|(_, schema)| schema)
-    }
-
-    /// The opened seed file, with its length, and the load job's schema. A path naming something
-    /// other than a regular file is refused here rather than failing mid-upload.
-    fn open_seed(&self) -> Result<(CsvSeedFile, Arc<TableSchema>)> {
+    /// Opens the seed without reading it, recording the length that frames the streamed upload,
+    /// and answers it with the load job's schema. The bytes are sent unmodified; BigQuery owns CSV
+    /// parsing (quoting, nulls, numbers, temporals, malformed rows). A path naming something other
+    /// than a regular file is refused here rather than failing mid-upload.
+    pub(crate) fn open_seed(&self) -> Result<(CsvSeedFile, &TableSchema)> {
         let filepath = self.filepath.as_deref().ok_or_else(|| {
             invalid_state("cannot execute a BigQuery CSV seed ingest without a file path")
         })?;
-        let schema = self.schema.clone().ok_or_else(|| {
+        let schema = self.schema.as_ref().ok_or_else(|| {
             invalid_state("cannot execute a BigQuery CSV seed ingest without an Arrow IPC schema")
         })?;
         let unreadable = |source: std::io::Error| {
@@ -148,7 +134,7 @@ impl CsvSeedOptions {
 /// parameters included, as `CREATE TABLE` would give it; BigQuery parses the CSV text itself, so
 /// no Arrow value domain constrains the declaration. A column without that metadata takes the type
 /// its Arrow type implies.
-fn load_schema(encoded: &[u8]) -> Result<Arc<TableSchema>> {
+fn load_schema(encoded: &[u8]) -> Result<TableSchema> {
     let schema = decode_ipc_schema(encoded).map_err(|source| {
         invalid_argument(format!(
             "failed to decode the BigQuery CSV seed Arrow IPC schema: {source}"
@@ -164,10 +150,10 @@ fn load_schema(encoded: &[u8]) -> Result<Arc<TableSchema>> {
         .iter()
         .map(|field| load_field(field))
         .collect::<Result<Vec<_>>>()?;
-    Ok(Arc::new(TableSchema {
+    Ok(TableSchema {
         fields,
         ..TableSchema::default()
-    }))
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -270,7 +256,7 @@ fn parse_logical_type(value: &str) -> Option<(BigQueryType, Option<TypeParameter
                 }
                 BigQueryType::String | BigQueryType::Bytes => {
                     let max_length = parameters.trim().parse::<i64>().ok()?;
-                    if max_length <= 0 || parameters.contains(',') {
+                    if max_length <= 0 {
                         return None;
                     }
                     Some(TypeParameters::MaxLength(max_length))
