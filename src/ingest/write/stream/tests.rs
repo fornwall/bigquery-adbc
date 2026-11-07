@@ -60,47 +60,18 @@ fn table_visibility_backoff_grows_and_saturates_like_its_reference_policy() {
     assert_eq!(TABLE_VISIBILITY_RETRY_DELAY, Duration::from_millis(100));
     assert_eq!(TABLE_VISIBILITY_MAX_RETRY_DELAY, Duration::from_secs(15));
 
-    let mut observed_maxima =
-        Vec::with_capacity(usize::try_from(TABLE_VISIBILITY_ATTEMPTS - 1).unwrap());
     for failure_count in 1..TABLE_VISIBILITY_ATTEMPTS {
         let multiplier = 1_u32 << (failure_count - 1).min(31);
         let ceiling = TABLE_VISIBILITY_RETRY_DELAY
             .saturating_mul(multiplier)
             .min(TABLE_VISIBILITY_MAX_RETRY_DELAY);
-        let mut maximum = Duration::ZERO;
-        for _ in 0..SAMPLES {
-            let delay = TABLE_VISIBILITY_BACKOFF.delay(failure_count);
-            assert!(
-                delay <= ceiling,
-                "failure {failure_count} delay {delay:?} exceeds {ceiling:?}"
-            );
-            maximum = maximum.max(delay);
-        }
+        let maximum = (0..SAMPLES)
+            .map(|_| TABLE_VISIBILITY_BACKOFF.delay(failure_count))
+            .max()
+            .unwrap();
         assert!(
-            maximum * 10 >= ceiling * 9,
-            "failure {failure_count} never drew past {maximum:?} in {SAMPLES} samples, well \
-             short of its {ceiling:?} ceiling"
-        );
-        observed_maxima.push(maximum);
-    }
-
-    // The delay really grows with the failure count: a `with_scaling` that stopped scaling would
-    // leave every attempt drawing from the initial 100ms.
-    assert!(
-        observed_maxima[7] > observed_maxima[0],
-        "the eighth attempt drew no longer than the first: {:?} against {:?}",
-        observed_maxima[7],
-        observed_maxima[0]
-    );
-    // From the ninth failure on, the doubling ceiling is past the maximum and stays clamped
-    // there, which is what bounds the total wait across all twenty attempts.
-    for (index, maximum) in observed_maxima.iter().enumerate().skip(8) {
-        assert!(
-            *maximum <= TABLE_VISIBILITY_MAX_RETRY_DELAY
-                && *maximum * 10 >= TABLE_VISIBILITY_MAX_RETRY_DELAY * 9,
-            "failure {} drew {maximum:?}, which is not saturated at \
-             {TABLE_VISIBILITY_MAX_RETRY_DELAY:?}",
-            index + 1
+            maximum <= ceiling && maximum * 10 >= ceiling * 9,
+            "failure {failure_count} drew up to {maximum:?} against a {ceiling:?} ceiling"
         );
     }
 }
@@ -114,14 +85,8 @@ fn the_table_visibility_budget_spans_every_step_of_one_wait() {
     while budget.has_attempt_left() {
         budget.failures += 1;
         waits += 1;
-        assert!(
-            waits < TABLE_VISIBILITY_ATTEMPTS,
-            "the budget never ran out"
-        );
     }
     assert_eq!(waits, TABLE_VISIBILITY_ATTEMPTS - 1);
-    // The other step now finds nothing left.
-    assert!(!budget.has_attempt_left());
 }
 
 #[test]

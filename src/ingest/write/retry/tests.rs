@@ -275,14 +275,6 @@ fn a_closed_append_stream_is_io() {
     );
 }
 
-#[test]
-fn a_rejection_naming_no_row_says_so() {
-    assert_eq!(
-        row_failure_message(&[], 0),
-        "BigQuery rejected the batch without naming a row, and appended none"
-    );
-}
-
 /// A wholesale rejection renders the service's own per-row account, capped, never a `Debug`
 /// dump of the rows.
 #[test]
@@ -310,42 +302,46 @@ fn rejected_rows_are_summarized_without_debug_noise() {
     assert!(!message.contains("_unknown_fields"));
 }
 
-#[test]
-fn a_single_rejected_row_reads_in_the_singular() {
-    let rows = vec![RowError::new().set_index(7).set_message("bad value")];
-
-    assert_eq!(
-        row_failure_message(&rows, 0),
-        "BigQuery rejected 1 row and appended none; correct or remove them and retry: input row \
-         7 (row 7 of the append at stream offset 0): bad value"
-    );
-}
-
 /// A rejected row is reported by both the caller's row number and the service's chunk-relative
-/// index, and by the latter alone when the sum overflows.
+/// index, and by the latter alone when the sum overflows. A rejection naming no row says so.
 #[test]
 fn a_rejected_row_is_reported_by_the_callers_own_row_number() {
-    let rows = vec![
-        RowError::new()
-            .set_index(7)
-            .set_code(RowErrorCode::FieldsError)
-            .set_message("bad value"),
-    ];
-
-    assert_eq!(
-        row_failure_message(&rows, 40_960),
-        "BigQuery rejected 1 row and appended none; correct or remove them and retry: input row \
-         40967 (row 7 of the append at stream offset 40960): FIELDS_ERROR: bad value"
-    );
-
-    // An index that cannot be made absolute keeps the account the service actually gave.
-    let overflowing = vec![RowError::new().set_index(i64::MAX).set_message("bad value")];
-    assert_eq!(
-        row_failure_message(&overflowing, 1),
-        format!(
-            "BigQuery rejected 1 row and appended none; correct or remove them and retry: row {} \
-             of the append at stream offset 1: bad value",
-            i64::MAX
-        )
-    );
+    let row = |index, code| {
+        vec![
+            RowError::new()
+                .set_index(index)
+                .set_code(code)
+                .set_message("bad value"),
+        ]
+    };
+    let lead = "BigQuery rejected 1 row and appended none; correct or remove them and retry:";
+    let overflowing = i64::MAX;
+    for (rows, offset, expected) in [
+        (
+            Vec::new(),
+            0,
+            "BigQuery rejected the batch without naming a row, and appended none".to_owned(),
+        ),
+        (
+            row(7, RowErrorCode::Unspecified),
+            0,
+            format!("{lead} input row 7 (row 7 of the append at stream offset 0): bad value"),
+        ),
+        (
+            row(7, RowErrorCode::FieldsError),
+            40_960,
+            format!(
+                "{lead} input row 40967 (row 7 of the append at stream offset 40960): \
+                 FIELDS_ERROR: bad value"
+            ),
+        ),
+        // An index that cannot be made absolute keeps the account the service actually gave.
+        (
+            row(overflowing, RowErrorCode::Unspecified),
+            1,
+            format!("{lead} row {overflowing} of the append at stream offset 1: bad value"),
+        ),
+    ] {
+        assert_eq!(row_failure_message(&rows, offset), expected);
+    }
 }

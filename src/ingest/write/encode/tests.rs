@@ -475,6 +475,23 @@ fn a_large_batch_is_normalized_one_request_sized_window_at_a_time() {
     );
 }
 
+/// Encodes `column` in windows sized for `target` bytes, handing each to `check`, and returns how
+/// many there were.
+fn each_window(column: ArrayRef, target: usize, mut check: impl FnMut(&RecordBatch)) -> usize {
+    let input = RecordBatch::try_from_iter([("value", column)]).unwrap();
+    let normalized = Arc::new(crate::ingest::schema::normalize_schema(&input.schema()).unwrap());
+    let mut encoder = limited_encoder(normalized, target, 2 * target);
+    let mut offset = 0;
+    let mut windows = 0;
+    while offset < input.num_rows() {
+        let window = encoder.window(&input, offset, target).unwrap();
+        check(&window);
+        offset += encoder.encode(window, offset).unwrap().row_count;
+        windows += 1;
+    }
+    windows
+}
+
 #[test]
 fn repeated_dictionary_values_and_list_views_normalize_in_bounded_windows() {
     let label = "x".repeat(1_000);
@@ -502,16 +519,9 @@ fn repeated_dictionary_values_and_list_views_normalize_in_bounded_windows() {
             None,
         )),
     ];
+    let target = 10_000;
     for column in inputs {
-        let input = RecordBatch::try_from_iter([("value", column)]).unwrap();
-        let normalized =
-            Arc::new(crate::ingest::schema::normalize_schema(&input.schema()).unwrap());
-        let target = 10_000;
-        let mut encoder = limited_encoder(normalized, target, 2 * target);
-        let mut offset = 0;
-        let mut windows = 0;
-        while offset < input.num_rows() {
-            let window = encoder.window(&input, offset, target).unwrap();
+        let windows = each_window(column, target, |window| {
             let column = window.column(0);
             let strings = match column.data_type() {
                 DataType::List(_) => column.as_list::<i32>().values().as_string::<i32>(),
@@ -519,9 +529,7 @@ fn repeated_dictionary_values_and_list_views_normalize_in_bounded_windows() {
             };
             assert!(strings.value_data().len() <= 2 * target);
             assert!(strings.iter().all(|value| value == Some(label.as_str())));
-            offset += encoder.encode(window, offset).unwrap().row_count;
-            windows += 1;
-        }
+        });
         assert!(windows > 50, "the input used only {windows} windows");
     }
 }
@@ -536,6 +544,7 @@ fn repeated_empty_list_values_bound_their_normalized_offsets() {
         Arc::new(LargeBinaryArray::from(vec![b"".as_slice(); 1_000])),
         Arc::new(BinaryViewArray::from(vec![b"".as_slice(); 1_000])),
     ];
+    let target = 10_000;
     for values in values {
         let column = Arc::new(ListViewArray::new(
             Arc::new(Field::new("item", values.data_type().clone(), false)),
@@ -544,14 +553,7 @@ fn repeated_empty_list_values_bound_their_normalized_offsets() {
             values,
             None,
         ));
-        let input = RecordBatch::try_from_iter([("value", column as ArrayRef)]).unwrap();
-        let normalized =
-            Arc::new(crate::ingest::schema::normalize_schema(&input.schema()).unwrap());
-        let target = 10_000;
-        let mut encoder = limited_encoder(normalized, target, 2 * target);
-        let mut offset = 0;
-        while offset < input.num_rows() {
-            let window = encoder.window(&input, offset, target).unwrap();
+        each_window(column, target, |window| {
             let values = window.column(0).as_list::<i32>().values();
             let bytes: usize = values.to_data().buffers().iter().map(Buffer::len).sum();
             assert!(
@@ -559,8 +561,7 @@ fn repeated_empty_list_values_bound_their_normalized_offsets() {
                 "normalized {bytes} bytes of offsets"
             );
             assert_eq!(values.len(), 1_000 * window.num_rows());
-            offset += encoder.encode(window, offset).unwrap().row_count;
-        }
+        });
     }
 }
 
