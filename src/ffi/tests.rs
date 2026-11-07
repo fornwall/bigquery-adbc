@@ -1,5 +1,6 @@
 use super::*;
-use crate::ffi::test_support::{error_message, null, release_error, zeroed_error};
+use crate::ffi::abi::ADBC_ERROR_INIT;
+use crate::ffi::test_support::{error_message, null, release_error};
 
 /// Every function slot in the vtable, named, in header order. A `None` slot is a null pointer the
 /// host will call, so the whole table is swept.
@@ -78,7 +79,7 @@ const PREFIX_SLOTS: usize =
 /// message of any error exported.
 fn init_zeroed(version: c_int) -> (AdbcStatusCode, AdbcDriver, Option<String>) {
     let mut table = std::mem::MaybeUninit::<AdbcDriver>::zeroed();
-    let mut error = zeroed_error();
+    let mut error = ADBC_ERROR_INIT;
     // SAFETY: The table allocation covers every ABI version, and `error` is initialized and
     // writable.
     let status =
@@ -233,7 +234,7 @@ fn rejects_an_unknown_version_as_not_implemented() {
 
 #[test]
 fn rejects_a_null_vtable() {
-    let mut error = zeroed_error();
+    let mut error = ADBC_ERROR_INIT;
     // SAFETY: Init explicitly rejects a null table; the initialized error destination is writable.
     let status = unsafe { AdbcDriverBigqueryInit(ADBC_VERSION_1_1_0, null(), &raw mut error) };
     assert_eq!(status, abi::ADBC_STATUS_INVALID_ARGUMENT);
@@ -251,7 +252,7 @@ fn releasing_the_driver_twice_reports_invalid_state() {
     // SAFETY: The table owns the initialized callback and no database/connection handles were
     // created.
     assert_eq!(unsafe { release(&raw mut table, null()) }, ADBC_STATUS_OK);
-    let mut error = zeroed_error();
+    let mut error = ADBC_ERROR_INIT;
     assert_eq!(
         // SAFETY: The table remains allocated with its release field cleared; this callback checks
         // the released state. The initialized error destination is writable.

@@ -29,6 +29,8 @@ changes.
   cached token expired.
 - A token service that accepts a connection and never answers fails the request with `IO` after two
   minutes instead of hanging it. This covers the OAuth, STS and metadata-server exchanges.
+- A second `AdbcErrorFromArrayStream` call on a stream no longer frees the message and detail
+  pointers the first one returned.
 
 ## [0.2.0] - 2026-11-06
 

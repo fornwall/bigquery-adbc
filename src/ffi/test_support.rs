@@ -11,24 +11,9 @@ use arrow_array::ffi_stream::FFI_ArrowArrayStream;
 use arrow_array::{ArrayRef, Int64Array, StructArray};
 use arrow_schema::Field;
 
-use super::abi::{
-    ADBC_ERROR_VENDOR_CODE_PRIVATE_DATA, ADBC_STATUS_OK, AdbcDatabase, AdbcError, AdbcStatusCode,
-};
+use super::abi::{ADBC_ERROR_INIT, ADBC_STATUS_OK, AdbcDatabase, AdbcError, AdbcStatusCode};
 use super::database::database_init;
 use super::options::{FfiHandle, get_option, new_handle, release_handle, set_option};
-
-/// An `AdbcError` as a 1.1.0 caller hands it in: zeroed, with the vendor-code sentinel that
-/// advertises the larger layout.
-pub(super) fn zeroed_error() -> AdbcError {
-    AdbcError {
-        message: std::ptr::null_mut(),
-        vendor_code: ADBC_ERROR_VENDOR_CODE_PRIVATE_DATA,
-        sqlstate: [0; 5],
-        release: None,
-        private_data: std::ptr::null_mut(),
-        private_driver: std::ptr::null(),
-    }
-}
 
 /// Run the driver's release callback on an out parameter, when one was set.
 pub(super) fn release_error(error: &mut AdbcError) {
@@ -85,7 +70,7 @@ pub(super) fn database_at(endpoint: &str) -> AdbcDatabase {
 pub(super) fn call(
     entry_point: impl FnOnce(*mut AdbcError) -> AdbcStatusCode,
 ) -> (AdbcStatusCode, Option<String>) {
-    let mut error = zeroed_error();
+    let mut error = ADBC_ERROR_INIT;
     let status = entry_point(&raw mut error);
     let message = error_message(&error);
     release_error(&mut error);

@@ -14,9 +14,7 @@ use arrow_schema::{ArrowError, Schema};
 
 use libc::{EACCES, ECANCELED, EEXIST, EINVAL, EIO, ENOENT, ENOMEM, ENOSYS, ENOTSUP, ETIMEDOUT};
 
-use super::abi::{
-    ADBC_ERROR_VENDOR_CODE_PRIVATE_DATA, ADBC_STATUS_OK, AdbcDriver, AdbcError, AdbcStatusCode,
-};
+use super::abi::{ADBC_ERROR_INIT, ADBC_STATUS_OK, AdbcDriver, AdbcError, AdbcStatusCode};
 use super::error::export_error;
 use super::guard::{panic_message, sanitized_cstring};
 use crate::error::{chain, driver_defect};
@@ -68,6 +66,8 @@ pub(super) unsafe fn write_schema(
 struct LastError {
     message: CString,
     error: Error,
+    /// Whether [`PrivateData::exported_error`] holds this error.
+    exported: bool,
 }
 
 /// The release callback of this module's streams, by which [`error_from_array_stream`] recognizes
@@ -83,24 +83,19 @@ const STREAM_MAGIC: u64 = 0x4249_4751_5354_524d; // "BIGQSTRM"
 struct PrivateData {
     magic: u64,
     reader: Box<dyn RecordBatchReader + Send>,
-    /// The producing handle's driver vtable, forwarded into the `AdbcError` that
-    /// [`error_from_array_stream`] returns.
-    private_driver: *const AdbcDriver,
     last_error: Option<LastError>,
     /// Backing store for the `AdbcError` that [`error_from_array_stream`] returns, which must stay
     /// valid until the stream is released.
-    exported_error: Option<Box<AdbcError>>,
+    exported_error: AdbcError,
     panicked: bool,
 }
 
 impl Drop for PrivateData {
     fn drop(&mut self) {
-        if let Some(mut exported) = self.exported_error.take()
-            && let Some(release) = exported.release
-        {
-            // SAFETY: This owned error box was populated by export_error; its matching release runs
-            // once before drop.
-            unsafe { release(&raw mut *exported) };
+        if let Some(release) = self.exported_error.release {
+            // SAFETY: export_error populated this owned error; its matching release runs once
+            // before drop.
+            unsafe { release(&raw mut self.exported_error) };
         }
     }
 }
@@ -112,9 +107,11 @@ pub(super) fn export_reader(
     let private_data = Box::new(PrivateData {
         magic: STREAM_MAGIC,
         reader,
-        private_driver,
         last_error: None,
-        exported_error: None,
+        exported_error: AdbcError {
+            private_driver,
+            ..ADBC_ERROR_INIT
+        },
         panicked: false,
     });
     // SAFETY: each callback reads `private_data` as the `PrivateData` boxed here, which `release`
@@ -240,52 +237,40 @@ pub(super) unsafe extern "C" fn error_from_array_stream(
         if private.magic != STREAM_MAGIC {
             return std::ptr::null();
         }
-        // The error lives in `PrivateData` to outlive this call; each export releases the
-        // previous one.
-        let private_driver = private.private_driver;
-        let exported = private.exported_error.get_or_insert_with(|| {
-            Box::new(AdbcError {
-                message: std::ptr::null_mut(),
-                vendor_code: ADBC_ERROR_VENDOR_CODE_PRIVATE_DATA,
-                sqlstate: [0; 5],
-                release: None,
-                private_data: std::ptr::null_mut(),
-                private_driver,
-            })
-        });
-        match private.last_error.as_ref() {
-            None => {
-                // A recognized stream with nothing pending reports ADBC_STATUS_OK and an
-                // empty error, mirroring the reference C++ drivers.
-                if let Some(release) = exported.release {
-                    // SAFETY: The owned error box retains the matching callback from its last
-                    // export; release precedes reuse.
-                    unsafe { release(&raw mut **exported) };
+        // The error lives in `PrivateData` to outlive this call.
+        let exported = &raw mut private.exported_error;
+        let code = if let Some(last) = private.last_error.as_mut() {
+            // Exporting releases the previous export, which the caller may still be reading, so
+            // export only an error that is new or that the caller released.
+            // SAFETY: The stream owns this full 1.1.0 error, with its sentinel and release.
+            unsafe {
+                if !last.exported || (*exported).release.is_none() {
+                    export_error(exported, last.error.clone());
+                    last.exported = true;
+                }
+            }
+            AdbcStatusCode::from(last.error.status)
+        } else {
+            // A recognized stream with nothing pending reports ADBC_STATUS_OK and an empty error,
+            // mirroring the reference C++ drivers.
+            // SAFETY: The stream owns this error and its matching callback, and nothing else
+            // holds a reference to it during this call.
+            unsafe {
+                if let Some(release) = (*exported).release {
+                    release(exported);
                 }
                 // release_error frees owned storage but leaves SQLSTATE; clear the stale code.
-                exported.sqlstate = [0; 5];
-                if !status.is_null() {
-                    // SAFETY: Null was excluded and the caller grants writable status output
-                    // storage.
-                    unsafe { std::ptr::write_unaligned(status, ADBC_STATUS_OK) };
-                }
+                (*exported).sqlstate = [0; 5];
             }
-            Some(last) => {
-                // SAFETY: This exclusively owned box has the full 1.1.0 layout and sentinel, with
-                // matching release ownership.
-                unsafe { export_error(&raw mut **exported, last.error.clone()) };
-                if !status.is_null() {
-                    // SAFETY: Null was excluded and the caller grants writable status output
-                    // storage.
-                    unsafe {
-                        std::ptr::write_unaligned(status, AdbcStatusCode::from(last.error.status));
-                    }
-                }
-            }
+            ADBC_STATUS_OK
+        };
+        if !status.is_null() {
+            // SAFETY: Null was excluded and the caller grants writable status output storage.
+            unsafe { std::ptr::write_unaligned(status, code) };
         }
         // Callers write through this pointer despite its `const`: the C driver manager sets
         // `private_driver`, and Python releases the error.
-        std::ptr::from_mut::<AdbcError>(&mut **exported).cast_const()
+        exported.cast_const()
     }))
     .unwrap_or(std::ptr::null())
 }
@@ -363,6 +348,7 @@ impl PrivateData {
         self.last_error = Some(LastError {
             message: sanitized_cstring(&error.message),
             error,
+            exported: false,
         });
     }
 

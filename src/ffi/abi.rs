@@ -44,6 +44,16 @@ pub(crate) struct AdbcError {
     pub(crate) private_driver: *const AdbcDriver,
 }
 
+/// An empty 1.1.0 error, as the header's macro of the same name initializes one.
+pub(crate) const ADBC_ERROR_INIT: AdbcError = AdbcError {
+    message: std::ptr::null_mut(),
+    vendor_code: ADBC_ERROR_VENDOR_CODE_PRIVATE_DATA,
+    sqlstate: [0; 5],
+    release: None,
+    private_data: std::ptr::null_mut(),
+    private_driver: std::ptr::null(),
+};
+
 /// The 1.0.0 prefix of [`AdbcError`], for writing back into a caller-allocated struct that has no
 /// room for the 1.1.0 tail.
 #[repr(C)]

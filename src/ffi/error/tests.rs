@@ -1,8 +1,8 @@
 use adbc_core::error::Status;
 
 use super::*;
-use crate::ffi::abi::AdbcDriver;
-use crate::ffi::test_support::{c_string, error_message, null, release_error, zeroed_error};
+use crate::ffi::abi::{ADBC_ERROR_INIT, AdbcDriver};
+use crate::ffi::test_support::{c_string, error_message, null, release_error};
 
 fn export(out: &mut AdbcError, error: Error) {
     // SAFETY: `out` is initialized, exclusively borrowed and sized for the revision its vendor
@@ -55,7 +55,7 @@ fn release_v100(error: &mut AdbcError) {
 
 #[test]
 fn exports_a_message_and_releases_idempotently() {
-    let mut out = zeroed_error();
+    let mut out = ADBC_ERROR_INIT;
     export(&mut out, Error::with_message_and_status("boom", Status::IO));
     assert_eq!(error_message(&out).as_deref(), Some("boom"));
     assert_eq!(out.vendor_code, ADBC_ERROR_VENDOR_CODE_PRIVATE_DATA);
@@ -74,7 +74,7 @@ fn exports_a_message_and_releases_idempotently() {
 
 #[test]
 fn reusing_an_out_parameter_releases_the_previous_error() {
-    let mut out = zeroed_error();
+    let mut out = ADBC_ERROR_INIT;
     export(
         &mut out,
         Error::with_message_and_status("first", Status::IO),
@@ -139,7 +139,7 @@ fn a_1_1_0_caller_keeps_the_layout_sentinel_and_its_details_rather_than_a_vendor
         crate::error::DETAIL_HTTP_STATUS.to_string(),
         b"404".to_vec(),
     )]);
-    let mut out = zeroed_error();
+    let mut out = ADBC_ERROR_INIT;
     export(&mut out, error);
 
     assert_eq!(out.vendor_code, ADBC_ERROR_VENDOR_CODE_PRIVATE_DATA);
@@ -157,7 +157,7 @@ fn round_trips_error_details() {
         ("k1".to_string(), b"v1".to_vec()),
         ("k2".to_string(), b"".to_vec()),
     ]);
-    let mut out = zeroed_error();
+    let mut out = ADBC_ERROR_INIT;
     export(&mut out, error);
     assert_eq!(
         details_of(&out),
@@ -214,7 +214,7 @@ fn null_out_parameters_are_tolerated() {
 
 #[test]
 fn a_message_with_an_interior_nul_is_still_reported() {
-    let mut out = zeroed_error();
+    let mut out = ADBC_ERROR_INIT;
     export(
         &mut out,
         Error::with_message_and_status("before\0after", Status::IO),
@@ -227,7 +227,7 @@ fn a_message_with_an_interior_nul_is_still_reported() {
 /// 1.1.0 error carries a detail box even when it has no details to put in it.
 #[test]
 fn a_detail_free_error_still_marks_itself_initialized() {
-    let mut out = zeroed_error();
+    let mut out = ADBC_ERROR_INIT;
     export(
         &mut out,
         Error::with_message_and_status("plain", Status::IO),
@@ -255,7 +255,7 @@ fn a_foreign_release_cannot_take_private_driver_with_it() {
     let mut out = AdbcError {
         release: Some(clearing_release),
         private_driver: sentinel_driver,
-        ..zeroed_error()
+        ..ADBC_ERROR_INIT
     };
     export(&mut out, Error::with_message_and_status("boom", Status::IO));
     assert_eq!(out.private_driver, sentinel_driver);
@@ -283,7 +283,7 @@ fn a_service_failures_status_details_reach_the_detail_getters() {
                 .set_details([retry]),
         ),
     );
-    let mut out = zeroed_error();
+    let mut out = ADBC_ERROR_INIT;
     export(&mut out, error);
 
     let details = details_of(&out);

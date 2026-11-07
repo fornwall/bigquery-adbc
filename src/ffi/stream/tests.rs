@@ -265,6 +265,24 @@ fn error_from_array_stream_exposes_the_pending_error() {
     );
 }
 
+/// adbc.h invalidates an error's fields only at its release callback, so asking again must return
+/// what the first call did, not free it to export a copy.
+#[test]
+fn asking_again_keeps_the_error_already_exported() {
+    let failure = Error::with_message_and_status("the read failed", Status::IO);
+    let mut stream = error_stream(ArrowError::ExternalError(Box::new(failure)));
+    assert_eq!(next(&mut stream), EIO);
+
+    let (_, exported) = error_from(&mut stream);
+    // SAFETY: The stream-owned message is live, writable and not empty. A fresh export would not
+    // carry this mark.
+    unsafe { (*exported).message.write(b'T'.cast_signed()) };
+    let (status, again) = error_from(&mut stream);
+    assert_eq!(status, ADBC_STATUS_IO);
+    assert_eq!(message_of(again).unwrap(), "The read failed");
+    release(&mut stream);
+}
+
 /// adbc.h says the caller must not release the error `AdbcErrorFromArrayStream` returns, but
 /// Python's `adbc_driver_manager` does (`convert_error` in `_lib.pyx`). The stream must neither
 /// free it a second time nor lose a later export.
