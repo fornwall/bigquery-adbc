@@ -39,7 +39,7 @@ impl PageTokens {
         }
         Err(error(
             format!("BigQuery repeated a page token while listing {subject}"),
-            Status::IO,
+            Status::InvalidData,
         ))
     }
 }

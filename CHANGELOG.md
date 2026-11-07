@@ -81,6 +81,8 @@ changes.
   unknown outcome, instead of a refusal that kept a possibly committed transaction open.
 - After a statement fails with "No active transaction found", the next one begins a new transaction
   instead of autocommitting in the session.
+- A metadata listing whose page token repeats now returns `INVALID_DATA` instead of `IO`, which
+  reads as a transient failure.
 
 ## [0.2.0] - 2026-11-06
 

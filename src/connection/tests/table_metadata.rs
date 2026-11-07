@@ -2,7 +2,7 @@
 //! and how a listing reports a metadata error.
 
 use super::*;
-use crate::test_support::errors::assert_message_omits;
+use crate::test_support::errors::{assert_failure, assert_message_omits};
 
 /// Cancellation must propagate through the table task, retaining the most recent rejection.
 #[test]
@@ -219,15 +219,11 @@ fn a_repeated_dataset_page_token_is_refused_instead_of_walked_forever() {
     ]);
     let connection = anonymous_connection_at(&endpoint);
 
-    let message = connection
+    let failure = connection
         .get_objects(ObjectDepth::Schemas, None, None, None, None, None)
         .err()
-        .expect("a repeated page token is refused")
-        .to_string();
-    assert!(
-        message.contains("repeated a page token"),
-        "unexpected message: {message}"
-    );
+        .expect("a repeated page token is refused");
+    assert_failure(&failure, Status::InvalidData, &["repeated a page token"]);
 
     // The walk stopped at the repeat rather than requesting "stuck" a third time.
     assert_eq!(requests.join().unwrap().len(), 2);
