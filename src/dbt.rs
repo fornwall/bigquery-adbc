@@ -66,7 +66,7 @@ macro_rules! text_slots {
                 reason = "the Dataproc options split activation between their two submissions, \
                           since the keys they share select neither"
             )]
-            pub(crate) fn any_text_option_set(&self) -> bool {
+            pub(crate) fn is_active(&self) -> bool {
                 $(self.$field.is_some())||+
             }
         }

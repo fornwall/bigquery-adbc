@@ -70,10 +70,6 @@ text_slots!(NotebookExecutionOptions {
 });
 
 impl NotebookExecutionOptions {
-    pub(crate) fn is_active(&self) -> bool {
-        self.any_text_option_set()
-    }
-
     /// Returns the job resource name for `BIGQUERY:query_id` and the Colab Enterprise console.
     /// `pooling_timeout` covers template resolution, creation and job polling. Requests already
     /// in flight may overrun it; no further submission or poll starts after expiry.
@@ -215,14 +211,12 @@ async fn wait_for_create(
             submitted,
         )
         .await?;
-    match operation_failure(
+    operation_failure(
         &created,
         &format!("the BigQuery {OPERATION} {job_name} failed"),
         NO_FAILURE_DETAIL,
-    ) {
-        Some(failure) => Err(failure),
-        None => Ok(()),
-    }
+    )
+    .map_or(Ok(()), Err)
 }
 
 async fn wait_for_job(poller: &mut LroPoller<'_>, job_name: &str) -> Result<()> {
@@ -320,25 +314,6 @@ async fn runtime_template(
     )))
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct NotebookExecutionJobResource<'a> {
-    gcs_notebook_source: GcsNotebookSource<'a>,
-    gcs_output_uri: &'a str,
-    display_name: &'a str,
-    notebook_runtime_template_resource_name: &'a str,
-    /// One half of the `execution_identity` oneof, sent only when a principal is named; otherwise
-    /// the runtime template decides. `executionUser` is never sent: the fork guesses it from a
-    /// userinfo lookup, and the driver does not guess the execution principal.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    service_account: Option<&'a str>,
-}
-
-#[derive(serde::Serialize)]
-struct GcsNotebookSource<'a> {
-    uri: &'a str,
-}
-
 async fn create(
     poller: &LroPoller<'_>,
     request: &NotebookExecutionJob<'_>,
@@ -346,15 +321,20 @@ async fn create(
 ) -> Result<JsonValue> {
     // The fork's own request shape and `gs://{bucket}/{model_file_name}/logs` output URI. No
     // `executionTimeout` is set: `pooling_timeout` is a client-side deadline.
-    let body = NotebookExecutionJobResource {
-        gcs_notebook_source: GcsNotebookSource {
-            uri: request.gcs_notebook_uri,
-        },
-        gcs_output_uri: &request.gcs_output_uri,
-        display_name: request.display_name,
-        notebook_runtime_template_resource_name: template,
-        service_account: request.service_account,
-    };
+    let mut body = serde_json::json!({
+        "gcsNotebookSource": {"uri": request.gcs_notebook_uri},
+        "gcsOutputUri": request.gcs_output_uri,
+        "displayName": request.display_name,
+        "notebookRuntimeTemplateResourceName": template,
+    });
+    // One half of the `execution_identity` oneof, sent only when a principal is named; otherwise
+    // the runtime template decides. `executionUser` is never sent: the fork guesses it from a
+    // userinfo lookup, and the driver does not guess the execution principal.
+    if let Some(service_account) = request.service_account
+        && let Some(fields) = body.as_object_mut()
+    {
+        fields.insert("serviceAccount".to_owned(), service_account.into());
+    }
     let url = poller.resource_url(request.parent, "/notebookExecutionJobs");
     let body = encode_json(&body, "the BigQuery Vertex AI notebook execution job")?;
     let context = format!(

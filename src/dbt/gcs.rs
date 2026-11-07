@@ -35,11 +35,6 @@ text_slots!(GcsWriteOptions {
 });
 
 impl GcsWriteOptions {
-    /// Whether any part of the write is configured.
-    pub(crate) fn is_active(&self) -> bool {
-        self.any_text_option_set()
-    }
-
     /// Uploads the configured content, resending after a transient failure: a multipart insert
     /// replaces the object atomically, and a replay writes the same bytes.
     ///
