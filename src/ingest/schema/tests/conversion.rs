@@ -52,60 +52,41 @@ fn a_query_result_schema_ingests_back_into_the_same_bigquery_types() {
     assert_eq!(shape(&round_tripped), shape(&original));
 }
 
-#[test]
-fn rejects_deeply_nested_ingest_schemas() {
-    // A struct chain 100 levels deep; the iterative depth bound must reject it before the
-    // recursive schema normalizer walks it and overflows the stack.
-    let mut data_type = DataType::Utf8;
-    for _ in 0..100 {
-        data_type = DataType::Struct(vec![Arc::new(Field::new("child", data_type, true))].into());
-    }
-    let schema = Schema::new(vec![Field::new("record", data_type, true)]);
-
-    let error = normalize_schema(&schema).unwrap_err();
-    assert_failure(
-        &error,
-        Status::InvalidArguments,
-        &["nested", &MAX_SCHEMA_NESTING_DEPTH.to_string()],
-    );
-
-    // A schema at the bound still normalizes.
-    let mut data_type = DataType::Utf8;
-    for _ in 0..MAX_SCHEMA_NESTING_DEPTH - 1 {
-        data_type = DataType::Struct(vec![Arc::new(Field::new("child", data_type, true))].into());
-    }
-    let schema = Schema::new(vec![Field::new("record", data_type, true)]);
-    normalize_schema(&schema).unwrap();
-}
-
+/// The depth bound must reject a chain of structs before a recursive walk overflows the stack.
 /// `arrow_schema_to_bigquery` also converts the fields an append took from its table, which
-/// normalization never saw, so it enforces the depth bound itself rather than trust its callers.
+/// normalization never saw, so it enforces the bound itself rather than trust its callers.
 #[test]
-fn rejects_deeply_nested_table_schemas() {
-    let mut data_type = DataType::Utf8;
-    for _ in 0..100 {
-        data_type = DataType::Struct(vec![Arc::new(Field::new("child", data_type, true))].into());
+fn rejects_deeply_nested_schemas() {
+    let chain = |levels| {
+        let mut data_type = DataType::Utf8;
+        for _ in 0..levels {
+            data_type =
+                DataType::Struct(vec![Arc::new(Field::new("child", data_type, true))].into());
+        }
+        Schema::new(vec![Field::new("record", data_type, true)])
+    };
+    let too_deep = chain(100);
+    let bound = MAX_SCHEMA_NESTING_DEPTH.to_string();
+    for failure in [
+        normalize_schema(&too_deep).unwrap_err(),
+        arrow_schema_to_bigquery(&too_deep).unwrap_err(),
+    ] {
+        assert_failure(&failure, Status::InvalidArguments, &["nested", &bound]);
     }
-    let schema = Schema::new(vec![Field::new("record", data_type, true)]);
 
-    let error = arrow_schema_to_bigquery(&schema).unwrap_err();
-    assert_failure(
-        &error,
-        Status::InvalidArguments,
-        &[&MAX_SCHEMA_NESTING_DEPTH.to_string()],
-    );
-
-    let mut data_type = DataType::Utf8;
-    for _ in 0..MAX_SCHEMA_NESTING_DEPTH - 1 {
-        data_type = DataType::Struct(vec![Arc::new(Field::new("child", data_type, true))].into());
-    }
-    let schema = Schema::new(vec![Field::new("record", data_type, true)]);
-    arrow_schema_to_bigquery(&schema).unwrap();
+    let at_the_bound = chain(MAX_SCHEMA_NESTING_DEPTH - 1);
+    normalize_schema(&at_the_bound).unwrap();
+    arrow_schema_to_bigquery(&at_the_bound).unwrap();
 }
 
 #[test]
 fn rejects_uint64_instead_of_implicitly_narrowing_it_to_int64() {
-    let assert_rejected = |schema: Schema, name: &str| {
+    // An element is named by its list column: the item's own name is nothing the caller bound.
+    for (name, data_type) in [
+        ("value", DataType::UInt64),
+        ("values", DataType::new_list(DataType::UInt64, true)),
+    ] {
+        let schema = Schema::new(vec![Field::new(name, data_type, true)]);
         for error in [
             normalize_schema(&schema).unwrap_err(),
             arrow_schema_to_bigquery(&schema).unwrap_err(),
@@ -119,21 +100,16 @@ fn rejects_uint64_instead_of_implicitly_narrowing_it_to_int64() {
                 )
             );
         }
-    };
+    }
+}
 
-    assert_rejected(
-        Schema::new(vec![Field::new("value", DataType::UInt64, true)]),
-        "value",
-    );
-    // An element is named by its list column: the item's own name is nothing the caller bound.
-    assert_rejected(
-        Schema::new(vec![Field::new(
-            "values",
-            DataType::new_list(DataType::UInt64, true),
-            true,
-        )]),
-        "values",
-    );
+/// Each column's type and mode.
+fn types_and_modes(schema: &TableSchema) -> Vec<(&str, &str)> {
+    schema
+        .fields
+        .iter()
+        .map(|field| (field.r#type.as_str(), field.mode.as_str()))
+        .collect()
 }
 
 #[test]
@@ -157,13 +133,15 @@ fn normalizes_ingest_types_and_converts_table_schema() {
     );
     assert_eq!(normalized.field(2).data_type(), &DataType::Utf8);
 
-    let bigquery = arrow_schema_to_bigquery(&normalized).unwrap();
-    assert_eq!(bigquery.fields[0].r#type, "INTEGER");
-    assert_eq!(bigquery.fields[0].mode, "REQUIRED");
-    assert_eq!(bigquery.fields[1].r#type, "TIMESTAMP");
-    assert_eq!(bigquery.fields[2].r#type, "JSON");
-    assert_eq!(bigquery.fields[3].r#type, "STRING");
-    assert_eq!(bigquery.fields[3].mode, "REPEATED");
+    assert_eq!(
+        types_and_modes(&arrow_schema_to_bigquery(&normalized).unwrap()),
+        [
+            ("INTEGER", "REQUIRED"),
+            ("TIMESTAMP", "NULLABLE"),
+            ("JSON", "NULLABLE"),
+            ("STRING", "REPEATED"),
+        ]
+    );
 }
 
 #[test]
@@ -211,13 +189,15 @@ fn canonicalizes_list_like_schemas_for_bigquery() {
     assert!(matches!(fields[0].data_type(), DataType::List(_)));
 
     let bigquery = arrow_schema_to_bigquery(&normalized).unwrap();
-    assert_eq!(bigquery.fields[0].r#type, "INTEGER");
-    assert_eq!(bigquery.fields[0].mode, "REPEATED");
-    assert_eq!(bigquery.fields[1].r#type, "STRING");
-    assert_eq!(bigquery.fields[1].mode, "REPEATED");
-    assert_eq!(bigquery.fields[2].r#type, "INTEGER");
-    assert_eq!(bigquery.fields[2].mode, "REPEATED");
-    assert_eq!(bigquery.fields[3].r#type, "RECORD");
+    assert_eq!(
+        types_and_modes(&bigquery),
+        [
+            ("INTEGER", "REPEATED"),
+            ("STRING", "REPEATED"),
+            ("INTEGER", "REPEATED"),
+            ("RECORD", "NULLABLE"),
+        ]
+    );
     assert_eq!(bigquery.fields[3].fields[0].r#type, "BOOLEAN");
     assert_eq!(bigquery.fields[3].fields[0].mode, "REPEATED");
 }
@@ -471,36 +451,46 @@ fn rejects_lists_of_lists() {
     }
 }
 
+/// Field types no column can hold are refused by the field that carries them.
 #[test]
-fn rejects_negative_fixed_size_list_schema_length() {
-    let schema = Schema::new(vec![Field::new(
-        "values",
-        DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int64, true)), -1),
-        true,
-    )]);
-    let failure = normalize_schema(&schema).unwrap_err();
-    assert_eq!(failure.status, Status::InvalidArguments);
-    assert_eq!(
-        failure.message,
-        "Arrow fixed-size list ingest field \"values\" has length -1, which cannot be negative"
+fn normalization_refuses_shapes_bigquery_has_no_column_for() {
+    let map = DataType::Map(
+        Arc::new(Field::new(
+            "entries",
+            DataType::Struct(Fields::from(vec![
+                Field::new("key", DataType::Utf8, false),
+                Field::new("value", DataType::Int64, true),
+            ])),
+            false,
+        )),
+        false,
     );
-}
-
-/// A dictionary BigQuery cannot index names the column it was found on, like every other
-/// per-field rejection in this module.
-#[test]
-fn rejects_dictionary_ingest_keys_that_are_not_integers() {
-    let schema = Schema::new(vec![Field::new(
-        "label",
-        DataType::Dictionary(Box::new(DataType::Utf8), Box::new(DataType::Utf8)),
-        true,
-    )]);
-    let failure = normalize_schema(&schema).unwrap_err();
-    assert_eq!(failure.status, Status::InvalidArguments);
-    assert_eq!(
-        failure.message,
-        "Arrow dictionary ingest field \"label\" has key type Utf8, which is not an integer"
-    );
+    for (name, data_type, status, message) in [
+        (
+            "values",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Int64, true)), -1),
+            Status::InvalidArguments,
+            "Arrow fixed-size list ingest field \"values\" has length -1, which cannot be negative",
+        ),
+        (
+            "label",
+            DataType::Dictionary(Box::new(DataType::Utf8), Box::new(DataType::Utf8)),
+            Status::InvalidArguments,
+            "Arrow dictionary ingest field \"label\" has key type Utf8, which is not an integer",
+        ),
+        (
+            "lookup",
+            map,
+            Status::NotImplemented,
+            "Arrow ingest field \"lookup\" is a map, which BigQuery has no type for; ingest it \
+             as a list of key and value structs, ARRAY<STRUCT<key, value>>",
+        ),
+    ] {
+        let schema = Schema::new(vec![Field::new(name, data_type, true)]);
+        let failure = normalize_schema(&schema).unwrap_err();
+        assert_eq!(failure.status, status);
+        assert_eq!(failure.message, message);
+    }
 }
 
 /// Each column-name rejection names the rule, and the character, that failed. BigQuery tables
@@ -639,7 +629,7 @@ fn converts_interval_and_duration_ingest_schemas() {
 }
 
 #[test]
-fn converts_constrained_string_ingest_schema() {
+fn string_length_metadata_constrains_strings_and_bytes_alone() {
     let constrained = |name: &str, data_type: DataType, max_length: &str| {
         Field::new(name, data_type, true).with_metadata(HashMap::from([(
             BIGQUERY_FIELD_METADATA_MAX_LENGTH.to_owned(),
@@ -662,21 +652,12 @@ fn converts_constrained_string_ingest_schema() {
     assert_eq!(bigquery.fields[1].max_length, 64);
     assert_eq!(bigquery.fields[2].max_length, 16);
     assert_eq!(bigquery.fields[3].fields[0].max_length, 8);
-}
 
-#[test]
-fn rejects_invalid_string_ingest_constraints() {
-    let field = |name: &str, data_type: DataType, max_length: &str| {
-        Field::new(name, data_type, true).with_metadata(HashMap::from([(
-            BIGQUERY_FIELD_METADATA_MAX_LENGTH.to_owned(),
-            max_length.to_owned(),
-        )]))
-    };
     for invalid in [
-        field("zero", DataType::Utf8, "0"),
-        field("negative", DataType::Binary, "-1"),
-        field("not_a_number", DataType::Utf8, "many"),
-        field("integer", DataType::Int64, "8"),
+        constrained("zero", DataType::Utf8, "0"),
+        constrained("negative", DataType::Binary, "-1"),
+        constrained("not_a_number", DataType::Utf8, "many"),
+        constrained("integer", DataType::Int64, "8"),
     ] {
         let schema = normalize_schema(&Schema::new(vec![invalid])).unwrap();
         assert_eq!(
@@ -720,10 +701,10 @@ fn rejects_sibling_columns_that_differ_only_in_case() {
     );
 }
 
-/// An unsupported type names the field that carries it, and the all-null column pandas and
-/// pyarrow infer as `Null` gets the one remedy that fixes it.
+/// The all-null column pandas and pyarrow infer as `Null` gets the one remedy that fixes it, under
+/// the name of the field that carries it.
 #[test]
-fn an_unsupported_type_names_its_field() {
+fn a_null_type_names_its_field() {
     // An array element is named by its list column, not by the item's own name.
     for (field, name) in [
         (Field::new("blank", DataType::Null, true), "blank"),
@@ -745,29 +726,6 @@ fn an_unsupported_type_names_its_field() {
             )
         );
     }
-
-    let failure = normalize_schema(&Schema::new(vec![Field::new(
-        "lookup",
-        DataType::Map(
-            Arc::new(Field::new(
-                "entries",
-                DataType::Struct(Fields::from(vec![
-                    Field::new("key", DataType::Utf8, false),
-                    Field::new("value", DataType::Int64, true),
-                ])),
-                false,
-            )),
-            false,
-        ),
-        true,
-    )]))
-    .unwrap_err();
-    assert_eq!(failure.status, Status::NotImplemented);
-    assert_eq!(
-        failure.message,
-        "Arrow ingest field \"lookup\" is a map, which BigQuery has no type for; ingest it as a \
-         list of key and value structs, ARRAY<STRUCT<key, value>>"
-    );
 }
 
 /// BigQuery refuses a RECORD with no fields, so an empty Arrow struct is refused while the
