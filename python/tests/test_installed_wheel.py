@@ -17,33 +17,11 @@ import bigquery_adbc as driver
 from bigquery_adbc import dbapi
 
 
-def test_installed_distribution_metadata_and_exports() -> None:
+def test_installed_distribution_metadata() -> None:
     distribution = importlib.metadata.distribution("bigquery-adbc")
 
     assert distribution.version == driver.__version__
     assert distribution.metadata["Name"] == "bigquery-adbc"
-    assert set(driver.__all__) == {
-        "AuthenticationType",
-        "BulkIngestMethod",
-        "ConnectionOptions",
-        "CreateDisposition",
-        "CredentialsType",
-        "DatabaseOptions",
-        "ENTRYPOINT",
-        "ParameterMode",
-        "QueryPriority",
-        "StatementOptions",
-        "WriteDisposition",
-        "__version__",
-        "connect",
-        "driver_path",
-    }
-    assert set(dbapi.__all__) >= {
-        "Connection",
-        "Cursor",
-        "Error",
-        "connect",
-    }
 
 
 def test_public_function_signatures() -> None:

@@ -38,14 +38,9 @@ def test_generated_public_members_remain_wire_strings() -> None:
         assert hash(member) == hash(member.value)
 
 
-def test_legacy_aliases_are_not_advertised_members() -> None:
+def test_legacy_aliases_and_dbt_options_are_not_public() -> None:
     public_values = {member.value for member in _members(_OPTION_ENUMS + _VALUE_ENUMS)}
-    assert not any(value.startswith("adbc.bigquery.sql.") for value in public_values)
-
-
-def test_dbt_options_are_not_public() -> None:
-    public_options = {member.value for member in _members(_OPTION_ENUMS)}
-    assert not any(option.startswith("adbc.bigquery.") for option in public_options)
+    assert not any(value.startswith("adbc.bigquery.") for value in public_values)
 
 
 def test_string_conversions_use_wire_values_on_every_interpreter() -> None:
