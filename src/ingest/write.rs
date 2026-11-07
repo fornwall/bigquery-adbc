@@ -3,7 +3,6 @@
 
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
 
 use adbc_core::error::{Result, Status};
 use arrow_array::{RecordBatch, RecordBatchReader};
@@ -117,10 +116,6 @@ pub(super) async fn write_batches(
     outcome
 }
 
-/// Total timeout for finalize or commit, including retries. These calls run outside caller
-/// cancellation, so this also bounds their delay after a statement is cancelled.
-const STREAM_CLOSE_TIMEOUT: Duration = Duration::from_secs(60);
-
 /// Completes finalize or commit without racing caller cancellation against its response.
 /// Reporting a landed commit as cancelled could make callers retry and duplicate rows.
 /// Both RPCs are idempotent, so transient failures can be retried within the timeout.
@@ -135,23 +130,9 @@ where
     Fut: Future<Output = std::result::Result<T, GoogleError>>,
 {
     let context = format!("failed to {what} BigQuery ingest stream {stream} for {table_path}");
-    match tokio::time::timeout(
-        STREAM_CLOSE_TIMEOUT,
-        control_plane_retry(None, google_error_is_transient, call),
-    )
-    .await
-    {
-        // An ungated `control_plane_retry` cannot be cancelled; `?` propagates rather than
-        // asserts that.
-        Ok(outcome) => outcome?.map_err(|source| google_error(&context, source)),
-        Err(_) => Err(error(
-            format!(
-                "{context}: no answer within {} s",
-                STREAM_CLOSE_TIMEOUT.as_secs()
-            ),
-            Status::Timeout,
-        )),
-    }
+    control_plane_retry(&context, None, google_error_is_transient, call)
+        .await?
+        .map_err(|source| google_error(&context, source))
 }
 
 /// A retried commit may return STREAM_ALREADY_COMMITTED instead of its original commit time.

@@ -59,6 +59,26 @@ fn classifies_retryable_append_errors_for_replay() {
     assert!(!attach_error_is_not_found(&attach(Code::Unavailable)));
 }
 
+/// An append left unanswered counts as its call ending, which reconnecting replays: a connection
+/// that dies silently never resolves its appends, and no keepalive would notice (UP-102). A paused
+/// clock auto-advances to the deadline instead of waiting it out.
+#[test]
+fn an_unanswered_append_ends_its_call() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .start_paused(true)
+        .build()
+        .unwrap();
+    let elapsed = runtime.block_on(async {
+        let started = tokio::time::Instant::now();
+        let unanswered = std::future::pending::<std::result::Result<(), AppendError>>();
+        let failure = append_answer(unanswered).await.unwrap_err();
+        assert!(append_error_is_retryable(&failure));
+        started.elapsed()
+    });
+    assert_eq!(elapsed, APPEND_ANSWER_TIMEOUT);
+}
+
 /// The offsets are driver-assigned and never reused, so the only write that can already occupy
 /// one is this driver's own earlier send of the very same request.
 #[test]
@@ -188,9 +208,9 @@ fn commit_stream_errors_are_classified_by_their_storage_code() {
     );
 }
 
-/// An ingest's control-plane RPCs run with no upstream retry policy: only the default writer's
-/// `Dispatcher` has one, and `Write::builder()` exposes none. This classifier mirrors upstream's
-/// `RetryableErrors` minus `CANCELLED`, which here is the caller's own `AdbcStatementCancel`.
+/// Upstream's own policy reaches an ingest's control-plane RPCs only in part (UP-83), and
+/// `Write::builder()` exposes none. This classifier mirrors upstream's `RetryableErrors` minus
+/// `CANCELLED`, which here is the caller's own `AdbcStatementCancel`.
 #[test]
 fn classifies_the_control_plane_statuses_worth_another_attempt() {
     use google_cloud_bigquery::error::WriterBuilderError;

@@ -572,7 +572,9 @@ Bulk ingest uses the Storage Write API. Batches are normalized in request-sized 
 destination type widths, expanded dictionary values, overlapping list-view ranges and offsets for
 empty or null values. Null fields resolved from the destination schema count at their resolved width.
 Input failures stop ingestion without waiting for queued append responses. Failed or cancelled
-ingests release queued payloads before bounded remote stream cleanup.
+ingests release queued payloads before bounded remote stream cleanup. An append unanswered for five
+minutes is replayed on a new connection at its original offset, and a stream call unanswered for a
+minute fails with `TIMEOUT`, so a connection that dies silently cannot hang an ingest.
 
 | Mode | Table preparation and failure behavior |
 | --- | --- |

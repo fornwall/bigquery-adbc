@@ -47,6 +47,9 @@ changes.
   authentication no longer sends a `jobs.cancel` for a job that was never created.
 - A `replace` whose `TRUNCATE` or `CREATE OR REPLACE TABLE` gets no answer says the old rows may be
   gone, as a cancelled one already did, rather than implying they stand.
+- A bulk ingest no longer hangs on a connection that dies silently: an append unanswered for five
+  minutes is replayed on a new connection, and a stream call unanswered for a minute fails with
+  `TIMEOUT`.
 
 ## [0.2.0] - 2026-11-06
 

@@ -96,28 +96,25 @@ pub(super) async fn pending_writer(
         table_path,
         operation,
     } = target;
+    let context = format!("failed to create BigQuery pending ingest stream for {table_path}");
     let mut budget = VisibilityBudget::new();
     let mut writer = loop {
         // `CreateWriteStream` is not idempotent: a retry after a lost response leaves an extra
         // pending stream. That is harmless: an empty pending stream bills nothing and expires,
         // and only the stream whose creation was answered is committed.
-        let created = control_plane_retry(Some(operation), attach_error_is_transient, || {
-            client
-                .create_stream::<PendingStream>(*table_path)
-                .build_arrow(schema.clone())
-        })
-        .await?;
+        let created =
+            control_plane_retry(&context, Some(operation), attach_error_is_transient, || {
+                client
+                    .create_stream::<PendingStream>(*table_path)
+                    .build_arrow(schema.clone())
+            })
+            .await?;
         match created {
             Ok(writer) => break writer,
             Err(source) if budget.has_attempt_left() && attach_error_is_not_found(&source) => {
                 budget.back_off(target).await?;
             }
-            Err(source) => {
-                return Err(writer_builder_failure(
-                    &format!("failed to create BigQuery pending ingest stream for {table_path}"),
-                    source,
-                ));
-            }
+            Err(source) => return Err(writer_builder_failure(&context, source)),
         }
     };
 
@@ -179,12 +176,17 @@ async fn attach_writer(
     target: &AppendTarget<'_>,
     stream_name: &str,
 ) -> Result<std::result::Result<PendingWriter<Arrow>, WriterBuilderError>> {
-    control_plane_retry(Some(target.operation), attach_error_is_transient, || {
-        target
-            .client
-            .attach_to_stream::<PendingStream>(stream_name)
-            .build_arrow(target.schema.clone())
-    })
+    control_plane_retry(
+        &reconnect_context(stream_name),
+        Some(target.operation),
+        attach_error_is_transient,
+        || {
+            target
+                .client
+                .attach_to_stream::<PendingStream>(stream_name)
+                .build_arrow(target.schema.clone())
+        },
+    )
     .await
 }
 
@@ -198,8 +200,11 @@ pub(super) fn reconnect_failure(
     stream_name: &str,
     source: WriterBuilderError,
 ) -> adbc_core::error::Error {
-    let context = format!("failed to reconnect BigQuery ingest stream {stream_name}");
-    writer_builder_failure(&context, source)
+    writer_builder_failure(&reconnect_context(stream_name), source)
+}
+
+fn reconnect_context(stream_name: &str) -> String {
+    format!("failed to reconnect BigQuery ingest stream {stream_name}")
 }
 
 fn writer_builder_failure(context: &str, source: WriterBuilderError) -> adbc_core::error::Error {

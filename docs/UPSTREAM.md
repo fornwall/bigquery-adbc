@@ -36,7 +36,7 @@ cannot show whether the service is fixed. Unmerged fixes are under
 | UP-43 | No credential-recipient trust for endpoint overrides | `google-cloud-rust` | SDK limitation; driver validates endpoints | None |
 | UP-46 | Option conversion errors echo rejected values | Apache Arrow ADBC (`adbc_core`) | Driver sanitizes errors | None |
 | UP-56 | Generated clients link unused Storage RPCs | `google-cloud-bigquery` | SDK limitation; no workaround | None |
-| UP-61 | Pending-stream appends have no timeout | `google-cloud-bigquery` | Open; fixed for default streams only | [#6781](https://github.com/googleapis/google-cloud-rust/issues/6781) |
+| UP-61 | Pending-stream appends have no timeout | `google-cloud-bigquery` | Open; fixed for default streams only; driver bounds the wait | [#6781](https://github.com/googleapis/google-cloud-rust/issues/6781) |
 | UP-66 | Pending-stream `AppendRows` runner never reconnects | `google-cloud-bigquery` | Open; driver replays | [#6851](https://github.com/googleapis/google-cloud-rust/issues/6851) |
 | UP-68 | Unused query dependencies cannot be disabled | `google-cloud-bigquery` | SDK limitation | None |
 | UP-69 | AWS credential formatting pulls in jiff | `google-cloud-auth` | SDK limitation; no workaround | None |
@@ -60,7 +60,7 @@ cannot show whether the service is fixed. Unmerged fixes are under
 | UP-96 | Arrow appends refuse flexible column names | BigQuery Storage Write | Service status unknown; driver refuses up front | None |
 | [UP-100](#up-100-sdk-token-exchanges-follow-redirects) | Token exchanges follow redirects | `google-cloud-auth` | Local finding; no SDK policy option | None |
 | [UP-101](#up-101-sdk-token-exchanges-have-no-timeout) | Token exchanges have no timeout | `google-cloud-auth` | Local finding; driver bounds the caller's wait | None |
-| [UP-102](#up-102-grpc-server-streams-have-no-deadline-or-keepalive) | gRPC server streams have no deadline or keepalive | `google-cloud-gax-internal` | Local finding; driver bounds `ReadRows` silence | None |
+| [UP-102](#up-102-grpc-server-streams-have-no-deadline-or-keepalive) | gRPC server streams have no deadline or keepalive | `google-cloud-gax-internal` | Local finding; driver bounds `ReadRows` silence and Storage Write waits | None |
 
 ## Git snapshot candidates
 
@@ -181,8 +181,9 @@ around them.
 ## UP-61: Rust BigQuery's pending-stream appends still have no timeout
 
 In `google-cloud-bigquery` 0.19.0, attempt timeouts and retry policies remain configurable only on
-the default-stream `WriterBuilder`, so nothing bounds a pending-stream append. The driver bounds
-finalize and commit calls, but a stalled append still requires cancellation.
+the default-stream `WriterBuilder`, so nothing upstream bounds a pending-stream append. The driver
+bounds finalize and commit calls, and treats an append unanswered for five minutes as a dead call,
+reconnecting and replaying it at its offset.
 
 ## UP-66: The pending-stream `AppendRows` runner never reconnects
 
@@ -248,10 +249,11 @@ and the driver does not check the field.
 
 ## UP-83: the Storage Write retry policy never reaches the control plane
 
-The crate's retry policy applies only to default-stream appends; `CreateWriteStream`,
-`GetWriteStream`, `FinalizeWriteStream` and `BatchCommitWriteStreams` are sent without retries.
-`control_plane_retry` (`src/ingest/write/retry.rs`) makes up to three attempts with 200 ms
-doubling backoff on transport failures and transient statuses.
+The crate's retry policy applies only to default-stream appends. `CreateWriteStream`,
+`GetWriteStream` and `FinalizeWriteStream` get gax's default policy, which retries only failures
+before the RPC was sent, as they are marked non-idempotent; `BatchCommitWriteStreams` also retries
+I/O failures and `UNAVAILABLE`. `control_plane_retry` (`src/ingest/write/retry.rs`) makes up to
+three attempts with 200 ms doubling backoff on transport failures and transient statuses.
 
 ## UP-84: dbapi `adbc_read_partition` sends Ctrl-C to the statement, not the connection
 
@@ -380,4 +382,6 @@ blocked until the connection dies, so requests keep failing until then even if t
 TCP keepalive, with no client-builder option for either. A reader with nothing outstanding therefore
 never learns its peer is gone. The driver limits `ReadRows` silence itself (`src/storage_read.rs`),
 but a resume reuses the same channel, so on a dead connection the attempts run out and the read fails
-rather than recovers. A keepalive would detect that without the driver's timer.
+rather than recovers. An `AppendRows` call has the same gap, so the driver also bounds every
+Storage Write wait (`src/ingest/write/retry.rs`). A keepalive would detect both without the
+driver's timers.

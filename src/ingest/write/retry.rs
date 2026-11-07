@@ -1,5 +1,8 @@
 //! Bounded append pipelining and retries. Explicit offsets prevent replay from duplicating rows.
-//! The pending writer's control-plane RPCs have no SDK retry policy, so they retry here too.
+//! The pending writer's control-plane RPCs get little or no SDK retry (UP-83), so they retry here.
+//!
+//! Nothing below this module notices a connection that dies silently, since the gRPC channel has
+//! no keepalive (UP-102), so every wait on the service here has a deadline.
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -33,12 +36,20 @@ const APPEND_PIPELINE_REQUESTS: usize = 1_000;
 // waiting for a new table to become visible is the budget in [`super::stream`].
 const CONTROL_PLANE_RETRY_ATTEMPTS: usize = 3;
 const CONTROL_PLANE_RETRY_DELAY: Duration = Duration::from_millis(200);
+/// Total timeout for one control-plane RPC, including its retries. Finalize and commit run outside
+/// caller cancellation, so this also bounds their delay after a statement is cancelled.
+pub(super) const CONTROL_PLANE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long the oldest append may go unanswered before its call counts as ended. Replaying costs
+/// nothing if the service was only slow, so this need not be generous.
+const APPEND_ANSWER_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub(super) use crate::error::google_error_is_transient;
 
-/// Retries transient control-plane failures. The outer error is cancellation, the inner the RPC
-/// failure. Stream-closing RPCs pass no operation; see [`super::close_stream_call`].
+/// Retries transient control-plane failures. The outer error is cancellation or the timeout,
+/// reported under `context`, and the inner the RPC failure. Stream-closing RPCs pass no operation;
+/// see [`super::close_stream_call`].
 pub(super) async fn control_plane_retry<T, E, Call, Fut>(
+    context: &str,
     operation: Option<&Operation>,
     is_transient: impl Fn(&E) -> bool,
     mut call: Call,
@@ -47,23 +58,45 @@ where
     Call: FnMut() -> Fut,
     Fut: Future<Output = std::result::Result<T, E>>,
 {
-    let mut attempts_left = CONTROL_PLANE_RETRY_ATTEMPTS - 1;
-    let mut delay = CONTROL_PLANE_RETRY_DELAY;
-    loop {
-        match gate(operation, call()).await? {
-            Err(source) if attempts_left > 0 && is_transient(&source) => {
-                attempts_left -= 1;
-                back_off(operation, &mut delay).await?;
+    let attempts = async {
+        let mut attempts_left = CONTROL_PLANE_RETRY_ATTEMPTS - 1;
+        let mut delay = CONTROL_PLANE_RETRY_DELAY;
+        loop {
+            match gate(operation, call()).await? {
+                Err(source) if attempts_left > 0 && is_transient(&source) => {
+                    attempts_left -= 1;
+                    back_off(operation, &mut delay).await?;
+                }
+                outcome => return Ok(outcome),
             }
-            outcome => return Ok(outcome),
         }
-    }
+    };
+    tokio::time::timeout(CONTROL_PLANE_TIMEOUT, attempts)
+        .await
+        .unwrap_or_else(|_| {
+            Err(error(
+                format!(
+                    "{context}: no answer within {} s",
+                    CONTROL_PLANE_TIMEOUT.as_secs()
+                ),
+                Status::Timeout,
+            ))
+        })
 }
 
 async fn back_off(operation: Option<&Operation>, delay: &mut Duration) -> Result<()> {
     cancellation::sleep(operation, *delay).await?;
     *delay = delay.saturating_mul(2);
     Ok(())
+}
+
+/// An append's answer, or the end of its call once [`APPEND_ANSWER_TIMEOUT`] passes without one.
+async fn append_answer<T>(
+    answer: impl Future<Output = std::result::Result<T, AppendError>>,
+) -> std::result::Result<T, AppendError> {
+    tokio::time::timeout(APPEND_ANSWER_TIMEOUT, answer)
+        .await
+        .unwrap_or(Err(AppendError::UnexpectedEndOfStream))
 }
 
 /// Explicit offsets make ambiguous INTERNAL and ABORTED outcomes safe to replay.
@@ -134,7 +167,9 @@ pub(super) async fn append_with_retry(
         }
         match target
             .operation
-            .wait(writer.append(rows.clone()).set_offset(offset).send())
+            .wait(append_answer(
+                writer.append(rows.clone()).set_offset(offset).send(),
+            ))
             .await?
         {
             Ok(response) => {
@@ -340,7 +375,7 @@ impl AppendPipeline {
             return Ok(());
         };
         self.in_flight_bytes -= rows.serialized_record_batch.len();
-        let outcome = match target.operation.wait(future).await {
+        let outcome = match target.operation.wait(append_answer(future)).await {
             Ok(Ok(response)) => {
                 check_acknowledged_offset(response.offset, offset, target.table_path)
             }

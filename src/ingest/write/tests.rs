@@ -9,7 +9,8 @@ use google_cloud_gax::error::rpc::{Code, Status as GoogleStatus};
 
 use crate::cancellation::{Cancellation, OperationCancelHandle};
 
-use super::{STREAM_CLOSE_TIMEOUT, close_stream_call, commit_already_landed};
+use super::retry::CONTROL_PLANE_TIMEOUT;
+use super::{close_stream_call, commit_already_landed};
 use crate::test_support::errors::assert_message;
 
 /// One live `Operation`, already cancelled, standing in for a statement whose caller called
@@ -108,11 +109,11 @@ fn an_unanswered_close_times_out() {
     assert_eq!(failure.status, Status::Timeout);
     assert_message(&failure, &["commit", "streams/s", "no answer within 60 s"]);
     let elapsed = runtime.block_on(async { started.elapsed() });
-    assert_eq!(elapsed, STREAM_CLOSE_TIMEOUT);
+    assert_eq!(elapsed, CONTROL_PLANE_TIMEOUT);
 }
 
 /// One `UNAVAILABLE` on the last call of an ingest is retried by the driver, since the pinned
-/// client attaches no retry policy to the control-plane RPCs.
+/// client retries so little of the control plane (UP-83).
 #[test]
 fn a_transient_close_failure_is_replayed_before_it_is_reported() {
     let runtime = crate::runtime::new_runtime().unwrap();
