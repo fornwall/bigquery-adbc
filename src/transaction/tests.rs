@@ -3,7 +3,7 @@ use std::sync::Arc;
 use adbc_core::error::Status;
 
 use super::{
-    EnableAutocommit, FinishTransaction, QueryStart, QueryTransaction, TransactionState,
+    EnableAutocommit, Finish, FinishTransaction, QueryStart, QueryTransaction, TransactionState,
     googlesql_string_literal, outcome_unknown,
 };
 use crate::error::{error, with_job_verdict};
@@ -73,10 +73,7 @@ fn manual_transactions_move_between_idle_and_active() {
         Some("shared-session")
     );
 
-    let FinishTransaction::Active(session_id, finish) = state.begin_finish("commit").unwrap()
-    else {
-        panic!("active transaction was not returned")
-    };
+    let (session_id, finish) = finishing(&state);
     finish.succeeded(session_id).unwrap();
     assert!(!state.is_autocommit().unwrap());
     assert_eq!(
@@ -108,10 +105,7 @@ fn failed_begin_remains_in_manual_mode_without_a_session() {
 #[test]
 fn failed_finish_restores_the_active_transaction() {
     let state = active_state();
-    let FinishTransaction::Active(session_id, finish) = state.begin_finish("commit").unwrap()
-    else {
-        panic!("active transaction was not returned")
-    };
+    let (session_id, finish) = finishing(&state);
     finish.failed(session_id).unwrap();
 
     assert!(!state.is_autocommit().unwrap());
@@ -124,9 +118,7 @@ fn failed_finish_restores_the_active_transaction() {
 #[test]
 fn an_abandoned_transaction_stays_manual_without_a_session() {
     let state = active_state();
-    let FinishTransaction::Active(_, finish) = state.begin_finish("roll back").unwrap() else {
-        panic!("active transaction was not returned")
-    };
+    let (_, finish) = finishing(&state);
     finish.abandoned().unwrap();
 
     assert!(!state.is_autocommit().unwrap());
@@ -150,10 +142,7 @@ fn enabling_autocommit_distinguishes_idle_and_active_transactions() {
     assert!(idle.is_autocommit().unwrap());
 
     let retained = active_state();
-    let FinishTransaction::Active(session_id, finish) = retained.begin_finish("commit").unwrap()
-    else {
-        panic!("active transaction was not returned")
-    };
+    let (session_id, finish) = finishing(&retained);
     finish.succeeded(session_id).unwrap();
     assert!(matches!(
         retained.begin_enable_autocommit().unwrap(),
@@ -195,10 +184,7 @@ fn transaction_transitions_reject_competing_operations() {
     start.failed(None).unwrap();
 
     let state = active_state();
-    let FinishTransaction::Active(session_id, finish) = state.begin_finish("commit").unwrap()
-    else {
-        panic!("active transaction was not returned")
-    };
+    let (session_id, finish) = finishing(&state);
     for error in [
         state.begin_query().unwrap_err(),
         state.begin_finish("roll back").unwrap_err(),
@@ -223,9 +209,7 @@ fn dropped_transitions_restore_a_settled_state() {
     assert!(previous.is_none());
     start.started(Arc::from("shared-session")).unwrap();
 
-    let FinishTransaction::Active(_, finish) = state.begin_finish("commit").unwrap() else {
-        panic!("active transaction was not returned")
-    };
+    let (_, finish) = finishing(&state);
     drop(finish);
     assert!(matches!(
         state.begin_query().unwrap(),
@@ -253,9 +237,7 @@ fn releasing_reports_the_session_to_end_and_refuses_later_work() {
     }
 
     let idle = active_state();
-    let FinishTransaction::Active(session_id, finish) = idle.begin_finish("commit").unwrap() else {
-        panic!("active transaction was not returned")
-    };
+    let (session_id, finish) = finishing(&idle);
     finish.succeeded(session_id).unwrap();
     let release = idle.release().expect("an idle session to end");
     assert_eq!(release.session_id.as_ref(), "shared-session");
@@ -282,10 +264,7 @@ fn releasing_reports_the_session_to_end_and_refuses_later_work() {
 #[test]
 fn releasing_during_a_transition_leaves_the_session_alone() {
     let state = active_state();
-    let FinishTransaction::Active(session_id, finish) = state.begin_finish("commit").unwrap()
-    else {
-        panic!("active transaction was not returned")
-    };
+    let (session_id, finish) = finishing(&state);
     assert!(state.release().is_none());
     finish.failed(session_id).unwrap();
     assert!(state.release().is_some(), "the restored session still ends");
@@ -302,10 +281,7 @@ fn only_the_named_idle_session_is_forgotten() {
         Some("shared-session")
     );
 
-    let FinishTransaction::Active(session_id, finish) = state.begin_finish("commit").unwrap()
-    else {
-        panic!("active transaction was not returned")
-    };
+    let (session_id, finish) = finishing(&state);
     finish.succeeded(session_id).unwrap();
     assert!(!state.forget_ended_session("another-session"));
     assert!(state.forget_ended_session("shared-session"));
@@ -337,12 +313,17 @@ fn only_a_transaction_no_other_statement_joined_is_begun_again() {
     assert!(joined.begin_replacing("shared-session").is_none());
 
     let restored = active_state();
-    let FinishTransaction::Active(session_id, finish) = restored.begin_finish("commit").unwrap()
-    else {
-        panic!("active transaction was not returned")
-    };
+    let (session_id, finish) = finishing(&restored);
     finish.failed(session_id).unwrap();
     assert!(restored.begin_replacing("shared-session").is_none());
+}
+
+/// Begins finishing the active transaction in `state`.
+fn finishing(state: &TransactionState) -> (Arc<str>, Finish<'_>) {
+    match state.begin_finish("commit").unwrap() {
+        FinishTransaction::Active(session_id, finish) => (session_id, finish),
+        FinishTransaction::Idle => panic!("active transaction was not returned"),
+    }
 }
 
 fn start_query(state: &TransactionState) -> (Option<Arc<str>>, QueryStart<'_>) {
