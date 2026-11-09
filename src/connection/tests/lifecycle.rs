@@ -158,110 +158,69 @@ fn a_fresh_session() -> Vec<(u16, serde_json::Value)> {
     answers
 }
 
-/// The responses after the preamble when `finish` (a `COMMIT` or `ROLLBACK`) finds the
-/// transaction gone with `failure`: the session abort, a fresh session for the next statement's
-/// transaction, and the release that ends it.
-fn transaction_lost_then_a_fresh_session(
-    failure: serde_json::Value,
-) -> Vec<(u16, serde_json::Value)> {
-    [vec![(400, failure), (200, complete())], a_fresh_session()].concat()
-}
-
-/// Runs one more INSERT on `connection` after `finish` found the transaction gone, releases the
-/// connection, and asserts the INSERT ran in a fresh session with a transaction of its own.
-fn assert_the_next_statement_runs_in_a_fresh_session(
-    mut connection: crate::BigQueryConnection,
-    requests: CapturedServer,
-    finish: &str,
-) {
-    execute(&mut connection, "INSERT dataset.table VALUES (43)").unwrap();
-    drop(connection);
-
-    assert_sql_after_preamble(
-        requests,
-        &[
-            &format!("{finish} TRANSACTION"),
-            "CALL BQ.ABORT_SESSION('mock-session')",
-            "SELECT 1",
-            "BEGIN TRANSACTION",
-            "INSERT dataset.table VALUES (43)",
-            "ROLLBACK TRANSACTION",
-            "CALL BQ.ABORT_SESSION('fresh-session')",
-        ],
-    );
-}
-
-/// A rollback that finds the transaction gone ends the session; otherwise later statements would
-/// autocommit there and every rollback would fail the same way. The next statement opens a fresh
-/// session with its own transaction.
+/// A `COMMIT` or `ROLLBACK` that finds the transaction gone ends the session; otherwise later
+/// statements would autocommit there and every retry would fail the same way. The transaction is
+/// gone when a `COMMIT` or `ROLLBACK` in a script ended it unseen, or when the session expired with
+/// it. The connection stays in manual mode with nothing to roll back, and the next statement opens
+/// a fresh session with its own transaction.
 #[test]
-fn a_failed_rollback_ends_the_session_and_the_next_statement_starts_afresh() {
-    let (mut connection, requests) = connection_with_open_transaction_then(
-        transaction_lost_then_a_fresh_session(transaction_lost()),
-    );
+fn finding_the_transaction_gone_ends_the_session_and_the_next_statement_starts_afresh() {
+    for (finish, failure, fragments) in [
+        (
+            "ROLLBACK",
+            transaction_lost(),
+            &["No active transaction found", "session was ended"][..],
+        ),
+        (
+            "COMMIT",
+            transaction_lost(),
+            &[
+                "No active transaction found",
+                "a script ran COMMIT or ROLLBACK",
+                "next statement starts a new transaction",
+            ],
+        ),
+        (
+            "COMMIT",
+            session_expired(),
+            &[
+                "has expired and is no longer available",
+                "its session expired, which rolled it back",
+                "next statement starts a new transaction",
+            ],
+        ),
+    ] {
+        let (mut connection, requests) = connection_with_open_transaction_then(
+            [vec![(400, failure), (200, complete())], a_fresh_session()].concat(),
+        );
+        let failure = if finish == "COMMIT" {
+            connection.commit()
+        } else {
+            connection.rollback()
+        }
+        .unwrap_err();
+        assert_failure(&failure, Status::InvalidState, fragments);
+        assert_eq!(
+            option_string(&connection, OptionConnection::AutoCommit),
+            ADBC_OPTION_VALUE_DISABLED
+        );
+        connection.rollback().unwrap();
 
-    let failure = connection.rollback().unwrap_err();
-    assert_failure(
-        &failure,
-        Status::InvalidState,
-        &["No active transaction found", "session was ended"],
-    );
-    assert_eq!(
-        option_string(&connection, OptionConnection::AutoCommit),
-        ADBC_OPTION_VALUE_DISABLED
-    );
-    // Nothing is left to roll back.
-    connection.rollback().unwrap();
-
-    assert_the_next_statement_runs_in_a_fresh_session(connection, requests, "ROLLBACK");
-}
-
-/// A `COMMIT` inside a script ends BigQuery's transaction unseen, and every later statement
-/// autocommits in the session. The ADBC commit that then finds no transaction must say so, and
-/// end the session rather than keep it for a retry that fails the same way.
-#[test]
-fn a_commit_that_finds_the_transaction_gone_ends_the_session() {
-    let (mut connection, requests) = connection_with_open_transaction_then(
-        transaction_lost_then_a_fresh_session(transaction_lost()),
-    );
-
-    let failure = connection.commit().unwrap_err();
-    assert_failure(
-        &failure,
-        Status::InvalidState,
-        &[
-            "No active transaction found",
-            "a script ran COMMIT or ROLLBACK",
-            "next statement starts a new transaction",
-        ],
-    );
-    assert_eq!(
-        option_string(&connection, OptionConnection::AutoCommit),
-        ADBC_OPTION_VALUE_DISABLED
-    );
-    assert_the_next_statement_runs_in_a_fresh_session(connection, requests, "COMMIT");
-}
-
-/// A session that expired with its transaction open took the transaction with it. The commit
-/// must say so and leave manual mode without a session, rather than keep the dead session as an
-/// active transaction that every later statement and commit fails in.
-#[test]
-fn a_commit_in_an_expired_session_reports_the_transaction_gone() {
-    let (mut connection, requests) = connection_with_open_transaction_then(
-        transaction_lost_then_a_fresh_session(session_expired()),
-    );
-
-    let failure = connection.commit().unwrap_err();
-    assert_failure(
-        &failure,
-        Status::InvalidState,
-        &[
-            "has expired and is no longer available",
-            "its session expired, which rolled it back",
-            "next statement starts a new transaction",
-        ],
-    );
-    assert_the_next_statement_runs_in_a_fresh_session(connection, requests, "COMMIT");
+        execute(&mut connection, "INSERT dataset.table VALUES (43)").unwrap();
+        drop(connection);
+        assert_sql_after_preamble(
+            requests,
+            &[
+                &format!("{finish} TRANSACTION"),
+                "CALL BQ.ABORT_SESSION('mock-session')",
+                "SELECT 1",
+                "BEGIN TRANSACTION",
+                "INSERT dataset.table VALUES (43)",
+                "ROLLBACK TRANSACTION",
+                "CALL BQ.ABORT_SESSION('fresh-session')",
+            ],
+        );
+    }
 }
 
 /// A dry run describes a statement in the idle session a committed transaction left. Once
