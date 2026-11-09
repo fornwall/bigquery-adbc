@@ -355,13 +355,11 @@ Both drivers behave the same here:
 
 ### Paginated results select Storage Read before delivering rows
 
-Later rows may exceed REST's 20 MiB limit and switching APIs mid-read could duplicate or omit rows,
-so paginated results select Storage Read before delivery; complete results stay on REST, where the
-fork normally uses Storage Read. This affects `run_query` and previews, not CTAS payloads.
-Oversized rows still fail with Storage Read disabled or unavailable, and small paginated results
-pay its setup cost ([measurements](PERFORMANCE.md#choosing-storage-read-for-every-paginated-result)).
-The [live regression](../tests/bigquery/storage_read.rs) reads 2,001 rows in order, ending with a
-24,000,123-byte row.
+Paginated results [select Storage Read](REFERENCE.md#reading-large-results-through-the-storage-read-api)
+before delivery, so a later row over REST's 20 MiB limit fails only with Storage Read disabled or
+unavailable; complete results stay on REST, where the fork normally uses Storage Read. This affects
+`run_query` and previews, not CTAS payloads, and small paginated results pay Storage Read's setup
+cost ([measurements](PERFORMANCE.md#choosing-storage-read-for-every-paginated-result)).
 
 ### Seed type parameters are enforced
 
