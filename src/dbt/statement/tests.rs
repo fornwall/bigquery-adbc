@@ -30,39 +30,20 @@ fn each_dbt_operation_replaces_every_other_execution_mode() {
             if first == second {
                 continue;
             }
+            // A copy has two options, and leaving it clears both.
+            let copy = *first == Key::CopyTableSource.into();
+            let destination = OptionStatement::from(Key::CopyTableDestination);
             let mut statement = test_statement();
             set_option(&mut statement, first.clone(), *first_value);
+            if copy {
+                set_option(&mut statement, destination.clone(), "analytics.copy");
+            }
             set_option(&mut statement, second.clone(), *second_value);
             assert_string_option(&statement, first.clone(), None);
+            if copy {
+                assert_string_option(&statement, destination, None);
+            }
             assert!(statement.get_option_string(second.clone()).is_ok());
-        }
-    }
-}
-
-/// A table metadata update neither clears nor is cleared by another operation's setters, and the
-/// dataset operations run before it, so they refuse the pair rather than silently dropping it.
-#[test]
-fn a_dataset_operation_cannot_be_combined_with_a_table_metadata_update() {
-    for (option, value) in [
-        (Key::AuthorizeViewToDatasets, AUTHORIZATION),
-        (Key::GetDatasetLocation, LOCATION),
-    ] {
-        for (update, update_value) in [
-            (
-                Key::UpdateColumnsDescription,
-                r#"{"id":"Required identifier."}"#,
-            ),
-            (Key::UpdateDescription, "A documented relation."),
-        ] {
-            let mut statement = test_statement();
-            set_option(&mut statement, option, value);
-            set_option(&mut statement, update, update_value);
-            let error = statement.execute_update().unwrap_err();
-            assert_failure(
-                &error,
-                Status::InvalidState,
-                &["cannot be combined", option.as_str(), update.as_str()],
-            );
         }
     }
 }
@@ -81,6 +62,10 @@ fn only_the_dbt_placeholder_query_keeps_an_authorization() {
         "none\n/* bigquery-adbc: model.project.granted_view */",
         "-- a line comment\nnone",
         "",
+        // A terminator may precede trailing comments.
+        "none; -- node comment",
+        "none; # node comment",
+        "/* leading */ none /* before terminator */; /* after terminator */",
     ] {
         set_option(&mut statement, option, AUTHORIZATION);
         statement.set_sql_query(query).unwrap();
@@ -90,7 +75,12 @@ fn only_the_dbt_placeholder_query_keeps_an_authorization() {
         );
     }
 
-    for query in ["select 1", "none of your business", "/* c */ select none"] {
+    for query in [
+        "select 1",
+        "none of your business",
+        "/* c */ select none",
+        "none; /* comment */ SELECT 2",
+    ] {
         set_option(&mut statement, option, AUTHORIZATION);
         statement.set_sql_query(query).unwrap();
         assert_string_option(&statement, option, None);

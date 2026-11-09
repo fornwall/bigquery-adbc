@@ -3,7 +3,6 @@
 //! with.
 
 use super::*;
-use crate::dbt::statement::DbtOperation;
 
 #[test]
 fn clearing_the_ingest_target_keeps_the_sql_query() {
@@ -90,37 +89,6 @@ fn the_select_one_placeholder_finalizes_a_python_model_while_real_sql_replaces_i
         statement.set_sql_query(query).unwrap();
         assert_string_option(&statement, bucket, None);
     }
-}
-
-#[test]
-fn authorization_placeholders_allow_a_terminator_before_comments() {
-    let option = BqOption::AuthorizeViewToDatasets;
-    let value = r#"{"analytics.v": [{"project": "data-project", "dataset": "analytics"}]}"#;
-    let mut statement = test_statement();
-    set_option(&mut statement, option, value);
-
-    for query in [
-        "none; -- node comment",
-        "none; # node comment",
-        "/* leading */ none /* before terminator */; /* after terminator */",
-    ] {
-        statement.set_sql_query(query).unwrap();
-        assert_eq!(
-            statement.dbt.active_operation(),
-            Some(DbtOperation::DatasetAuthorization),
-            "{query}"
-        );
-        assert!(statement.sql.is_none(), "{query}");
-    }
-
-    statement
-        .set_sql_query("none; /* comment */ SELECT 2")
-        .unwrap();
-    assert_string_option(&statement, option, None);
-    assert_eq!(
-        statement.sql.as_deref(),
-        Some("none; /* comment */ SELECT 2")
-    );
 }
 
 #[test]
@@ -240,8 +208,19 @@ fn python_model_execution_follows_precedence_as_selectors_are_cleared() {
 /// pair is refused at execution, whichever was set first.
 #[test]
 fn a_table_metadata_update_cannot_be_combined_with_another_operation() {
-    let update = BqOption::UpdateDescription;
+    let authorization =
+        r#"{"data-project.analytics.granted_view":[{"project":"data-project","dataset":"raw"}]}"#;
     for (option, value, family) in [
+        (
+            BqOption::AuthorizeViewToDatasets.into(),
+            authorization,
+            BqOption::AuthorizeViewToDatasets.as_str(),
+        ),
+        (
+            BqOption::GetDatasetLocation.into(),
+            r#"{"project":"data-project","dataset":"raw"}"#,
+            BqOption::GetDatasetLocation.as_str(),
+        ),
         (
             BqOption::WriteGcsBucket.into(),
             "dbt-python",
@@ -281,10 +260,20 @@ fn a_table_metadata_update_cannot_be_combined_with_another_operation() {
             "adbc.bigquery.ingest.csv_*",
         ),
     ] {
-        for update_first in [true, false] {
+        for (update, update_first) in [
+            (BqOption::UpdateDescription, true),
+            (BqOption::UpdateDescription, false),
+            (BqOption::UpdateColumnsDescription, true),
+            (BqOption::UpdateColumnsDescription, false),
+        ] {
+            let update_value = if update == BqOption::UpdateDescription {
+                "a combined table"
+            } else {
+                r#"{"id":"Required identifier."}"#
+            };
             let mut statement = test_statement();
             let mut settings = [
-                (OptionStatement::from(update), "a combined table"),
+                (OptionStatement::from(update), update_value),
                 (option.clone(), value),
             ];
             if !update_first {
@@ -335,46 +324,6 @@ fn a_table_metadata_update_cannot_be_combined_with_a_sql_query() {
         Status::InvalidState,
         &[BqOption::DestinationTable.as_str()],
     );
-}
-
-/// A CSV seed takes precedence over a table copy, so setting a CSV filepath clears a configured
-/// copy, as the copy's setters clear a seed.
-#[test]
-fn a_csv_seed_and_a_table_copy_each_replace_the_other() {
-    let mut statement = test_statement();
-    set_option(
-        &mut statement,
-        BqOption::CopyTableSource,
-        "analytics.source",
-    );
-    set_option(
-        &mut statement,
-        BqOption::CopyTableDestination,
-        "analytics.destination",
-    );
-    assert_eq!(
-        statement.dbt.active_operation(),
-        Some(DbtOperation::TableCopy)
-    );
-
-    set_option(&mut statement, BqOption::CsvFilepath, "seeds/example.csv");
-    assert_eq!(
-        statement.dbt.active_operation(),
-        Some(DbtOperation::CsvSeed)
-    );
-    assert_string_option(&statement, BqOption::CopyTableSource, None);
-    assert_string_option(&statement, BqOption::CopyTableDestination, None);
-
-    set_option(
-        &mut statement,
-        BqOption::CopyTableSource,
-        "analytics.source",
-    );
-    assert_eq!(
-        statement.dbt.active_operation(),
-        Some(DbtOperation::TableCopy)
-    );
-    assert_string_option(&statement, BqOption::CsvFilepath, None);
 }
 
 #[test]
