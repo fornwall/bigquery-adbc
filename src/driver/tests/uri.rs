@@ -106,37 +106,15 @@ fn uri_replaces_the_complete_database_configuration() {
         "bigquery:///new-project",
     );
 
+    // Field for field what the URI alone configures; `Debug` covers every field, and shows
+    // whether each secret is set without its value.
+    let mut fresh = new_database();
+    set_option(&mut fresh, OptionDatabase::Uri, "bigquery:///new-project");
+    assert_eq!(
+        format!("{:?}", database.config),
+        format!("{:?}", fresh.config)
+    );
     assert_eq!(database.config.project_id.as_deref(), Some("new-project"));
-    assert_eq!(database.config.dataset_id, None);
-    assert_eq!(
-        database.config.authentication_type,
-        BigQueryAuthenticationType::ApplicationDefault
-    );
-    assert_eq!(database.config.credentials, None);
-    assert_eq!(database.config.credentials_type, None);
-    assert_eq!(database.config.user_authentication.client_id, None);
-    assert_eq!(database.config.user_authentication.client_secret, None);
-    assert_eq!(database.config.user_authentication.refresh_token, None);
-    assert_eq!(
-        database.config.user_authentication.access_token_endpoint,
-        None
-    );
-    assert_eq!(database.config.access_token, None);
-    assert_eq!(database.config.quota_project, None);
-    assert_eq!(database.config.impersonation.target_principal, None);
-    assert!(database.config.impersonation.delegates.is_empty());
-    assert!(database.config.impersonation.scopes.is_empty());
-    assert_eq!(database.config.impersonation.lifetime, None);
-    assert_eq!(database.config.location, None);
-    assert_eq!(
-        database.config.endpoints.get(ServiceEndpointKind::BigQuery),
-        Some("https://bigquery.googleapis.com:443")
-    );
-    assert_eq!(
-        database.config.endpoints.get(ServiceEndpointKind::Storage),
-        None
-    );
-    assert!(!database.config.allow_untrusted_endpoint);
     assert!(!Arc::ptr_eq(database.clients(), &old_clients));
 }
 
