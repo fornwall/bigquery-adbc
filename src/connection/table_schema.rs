@@ -1,8 +1,6 @@
 //! The table description `get_table_schema` reports: the dbt 2.0 schema metadata built from a
 //! `tables.get` response, and the resolution of a table reference from its arguments.
 
-use std::collections::BTreeMap;
-
 use adbc_core::error::Result;
 use arrow_schema::Metadata;
 
@@ -36,17 +34,17 @@ pub(super) fn table_schema_metadata(table: Table) -> Metadata {
         }
     }
     if !table.labels.is_empty() {
-        metadata.insert("Labels", sorted_json_object(&table.labels));
+        metadata.insert("Labels", to_json(&table.labels));
     }
     if !table.resource_tags.is_empty() {
-        metadata.insert("ResourceTags", sorted_json_object(&table.resource_tags));
+        metadata.insert("ResourceTags", to_json(&table.resource_tags));
     }
     if let Some(clustering) = table
         .clustering
         .as_ref()
         .filter(|clustering| !clustering.fields.is_empty())
     {
-        metadata.insert("Clustering.Fields", json_array(&clustering.fields));
+        metadata.insert("Clustering.Fields", to_json(&clustering.fields));
     }
     insert_partitioning(
         &mut metadata,
@@ -152,13 +150,13 @@ fn insert_external_data_config(
     if !external.source_uris.is_empty() {
         metadata.insert(
             "ExternalDataConfig.SourceURIs",
-            json_array(&external.source_uris),
+            to_json(&external.source_uris),
         );
     }
     if !external.decimal_target_types.is_empty() {
         metadata.insert(
             "ExternalDataConfig.DecimalTargetTypes",
-            json_array(&external.decimal_target_types),
+            to_json(&external.decimal_target_types),
         );
     }
     for (key, value) in [
@@ -235,15 +233,10 @@ fn insert_materialized_view(
     }
 }
 
-/// Serializes a list of strings as a JSON array, as the Go driver does. The order is significant
-/// (clustering key order, declared source URIs) and is kept.
-fn json_array(values: &[String]) -> String {
-    serde_json::to_string(values).expect("a vector of strings serializes to JSON")
-}
-
-/// Serializes labels and resource tags with deterministic key order.
-fn sorted_json_object(map: &BTreeMap<String, String>) -> String {
-    serde_json::to_string(map).expect("a map of strings serializes to JSON")
+/// Serializes a list of strings (in its significant order: clustering keys, declared source URIs)
+/// or a `BTreeMap` of labels or tags (in sorted key order) as JSON, as the Go driver does.
+fn to_json(value: &impl serde::Serialize) -> String {
+    serde_json::to_string(value).expect("strings serialize to JSON")
 }
 
 /// Formats Unix epoch milliseconds as RFC 3339 UTC, e.g. `2026-01-01T00:00:00Z`.

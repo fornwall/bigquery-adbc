@@ -30,15 +30,10 @@ pub(in crate::connection) fn object_table(
             constraints: None,
         });
     };
-    let columns = if include_columns {
-        Some(object_columns(metadata.schema, column_name))
-    } else {
-        None
-    };
     Ok(ObjectTable {
         name,
         table_type,
-        columns,
+        columns: include_columns.then(|| object_columns(metadata.schema, column_name)),
         constraints: Some(object_constraints(
             metadata.table_constraints.unwrap_or_default(),
         )?),
