@@ -167,34 +167,62 @@ fn a_table_type_outside_the_advertised_set_is_reported_as_table() {
     }
 }
 
-/// The dataset walk keeps every page's rows, sends the previous page's token, and stops only at
-/// an empty token. Every page sends `all=true`, so hidden datasets reach GetObjects too.
+/// Both walks keep every page's rows, send the previous page's token, and stop only at an empty
+/// token; the table walk's pages interleave with the describe fan-out. Every dataset page sends
+/// `all=true`, so hidden datasets reach GetObjects too.
 #[test]
-fn the_dataset_walk_follows_every_page_token() {
-    let dataset = |dataset_id: &str| json!({"datasetReference": {"datasetId": dataset_id}});
-    let (endpoint, requests) = capture_requests(vec![
-        ok(json!({"datasets": [dataset("alpha")], "nextPageToken": "page-2"})),
-        ok(json!({"datasets": [dataset("_hidden")], "nextPageToken": "page-3"})),
-        (200, json!({"datasets": [dataset("gamma")]})),
-    ]);
-    let connection = anonymous_connection_at(&endpoint);
+fn the_dataset_and_table_walks_follow_every_page_token() {
+    let dataset: fn(&str) -> serde_json::Value =
+        |dataset_id| json!({"datasetReference": {"datasetId": dataset_id}});
+    for (depth, db_schema, key, entry, path, fields) in [
+        (
+            ObjectDepth::Schemas,
+            None,
+            "datasets",
+            dataset,
+            "datasets?",
+            "fields=datasets%28datasetReference%28datasetId%29%29%2CnextPageToken&all=true",
+        ),
+        (
+            ObjectDepth::Tables,
+            Some("dataset"),
+            "tables",
+            listed_table as fn(&str) -> serde_json::Value,
+            "datasets/dataset/tables?",
+            "fields=nextPageToken%2Ctables%28tableReference%28datasetId%2CtableId%29%2Ctype%29",
+        ),
+    ] {
+        let (endpoint, requests) = capture_requests(vec![
+            ok(json!({key: [entry("alpha")], "nextPageToken": "page-2"})),
+            ok(json!({key: [entry("_hidden")], "nextPageToken": "page-3"})),
+            (200, json!({key: [entry("gamma")]})),
+        ]);
+        let connection = anonymous_connection_at(&endpoint);
 
-    let batch = objects_batch(&connection, ObjectDepth::Schemas, None, None, None);
-    let schemas = child_structs(batch.column(1));
-    assert_eq!(strings(schemas.column(0)), ["_hidden", "alpha", "gamma"]);
+        let batch = objects_batch(&connection, depth, db_schema, None, None);
+        let schemas = child_structs(batch.column(1));
+        let names = if depth == ObjectDepth::Schemas {
+            strings(schemas.column(0))
+        } else {
+            strings(child_structs(schemas.column(1)).column(0))
+        };
+        assert_eq!(names, ["_hidden", "alpha", "gamma"], "{key}");
 
-    let requests = requests.join().unwrap();
-    assert_eq!(
-        requests
-            .iter()
-            .map(CapturedRequest::path)
-            .collect::<Vec<_>>(),
-        [
-            "/bigquery/v2/projects/test-project/datasets?maxResults=1000&fields=datasets%28datasetReference%28datasetId%29%29%2CnextPageToken&all=true",
-            "/bigquery/v2/projects/test-project/datasets?maxResults=1000&pageToken=page-2&fields=datasets%28datasetReference%28datasetId%29%29%2CnextPageToken&all=true",
-            "/bigquery/v2/projects/test-project/datasets?maxResults=1000&pageToken=page-3&fields=datasets%28datasetReference%28datasetId%29%29%2CnextPageToken&all=true",
-        ]
-    );
+        let prefix = format!("/bigquery/v2/projects/test-project/{path}maxResults=1000&");
+        assert_eq!(
+            requests
+                .join()
+                .unwrap()
+                .iter()
+                .map(CapturedRequest::path)
+                .collect::<Vec<_>>(),
+            [
+                format!("{prefix}{fields}"),
+                format!("{prefix}pageToken=page-2&{fields}"),
+                format!("{prefix}pageToken=page-3&{fields}"),
+            ]
+        );
+    }
 }
 
 /// A repeated token would otherwise loop forever while the result grows without bound.
@@ -215,43 +243,6 @@ fn a_repeated_dataset_page_token_is_refused_instead_of_walked_forever() {
 
     // The walk stopped at the repeat rather than requesting "stuck" a third time.
     requests.served(2);
-}
-
-/// The table walk's page loop interleaves with the describe fan-out; a dropped page, a reused
-/// token or an early stop would lose tables from `get_objects`.
-#[test]
-fn the_table_walk_follows_every_page_token() {
-    let (endpoint, requests) = capture_requests(vec![
-        ok(json!({"tables": [listed_table("alpha")], "nextPageToken": "page-2"})),
-        ok(json!({"tables": [listed_table("beta")], "nextPageToken": "page-3"})),
-        (200, json!({"tables": [listed_table("gamma")]})),
-    ]);
-    let connection = anonymous_connection_at(&endpoint);
-
-    let batch = objects_batch(
-        &connection,
-        ObjectDepth::Tables,
-        Some("dataset"),
-        None,
-        None,
-    );
-    let schemas = child_structs(batch.column(1));
-    assert_eq!(schemas.len(), 1);
-    let tables = child_structs(schemas.column(1));
-    assert_eq!(strings(tables.column(0)), ["alpha", "beta", "gamma"]);
-
-    let requests = requests.join().unwrap();
-    assert_eq!(
-        requests
-            .iter()
-            .map(CapturedRequest::path)
-            .collect::<Vec<_>>(),
-        [
-            "/bigquery/v2/projects/test-project/datasets/dataset/tables?maxResults=1000&fields=nextPageToken%2Ctables%28tableReference%28datasetId%2CtableId%29%2Ctype%29",
-            "/bigquery/v2/projects/test-project/datasets/dataset/tables?maxResults=1000&pageToken=page-2&fields=nextPageToken%2Ctables%28tableReference%28datasetId%2CtableId%29%2Ctype%29",
-            "/bigquery/v2/projects/test-project/datasets/dataset/tables?maxResults=1000&pageToken=page-3&fields=nextPageToken%2Ctables%28tableReference%28datasetId%2CtableId%29%2Ctype%29",
-        ]
-    );
 }
 
 /// Every listed table must be described exactly once, however the fan-out schedules them.

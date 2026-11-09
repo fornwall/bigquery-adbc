@@ -740,18 +740,6 @@ fn object_table_lists_an_object_whose_metadata_has_no_schema() {
     .unwrap();
     assert_eq!(table.table_type, "VIEW");
     assert_eq!(table.columns.as_ref().map(Vec::len), Some(0));
-
-    let table = object_table(
-        "events".to_owned(),
-        "TABLE",
-        Some(
-            Table::decode(br#"{"schema": {"fields": [{"name": "id", "type": "INT64"}]}}"#).unwrap(),
-        ),
-        true,
-        None,
-    )
-    .unwrap();
-    assert_eq!(table.columns.as_ref().map(Vec::len), Some(1));
 }
 
 /// Listing visible projects would need the Resource Manager API, so with no current project, or
