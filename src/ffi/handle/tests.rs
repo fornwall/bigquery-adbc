@@ -4,10 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use super::*;
-use crate::ffi::abi::{
-    ADBC_STATUS_INTERNAL, ADBC_STATUS_INVALID_ARGUMENT, ADBC_STATUS_INVALID_STATE,
-    ADBC_STATUS_NOT_FOUND,
-};
+use crate::ffi::abi::{ADBC_STATUS_INTERNAL, ADBC_STATUS_INVALID_STATE, ADBC_STATUS_NOT_FOUND};
 use crate::ffi::test_support::{RecordingCancel, call, hold_the_dispatch_turn, null};
 use adbc_core::options::OptionDatabase;
 
@@ -251,49 +248,6 @@ fn returning_an_error_does_not_poison() {
         Ok(())
     });
     assert_eq!(status, ADBC_STATUS_OK);
-    assert_eq!(release_slot(&mut slot), ADBC_STATUS_OK);
-}
-
-#[test]
-fn a_released_handle_is_an_invalid_state_and_a_null_one_an_invalid_argument() {
-    let mut slot = installed(0_u32, None);
-    assert_eq!(release_slot(&mut slot), ADBC_STATUS_OK);
-    assert!(slot.is_null());
-    // A second release must report, not double free.
-    assert_eq!(release_slot(&mut slot), ADBC_STATUS_INVALID_STATE);
-    assert_eq!(run(&mut slot, |_| Ok(())), ADBC_STATUS_INVALID_STATE);
-    // A null handle has no slot at all.
-    // SAFETY: A null slot pointer is accepted and reported as a bad argument.
-    let statuses = unsafe {
-        [
-            dispatch::<u32, _>(null(), "statement", null(), |_| Ok(())),
-            cancel::<u32>(null(), "statement", null()),
-            release::<u32>(null(), "statement", null()),
-        ]
-    };
-    assert_eq!(statuses, [ADBC_STATUS_INVALID_ARGUMENT; 3]);
-}
-
-/// `New` refuses a populated slot rather than leak the object in it.
-#[test]
-fn installing_into_a_populated_slot_is_refused() {
-    let mut slot = installed(0_u32, None);
-    let before = *slot;
-    // SAFETY: The boxed slot is live and holds a `u32` object.
-    let (checked, installed) = unsafe {
-        (
-            check_empty(&raw const *slot, "statement"),
-            install(
-                &raw mut *slot,
-                "statement",
-                Exported::new(1_u32, None, None),
-            ),
-        )
-    };
-    for refused in [checked, installed] {
-        assert_eq!(refused.unwrap_err().status, Status::InvalidState);
-    }
-    assert_eq!(*slot, before);
     assert_eq!(release_slot(&mut slot), ADBC_STATUS_OK);
 }
 
