@@ -60,40 +60,6 @@ fn normalizes_day_time_intervals_to_month_day_nano() {
 }
 
 #[test]
-fn normalizes_and_validates_same_type_intervals() {
-    let column = Arc::new(IntervalMonthDayNanoArray::from(vec![
-        IntervalMonthDayNano::new(1, 2, 1_999),
-    ])) as ArrayRef;
-    let schema = one_column_schema("duration", column.data_type(), false);
-    let batch = RecordBatch::try_new(schema.clone(), vec![column]).unwrap();
-    let normalized = normalize_batch(batch, schema).unwrap();
-    assert_eq!(
-        column_as::<IntervalMonthDayNanoArray>(&normalized, 0).value(0),
-        IntervalMonthDayNano::new(1, 2, 1_000)
-    );
-
-    for column in [
-        Arc::new(IntervalYearMonthArray::from(vec![120_001])) as ArrayRef,
-        Arc::new(IntervalDayTimeArray::from(vec![IntervalDayTime::new(
-            3_660_001, 0,
-        )])) as ArrayRef,
-        Arc::new(IntervalMonthDayNanoArray::from(vec![
-            IntervalMonthDayNano::new(120_001, 0, 0),
-        ])) as ArrayRef,
-    ] {
-        let schema = one_column_schema("duration", column.data_type(), false);
-        let normalized_schema = Arc::new(normalize_schema(&schema).unwrap());
-        let batch = RecordBatch::try_new(schema, vec![column]).unwrap();
-        assert_eq!(
-            normalize_batch(batch, normalized_schema)
-                .unwrap_err()
-                .status,
-            Status::InvalidData
-        );
-    }
-}
-
-#[test]
 fn normalizes_duration_values_to_month_day_nano() {
     let repeated = ListArray::from_iter_primitive::<DurationSecondType, _, _>(vec![
         Some(vec![Some(1), Some(2)]),

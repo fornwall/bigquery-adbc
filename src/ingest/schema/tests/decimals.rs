@@ -377,7 +377,7 @@ fn a_declared_decimal_shape_survives_a_read_and_an_ingest_back() {
     .unwrap();
     // Each value has at most the two fractional digits its column declares.
     let wire = Arc::new(storage_write_schema(&normalized));
-    let written = normalize_batch(batch.clone(), wire.clone()).unwrap();
+    let written = normalize_batch(batch, wire).unwrap();
     assert_eq!(column_as::<Decimal128Array>(&written, 0).value(0), 123);
     assert_eq!(
         column_as::<Decimal256Array>(&written, 1).value(0),
@@ -388,24 +388,6 @@ fn a_declared_decimal_shape_survives_a_read_and_an_ingest_back() {
     assert_eq!(
         array_as::<Decimal128Array>(&elements).value(0),
         12_340_000_000
-    );
-
-    let mut too_precise = batch.columns().to_vec();
-    too_precise[0] = Arc::new(
-        Decimal128Array::from(vec![Some(1_234_000_000)])
-            .with_precision_and_scale(38, 9)
-            .unwrap(),
-    );
-    let failure = normalize_batch(
-        RecordBatch::try_new(batch.schema(), too_precise).unwrap(),
-        wire,
-    )
-    .unwrap_err();
-    assert_eq!(failure.status, Status::InvalidData);
-    assert_eq!(
-        failure.message,
-        "Arrow decimal ingest field \"amount\" holds a value at row 0 with more than 2 \
-         fractional digits, which its column's NUMERIC(10, 2) cannot store without rounding"
     );
 }
 

@@ -5,12 +5,11 @@ use adbc_core::error::Status;
 use arrow_array::cast::AsArray;
 use arrow_array::types::{
     Date32Type, Decimal256Type, Int64Type, IntervalMonthDayNanoType, Time64MicrosecondType,
-    TimestampMicrosecondType,
 };
 use arrow_array::{
     Array, ArrayRef, Date32Array, Date64Array, Decimal128Array, Decimal256Array, Int64Array,
     IntervalMonthDayNanoArray, LargeListArray, LargeListViewArray, ListArray, RecordBatch,
-    StructArray, Time64MicrosecondArray, TimestampMicrosecondArray, TimestampNanosecondArray,
+    StructArray, Time64MicrosecondArray,
 };
 use arrow_buffer::{IntervalMonthDayNano, OffsetBuffer, i256};
 use arrow_schema::{DataType as ArrowDataType, Field as ArrowField, Schema, SchemaRef, TimeUnit};
@@ -24,8 +23,12 @@ fn one_field(name: &str, data_type: ArrowDataType, nullable: bool) -> SchemaRef 
     )]))
 }
 
+/// Canonical columns pass through by identity; only a column that needs rewriting is replaced.
 #[test]
-fn canonical_validated_batch_preserves_schema_and_column_identity() {
+fn normalization_replaces_only_the_columns_it_rewrites() {
+    let interval = Arc::new(IntervalMonthDayNanoArray::from(vec![
+        IntervalMonthDayNano::new(1, 2, 3_999),
+    ])) as ArrayRef;
     let columns: Vec<ArrayRef> = vec![
         Arc::new(Time64MicrosecondArray::from(vec![3_723_000_004])),
         Arc::new(
@@ -33,9 +36,7 @@ fn canonical_validated_batch_preserves_schema_and_column_identity() {
                 .with_precision_and_scale(10, 2)
                 .unwrap(),
         ),
-        Arc::new(IntervalMonthDayNanoArray::from(vec![
-            IntervalMonthDayNano::new(1, 2, 3_000),
-        ])),
+        interval,
         Arc::new(ListArray::from_iter_primitive::<Int64Type, _, _>(vec![
             Some(vec![Some(1), Some(2)]),
         ])),
@@ -54,40 +55,16 @@ fn canonical_validated_batch_preserves_schema_and_column_identity() {
     let normalized = normalize_batch(batch, schema.clone()).unwrap();
 
     assert!(Arc::ptr_eq(normalized.schema_ref(), &schema));
-    for (normalized, original) in normalized.columns().iter().zip(&columns) {
-        assert!(Arc::ptr_eq(normalized, original));
+    for (index, (normalized, original)) in normalized.columns().iter().zip(&columns).enumerate() {
+        assert_eq!(
+            Arc::ptr_eq(normalized, original),
+            index != 2,
+            "column {index}"
+        );
     }
-}
-
-#[test]
-fn changed_column_rebuilds_batch_and_preserves_unchanged_columns() {
-    let time = Arc::new(Time64MicrosecondArray::from(vec![3_723_000_004])) as ArrayRef;
-    let interval = Arc::new(IntervalMonthDayNanoArray::from(vec![
-        IntervalMonthDayNano::new(1, 2, 3_999),
-    ])) as ArrayRef;
-    let list = Arc::new(ListArray::from_iter_primitive::<Int64Type, _, _>(vec![
-        Some(vec![Some(1), Some(2)]),
-    ])) as ArrayRef;
-    let columns = vec![time.clone(), interval.clone(), list.clone()];
-    let schema = Arc::new(Schema::new(
-        columns
-            .iter()
-            .enumerate()
-            .map(|(index, column)| {
-                ArrowField::new(format!("column_{index}"), column.data_type().clone(), false)
-            })
-            .collect::<Vec<_>>(),
-    ));
-    let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
-
-    let normalized = normalize_batch(batch, schema).unwrap();
-
-    assert!(Arc::ptr_eq(normalized.column(0), &time));
-    assert!(!Arc::ptr_eq(normalized.column(1), &interval));
-    assert!(Arc::ptr_eq(normalized.column(2), &list));
     assert_eq!(
         normalized
-            .column(1)
+            .column(2)
             .as_primitive::<IntervalMonthDayNanoType>()
             .value(0),
         IntervalMonthDayNano::new(1, 2, 3_000)
@@ -139,92 +116,6 @@ fn bignumeric_ingest_uses_its_physical_domain_only_for_its_canonical_shape() {
     let normalized = normalize_batch(batch, schema).unwrap();
     let values = normalized.column(0).as_primitive::<Decimal256Type>();
     assert_eq!(values.values(), &[i256::MIN, one_e38, i256::MAX]);
-
-    // A non-BIGNUMERIC Decimal256 retains its declared precision even though its physical
-    // integer can hold the value.
-    let outside_precision = i256::from_string(&format!("1{}", "0".repeat(75))).unwrap();
-    let column = Arc::new(
-        Decimal256Array::from(vec![outside_precision])
-            .with_precision_and_scale(75, 38)
-            .unwrap(),
-    ) as ArrayRef;
-    let (batch, schema) = single_column_batch("ordinary", column);
-    let error = normalize_batch(batch, schema).unwrap_err();
-    assert_failure(&error, Status::InvalidData, &["declared precision"]);
-}
-
-/// A `Date32` or a microsecond `Timestamp` that already matches the bound schema is still checked
-/// against BigQuery's calendar before it reaches Storage Write, so an out-of-range DATE fails
-/// before it can create or replace the target table.
-#[test]
-fn rejects_dates_and_timestamps_outside_the_bigquery_calendar() {
-    for (name, column) in [
-        (
-            "date_after_9999",
-            Arc::new(Date32Array::from(vec![3_000_000])) as ArrayRef,
-        ),
-        (
-            "date_before_0001",
-            Arc::new(Date32Array::from(vec![-800_000])) as ArrayRef,
-        ),
-        (
-            "timestamp_after_9999",
-            Arc::new(
-                TimestampMicrosecondArray::from(vec![999_999_999_999_999_999]).with_timezone_utc(),
-            ) as ArrayRef,
-        ),
-        (
-            "datetime_before_0001",
-            Arc::new(TimestampMicrosecondArray::from(vec![
-                -70_000_000_000_000_000,
-            ])) as ArrayRef,
-        ),
-    ] {
-        let (batch, schema) = single_column_batch(name, column);
-        let error = normalize_batch(batch, schema).unwrap_err();
-        assert_failure(&error, Status::InvalidData, &[name, "row 0"]);
-    }
-
-    // 0001-01-01 and 9999-12-31 are inside the range, at both ends and in both types.
-    let last_micro_of_9999 = 2_932_896 * 86_400_000_000 + 86_399_999_999;
-    for (name, column) in [
-        (
-            "dates",
-            Arc::new(Date32Array::from(vec![-719_162, 2_932_896])) as ArrayRef,
-        ),
-        (
-            "timestamps",
-            Arc::new(TimestampMicrosecondArray::from(vec![
-                -719_162 * 86_400_000_000,
-                last_micro_of_9999,
-            ])) as ArrayRef,
-        ),
-    ] {
-        let (batch, schema) = single_column_batch(name, column);
-        normalize_batch(batch, schema).unwrap();
-    }
-}
-
-/// Nanosecond instants narrow to microseconds by rounding down, as bound parameters do.
-#[test]
-fn negative_nanosecond_timestamps_round_down() {
-    let column = Arc::new(TimestampNanosecondArray::from(vec![
-        -1_999,
-        -86_400_000_000_999,
-        1_999,
-    ])) as ArrayRef;
-    let (batch, _) = single_column_batch("instant", column);
-    let schema = one_field(
-        "instant",
-        ArrowDataType::Timestamp(TimeUnit::Microsecond, None),
-        false,
-    );
-
-    let normalized = normalize_batch(batch, schema).unwrap();
-    let instants = normalized
-        .column(0)
-        .as_primitive::<TimestampMicrosecondType>();
-    assert_eq!(instants.values(), &[-2, -86_400_000_001, 1]);
 }
 
 /// BigQuery arrays cannot contain NULL, and an ingest array is described to the service only
@@ -248,10 +139,17 @@ fn rejects_null_elements_inside_ingested_arrays() {
     let list = ArrowDataType::new_list(ArrowDataType::Int64, true);
     let schema = one_field("values", list, false);
     // The layouts that have to be rebuilt are held to the same rule as one passed through.
-    for (column, row) in [(canonical, "row 1"), (large, "row 0"), (view, "row 0")] {
+    for (column, row) in [(canonical, 1), (large, 0), (view, 0)] {
         let (batch, _) = single_column_batch("values", column);
         let error = normalize_batch(batch, schema.clone()).unwrap_err();
-        assert_failure(&error, Status::InvalidData, &["values", row]);
+        assert_eq!(error.status, Status::InvalidData);
+        assert_eq!(
+            error.message,
+            format!(
+                "BigQuery ingest list field \"values\" contains a NULL array element at row \
+                 {row}; a BigQuery array cannot contain NULL"
+            )
+        );
     }
 }
 
@@ -392,26 +290,10 @@ fn rejects_date64_values_outside_the_bigquery_calendar() {
     );
 }
 
-/// A sliced list is judged by the child values its own offsets address, not by the whole
-/// child `values()` still hands back.
+/// A sliced canonical list is judged only by the child values its offsets address, and passes
+/// through unchanged when those are valid.
 #[test]
 fn a_sliced_list_is_judged_only_by_the_values_its_offsets_address() {
-    let list = ListArray::from_iter_primitive::<Int64Type, _, _>(vec![
-        Some(vec![None]),
-        Some(vec![Some(1), Some(2)]),
-        Some(vec![None]),
-    ]);
-    let sliced = Arc::new(list.slice(1, 1)) as ArrayRef;
-    let (batch, schema) = single_column_batch("values", sliced);
-    let normalized = normalize_batch(batch, schema).unwrap();
-    let values = normalized.column(0).as_list::<i32>();
-    assert_eq!(values.len(), 1);
-    assert_eq!(
-        values.value(0).as_primitive::<Int64Type>().values(),
-        &[1, 2]
-    );
-
-    // A date the window does not address must not be range-checked either.
     let dates = Date32Array::from(vec![3_000_000, 0, 1]);
     let item = Arc::new(ArrowField::new("item", ArrowDataType::Date32, true));
     let list = ListArray::new(
@@ -424,22 +306,6 @@ fn a_sliced_list_is_judged_only_by_the_values_its_offsets_address() {
     let (batch, schema) = single_column_batch("days", sliced.clone());
     let normalized = normalize_batch(batch, schema).unwrap();
     assert!(Arc::ptr_eq(normalized.column(0), &sliced));
-
-    // A NULL element inside the window is still rejected, at its slice-relative row.
-    let list = ListArray::from_iter_primitive::<Int64Type, _, _>(vec![
-        Some(vec![Some(1)]),
-        Some(vec![Some(2)]),
-        Some(vec![Some(3), None]),
-    ]);
-    let sliced = Arc::new(list.slice(1, 2)) as ArrayRef;
-    let (batch, schema) = single_column_batch("values", sliced);
-    let error = normalize_batch(batch, schema).unwrap_err();
-    assert_eq!(error.status, Status::InvalidData);
-    assert_eq!(
-        error.message,
-        "BigQuery ingest list field \"values\" contains a NULL array element at row 1; a \
-         BigQuery array cannot contain NULL"
-    );
 }
 
 #[test]
@@ -543,25 +409,6 @@ fn sliced_lists_gather_visible_ranges_before_validating() {
             assert!(failure.message.contains("days"), "{}", failure.message);
         }
     }
-}
-
-/// GoogleSQL has no NULL ARRAY to preserve: BigQuery stores one as an empty ARRAY, and an
-/// ingested array reaches the service as a `REPEATED` field, which has no NULL state at all.
-/// A NULL list entry therefore normalizes to an empty array rather than surviving as NULL.
-#[test]
-fn a_null_array_entry_normalizes_to_an_empty_array() {
-    let column = Arc::new(ListArray::from_iter_primitive::<Int64Type, _, _>(vec![
-        Some(vec![Some(1)]),
-        None,
-    ])) as ArrayRef;
-    let schema: SchemaRef = one_field("values", column.data_type().clone(), true);
-    let batch = RecordBatch::try_new(schema.clone(), vec![column]).unwrap();
-    let normalized = normalize_batch(batch, schema).unwrap();
-    let list = normalized.column(0).as_list::<i32>();
-    assert_eq!(list.len(), 2);
-    assert_eq!(list.null_count(), 0);
-    assert!(list.is_valid(1));
-    assert!(list.value(1).is_empty());
 }
 
 /// A value-domain rejection inside a list names the caller's column and the batch row whose

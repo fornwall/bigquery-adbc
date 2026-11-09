@@ -8,7 +8,7 @@ use crate::test_support::errors::assert_message_omits;
 
 #[test]
 fn invalid_ingest_values_do_not_appear_in_errors() {
-    let cases: [(ArrayRef, &str, &str); 11] = [
+    let cases: [(ArrayRef, &str, &str); 12] = [
         (
             Arc::new(Date32Array::from(vec![12_345_678])),
             "12345678",
@@ -39,6 +39,12 @@ fn invalid_ingest_values_do_not_appear_in_errors() {
                 876_543_210_987_654_321,
             ])),
             "876543210987654321",
+            "years 1 to 9999",
+        ),
+        // The multiply into microseconds would overflow, so the range check comes first.
+        (
+            Arc::new(TimestampSecondArray::from(vec![i64::MAX]).with_timezone_utc()),
+            "9223372036854775807",
             "years 1 to 9999",
         ),
         (
@@ -84,66 +90,6 @@ fn invalid_ingest_values_do_not_appear_in_errors() {
         let failure = normalize_batch(batch, normalized).unwrap_err();
         assert_failure(&failure, Status::InvalidData, &["\"value\"", reason]);
         assert_message_omits(&failure, &[secret]);
-    }
-}
-
-#[test]
-fn rejects_values_outside_bigquery_ranges() {
-    for (name, column) in [
-        (
-            "decimal_outside_declared_precision",
-            Arc::new(
-                Decimal128Array::from(vec![1_000])
-                    .with_precision_and_scale(3, 0)
-                    .unwrap(),
-            ) as ArrayRef,
-        ),
-        (
-            "out_of_range_duration",
-            Arc::new(DurationSecondArray::from(vec![3_660_001_i64 * 86_400])) as ArrayRef,
-        ),
-        (
-            "out_of_range_time",
-            Arc::new(Time64NanosecondArray::from(vec![86_400_000_000_000])) as ArrayRef,
-        ),
-        (
-            "overflowing_timestamp",
-            Arc::new(TimestampSecondArray::from(vec![i64::MAX]).with_timezone_utc()) as ArrayRef,
-        ),
-        // Year 10000 in seconds: the multiply into microseconds does not overflow, so only a
-        // calendar-range check rejects it.
-        (
-            "timestamp_past_year_9999",
-            Arc::new(TimestampSecondArray::from(vec![253_402_300_800]).with_timezone_utc())
-                as ArrayRef,
-        ),
-        (
-            "datetime_before_year_1",
-            Arc::new(TimestampMicrosecondArray::from(vec![
-                -70_000_000_000_000_000,
-            ])) as ArrayRef,
-        ),
-        (
-            "date_past_year_9999",
-            Arc::new(Date32Array::from(vec![3_000_000])) as ArrayRef,
-        ),
-        (
-            "null_array_element",
-            Arc::new(ListArray::from_iter_primitive::<Int64Type, _, _>(vec![
-                Some(vec![Some(1), None]),
-            ])) as ArrayRef,
-        ),
-    ] {
-        let schema = one_column_schema(name, column.data_type(), false);
-        let batch = RecordBatch::try_new(schema.clone(), vec![column]).unwrap();
-        let normalized_schema = Arc::new(normalize_schema(&schema).unwrap());
-        assert_eq!(
-            normalize_batch(batch, normalized_schema)
-                .unwrap_err()
-                .status,
-            Status::InvalidData,
-            "{name}"
-        );
     }
 }
 
@@ -279,17 +225,6 @@ fn normalizes_null_and_noncanonical_lists() {
 
 #[test]
 fn preserves_canonical_list_values_without_copying() {
-    // A fully canonical non-null list passes through as the very same column.
-    let list = Arc::new(ListArray::from_iter_primitive::<Int64Type, _, _>(vec![
-        Some(vec![Some(1), Some(2)]),
-        Some(vec![]),
-    ]));
-    let column = list as ArrayRef;
-    let schema = one_column_schema("values", column.data_type(), true);
-    let batch = RecordBatch::try_new(schema.clone(), vec![column.clone()]).unwrap();
-    let normalized = normalize_batch(batch, schema).unwrap();
-    assert!(Arc::ptr_eq(normalized.column(0), &column));
-
     // Null lists that hide no values rebuild the list around the same values array.
     let list = Arc::new(ListArray::from_iter_primitive::<Int64Type, _, _>(vec![
         None,

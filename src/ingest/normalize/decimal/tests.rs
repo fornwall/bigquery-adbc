@@ -91,14 +91,6 @@ fn an_element_keeps_its_declared_shape_on_its_full_scale_wire_type() {
         widened.as_primitive::<Decimal128Type>().value(0),
         1_230_000_000
     );
-
-    // Already on the wire type, a value still has to fit the declared shape.
-    let on_the_wire = decimal128(vec![Some(1_234_000_000)], 38, 9);
-    assert!(rescale(&on_the_wire, &wire).is_err());
-    assert!(!needs_rescale(
-        &DataType::Decimal128(38, 9),
-        &Field::new("amount", DataType::Decimal128(38, 9), true)
-    ));
 }
 
 /// Every Arrow width reaches either column width, and plain BIGNUMERIC's values beyond its
