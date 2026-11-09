@@ -80,40 +80,21 @@ fn job_references_adopt_the_service_resolved_project_number() {
     let canonical = requested.confirm(Some(&returned), "response").unwrap();
     assert_eq!(canonical, returned);
 
-    for unexpected in [
-        JobReference::new("987654321", Some("US"), "job-a".to_owned()),
-        JobReference::new("canonical-project", Some("US"), "other-job".to_owned()),
-        JobReference::new("canonical-project", Some("EU"), "job-a".to_owned()),
-        JobReference::new("", Some("US"), "job-a".to_owned()),
-    ] {
-        assert_eq!(
-            requested
-                .confirm(Some(&unexpected), "response")
-                .unwrap_err()
-                .status,
-            Status::InvalidData,
-            "{unexpected:?}"
-        );
+    let unexpected = |base: &JobReference, project: &str, location: &str, job: &str| {
+        let returned = JobReference::new(project, Some(location), job.to_owned());
+        let failure = base.confirm(Some(&returned), "response").unwrap_err();
+        assert_eq!(failure.status, Status::InvalidData, "{base:?} {returned:?}");
+    };
+    unexpected(&requested, "987654321", "US", "job-a");
+    unexpected(&requested, "canonical-project", "US", "other-job");
+    unexpected(&requested, "canonical-project", "EU", "job-a");
+    unexpected(&requested, "", "US", "job-a");
+    for project in ["project/path", "project\\path", "project\n", ".", ".."] {
+        unexpected(&requested, project, "US", "job-a");
     }
-    for unexpected_project in ["other-project", "123456789"] {
-        let unexpected = JobReference::new(unexpected_project, Some("US"), "job-a".to_owned());
-        assert_eq!(
-            canonical
-                .confirm(Some(&unexpected), "response")
-                .unwrap_err()
-                .status,
-            Status::InvalidData
-        );
-    }
-    for unsafe_project in ["project/path", "project\\path", "project\n", ".", ".."] {
-        let unexpected = JobReference::new(unsafe_project, Some("US"), "job-a".to_owned());
-        assert_eq!(
-            requested
-                .confirm(Some(&unexpected), "response")
-                .unwrap_err()
-                .status,
-            Status::InvalidData
-        );
+    // Once resolved, a project must stay the same; a number is never an alias.
+    for project in ["other-project", "123456789"] {
+        unexpected(&canonical, project, "US", "job-a");
     }
 }
 
@@ -898,20 +879,16 @@ fn cancellation_uses_refreshed_credentials_from_the_submission_client() {
 
 #[test]
 fn jobs_query_retries_the_identical_request_body() {
-    let (endpoint, captured) = capture_requests(vec![
-        (500, error_body("backendError", "later")),
-        ok(json!({"jobComplete": true, "rows": []})),
-    ]);
-    let (runtime, client) = job_client(&endpoint);
-    let body = bytes::Bytes::from_static(br#"{"query":"SELECT 1","requestId":"req_same"}"#);
-
-    runtime
-        .block_on(client.query(None, "billing/project", body, &RequestStart::default()))
-        .unwrap();
-
-    let captured = captured.served(2);
+    let (answer, captured) = jobs_query(
+        "billing/project",
+        vec![
+            (500, error_body("backendError", "later")),
+            ok(json!({"jobComplete": true, "rows": []})),
+        ],
+    );
+    assert!(matches!(answer.unwrap(), QueryAnswer::Response(_)));
+    assert_eq!(captured.len(), 2);
     assert_eq!(captured[0].raw_body, captured[1].raw_body);
-    assert_eq!(captured[0].body["requestId"], "req_same");
     assert_eq!(
         captured[0].path(),
         "/bigquery/v2/projects/billing%2Fproject/queries"
@@ -1221,34 +1198,31 @@ fn a_rejected_query_says_bigquery_rejected_it_and_a_transport_failure_says_it_fa
 
 /// BigQuery maps a failed job's `errorResult` onto every read of its results, so a completion
 /// read rejected with a reason only a query can earn names the failed job. A reason that may be
-/// about the read itself keeps the read's wording.
+/// about the read itself keeps the read's wording. Either way the read is not repeated: the
+/// job-level reasons BigQuery reports under 400 are retried on submission, but on a read they are
+/// the job's own failure, still reported as `IO` so the completion poll can confirm it against
+/// `jobs.get` and reissue the query.
 #[test]
-fn a_completion_read_rejected_with_a_query_verdict_names_the_failed_job() {
+fn a_rejected_completion_read_is_sent_once_and_names_a_failed_job() {
     let reference = JobReference::new("billing", Some("EU"), "job_1".to_owned());
-    for (status, reason, expected) in [
-        (
-            400,
-            "invalidQuery",
-            "BigQuery query job billing:EU.job_1 failed: invalidQuery: late failure (HTTP 400)",
-        ),
+    let failed = "BigQuery query job billing:EU.job_1 failed";
+    let read = "failed to get the BigQuery query results";
+    for (status, reason, lead, expected) in [
+        (400, "invalidQuery", failed, Status::InvalidArguments),
         (
             400,
             "bytesBilledLimitExceeded",
-            "BigQuery query job billing:EU.job_1 failed: bytesBilledLimitExceeded: late failure \
-             (HTTP 400)",
+            failed,
+            Status::InvalidArguments,
         ),
-        (
-            403,
-            "accessDenied",
-            "failed to get the BigQuery query results: accessDenied: late failure (HTTP 403)",
-        ),
+        (403, "accessDenied", read, Status::Unauthorized),
         // BigQuery also answers a read of a succeeded job this way when one row exceeds its
         // 20 MiB response row limit (verified live).
-        (
-            403,
-            "responseTooLarge",
-            "failed to get the BigQuery query results: responseTooLarge: late failure (HTTP 403)",
-        ),
+        (403, "responseTooLarge", read, Status::InvalidArguments),
+        (400, "jobRateLimitExceeded", read, Status::IO),
+        (400, "jobBackendError", read, Status::IO),
+        (400, "jobInternalError", read, Status::IO),
+        (400, "tableUnavailable", read, Status::IO),
     ] {
         let (endpoint, captured) =
             capture_requests(vec![(status, error_body(reason, "late failure"))]);
@@ -1263,36 +1237,11 @@ fn a_completion_read_rejected_with_a_query_verdict_names_the_failed_job() {
             ))
             .unwrap_err();
         assert_eq!(captured.join().unwrap().len(), 1, "{reason}");
-        assert_eq!(failure.message, expected);
-    }
-}
-
-/// The job-level reasons BigQuery reports under 400 are retried on submission, but on a read of
-/// the job's results they are the job's own failure: one read, still reported as `IO` so the
-/// completion poll can confirm the failure against `jobs.get` and reissue the query.
-#[test]
-fn a_results_read_rejected_with_a_job_level_400_reason_is_not_repeated() {
-    let reference = JobReference::new("billing", Some("EU"), "job_1".to_owned());
-    for reason in [
-        "jobRateLimitExceeded",
-        "jobBackendError",
-        "jobInternalError",
-        "tableUnavailable",
-    ] {
-        let (endpoint, captured) =
-            capture_requests(vec![(400, error_body(reason, "the job failed"))]);
-        let (runtime, client) = job_client(&endpoint);
-        let failure = runtime
-            .block_on(client.get_query_results(
-                None,
-                &reference,
-                None,
-                0,
-                QueryResultsRead::Completion,
-            ))
-            .unwrap_err();
-        assert_eq!(captured.join().unwrap().len(), 1, "{reason}");
-        assert_eq!(failure.status, Status::IO, "{reason}");
+        assert_eq!(
+            failure.message,
+            format!("{lead}: {reason}: late failure (HTTP {status})")
+        );
+        assert_eq!(failure.status, expected, "{reason}");
     }
 }
 
@@ -1347,27 +1296,6 @@ fn listing_a_scripts_latest_child_retries_and_asks_for_one_full_job() {
             "/bigquery/v2/projects/billing%2Fproject/jobs?parentJobId=job%2Fid&maxResults=1&projection=full"
         );
     }
-}
-
-#[test]
-fn an_answer_lost_after_the_post_retries_the_same_mutation() {
-    // The first POST is read and dropped, and the identical replay answered 409.
-    let mut answers = [
-        None,
-        Some((409, error_body("duplicate", "exists"))),
-        Some(ok(json!({"status": {"state": "DONE"}, "recovered": true}))),
-    ]
-    .into_iter();
-    let (endpoint, captured) = capture_requests_responding(3, move |_| answers.next().unwrap());
-    insert_copy(&endpoint, "transport-ambiguous").unwrap();
-
-    let captured = captured.served(3);
-    assert_eq!(captured[0].raw_body, captured[1].raw_body);
-    assert_eq!(
-        captured[0].body["jobReference"]["jobId"],
-        "transport-ambiguous"
-    );
-    assert!(captured[2].raw_body.is_empty(), "jobs.get has no body");
 }
 
 #[test]

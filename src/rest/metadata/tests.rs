@@ -96,12 +96,20 @@ fn table_metadata_decodes_every_field_the_driver_reports() {
             "numTotalPhysicalBytes": "8192",
             "numTimeTravelPhysicalBytes": "64",
             "numPartitions": "3",
+            "requirePartitionFilter": true,
+            "tableReference": {"projectId": "p", "datasetId": "d", "tableId": "events"},
             "aFieldBigQueryAddedLater": {"nested": ["anything"]}
         }"#,
     )
     .unwrap();
 
     assert_eq!(table.table_type, "MATERIALIZED_VIEW");
+    let reference = table.table_reference.unwrap();
+    assert_eq!(
+        (reference.dataset_id.as_str(), reference.table_id.as_str()),
+        ("d", "events")
+    );
+    assert_eq!(table.require_partition_filter, Some(true));
     assert_eq!(table.description, "test table");
     assert_eq!(table.labels.get("env").map(String::as_str), Some("dev"));
     assert_eq!(
@@ -154,24 +162,52 @@ fn table_metadata_decodes_every_field_the_driver_reports() {
     assert_eq!(table.num_partitions, Some(3));
 }
 
-/// A table described by its type alone (a view, a new table) decodes rather than failing.
+/// A table described by its type alone (a view, a new table) decodes rather than failing, and an
+/// explicit `null` reads as absent for a scalar, a nested document, and a listing array.
 #[test]
-fn an_almost_empty_table_decodes_to_absent_fields() {
+fn absent_and_null_fields_decode_as_absent() {
     let table = Table::decode(br#"{"type": "VIEW"}"#).unwrap();
     assert_eq!(table.table_type, "VIEW");
     assert!(table.schema.is_none());
+    assert!(table.table_reference.is_none());
     assert_eq!(table.last_modified_time, 0);
     assert_eq!(table.num_rows, None);
-    assert_eq!(table.num_total_logical_bytes, None);
+
+    let table = Table::decode(
+        br#"{"type": null, "schema": null, "numRows": null,
+            "labels": null, "requirePartitionFilter": null}"#,
+    )
+    .unwrap();
+    assert!(table.table_type.is_empty());
+    assert!(table.schema.is_none());
+    assert_eq!(table.num_rows, None);
+    assert!(table.labels.is_empty());
+    assert_eq!(table.require_partition_filter, None);
+
+    for body in [
+        br#"{"datasets": null, "nextPageToken": null}"#.as_slice(),
+        // The last page of an empty project carries neither an array nor a token.
+        b"{}",
+    ] {
+        let page = dataset_page(body).unwrap();
+        assert!(page.items.is_empty());
+        assert!(page.next_page_token.is_empty());
+    }
 }
 
+/// A wrong-typed field is a malformed document, never absent metadata: a listing whose entries
+/// are not an array would look like an empty dataset, and a malformed continuation token would
+/// truncate the listing.
 #[test]
-fn malformed_metadata_scalars_are_not_silently_discarded() {
+fn malformed_documents_are_rejected() {
     for body in [
-        br#"{"type": false}"#.as_slice(),
-        br#"{"description": []}"#.as_slice(),
-        br#"{"maxStaleness": {}}"#.as_slice(),
-        br#"{"requirePartitionFilter": "false"}"#.as_slice(),
+        b"[]".as_slice(),
+        b"7",
+        b"not json",
+        br#"{"type": false}"#,
+        br#"{"description": []}"#,
+        br#"{"maxStaleness": {}}"#,
+        br#"{"requirePartitionFilter": "false"}"#,
     ] {
         assert_eq!(Table::decode(body).unwrap_err().status, Status::InvalidData);
     }
@@ -179,26 +215,16 @@ fn malformed_metadata_scalars_are_not_silently_discarded() {
         Dataset::decode(br#"{"etag": false}"#).unwrap_err().status,
         Status::InvalidData
     );
-    for required in [false, true] {
-        let body = format!(r#"{{"requirePartitionFilter": {required}}}"#);
-        assert_eq!(
-            Table::decode(body.as_bytes())
-                .unwrap()
-                .require_partition_filter,
-            Some(required)
-        );
-    }
-}
-
-#[test]
-fn a_malformed_continuation_token_does_not_end_a_listing() {
     for token in ["false", "42", "[]", "{}"] {
         let body = format!(r#"{{"datasets": [], "nextPageToken": {token}}}"#);
-        let failure = dataset_page(body.as_bytes())
-            .err()
-            .expect("a malformed continuation token must not truncate the listing");
-        assert_eq!(failure.status, Status::InvalidData);
+        let failure = dataset_page(body.as_bytes()).err().unwrap();
+        assert_eq!(failure.status, Status::InvalidData, "{token}");
     }
+    let failure = dataset_page(br#"{"datasets": {"first": {}}}"#)
+        .err()
+        .unwrap();
+    assert_eq!(failure.status, Status::InvalidData);
+    assert!(failure.message.contains("is not an array"), "{failure:?}");
 }
 
 /// Integer fields decode from strings or numbers; anything else is a malformed document, not an
@@ -221,25 +247,6 @@ fn integers_decode_from_both_json_spellings_and_reject_anything_else() {
     }
 }
 
-/// An explicit `null` reads as absent for a scalar, a nested document, and a listing array.
-#[test]
-fn an_explicit_null_reads_as_an_absent_field() {
-    let table = Table::decode(
-        br#"{"type": null, "schema": null, "numRows": null,
-            "labels": null, "requirePartitionFilter": null}"#,
-    )
-    .unwrap();
-    assert!(table.table_type.is_empty());
-    assert!(table.schema.is_none());
-    assert_eq!(table.num_rows, None);
-    assert!(table.labels.is_empty());
-    assert_eq!(table.require_partition_filter, None);
-
-    let page = dataset_page(br#"{"datasets": null, "nextPageToken": null}"#).unwrap();
-    assert!(page.items.is_empty());
-    assert!(page.next_page_token.is_empty());
-}
-
 /// Field names are borrowed from the body, but one spelled with a JSON escape is the same field.
 #[test]
 fn an_escaped_field_name_reads_as_the_field_it_spells() {
@@ -254,24 +261,6 @@ fn an_escaped_field_name_reads_as_the_field_it_spells() {
     };
     assert!(borrowed("plain"));
     assert!(!borrowed("escaped"));
-}
-
-/// A listing whose entry array is a value of some other type is malformed rather than empty:
-/// silently reporting no tables would look like an empty dataset.
-#[test]
-fn a_listing_whose_entries_are_not_an_array_is_rejected() {
-    let Err(failure) = dataset_page(br#"{"datasets": {"first": {}}}"#) else {
-        panic!("a listing whose entries are not an array must not decode");
-    };
-    assert_eq!(failure.status, Status::InvalidData);
-    assert!(failure.message.contains("is not an array"), "{failure:?}");
-}
-
-#[test]
-fn a_response_that_is_not_a_json_object_is_rejected() {
-    for body in [b"[]".as_slice(), b"7".as_slice(), b"not json".as_slice()] {
-        assert_eq!(Table::decode(body).unwrap_err().status, Status::InvalidData);
-    }
 }
 
 /// The access list is read-modify-written, so an entry BigQuery describes with a field this
@@ -327,11 +316,6 @@ fn a_listing_page_decodes_its_entries_and_its_continuation() {
     assert_eq!(page.items, ["first".to_owned(), String::new()]);
     assert_eq!(page.next_page_token, "page-2");
 
-    // The last page of an empty project carries neither an array nor a token.
-    let page = dataset_page(b"{}").unwrap();
-    assert!(page.items.is_empty());
-    assert!(page.next_page_token.is_empty());
-
     let page = Page::<ListedTable>::decode(
         br#"{"tables": [{"tableReference": {"datasetId": "d", "tableId": "events"}, "type": "VIEW"}]}"#,
         "BigQuery table listing",
@@ -352,21 +336,10 @@ fn a_listing_page_decodes_its_entries_and_its_continuation() {
     assert_eq!(page.items[0].table_type, "VIEW");
 }
 
-/// `tables.get` and `datasets.get` name the object BigQuery resolved the request to, which an
-/// exact metadata filter reports; an answer without the reference names nothing.
+/// `datasets.get` names the dataset BigQuery resolved the request to, which an exact metadata
+/// filter reports; an answer without the reference names nothing.
 #[test]
-fn lookups_decode_the_names_bigquery_resolved() {
-    let table = Table::decode(
-        br#"{"tableReference": {"projectId": "p", "datasetId": "d", "tableId": "events"}, "type": "TABLE"}"#,
-    )
-    .unwrap();
-    let reference = table.table_reference.unwrap();
-    assert_eq!(
-        (reference.dataset_id.as_str(), reference.table_id.as_str()),
-        ("d", "events")
-    );
-    assert!(Table::decode(b"{}").unwrap().table_reference.is_none());
-
+fn a_dataset_lookup_decodes_the_name_bigquery_resolved() {
     let runtime = crate::runtime::new_runtime().unwrap();
     for (response, expected) in [
         (

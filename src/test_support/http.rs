@@ -30,10 +30,6 @@ pub(crate) fn ok(body: JsonValue) -> (u16, JsonValue) {
 
 /// A staged 200 answer for finished job `job_id` of `fixture-project`: `fields`, usually `json!({})`
 /// or a `statementType`, `schema` and `rows`, plus its `jobReference` and `jobComplete`.
-#[allow(
-    dead_code,
-    reason = "adopted by the test modules that stage query answers"
-)]
 pub(crate) fn completed_job(job_id: &str, mut fields: JsonValue) -> (u16, JsonValue) {
     fields["jobReference"] = job_reference("fixture-project", job_id);
     fields["jobComplete"] = json!(true);
@@ -352,10 +348,6 @@ pub(crate) fn capture_requests_until_stopped(
 
 /// A staged 200 `jobs.get` answer for done job `job_id` of `fixture-project`: `fields`, usually
 /// `json!({})` or `statistics`, plus its `jobReference` and `status.state`.
-#[allow(
-    dead_code,
-    reason = "adopted by the test modules that stage job resources"
-)]
 pub(crate) fn done_job(job_id: &str, mut fields: JsonValue) -> (u16, JsonValue) {
     fields["jobReference"] = job_reference("fixture-project", job_id);
     fields["status"]["state"] = json!("DONE");
@@ -364,10 +356,6 @@ pub(crate) fn done_job(job_id: &str, mut fields: JsonValue) -> (u16, JsonValue) 
 
 /// A staged Google API rejection with HTTP status `code`, for a test whose document needs more
 /// than [`error_body`]. An empty `status` or `reason` leaves that part out, as some APIs do.
-#[allow(
-    dead_code,
-    reason = "adopted by the test modules that stage rejections"
-)]
 pub(crate) fn google_rejection(
     code: u16,
     status: &str,

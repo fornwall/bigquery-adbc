@@ -16,7 +16,7 @@ use std::sync::Arc;
 /// `PartialEq` exists for test assertions; it is not constant time, so nothing may use it to check
 /// a presented credential.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct Secret(Arc<String>);
+pub(crate) struct Secret(Arc<str>);
 
 impl std::fmt::Debug for Secret {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -34,12 +34,12 @@ impl std::ops::Deref for Secret {
 
 impl From<String> for Secret {
     fn from(value: String) -> Self {
-        Self(Arc::new(value))
+        Self(value.into())
     }
 }
 
 impl From<&str> for Secret {
     fn from(value: &str) -> Self {
-        Self(Arc::new(value.to_owned()))
+        Self(value.into())
     }
 }
