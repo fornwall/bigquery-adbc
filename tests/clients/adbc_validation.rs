@@ -182,6 +182,13 @@ fn adapter_drift(records: &[Record<'_>], adapter: &str) -> Vec<String> {
     errors
 }
 
+/// Parses the baseline and checks it against the adapter source.
+fn baseline_drift<'a>(baseline: &'a str, adapter: &str) -> (Vec<Record<'a>>, Vec<String>) {
+    let (records, mut errors) = parse_baseline(baseline);
+    errors.extend(adapter_drift(&records, adapter));
+    (records, errors)
+}
+
 fn suite_file(name: &str) -> String {
     fs::read_to_string(Path::new(REPOSITORY_ROOT).join(SUITE_DIRECTORY).join(name)).unwrap()
 }
@@ -266,11 +273,7 @@ fn build_harness() -> Harness {
     ));
 
     let baseline = suite_file("coverage_baseline.txt");
-    let (records, mut errors) = parse_baseline(&baseline);
-    errors.extend(adapter_drift(
-        &records,
-        &suite_file("bigquery_validation.cc"),
-    ));
+    let (records, mut errors) = baseline_drift(&baseline, &suite_file("bigquery_validation.cc"));
     for record in &records {
         if !cases.iter().any(|case| case == record.case) {
             let case = record.case;
@@ -443,11 +446,7 @@ fn run_case(
 #[test]
 fn coverage_baseline_matches_adapter() {
     let baseline = suite_file("coverage_baseline.txt");
-    let (records, mut errors) = parse_baseline(&baseline);
-    errors.extend(adapter_drift(
-        &records,
-        &suite_file("bigquery_validation.cc"),
-    ));
+    let (records, errors) = baseline_drift(&baseline, &suite_file("bigquery_validation.cc"));
     assert_no_drift(&errors);
     assert!(!records.is_empty());
 }
@@ -519,9 +518,7 @@ mod false_success {
     ";
 
     fn drift(baseline: &str, adapter: &str) -> Vec<String> {
-        let (records, mut errors) = parse_baseline(baseline);
-        errors.extend(adapter_drift(&records, adapter));
-        errors
+        baseline_drift(baseline, adapter).1
     }
 
     #[test]
