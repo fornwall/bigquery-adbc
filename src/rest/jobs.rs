@@ -542,15 +542,13 @@ impl JobClient {
                 request.reference.job_id,
                 failure.status
             );
-            if let Err(failure) =
+            if let Err(cancelled) =
                 cancellation::sleep(operation, self.service_delays.delay(class, attempt)).await
             {
-                if failure.status == Status::Cancelled {
-                    // A POST before this backoff may have been accepted, and a visibility-raced
-                    // cancel then gets its one post-confirmation generation.
-                    settle_submission(operation, &request.reference, may_exist);
-                }
-                return Err(failure);
+                // A POST before this backoff may have been accepted, and a visibility-raced
+                // cancel then gets its one post-confirmation generation.
+                settle_submission(operation, &request.reference, may_exist);
+                return Err(cancelled);
             }
         }
         unreachable!("the bounded insert loop returns on its final attempt")
