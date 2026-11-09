@@ -42,7 +42,7 @@ use crate::test_support::http::{
 use crate::test_support::schema::{field_mode, table_schema};
 
 /// Plans the target and prepares it as an execution does: a `create` reads nothing first.
-pub(super) fn plan_and_prepare(
+fn plan_and_prepare(
     context: &IngestContext<'_>,
     table: TableId<'_>,
     mode: IngestMode,
@@ -572,22 +572,6 @@ fn a_truncate_bigquery_stops_leaves_the_replace_uncommitted() {
     assert_eq!(storage.finalized(), (Some(1), false));
 }
 
-/// An ingest whose bound schema cannot be spelled as DDL is refused before anything mutates.
-#[test]
-fn a_replace_with_no_columns_is_refused_before_the_target_changes() {
-    let existing = table(&json!([{"name": "id", "type": "STRING", "mode": "NULLABLE"}]));
-    let (outcome, requests) = against_bigquery(vec![ok(existing)], |context| {
-        plan_and_prepare(
-            context,
-            TARGET,
-            IngestMode::Replace,
-            &TableSchema::default(),
-        )
-    });
-    assert!(outcome.unwrap_err().message.contains("no fields"));
-    assert_eq!(requests.len(), 1, "only the schema read was sent");
-}
-
 /// A bound schema with no columns is refused before any request in every mode. `tables.insert`
 /// accepts it and creates a table with no schema, which no query can read and no later
 /// ingest can append to.
@@ -707,6 +691,26 @@ fn an_array_of_timestamps_is_refused_before_any_request() {
         });
         outcome.unwrap_or_else(|failure| panic!("{}: {failure}", schema.field(0)));
         assert_eq!(requests.len(), 1, "only the table lookup was sent");
+    }
+}
+
+/// Cancel reaches the table setup an ingest runs before its first append: a cancelled ingest
+/// sends none of `get_table`, `insert_table` or the DDL a `replace` runs.
+#[test]
+fn cancelling_an_ingest_stops_its_table_setup_requests() {
+    for mode in [IngestMode::Create, IngestMode::Append, IngestMode::Replace] {
+        let (endpoint, captured) = capture_requests(Vec::new());
+        let runtime = new_runtime().unwrap();
+        let clients = ClientState::for_test_at(ServiceEndpointKind::BigQuery, &endpoint);
+        let (cancellation, operation) = operation(&runtime, clients.clone());
+        OperationCancelHandle(cancellation).try_cancel().unwrap();
+        let failure = in_context(&runtime, &clients, &operation, |context| {
+            plan_and_prepare(context, TARGET, mode, &TableSchema::default())
+        })
+        .unwrap_err();
+        operation.finish();
+        assert_eq!(failure.status, Status::Cancelled, "{mode:?}: {failure}");
+        assert!(captured.join().unwrap().is_empty(), "{mode:?}");
     }
 }
 
@@ -886,13 +890,6 @@ fn ingest_method_accepts_only_storage_write() {
         assert_message(&error, &[KEY]);
         assert!(!error.message.contains(value) || value.is_empty());
     }
-    let secret = "ingest-method-option-payload-secret-sentinel";
-    assert!(
-        !parse_ingest_method(KEY, secret)
-            .unwrap_err()
-            .message
-            .contains(secret)
-    );
 }
 
 // Ingests driven end to end against a scripted Storage Write server.

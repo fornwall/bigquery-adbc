@@ -41,7 +41,6 @@ mod ddl;
 mod decimals;
 mod metadata;
 mod ranges;
-mod table_setup;
 mod temporals;
 mod values;
 

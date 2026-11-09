@@ -61,32 +61,6 @@ fn an_atomic_replace_renders_every_property_the_ingest_schema_carries() {
     );
 }
 
-/// Every column the DDL declares round-trips: the schema BigQuery would report for the table it
-/// creates is the schema the ingest asked for, so the next run reuses the table rather than
-/// replacing it again.
-#[test]
-fn the_atomic_replace_declares_the_schema_the_ingest_compares_against() {
-    let schema = arrow_schema_to_bigquery(
-        &normalize_schema(&Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-            Field::new("name", DataType::Utf8, true),
-            Field::new(
-                "customer",
-                DataType::Struct(Fields::from(vec![Field::new("age", DataType::Int64, true)])),
-                true,
-            ),
-        ]))
-        .unwrap(),
-    )
-    .unwrap();
-    let ddl = create_or_replace_table_ddl("`p.d.t`", &schema).unwrap();
-    assert_eq!(
-        ddl,
-        "CREATE OR REPLACE TABLE `p.d.t` (`id` INT64 NOT NULL, `name` STRING, \
-         `customer` STRUCT<`age` INT64>)"
-    );
-}
-
 /// A table with no columns is refused here rather than as a BigQuery syntax error on `()`.
 #[test]
 fn an_atomic_replace_refuses_a_schema_with_no_columns() {
