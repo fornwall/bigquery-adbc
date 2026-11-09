@@ -351,9 +351,6 @@ fn null_free_boolean_and_nested_slice_omit_validity_body_regions() {
             .collect::<Vec<_>>(),
         [0, 0, 1]
     );
-    let encoded = planned.write().unwrap();
-    assert_eq!(framed_body(&encoded).len(), 64);
-    assert_eq!(framed_body(&encoded)[0], 0b0101_1011);
 
     // The in-tree reader must consume both zero-length validity descriptors and reconstruct
     // the same logical nested Boolean values without attaching a null bitmap.

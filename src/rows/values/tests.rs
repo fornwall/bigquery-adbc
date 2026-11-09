@@ -5,7 +5,6 @@ use arrow_array::types::{
     Time64MicrosecondType, TimestampMicrosecondType,
 };
 use arrow_buffer::{IntervalMonthDayNano, i256};
-use arrow_schema::Schema;
 
 use crate::pipeline::BATCH_SIZE;
 use crate::rest::model::TableFieldSchema;
@@ -37,14 +36,6 @@ fn uncancelled() -> ResultPipelineCancellation {
 )]
 fn append(builder: &mut ColumnBuilder, value: RestValue) -> Result<(), ArrowError> {
     builder.append(&value, &ValueAt::Root(&TEST_COLUMN), &uncancelled())
-}
-
-fn column_builders(schema: &Schema) -> Vec<ColumnBuilder> {
-    schema
-        .fields()
-        .iter()
-        .map(|field| ColumnBuilder::new(field, BATCH_SIZE).unwrap())
-        .collect()
 }
 
 fn decoded_rows_to_record_batch(
@@ -537,13 +528,13 @@ fn rejects_range_bounds_outside_the_calendar() {
         range_field("timestamps", "TIMESTAMP"),
     ]);
     let schema = convert_schema(&table).unwrap();
-    let mut builders = column_builders(&schema);
-    for (index, literal, kind) in [
-        (0, "[0000-01-01, UNBOUNDED)", "DATE"),
-        (1, "[UNBOUNDED, 0000-01-01T00:00:00)", "DATETIME"),
-        (2, "[UNBOUNDED, 253402300800000000)", "TIMESTAMP"),
-    ] {
-        let error = append(&mut builders[index], text(literal)).unwrap_err();
+    for (field, (literal, kind)) in schema.fields().iter().zip([
+        ("[0000-01-01, UNBOUNDED)", "DATE"),
+        ("[UNBOUNDED, 0000-01-01T00:00:00)", "DATETIME"),
+        ("[UNBOUNDED, 253402300800000000)", "TIMESTAMP"),
+    ]) {
+        let mut builder = ColumnBuilder::new(field, 1).unwrap();
+        let error = append(&mut builder, text(literal)).unwrap_err();
         let message = error.to_string();
         assert!(
             message.contains(&format!("is not a valid {kind}")),
