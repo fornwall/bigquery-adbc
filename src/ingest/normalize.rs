@@ -133,9 +133,18 @@ fn requires_same_type_value_normalization(column: &ArrayRef, field: &Field) -> b
     }
 }
 
-fn mask_struct_child(column: &ArrayRef, parent_nulls: &NullBuffer, name: &str) -> Result<ArrayRef> {
-    // A `Null` array hides no values and cannot carry a validity buffer.
+fn mask_struct_child(
+    column: &ArrayRef,
+    field: &Field,
+    parent_nulls: &NullBuffer,
+    name: &str,
+) -> Result<ArrayRef> {
+    // A `Null` array hides no values and cannot carry a validity buffer. A child that normalizes
+    // to itself unchecked has nothing to hide, and rebuilding it would revalidate every value,
+    // such as all of a string's UTF-8.
     if column.data_type() == &DataType::Null
+        || (column.data_type() == field.data_type()
+            && !requires_same_type_value_normalization(column, field))
         || column
             .nulls()
             .is_some_and(|nulls| nulls.contains(parent_nulls))
@@ -180,7 +189,7 @@ fn normalize_column(column: &ArrayRef, field: &Field, site: &ValueSite<'_>) -> R
                 let site = site.field(field.name());
                 let masked = array
                     .nulls()
-                    .map(|nulls| mask_struct_child(column, nulls, site.name()))
+                    .map(|nulls| mask_struct_child(column, field, nulls, site.name()))
                     .transpose()?;
                 let mut normalized =
                     normalize_column(masked.as_ref().unwrap_or(column), field, &site)?;

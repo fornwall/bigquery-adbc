@@ -5,7 +5,7 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::{Date32Type, Int8Type};
 use arrow_array::{
     Array, ArrayRef, Date32Array, Date64Array, DictionaryArray, Int8Array, ListArray, RecordBatch,
-    StructArray, TimestampMicrosecondArray, TimestampSecondArray,
+    StringArray, StructArray, TimestampMicrosecondArray, TimestampSecondArray,
 };
 use arrow_buffer::{Buffer, NullBuffer};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
@@ -166,14 +166,29 @@ fn struct_mask_preserves_child_nulls_and_reuses_an_existing_combined_mask() {
 #[test]
 fn unchanged_nested_structs_preserve_array_identity_after_validation() {
     for nulls in [None, Some(NullBuffer::from(vec![true, false, true]))] {
-        let mut column = Arc::new(Date32Array::from(vec![Some(0), None, Some(1)])) as ArrayRef;
-        for name in ["day", "inner"] {
-            column = Arc::new(StructArray::new(
-                vec![Arc::new(Field::new(name, column.data_type().clone(), true))].into(),
-                vec![column],
-                nulls.clone(),
-            ));
-        }
+        let day = Arc::new(Date32Array::from(vec![Some(0), None, Some(1)])) as ArrayRef;
+        // Needs no check, so it is not masked (which would rebuild and revalidate it) though a
+        // NULL struct hides one of its values.
+        let label = Arc::new(StringArray::from(vec!["a", "hidden", "c"])) as ArrayRef;
+        let fields = vec![
+            Field::new("day", DataType::Date32, true),
+            Field::new("label", DataType::Utf8, false),
+        ];
+        let mut column: ArrayRef = Arc::new(StructArray::new(
+            fields.into(),
+            vec![day, label],
+            nulls.clone(),
+        ));
+        column = Arc::new(StructArray::new(
+            vec![Arc::new(Field::new(
+                "inner",
+                column.data_type().clone(),
+                true,
+            ))]
+            .into(),
+            vec![column],
+            nulls.clone(),
+        ));
         let schema = Arc::new(Schema::new(vec![Field::new(
             "outer",
             column.data_type().clone(),
