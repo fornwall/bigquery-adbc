@@ -27,6 +27,17 @@ fn http2_client() -> super::RestClient {
     super::build_client("test", builder).unwrap()
 }
 
+/// Sends GOAWAY and waits for the client to leave. A client that resets the socket instead of
+/// closing it ends the connection with an error (seen on Windows CI), so only another stream fails.
+async fn close_after_last_stream(
+    mut connection: h2::server::Connection<tokio::net::TcpStream, bytes::Bytes>,
+) {
+    connection.graceful_shutdown();
+    if let Some(Ok((request, _))) = connection.accept().await {
+        panic!("unexpected HTTP/2 stream to {}", request.uri());
+    }
+}
+
 #[test]
 fn redirects_cannot_replay_requests_at_another_endpoint() {
     use crate::test_support::http::{capture_requests_until_stopped, redirect_once};
@@ -110,8 +121,7 @@ fn json_and_media_requests_share_one_http2_connection() {
                     .send_data(bytes::Bytes::copy_from_slice(path.as_bytes()), true)
                     .unwrap();
             }
-            connection.graceful_shutdown();
-            assert!(connection.accept().await.is_none());
+            close_after_last_stream(connection).await;
         });
 
         let client = http2_client();
@@ -179,8 +189,7 @@ fn a_retry_leaves_an_http2_connection_that_stopped_answering() {
             response
                 .send_response(http::Response::new(()), true)
                 .unwrap();
-            connection.graceful_shutdown();
-            assert!(connection.accept().await.is_none());
+            close_after_last_stream(connection).await;
         });
 
         let client = http2_client();
