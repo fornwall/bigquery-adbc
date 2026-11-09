@@ -139,7 +139,7 @@ fn null_handles_keys_and_values_are_rejected() {
 #[test]
 fn typed_getters_reject_string_options() {
     let mut database = initialized_database();
-    let mut value = 0_i64;
+    let mut value = -1_i64;
     // SAFETY: The handle and static key are live, and the integer output is writable.
     let status = unsafe {
         get_option_int(
@@ -150,7 +150,7 @@ fn typed_getters_reject_string_options() {
         )
     };
     assert_eq!(status, ADBC_STATUS_NOT_FOUND);
-    assert_eq!(value, 0);
+    assert_eq!(value, -1);
     release(&mut database);
 }
 
