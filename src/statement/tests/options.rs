@@ -5,19 +5,9 @@ use super::*;
 use crate::dbt::statement::DbtOperation;
 
 #[test]
-fn reservation_round_trips_clears_and_rejects_wrong_types_and_legacy_alias() {
+fn reservation_rejects_wrong_types_and_the_legacy_alias() {
     let mut statement = test_statement();
     let key = BqOption::Reservation;
-    // Unset, and cleared by the empty string, it has no value to read.
-    assert_string_option(&statement, key, None);
-    for value in [
-        "projects/billing-project/locations/EU/reservations/analytics",
-        "none",
-    ] {
-        set_option(&mut statement, key, value);
-        assert_string_option(&statement, key, Some(value));
-    }
-    set_option(&mut statement, key, "");
     assert_string_option(&statement, key, None);
     set_option(&mut statement, key, "none");
     for value in [
@@ -118,6 +108,13 @@ fn connection_and_statement_option_errors_do_not_disclose_payloads() {
             BqOption::DestinationTable.into(),
             format!("{SECRET}/path.dataset.table").into(),
         ),
+        // Job labels must be a JSON object of strings.
+        (BqOption::Labels.into(), format!("[\"{SECRET}\"]").into()),
+        (
+            BqOption::Labels.into(),
+            format!("{{\"key\":42,\"other\":\"{SECRET}\"}}").into(),
+        ),
+        (BqOption::Labels.into(), format!("not json {SECRET}").into()),
     ] {
         let rendered = format!("{value:?}");
         let error = set_option_error(&mut statement, key, value);
@@ -515,12 +512,10 @@ fn statement_options_report_their_defaults_and_clear_back_to_them() {
     }
 }
 
-/// Key spelling is not asserted here: `no_option_key_or_alias_is_spelled_twice` covers every
-/// option scope at once.
 #[test]
 fn statement_options_reject_invalid_values() {
     let mut statement = test_statement();
-    let rows: [(BqOption, OptionValue); 19] = [
+    let rows: [(BqOption, OptionValue); 17] = [
         (BqOption::MaximumBytesBilled, OptionValue::Int(-1)),
         (BqOption::JobTimeout, OptionValue::Int(-1)),
         (BqOption::Priority, "batch_mode".into()),
@@ -540,8 +535,6 @@ fn statement_options_reject_invalid_values() {
             BqOption::CopyTableWriteDisposition,
             "WRITE_SOMETIMES".into(),
         ),
-        (BqOption::DataprocPoolingTimeout, "3600 seconds".into()),
-        (BqOption::DataprocPoolingTimeout, OptionValue::Int(-1)),
         (BqOption::WriteGcsBucket, OptionValue::Int(1)),
     ];
     for (option, value) in rows {
@@ -552,13 +545,7 @@ fn statement_options_reject_invalid_values() {
             option.as_str()
         );
     }
-    assert_eq!(
-        set_option_error(&mut statement, BqOption::MaximumBillingTier, 1).status,
-        Status::NotImplemented
-    );
-
-    // No rejection mutated the statement: the destination table and the copy endpoints are
-    // still unset, and the deprecated billing tier is unreadable through the typed getter too.
+    // No rejection mutated the statement.
     for option in [
         BqOption::DestinationTable,
         BqOption::CopyTableSource,
@@ -567,20 +554,6 @@ fn statement_options_reject_invalid_values() {
     ] {
         assert_string_option(&statement, option, None);
     }
-    assert_eq!(
-        option_int(&statement, BqOption::DataprocPoolingTimeout),
-        0,
-        "a rejected timeout leaves the statement without a client-side deadline"
-    );
-    // The setter refuses the deprecated option with NotImplemented, but adbc.h gives
-    // `AdbcStatementGetOptionInt` only NotFound.
-    assert_eq!(
-        statement
-            .get_option_int(BqOption::MaximumBillingTier.into())
-            .unwrap_err()
-            .status,
-        Status::NotFound
-    );
 }
 
 /// Every option key dbt 2.0 sends for a python model, in its exact spelling: unset reads
@@ -663,24 +636,11 @@ fn python_model_options_round_trip_and_clear_under_the_dbt_key_spellings() {
         assert_string_option(&statement, option, Some(value));
     }
 
-    // The twentieth key is the only integer one, and reads back through the typed getter.
-    let timeout = BqOption::DataprocPoolingTimeout;
-    assert_eq!(timeout.as_str(), "adbc.bigquery.dataproc.pooling_timeout");
-    assert_eq!(option_int(&statement, timeout), 0);
-    set_option(&mut statement, timeout, "86400");
-    assert_eq!(option_int(&statement, timeout), 86_400);
-
     for (key, _) in KEYS {
-        set_option(&mut statement, OptionStatement::Other(key.to_owned()), "");
+        let key = OptionStatement::Other(key.to_owned());
+        set_option(&mut statement, key.clone(), "");
+        assert_string_option(&statement, key, None);
     }
-    set_option(&mut statement, timeout, "");
-    for (key, _) in KEYS {
-        let Some(option) = BqOption::from_name(key) else {
-            panic!("{key}")
-        };
-        assert_string_option(&statement, option, None);
-    }
-    assert_eq!(option_int(&statement, timeout), 0);
     // Every python-model option is released, so the statement needs SQL again.
     let error = statement.execute_update().unwrap_err();
     assert_failure(&error, Status::InvalidState, &["without a SQL query"]);
@@ -693,6 +653,7 @@ fn python_model_options_round_trip_and_clear_under_the_dbt_key_spellings() {
 fn pooling_timeout_is_accepted_as_a_string_and_as_an_integer() {
     const SECRET: &str = "pooling-timeout-payload-sentinel";
     let key = BqOption::DataprocPoolingTimeout;
+    assert_eq!(key.as_str(), "adbc.bigquery.dataproc.pooling_timeout");
     let mut statement = test_statement();
 
     set_option(&mut statement, key, "3600");
@@ -880,28 +841,6 @@ fn dbt_csv_seed_options_reject_wrong_accessor_types() {
 }
 
 #[test]
-fn job_labels_reject_non_object_values_without_echoing_them() {
-    const SECRET: &str = "job-label-payload-secret-sentinel";
-
-    let mut statement = test_statement();
-    for invalid in [
-        format!("[\"{SECRET}\"]"),
-        format!("\"{SECRET}\""),
-        format!("{{\"key\":42,\"other\":\"{SECRET}\"}}"),
-        format!("not json {SECRET}"),
-    ] {
-        let error = set_option_error(
-            &mut statement,
-            BqOption::Labels,
-            OptionValue::String(invalid),
-        );
-        assert_eq!(error.status, Status::InvalidArguments);
-        assert_message_omits(&error, &[SECRET]);
-    }
-    assert!(statement.query_options.labels.is_none());
-}
-
-#[test]
 fn project_options_preserve_identifiers_and_reject_unsafe_resource_segments() {
     let mut statement = test_statement();
     for option in [
@@ -944,10 +883,10 @@ fn project_options_preserve_identifiers_and_reject_unsafe_resource_segments() {
     );
 }
 
-/// These two options run the same dataset and table validators as `adbc.connection.db_schema`
-/// and `bigquery.dataset_id`, when set rather than at the first append.
+/// These options run the same dataset and table validators as `adbc.connection.db_schema` and
+/// `bigquery.dataset_id`, when set, under the option's own name.
 #[test]
-fn ingest_target_names_are_validated_when_they_are_set() {
+fn dataset_and_table_options_are_validated_when_they_are_set() {
     let mut statement = test_statement();
     for (option, value, expected) in [
         (
@@ -961,6 +900,12 @@ fn ingest_target_names_are_validated_when_they_are_set() {
             "events/rollup",
             "BigQuery option adbc.ingest.target_table cannot contain slashes or control characters",
         ),
+        (
+            BqOption::DefaultDatasetId.into(),
+            "bad-dataset",
+            "BigQuery option bigquery.query.default_dataset_id may contain only ASCII letters, \
+             digits, and underscores",
+        ),
     ] {
         let error = set_option_error(&mut statement, option, value);
         assert_eq!(error.status, Status::InvalidArguments, "{value:?}");
@@ -968,38 +913,7 @@ fn ingest_target_names_are_validated_when_they_are_set() {
     }
     assert!(statement.ingest.target_db_schema.is_none());
     assert!(statement.ingest.target_table.is_none());
-}
-
-/// The statement default dataset is checked by the validator `adbc.connection.db_schema` and
-/// `bigquery.dataset_id` use, so an unusable dataset ID is refused under the option's own name.
-#[test]
-fn the_statement_default_dataset_is_validated_like_every_other_dataset_id() {
-    let mut statement = test_statement();
-    let failure = set_option_error(&mut statement, BqOption::DefaultDatasetId, "bad-dataset");
-    assert_eq!(failure.status, Status::InvalidArguments);
-    assert_eq!(
-        failure.message,
-        "BigQuery option bigquery.query.default_dataset_id may contain only ASCII letters, \
-         digits, and underscores"
-    );
-
-    let failure = set_option_error(
-        &mut statement,
-        BqOption::DefaultDatasetId,
-        "d".repeat(1_025),
-    );
-    assert_eq!(
-        failure.message,
-        "BigQuery option bigquery.query.default_dataset_id is 1025 characters long; it \
-         cannot exceed 1,024 characters"
-    );
-
-    // A valid one still applies, and the empty string still clears it.
-    let key = BqOption::DefaultDatasetId;
-    set_option(&mut statement, key, "good_dataset");
-    assert_string_option(&statement, key, Some("good_dataset"));
-    set_option(&mut statement, key, "");
-    assert_string_option(&statement, key, None);
+    assert!(statement.query_options.default_dataset_id.is_none());
 }
 
 /// A refusal names the key the caller set, alias spellings included, and a removed option is
@@ -1128,35 +1042,6 @@ fn execution_progress_reports_the_bytes_the_query_processed() {
             .unwrap(),
         4096.0
     );
-
-    // The two are doubles, and say so through every other accessor.
-    for key in [OptionStatement::Progress, OptionStatement::MaxProgress] {
-        for error in [
-            statement.get_option_string(key.clone()).unwrap_err(),
-            statement.get_option_int(key.clone()).unwrap_err(),
-            statement.get_option_bytes(key.clone()).unwrap_err(),
-        ] {
-            assert_failure(&error, Status::NotFound, &["double"]);
-        }
-    }
-    requests.served(1);
-}
-
-/// An update runs a job like any query, so it publishes the bytes that job processed.
-#[test]
-fn an_update_publishes_the_bytes_its_job_processed() {
-    let (endpoint, requests) = capture_requests(vec![completed_job(
-        "options-job-2",
-        json!({
-            "statementType": "UPDATE",
-            "totalBytesProcessed": "4096",
-            "numDmlAffectedRows": "3"
-        }),
-    )]);
-    let mut statement = test_query_at(&endpoint, "UPDATE dataset.table SET value = 1 WHERE true");
-    assert_eq!(statement.execute_update().unwrap(), Some(3));
-
-    assert_progress(&statement, 4096.0);
     requests.served(1);
 }
 

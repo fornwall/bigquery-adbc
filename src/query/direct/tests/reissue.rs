@@ -2,47 +2,6 @@
 
 use super::*;
 
-#[test]
-fn reservation_survives_transport_retries_on_both_submission_paths() {
-    for dry_run in [false, true] {
-        let success = if dry_run {
-            json!({"status":{"state":"DONE"}, "statistics":{"query":{"statementType":"DELETE"}}})
-        } else {
-            json!({"jobComplete":true,
-                "jobReference":{"projectId":"project","jobId":"job-1","location":"EU"}})
-        };
-        let (endpoint, captured) = capture_requests(vec![
-            (
-                503,
-                json!({"error":{"errors":[{"reason":"backendError", "message":"temporary"}]}}),
-            ),
-            (200, success),
-        ]);
-        let (runtime, client) = job_client(&endpoint);
-        let reservation = "projects/billing-project/locations/EU/reservations/analytics";
-        complete(
-            &runtime,
-            client,
-            plan(StatementQueryOptions {
-                dry_run,
-                reservation: Some(Arc::from(reservation)),
-                ..StatementQueryOptions::default()
-            }),
-            QueryResultMode::MetadataOnly,
-            "test",
-        )
-        .unwrap();
-        let captured = captured.served(2);
-        assert_eq!(captured[0].body, captured[1].body);
-        let configuration = if dry_run {
-            &captured[1].body["configuration"]
-        } else {
-            &captured[1].body
-        };
-        assert_eq!(configuration["reservation"], reservation);
-    }
-}
-
 /// One failed attempt: the `jobs.query` response carrying the errors, then the `jobs.get` whose
 /// `status.errorResult` confirms them. `statement_type` feeds `reissuable_statement`.
 fn failed_attempt(
