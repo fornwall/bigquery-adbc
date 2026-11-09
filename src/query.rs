@@ -243,9 +243,10 @@ pub(crate) fn execute_update_with_parameters(
             "BigQuery query execution failed"
         },
     )?;
-    Ok((!context.options.dry_run)
-        .then_some(complete.metadata.num_dml_affected_rows)
-        .flatten())
+    Ok(complete
+        .metadata
+        .num_dml_affected_rows
+        .filter(|_| !context.options.dry_run))
 }
 
 pub(crate) fn execute_schema(

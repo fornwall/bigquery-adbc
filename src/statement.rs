@@ -148,12 +148,11 @@ impl BigQueryStatement {
     #[inline(never)]
     fn refuse_session_creation(&self) -> Result<()> {
         if self.query_options.create_session && !self.transaction.is_autocommit()? {
+            let option = BigQueryStatementOption::CreateSession.as_str();
             return Err(invalid_state(format!(
-                "BigQuery option {} cannot be enabled while {ADBC_CONNECTION_OPTION_AUTOCOMMIT} \
-                 is disabled: the statement runs in the transaction's BigQuery session; set {} to \
-                 false or re-enable autocommit",
-                BigQueryStatementOption::CreateSession.as_str(),
-                BigQueryStatementOption::CreateSession.as_str(),
+                "BigQuery option {option} cannot be enabled while \
+                 {ADBC_CONNECTION_OPTION_AUTOCOMMIT} is disabled: the statement runs in the \
+                 transaction's BigQuery session; set {option} to false or re-enable autocommit",
             )));
         }
         Ok(())

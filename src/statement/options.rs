@@ -201,14 +201,13 @@ impl BigQueryStatement {
                     && self.context.current_catalog.is_none()
                     && self.context.billing_project_id.is_none()
                 {
+                    let dataset = BigQueryStatementOption::DefaultDatasetId.as_str();
                     return Err(invalid_state(format!(
-                        "BigQuery option {} cannot be cleared while the statement option {} is \
-                         set and no other project is configured; clear {} first, or set the \
-                         connection option adbc.connection.catalog or the database option \
-                         bigquery.project_id",
+                        "BigQuery option {} cannot be cleared while the statement option \
+                         {dataset} is set and no other project is configured; clear {dataset} \
+                         first, or set the connection option adbc.connection.catalog or the \
+                         database option bigquery.project_id",
                         key.as_ref(),
-                        BigQueryStatementOption::DefaultDatasetId.as_str(),
-                        BigQueryStatementOption::DefaultDatasetId.as_str(),
                     )));
                 }
                 self.query_options.default_project_id = project;
