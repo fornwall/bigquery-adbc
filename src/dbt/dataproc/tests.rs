@@ -370,60 +370,22 @@ fn a_finished_operation_reports_the_state_its_resource_reached() {
 }
 
 /// `pooling_timeout` expiry stops the wait, reports a timeout distinct from a failed model, and
-/// asks Dataproc to stop the still-running batch.
+/// asks Dataproc to stop the still-running batch. The deadline is rechecked after a backoff sleep
+/// shortened to end at it, and the initial backoff consumes the one second of budget, so the
+/// create is followed directly by the cancel. A batch has no cancel method of its own, so its
+/// operation is cancelled.
 ///
-/// The deadline is rechecked after a backoff sleep shortened to end at it, so no extra poll is
-/// issued. One second of budget is consumed by the initial backoff, so the create is followed
-/// directly by the cancel.
+/// The timeout stays the answer whatever the cancel does: a refused one says the batch may keep
+/// running and why, and is attempted once; a transient failure has work to stop, so it is resent.
 #[test]
-fn an_expired_pooling_timeout_reports_a_timeout_without_another_poll_and_cancels_the_batch() {
-    let (endpoint, captured) = capture_requests(vec![ok(running(OPERATION)), ok(json!({}))]);
-    let mut connection = dataproc_connection(&endpoint);
-    let mut statement = batch_statement(&mut connection, Some("1"));
-
-    let error = statement.execute_update().unwrap_err();
-    assert_eq!(
-        error.status,
-        Status::Timeout,
-        "a deadline that expired is not a model that failed: {}",
-        error.message
-    );
-    assert_message(
-        &error,
-        &[BigQueryStatementOption::DataprocPoolingTimeout.as_str()],
-    );
-    assert!(
-        error.message.ends_with(&format!(
-            "; the BigQuery Dataproc batch {OPERATION} was asked to stop"
-        )),
-        "{}",
-        error.message
-    );
-
-    let requests = captured.join().unwrap();
-    assert_eq!(
-        requests.len(),
-        2,
-        "the create, then the cancel: nothing is polled once the deadline has passed"
-    );
-    assert_eq!(
-        requests[1].line,
-        format!("POST /v1/{OPERATION}:cancel HTTP/1.1"),
-        "a batch has no cancel method of its own, so its operation is cancelled"
-    );
-}
-
-/// A cancel keeps `Status::Timeout`: the caller's timeout is the answer, the cancel a courtesy. A
-/// refused one says the batch may keep running and why, and is attempted once; a transient
-/// failure has work to stop, so it is resent.
-#[test]
-fn a_cancel_after_the_timeout_is_resent_only_after_a_transient_failure() {
+fn an_expired_pooling_timeout_cancels_the_batch_without_another_poll() {
     let unavailable = (503, error_body("backendError", "unavailable"));
     let denied = (
         403,
         json!({"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "denied"}}),
     );
     for (cancel, sent, outcome) in [
+        (ok(json!({})), 1, "was asked to stop"),
         (denied, 1, "failed (denied"),
         (unavailable, 2, "was asked to stop"),
     ] {
@@ -448,27 +410,6 @@ fn a_cancel_after_the_timeout_is_resent_only_after_a_transient_failure() {
             assert_eq!(cancel.line, format!("POST /v1/{OPERATION}:cancel HTTP/1.1"));
         }
     }
-}
-
-/// A 200 whose body is not a JSON object fails on the first attempt without cancelling the
-/// batch: a malformed response says nothing about the batch.
-#[test]
-fn a_poll_answered_with_a_json_array_fails_at_once_without_cancelling_the_batch() {
-    let (endpoint, captured) = capture_requests(vec![ok(running(OPERATION)), ok(json!([]))]);
-    let mut connection = dataproc_connection(&endpoint);
-    // A minute of budget, so nothing here is the deadline expiring.
-    let mut statement = batch_statement(&mut connection, Some("60"));
-
-    let error = statement.execute_update().unwrap_err();
-    assert_failure(&error, Status::InvalidData, &["is not a JSON object"]);
-
-    let requests = captured.join().unwrap();
-    assert_eq!(
-        requests.len(),
-        2,
-        "the create and the one poll: a malformed body is not retried"
-    );
-    assert_eq!(requests[1].line, format!("GET /v1/{OPERATION} HTTP/1.1"));
 }
 
 /// A gateway timeout on a poll says nothing about the batch, so the poll is repeated and nothing
@@ -510,21 +451,38 @@ fn a_gateway_timeout_while_polling_is_retried_rather_than_failing_the_batch() {
     );
 }
 
-/// A status the service means as a verdict stops the wait at once, with nothing cancelled. That
-/// leaves the submission running and billing, so the error says so and names it for the caller.
+/// A status the service means as a verdict, or a 200 whose body is not a JSON object, stops the
+/// wait at once, with nothing cancelled: neither says anything about the submission. That leaves
+/// it running and billing, so the error says so and names it for the caller.
 #[test]
-fn a_fatal_poll_rejection_says_the_submission_may_still_be_running() {
+fn a_fatal_poll_answer_says_the_submission_may_still_be_running() {
     let denied = json!({"error": {"code": 403, "message": "Permission denied on the operation"}});
-    for (cluster, operation, what) in [
-        (false, OPERATION, "Dataproc batch"),
-        (true, JOB_OPERATION, "Dataproc job"),
+    for (cluster, operation, what, poll, status) in [
+        (
+            false,
+            OPERATION,
+            "Dataproc batch",
+            (403, denied.clone()),
+            Status::Unauthorized,
+        ),
+        (
+            true,
+            JOB_OPERATION,
+            "Dataproc job",
+            (403, denied),
+            Status::Unauthorized,
+        ),
+        (
+            false,
+            OPERATION,
+            "Dataproc batch",
+            ok(json!([])),
+            Status::InvalidData,
+        ),
     ] {
         // The last response answers a repeated poll or a cancel, which must never be sent.
-        let (endpoint, server) = capture_requests_until_stopped(vec![
-            ok(running(operation)),
-            (403, denied.clone()),
-            ok(json!({})),
-        ]);
+        let (endpoint, server) =
+            capture_requests_until_stopped(vec![ok(running(operation)), poll, ok(json!({}))]);
         let mut connection = dataproc_connection(&endpoint);
         let mut statement = if cluster {
             cluster_statement(&mut connection, None)
@@ -533,7 +491,7 @@ fn a_fatal_poll_rejection_says_the_submission_may_still_be_running() {
         };
 
         let error = statement.execute_update().unwrap_err();
-        assert_eq!(error.status, Status::Unauthorized, "{}", error.message);
+        assert_eq!(error.status, status, "{}", error.message);
         assert!(
             error.message.ends_with(&format!(
                 "; the BigQuery {what} {operation} may still be running"
@@ -789,9 +747,16 @@ fn a_half_configured_submission_names_the_option_it_is_missing() {
 }
 
 /// These options are interpolated into the request path, and the region into the regional
-/// host as well, so a value that would redirect the request is refused instead.
+/// host as well, so a value that would redirect the request is refused instead. The region is
+/// held to the region-name alphabet rather than a list of characters a URL parser treats
+/// specially.
 #[test]
 fn resource_options_that_would_redirect_the_request_are_refused() {
+    let refused = |result: adbc_core::error::Result<&str>, key: BigQueryStatementOption, value| {
+        let error = result.unwrap_err();
+        assert_eq!(error.status, Status::InvalidArguments, "{value:?}");
+        assert_message(&error, &[key.as_str()]);
+    };
     let key = BigQueryStatementOption::CreateBatchParent;
     assert_eq!(
         resource_path("projects/p/locations/eu", key).unwrap(),
@@ -811,9 +776,7 @@ fn resource_options_that_would_redirect_the_request_are_refused() {
         "/projects/p",
         "projects/p/",
     ] {
-        let error = resource_path(value, key).unwrap_err();
-        assert_eq!(error.status, Status::InvalidArguments, "{value}");
-        assert_message(&error, &[key.as_str()]);
+        refused(resource_path(value, key), key, value);
     }
 
     let key = BigQueryStatementOption::DataprocProject;
@@ -822,16 +785,9 @@ fn resource_options_that_would_redirect_the_request_are_refused() {
         "exec-project"
     );
     for value in ["exec/project", "evil.example\\"] {
-        let error = resource_segment(value, key).unwrap_err();
-        assert_eq!(error.status, Status::InvalidArguments, "{value}");
-        assert_message(&error, &[key.as_str()]);
+        refused(resource_segment(value, key), key, value);
     }
-}
 
-/// The region becomes part of a host name, so it is held to the region-name alphabet rather than
-/// a list of characters a URL parser treats specially.
-#[test]
-fn a_region_that_could_move_the_host_is_refused() {
     let key = BigQueryStatementOption::DataprocComputeRegion;
     assert_eq!(region_segment("us-central1", key).unwrap(), "us-central1");
     for value in [
@@ -843,31 +799,17 @@ fn a_region_that_could_move_the_host_is_refused() {
         "user@attacker.example",
         "us-central1:8080",
     ] {
-        let error = region_segment(value, key).unwrap_err();
-        assert_eq!(error.status, Status::InvalidArguments, "{value:?}");
-        assert_message(&error, &[key.as_str()]);
+        refused(region_segment(value, key), key, value);
     }
-}
 
-/// End to end: a backslash-bearing region never reaches the wire at all, so no bearer token
-/// minted for the configured identity can be handed to a host the option chose.
-#[test]
-fn a_backslash_region_sends_no_request_anywhere() {
-    // A port nothing listens on: a request that did escape would fail rather than succeed.
+    // End to end, a backslash-bearing region never reaches the wire, so no bearer token minted for
+    // the configured identity can be handed to a host the option chose. Nothing listens on the
+    // port, so a request that did escape would fail differently.
     let mut connection = dataproc_connection("http://127.0.0.1:1");
     let mut statement = batch_statement(&mut connection, None);
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::DataprocComputeRegion,
-        "attacker.example\\",
-    );
-
+    set_option(&mut statement, key, "attacker.example\\");
     let error = statement.execute_update().unwrap_err();
-    assert_failure(
-        &error,
-        Status::InvalidArguments,
-        &[BigQueryStatementOption::DataprocComputeRegion.as_str()],
-    );
+    assert_failure(&error, Status::InvalidArguments, &[key.as_str()]);
 }
 
 /// The remote cancel escapes every segment it takes from the operation resource, so `?`, `#`, or
