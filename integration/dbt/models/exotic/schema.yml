@@ -18,9 +18,7 @@ models:
       - name: local_time
         data_tests: [not_null]
     data_tests:
-      - exotic_exact_row_count:
-          arguments:
-            expected: 1
+      - exotic_exact_row_count: {arguments: {expected: 1}}
 
   - name: exotic_hooked_model
     columns:
@@ -31,9 +29,7 @@ models:
       - name: order_total
         data_tests: [positive]
     data_tests:
-      - exotic_exact_row_count:
-          arguments:
-            expected: 3
+      - exotic_exact_row_count: {arguments: {expected: 3}}
 
   - name: exotic_seed_source_projection
     columns:
@@ -45,9 +41,7 @@ models:
               arguments:
                 values: [completed, cancelled, pending]
     data_tests:
-      - exotic_exact_row_count:
-          arguments:
-            expected: 5
+      - exotic_exact_row_count: {arguments: {expected: 5}}
 
   - name: exotic_dispatched_fingerprint
     columns:
@@ -61,9 +55,7 @@ models:
       - name: row_fingerprint
         data_tests: [not_null]
     data_tests:
-      - exotic_exact_row_count:
-          arguments:
-            expected: 5
+      - exotic_exact_row_count: {arguments: {expected: 5}}
 
   - name: exotic_sequence_pivot
     columns:
@@ -78,9 +70,7 @@ models:
       - name: metric_value
         data_tests: [positive]
     data_tests:
-      - exotic_exact_row_count:
-          arguments:
-            expected: 6
+      - exotic_exact_row_count: {arguments: {expected: 6}}
 
   - name: exotic_versioned_metric
     latest_version: 2
@@ -112,9 +102,7 @@ models:
                 values: [true]
                 quote: false
     data_tests:
-      - exotic_exact_row_count:
-          arguments:
-            expected: 5
+      - exotic_exact_row_count: {arguments: {expected: 5}}
 
   - name: exotic_materialized_view
     description: Materialized view covering BigQuery refresh and staleness metadata.
@@ -149,9 +137,7 @@ models:
       - name: order_id
         data_tests: [not_null, unique]
     data_tests:
-      - exotic_exact_row_count:
-          arguments:
-            expected: 5
+      - exotic_exact_row_count: {arguments: {expected: 5}}
 
   - name: exotic_dynamic_overwrite
     description: Dynamic insert-overwrite incremental covering the multi-statement script path.
@@ -175,9 +161,7 @@ models:
       - name: load_wave
         data_tests: [positive]
     data_tests:
-      - exotic_exact_row_count:
-          arguments:
-            expected: 3
+      - exotic_exact_row_count: {arguments: {expected: 3}}
 
   - name: exotic_authorized_source
     description: >-
@@ -189,9 +173,7 @@ models:
       - name: order_total
         data_tests: [non_negative]
     data_tests:
-      - exotic_exact_row_count:
-          arguments:
-            expected: 5
+      - exotic_exact_row_count: {arguments: {expected: 5}}
 
   - name: exotic_authorized_view
     description: >-
@@ -205,9 +187,7 @@ models:
         description: Orders per day, documented through the view's column metadata update.
         data_tests: [positive]
     data_tests:
-      - exotic_exact_row_count:
-          arguments:
-            expected: 3
+      - exotic_exact_row_count: {arguments: {expected: 3}}
 
   - name: exotic_python_model
     description: >-
@@ -231,16 +211,12 @@ models:
       - name: row_id
         data_tests: [not_null, unique]
     data_tests:
-      - exotic_exact_row_count:
-          arguments:
-            expected: 1
+      - exotic_exact_row_count: {arguments: {expected: 1}}
 
   - name: exotic_empty_result
     description: Typed zero-row view covering empty ADBC result schema retention.
     data_tests:
-      - exotic_exact_row_count:
-          arguments:
-            expected: 0
+      - exotic_exact_row_count: {arguments: {expected: 0}}
 
   - name: exotic_quoted_identifiers
     description: Reserved relation alias and BigQuery flexible column names.
@@ -254,9 +230,7 @@ models:
       - name: 名前-列
         description: Unicode flexible column, persisted through the metadata update.
     data_tests:
-      - exotic_exact_row_count:
-          arguments:
-            expected: 1
+      - exotic_exact_row_count: {arguments: {expected: 1}}
 
   - name: exotic_schema_sync
     description: >-

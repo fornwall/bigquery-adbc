@@ -51,9 +51,7 @@ seeds:
               arguments:
                 values: [completed, cancelled, pending]
       - name: shipping_amount
-        data_tests:
-          - not_null
-          - non_negative
+        data_tests: [not_null, non_negative]
 
   - name: order_items
     config:
@@ -77,17 +75,11 @@ seeds:
       - name: sku
         data_tests: [not_null]
       - name: quantity
-        data_tests:
-          - not_null
-          - positive
+        data_tests: [not_null, positive]
       - name: unit_price
-        data_tests:
-          - not_null
-          - non_negative
+        data_tests: [not_null, non_negative]
       - name: discount_amount
-        data_tests:
-          - not_null
-          - non_negative
+        data_tests: [not_null, non_negative]
 
   - name: exotic_wide_types
     description: Pipe-delimited seed covering parameterized decimals and civil-time types.
