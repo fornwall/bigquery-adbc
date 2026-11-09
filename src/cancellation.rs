@@ -647,7 +647,7 @@ impl Iterator for OperationReader {
         if let Some(cancelled) = self.cancellation_item() {
             return Some(cancelled);
         }
-        if batch.is_none() || batch.as_ref().is_some_and(|batch| batch.is_err()) {
+        if !matches!(batch, Some(Ok(_))) {
             self.finish();
         }
         batch

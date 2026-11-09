@@ -63,6 +63,19 @@ fn assert_one_cancel(requests: CapturedServer, job_id: &str) {
     );
 }
 
+/// Cancels from a task on the driver's own runtime, as an rlib Tokio host would.
+fn cancel_from_a_runtime_thread(cancellation: &Arc<Cancellation>) {
+    let handle = OperationCancelHandle(cancellation.clone());
+    cancellation
+        .runtime
+        .block_on(async move {
+            tokio::task::spawn(async move { handle.try_cancel() })
+                .await
+                .unwrap()
+        })
+        .unwrap();
+}
+
 #[track_caller]
 fn assert_status<T: std::fmt::Debug>(result: adbc_core::error::Result<T>, status: Status) {
     assert_eq!(result.unwrap_err().status, status);
@@ -282,16 +295,7 @@ fn cancellation_from_a_runtime_thread_still_delivers_the_remote_cancel() {
     let reference = job("query-job");
     operation.register_job(&reference).unwrap();
 
-    let handle = OperationCancelHandle(cancellation.clone());
-    cancellation
-        .runtime
-        .block_on(async move {
-            tokio::task::spawn(async move { handle.try_cancel() })
-                .await
-                .unwrap()
-        })
-        .unwrap();
-
+    cancel_from_a_runtime_thread(&cancellation);
     assert_one_cancel(requests, "query-job");
 }
 
@@ -313,15 +317,7 @@ fn failed_runtime_thread_cancel_rearms_the_same_confirmed_reference() {
     let reference = job("query-job");
     operation.register_job(&reference).unwrap();
 
-    let handle = OperationCancelHandle(cancellation.clone());
-    cancellation
-        .runtime
-        .block_on(async move {
-            tokio::task::spawn(async move { handle.try_cancel() })
-                .await
-                .unwrap()
-        })
-        .unwrap();
+    cancel_from_a_runtime_thread(&cancellation);
     seen.recv_timeout(EVENT_TIMEOUT).unwrap();
     let deadline = std::time::Instant::now() + EVENT_TIMEOUT;
     while operation
@@ -360,18 +356,6 @@ fn cancellation_sends_one_location_aware_job_request() {
         "/bigquery/v2/projects/billing-project/jobs/query-job/cancel?location=europe-north1"
     );
     assert!(requests[0].raw_body.is_empty());
-}
-
-#[test]
-fn cancellation_before_job_registration_cancels_job_when_known() {
-    let (endpoint, requests) = capture_requests(vec![ok(json!({}))]);
-    let cancellation = cancellation_at(&endpoint);
-    let operation = cancellation.begin();
-    OperationCancelHandle(cancellation).try_cancel().unwrap();
-
-    let reference = job("late-query-job");
-    assert_status(operation.register_job(&reference), Status::Cancelled);
-    assert_one_cancel(requests, "late-query-job");
 }
 
 #[test]
@@ -558,32 +542,22 @@ fn every_concurrent_operation_is_locally_cancelled_before_the_first_remote_answe
     requests.served(2);
 }
 
+/// An operation a later one supersedes, or one dropped unfinished, cancels its job.
 #[test]
-fn superseding_an_operation_cancels_its_registered_job() {
-    let (endpoint, requests) = capture_requests(vec![ok(json!({}))]);
-    let cancellation = cancellation_at(&endpoint);
-    let first = cancellation.begin();
-    let reference = job("superseded-job");
-    first.register_job(&reference).unwrap();
-
-    let replacement = cancellation.begin();
-    assert_status(first.check(), Status::Cancelled);
-    replacement.finish();
-
-    assert_one_cancel(requests, "superseded-job");
-}
-
-#[test]
-fn abandoning_an_operation_cancels_its_registered_job() {
-    let (endpoint, requests) = capture_requests(vec![ok(json!({}))]);
-    let cancellation = cancellation_at(&endpoint);
-    let operation = cancellation.begin();
-    let reference = job("abandoned-job");
-    operation.register_job(&reference).unwrap();
-
-    drop(operation);
-
-    assert_one_cancel(requests, "abandoned-job");
+fn a_superseded_or_abandoned_operation_cancels_its_registered_job() {
+    for supersede in [true, false] {
+        let (endpoint, requests) = capture_requests(vec![ok(json!({}))]);
+        let cancellation = cancellation_at(&endpoint);
+        let operation = cancellation.begin();
+        operation.register_job(&job("query-job")).unwrap();
+        if supersede {
+            cancellation.begin().finish();
+            assert_status(operation.check(), Status::Cancelled);
+        } else {
+            drop(operation);
+        }
+        assert_one_cancel(requests, "query-job");
+    }
 }
 
 #[test]

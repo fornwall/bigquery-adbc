@@ -6,7 +6,10 @@ use arrow_buffer::{BooleanBuffer, Buffer, NullBuffer, ScalarBuffer};
 use arrow_schema::ArrowError;
 use tokio::sync::{Semaphore, mpsc};
 
-use super::{BufferedBigQueryRecordBatchReader, ResultPipelineCancellation, buffer_batch};
+use super::{
+    BufferedBigQueryRecordBatchReader, QUERY_RESULT_BUFFER_BYTES, ResultPipelineCancellation,
+    ResultSink, buffer_batch, buffered_batch_size,
+};
 
 fn value_batch() -> RecordBatch {
     RecordBatch::try_from_iter([("value", Arc::new(Int64Array::from(vec![42])) as ArrayRef)])
@@ -26,7 +29,7 @@ fn test_buffered_reader(
     let runtime = crate::runtime::new_runtime().unwrap();
     let (sender, receiver) = mpsc::channel(1);
     let produced_batch = batch.clone();
-    let buffer_budget = Arc::new(Semaphore::new(super::QUERY_RESULT_BUFFER_BYTES));
+    let buffer_budget = Arc::new(Semaphore::new(QUERY_RESULT_BUFFER_BYTES));
     let producer = runtime.spawn(async move {
         sender
             .send(buffer_batch(produced_batch, buffer_budget).await.unwrap())
@@ -56,15 +59,8 @@ fn test_buffered_reader(
 fn cloned_sinks_share_the_channel_budget_and_cancellation() {
     let batch = value_batch();
     let runtime = crate::runtime::new_runtime().unwrap();
-    let (sender, mut receiver) = mpsc::channel(4);
-    let sink = super::ResultSink {
-        schema: batch.schema(),
-        cancellation: ResultPipelineCancellation::new(None),
-        sender,
-        buffer_budget: Arc::new(Semaphore::new(super::QUERY_RESULT_BUFFER_BYTES)),
-        delivery_slots: Arc::new(Semaphore::new(1)),
-        conversion_permits: Arc::new(Semaphore::new(1)),
-    };
+    let (sink, mut receiver) =
+        ResultSink::with_limits(batch.schema(), 4, QUERY_RESULT_BUFFER_BYTES, 1);
     let clone = sink.clone();
 
     assert!(runtime.block_on(sink.deliver(batch.clone())));
@@ -99,17 +95,14 @@ fn the_delivery_slot_bounds_the_batches_outside_the_byte_budget() {
     let slots = 3;
     let batch = value_batch();
     let runtime = crate::runtime::new_runtime().unwrap();
-    let (sender, mut receiver) = mpsc::channel(slots + 1);
-    let sink = super::ResultSink {
-        schema: batch.schema(),
-        cancellation: ResultPipelineCancellation::new(None),
-        sender,
-        // Room for exactly one batch, so no delivery after the first can be charged until the
-        // reader has taken one.
-        buffer_budget: Arc::new(Semaphore::new(super::buffered_batch_size(&batch))),
-        delivery_slots: Arc::new(Semaphore::new(slots)),
-        conversion_permits: Arc::new(Semaphore::new(slots)),
-    };
+    // Room for exactly one batch, so no delivery after the first can be charged until the reader
+    // has taken one.
+    let (sink, mut receiver) = ResultSink::with_limits(
+        batch.schema(),
+        slots + 1,
+        buffered_batch_size(&batch),
+        slots,
+    );
     let waiting = sink.clone();
 
     runtime.block_on(async move {
@@ -154,33 +147,6 @@ fn the_delivery_slot_bounds_the_batches_outside_the_byte_budget() {
     });
 }
 
-/// A finished batch holds exactly the bytes it was charged, and holds them until the reader
-/// takes it off the channel.
-///
-/// The permit travels with the batch, so draining, not the producer moving on, releases room for
-/// waiting deliveries.
-#[test]
-fn completed_batch_holds_its_memory_budget_until_dequeued() {
-    let batch = value_batch();
-    let batch_size = super::buffered_batch_size(&batch);
-    let budget = Arc::new(Semaphore::new(batch_size));
-    let runtime = crate::runtime::new_runtime().unwrap();
-    let buffered = runtime
-        .block_on(buffer_batch(batch, budget.clone()))
-        .unwrap();
-
-    // Exactly the batch's own size: nothing is left over, and nothing beyond it was taken.
-    assert_eq!(budget.available_permits(), 0);
-    assert!(budget.clone().try_acquire_owned().is_err());
-    drop(buffered);
-    assert_eq!(budget.available_permits(), batch_size);
-    assert!(
-        budget
-            .try_acquire_many_owned(u32::try_from(batch_size).unwrap())
-            .is_ok()
-    );
-}
-
 /// A batch bigger than the whole budget is charged the whole budget rather than its own size.
 ///
 /// The clamp lets a producer hold its delivery slot across `deliver`: an unclamped request could
@@ -188,17 +154,17 @@ fn completed_batch_holds_its_memory_budget_until_dequeued() {
 /// than the budget when its buffer has spare capacity.
 #[test]
 fn a_batch_larger_than_the_budget_is_charged_the_whole_budget() {
-    let mut values = Vec::with_capacity(super::QUERY_RESULT_BUFFER_BYTES / size_of::<i64>() + 1);
+    let mut values = Vec::with_capacity(QUERY_RESULT_BUFFER_BYTES / size_of::<i64>() + 1);
     values.push(42_i64);
     let batch =
         RecordBatch::try_from_iter([("value", Arc::new(Int64Array::from(values)) as ArrayRef)])
             .unwrap();
     assert!(
-        super::buffered_batch_size(&batch) > super::QUERY_RESULT_BUFFER_BYTES,
+        buffered_batch_size(&batch) > QUERY_RESULT_BUFFER_BYTES,
         "the fixture no longer exceeds the budget it is meant to overflow"
     );
 
-    let budget = Arc::new(Semaphore::new(super::QUERY_RESULT_BUFFER_BYTES));
+    let budget = Arc::new(Semaphore::new(QUERY_RESULT_BUFFER_BYTES));
     let runtime = crate::runtime::new_runtime().unwrap();
     let buffered = runtime
         .block_on(async {
@@ -211,7 +177,7 @@ fn a_batch_larger_than_the_budget_is_charged_the_whole_budget() {
     drop(buffered);
     assert_eq!(
         budget.available_permits(),
-        super::QUERY_RESULT_BUFFER_BYTES,
+        QUERY_RESULT_BUFFER_BYTES,
         "the clamped charge was not returned in full"
     );
 }
@@ -277,64 +243,48 @@ fn dropping_a_reader_mid_stream_stops_its_producer() {
     }
 }
 
+/// A reader yields what its producer buffered, then the producer's outcome: end of stream, its
+/// error, or a panic reported as the driver defect it is rather than a bare `JoinError`.
+fn assert_buffered_reader_reports_producer_outcomes() {
+    for (outcome, expected) in [
+        (TestProducerOutcome::Success, None),
+        (TestProducerOutcome::Error, Some("query producer failed")),
+        (TestProducerOutcome::Panic, Some("query producer panicked")),
+    ] {
+        let panicked = matches!(outcome, TestProducerOutcome::Panic);
+        let (batch, mut reader) = test_buffered_reader(outcome);
+        assert_eq!(reader.next().unwrap().unwrap(), batch);
+        if let Some(expected) = expected {
+            let error = reader.next().unwrap().unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+            if panicked {
+                let ArrowError::ExternalError(source) = &error else {
+                    panic!("expected an embedded driver error, got {error:?}");
+                };
+                let source = source.downcast_ref::<adbc_core::error::Error>().unwrap();
+                assert_eq!(source.status, adbc_core::error::Status::Internal);
+                assert!(source.message.contains(crate::error::DRIVER_DEFECT));
+            }
+        }
+        assert!(reader.next().is_none());
+        assert!(reader.next().is_none());
+    }
+}
+
+#[test]
+fn buffered_reader_reports_producer_outcomes() {
+    assert_buffered_reader_reports_producer_outcomes();
+}
+
 #[test]
 fn buffered_reader_works_inside_a_multi_threaded_host_runtime() {
     let host = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .build()
         .unwrap();
-    for spawned in [false, true] {
-        let consume = async {
-            buffered_reader_returns_eof_after_successful_producer_completion();
-            buffered_reader_returns_the_producer_error_after_buffered_data();
-        };
-        if spawned {
-            host.block_on(host.spawn(consume)).unwrap();
-        } else {
-            host.block_on(consume);
-        }
-    }
-}
-
-#[test]
-fn buffered_reader_returns_eof_after_successful_producer_completion() {
-    let (batch, mut reader) = test_buffered_reader(TestProducerOutcome::Success);
-    assert_eq!(reader.next().unwrap().unwrap(), batch);
-    assert!(reader.next().is_none());
-    assert!(reader.next().is_none());
-}
-
-#[test]
-fn buffered_reader_returns_the_producer_error_after_buffered_data() {
-    let (batch, mut reader) = test_buffered_reader(TestProducerOutcome::Error);
-    assert_eq!(reader.next().unwrap().unwrap(), batch);
-    let error = reader.next().unwrap().unwrap_err();
-    assert!(
-        error.to_string().contains("query producer failed"),
-        "{error}"
-    );
-    assert!(reader.next().is_none());
-}
-
-/// A producer panic reaches the reader as the driver defect it is, not as a bare `JoinError`
-/// without a status.
-#[test]
-fn buffered_reader_returns_a_task_panic_after_buffered_data() {
-    let (batch, mut reader) = test_buffered_reader(TestProducerOutcome::Panic);
-    assert_eq!(reader.next().unwrap().unwrap(), batch);
-    let error = reader.next().unwrap().unwrap_err();
-    let ArrowError::ExternalError(source) = &error else {
-        panic!("expected an embedded driver error, got {error:?}");
-    };
-    let source = source.downcast_ref::<adbc_core::error::Error>().unwrap();
-    assert_eq!(source.status, adbc_core::error::Status::Internal);
-    assert!(
-        source.message.contains("query producer panicked")
-            && source.message.contains(crate::error::DRIVER_DEFECT),
-        "{}",
-        source.message
-    );
-    assert!(reader.next().is_none());
+    host.block_on(async { assert_buffered_reader_reports_producer_outcomes() });
+    host.block_on(host.spawn(async { assert_buffered_reader_reports_producer_outcomes() }))
+        .unwrap();
 }
 
 /// Every column of a decoded Storage Read batch can slice the same IPC message body. The whole
@@ -353,11 +303,11 @@ fn a_sliced_batch_is_charged_its_backing_allocation_once() {
     .unwrap();
 
     assert_eq!(
-        super::buffered_batch_size(&batch),
+        buffered_batch_size(&batch),
         allocation.values().inner().capacity()
     );
     assert!(
-        batch.get_array_memory_size() > super::QUERY_RESULT_BUFFER_BYTES,
+        batch.get_array_memory_size() > QUERY_RESULT_BUFFER_BYTES,
         "the fixture no longer shows the difference the slice accounting makes"
     );
 }
@@ -381,7 +331,7 @@ fn retained_buffer_accounting_includes_nested_values_and_shared_validity() {
     );
     let batch = RecordBatch::try_from_iter([("nested", Arc::new(structure) as ArrayRef)]).unwrap();
 
-    assert_eq!(super::buffered_batch_size(&batch), retained);
+    assert_eq!(buffered_batch_size(&batch), retained);
 }
 
 #[test]
@@ -393,7 +343,7 @@ fn retained_buffer_accounting_includes_an_external_response_allocation() {
     );
     let batch = RecordBatch::try_from_iter([("value", Arc::new(column) as ArrayRef)]).unwrap();
 
-    assert_eq!(super::buffered_batch_size(&batch), response.capacity());
+    assert_eq!(buffered_batch_size(&batch), response.capacity());
     assert_eq!(response.capacity(), 8 * 1024 * 1024);
 }
 

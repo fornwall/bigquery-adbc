@@ -104,16 +104,34 @@ impl ResultSink {
     /// end without a [`BufferedBigQueryRecordBatchReader`] to drain it.
     #[cfg(test)]
     pub(crate) fn for_test_reading(schema: SchemaRef) -> (Self, DeliveredBatches) {
-        let (sender, receiver) = mpsc::channel(QUERY_RESULT_BUFFER_SIZE);
+        let (sink, receiver) = Self::with_limits(
+            schema,
+            QUERY_RESULT_BUFFER_SIZE,
+            QUERY_RESULT_BUFFER_BYTES,
+            1,
+        );
+        (sink, DeliveredBatches(receiver))
+    }
+
+    /// A sink with a `capacity`-batch channel, a `bytes` budget, and `slots` delivery slots and
+    /// conversion permits.
+    #[cfg(test)]
+    fn with_limits(
+        schema: SchemaRef,
+        capacity: usize,
+        bytes: usize,
+        slots: usize,
+    ) -> (Self, mpsc::Receiver<BufferedBatch>) {
+        let (sender, receiver) = mpsc::channel(capacity);
         let sink = Self {
             schema,
             cancellation: ResultPipelineCancellation::new(None),
             sender,
-            buffer_budget: Arc::new(Semaphore::new(QUERY_RESULT_BUFFER_BYTES)),
-            delivery_slots: Arc::new(Semaphore::new(1)),
-            conversion_permits: Arc::new(Semaphore::new(1)),
+            buffer_budget: Arc::new(Semaphore::new(bytes)),
+            delivery_slots: Arc::new(Semaphore::new(slots)),
+            conversion_permits: Arc::new(Semaphore::new(slots)),
         };
-        (sink, DeliveredBatches(receiver))
+        (sink, receiver)
     }
 
     /// Acquires one driver-wide conversion permit, bounding CPU-heavy batch decoding across all
