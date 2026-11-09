@@ -153,32 +153,22 @@ fn a_failed_upload_reports_the_service_status_over_the_wire() {
     assert_eq!(captured.join().unwrap().len(), 1);
 }
 
-/// A replay writes the same bytes, so a transient failure resends the upload.
+/// A replay writes the same bytes, so a transient failure resends the upload. An unset content
+/// option writes the empty object rather than refusing, which is what a dbt model compiling to
+/// nothing produces.
 #[test]
-fn a_transiently_failed_upload_is_resent() {
+fn a_transiently_failed_upload_is_resent_and_unset_content_is_an_empty_object() {
     let (endpoint, captured) = capture_requests(vec![
         (503, json!({"error": {"code": 503, "message": "Try again"}})),
         ok(json!({"kind": "storage#object"})),
     ]);
     let mut connection = connection_writing_objects_to(endpoint);
-    let mut statement = write_statement(&mut connection, "a/b.py", Some("print(1)"));
-    assert_eq!(statement.execute_update().unwrap(), None);
-
-    let requests = captured.join().unwrap();
-    assert_eq!(requests[0].line, requests[1].line);
-    assert_eq!(requests[0].raw_body, requests[1].raw_body);
-}
-
-/// An unset content option writes the empty object rather than refusing, which is what a
-/// dbt model compiling to nothing produces.
-#[test]
-fn an_unset_content_option_uploads_an_empty_object() {
-    let (endpoint, captured) = capture_requests(vec![ok(json!({"kind": "storage#object"}))]);
-    let mut connection = connection_writing_objects_to(endpoint);
     let mut statement = write_statement(&mut connection, "a/b.py", None);
     assert_eq!(statement.execute_update().unwrap(), None);
 
-    let requests = captured.join().unwrap();
+    let requests = captured.served(2);
+    assert_eq!(requests[0].line, requests[1].line);
+    assert_eq!(requests[0].raw_body, requests[1].raw_body);
     let body = std::str::from_utf8(&requests[0].raw_body).unwrap();
     // The boundary carries a process-unique ID rather than a fixed suffix: that is what
     // lets the body be assembled without first scanning the media for a collision.
