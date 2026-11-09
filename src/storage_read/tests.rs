@@ -410,6 +410,8 @@ fn the_aggregate_resume_wait_is_bounded_however_often_progress_resets_the_backof
     }
     assert_eq!(total, READ_ROWS_RESUME_DELAY_BUDGET);
     assert_eq!(budget.delay_budget, Duration::ZERO);
+    // Progress also restores the consecutive-failure allowance.
+    assert!(budget.has_attempt_left());
     // Spent is not failed: the next resume still happens, it just no longer waits.
     budget.earn_by_progress();
     assert_eq!(budget.spend_attempt(), Duration::ZERO);

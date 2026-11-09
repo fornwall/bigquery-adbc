@@ -347,8 +347,10 @@ fn credential_type_rejections_name_the_types_involved() {
     let incomplete = json_credentials(
         r#"{"type":"service_account","client_email":"sa@example.com","private_key_id":"secret-id"}"#,
     );
+    let error = ClientConfiguration::build(&incomplete).unwrap_err();
+    assert_eq!(error.status, Status::InvalidArguments);
     assert_eq!(
-        ClientConfiguration::build(&incomplete).unwrap_err().message,
+        error.message,
         "the Google auth library could not use the \"service_account\" credentials in BigQuery \
          option bigquery.auth.credentials; check that the document is as Google issued it and \
          has client_email, private_key_id, private_key and project_id"
