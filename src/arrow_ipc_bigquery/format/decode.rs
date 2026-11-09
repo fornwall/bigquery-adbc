@@ -359,9 +359,8 @@ fn parse_record_batch(
 }
 
 // A small checked FlatBuffer table view. All arithmetic and all reads are bounds checked.
-// `pub(super)` so the encoder's physical-layout test can read its output back.
 #[derive(Clone, Copy)]
-pub(super) struct Table<'a> {
+struct Table<'a> {
     bytes: &'a [u8],
     position: usize,
     vtable: usize,
@@ -370,7 +369,7 @@ pub(super) struct Table<'a> {
 }
 
 impl<'a> Table<'a> {
-    pub(super) fn root(bytes: &'a [u8]) -> Result<Self, FormatError> {
+    fn root(bytes: &'a [u8]) -> Result<Self, FormatError> {
         let offset = read_u32(bytes, 0)? as usize;
         Self::new(bytes, offset)
     }
@@ -408,7 +407,7 @@ impl<'a> Table<'a> {
         })
     }
 
-    pub(super) fn field(&self, slot: u16) -> Result<Option<usize>, FormatError> {
+    fn field(&self, slot: u16) -> Result<Option<usize>, FormatError> {
         let slot = slot as usize;
         if slot + 2 > self.vtable_len {
             return Ok(None);
@@ -467,7 +466,7 @@ impl<'a> Table<'a> {
         }
     }
 
-    pub(super) fn scalar_i16(&self, slot: u16, default: i16) -> Result<i16, FormatError> {
+    fn scalar_i16(&self, slot: u16, default: i16) -> Result<i16, FormatError> {
         self.scalar_field(slot, 2)?
             .map_or(Ok(default), |at| read_i16(self.bytes, at))
     }
@@ -495,7 +494,7 @@ impl<'a> Table<'a> {
             .transpose()
     }
 
-    pub(super) fn table(&self, slot: u16) -> Result<Option<Self>, FormatError> {
+    fn table(&self, slot: u16) -> Result<Option<Self>, FormatError> {
         self.target(slot)?
             .map(|at| Table::new(self.bytes, at))
             .transpose()
@@ -512,7 +511,7 @@ impl<'a> Table<'a> {
     }
 
     /// The vector of table offsets at `slot`.
-    pub(super) fn table_vector(&self, slot: u16) -> Result<Option<TableVector<'a>>, FormatError> {
+    fn table_vector(&self, slot: u16) -> Result<Option<TableVector<'a>>, FormatError> {
         self.target(slot)?
             .map(|at| {
                 let offsets = read_vector::<4>(self.bytes, at)?;
@@ -557,7 +556,7 @@ fn read_vector<const N: usize>(bytes: &[u8], position: usize) -> Result<&[[u8; N
 
 /// A bounds-checked FlatBuffer vector of offsets to tables.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct TableVector<'a> {
+struct TableVector<'a> {
     bytes: &'a [u8],
     /// The absolute position of the first offset, which each offset is relative to.
     start: usize,
@@ -565,12 +564,12 @@ pub(super) struct TableVector<'a> {
 }
 
 impl<'a> TableVector<'a> {
-    pub(super) fn len(self) -> usize {
+    fn len(self) -> usize {
         self.offsets.len()
     }
 
     /// Each element, followed to the table it points at.
-    pub(super) fn tables(self) -> impl Iterator<Item = Result<Table<'a>, FormatError>> {
+    fn tables(self) -> impl Iterator<Item = Result<Table<'a>, FormatError>> {
         self.offsets.iter().enumerate().map(move |(index, offset)| {
             // `read_vector` bounds-checked every element, so its position cannot overflow.
             let element = self.start + 4 * index;

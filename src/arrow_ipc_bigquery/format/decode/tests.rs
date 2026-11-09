@@ -77,26 +77,35 @@ fn only_the_lz4_frame_compression_codec_is_accepted() {
     }
 }
 
-/// `parse_fields` and the reader's `decode_field` recurse once per nesting level of a
-/// server-supplied schema, and a stack overflow aborts the host process instead of unwinding
-/// through the FFI guard. This pins where `MAX_SCHEMA_NESTING_DEPTH` cuts off. The REST
-/// counterpart is
+/// `parse_fields`, the reader's `decode_field` and the encoder's `encode_field` recurse once per
+/// nesting level of a server- or caller-supplied schema, and a stack overflow aborts the host
+/// process instead of unwinding through the FFI guard. This pins where `MAX_SCHEMA_NESTING_DEPTH`
+/// cuts off on both sides. The REST counterpart is
 /// `types::schema::tests::a_result_schema_nested_past_the_supported_depth_is_refused_rather_than_recursed_into`.
-///
-/// The over-limit bytes come from `arrow-ipc`, because this crate's encoder enforces the same
-/// bound (tested in `encode`).
 #[test]
-fn a_wire_schema_nested_past_the_driver_limit_is_refused_rather_than_recursed_into() {
-    let deepest = nested_schema(MAX_SCHEMA_NESTING_DEPTH);
-    let accepted = crate::arrow_ipc_bigquery::format::encode_schema(&deepest).unwrap();
+fn a_schema_nested_past_the_driver_limit_is_refused_rather_than_recursed_into() {
+    use crate::arrow_ipc_bigquery::format::{encode_schema, encode_schema_fixture};
+
+    let deepest = encode_schema(&nested_schema(MAX_SCHEMA_NESTING_DEPTH)).unwrap();
     assert!(matches!(
-        decode_message(&accepted).unwrap(),
+        decode_message(&deepest).unwrap(),
         MessageHeader::Schema(_)
     ));
 
-    let refused = arrow_ipc_schema_metadata(&nested_schema(MAX_SCHEMA_NESTING_DEPTH + 1));
+    let too_deep = nested_schema(MAX_SCHEMA_NESTING_DEPTH + 1);
     assert_eq!(
-        decode_message(&refused).unwrap_err().to_string(),
+        encode_schema(&too_deep).unwrap_err().to_string(),
+        format!(
+            "Arrow schema nesting exceeds the driver limit of {MAX_SCHEMA_NESTING_DEPTH} levels"
+        )
+    );
+    // The fixture encoder widens the accepted types, not the depth bound.
+    assert!(encode_schema_fixture(&too_deep).is_err());
+    // So the over-limit bytes come from `arrow-ipc`.
+    assert_eq!(
+        decode_message(&arrow_ipc_schema_metadata(&too_deep))
+            .unwrap_err()
+            .to_string(),
         format!(
             "Arrow IPC schema nesting exceeds the driver limit of \
              {MAX_SCHEMA_NESTING_DEPTH} levels"

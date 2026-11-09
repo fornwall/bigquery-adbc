@@ -23,10 +23,7 @@ use arrow_select::concat::concat_batches;
 use super::reader::{decode_record_batch_message, decode_schema};
 use super::{canonical_schema, encode_stream, message_length};
 
-/// One row per column value below, so a buffer read one element short still decodes.
-const ROWS: usize = 3;
-
-/// A populated batch of [`canonical_schema`], one null in every column.
+/// A populated three-row batch of [`canonical_schema`], one null in every column.
 ///
 /// Values rather than an empty batch: an empty column has no value bytes, so a writer that
 /// emitted a type's buffers in the wrong order would still match. Every column also carries a
@@ -224,10 +221,25 @@ fn assert_both_directions_agree(schema: &SchemaRef, batches: &[RecordBatch]) {
 }
 
 /// Every Arrow type BigQuery Storage Read and Storage Write carry, checked against `arrow-ipc`.
+///
+/// The canonical stream runs through one reused [`Writer`](super::writer::Writer), whose scratch
+/// must not carry over between batches. Its sliced batch has offsets rebased and unaligned bitmaps
+/// repacked by the writer alone, so only `arrow-ipc` can say the result is Arrow IPC; its empty
+/// batch must still declare every buffer the schema calls for. The nested fixture puts child
+/// buffers between the parent's, where a traversal-order mistake is invisible to a
+/// self-consistent round trip.
 #[test]
-fn every_canonical_column_agrees_with_arrow_ipc_in_both_directions() {
+fn every_canonical_layout_agrees_with_arrow_ipc_in_both_directions() {
     let batch = canonical_batch();
-    assert_both_directions_agree(&batch.schema(), std::slice::from_ref(&batch));
+    let canonical = [
+        batch.clone(),
+        batch.slice(1, 2),
+        batch.slice(0, 0),
+        batch.slice(2, 1),
+    ];
+    for batches in [&canonical[..], &[nested_batch()], &[ingest_only_batch()]] {
+        assert_both_directions_agree(&batches[0].schema(), batches);
+    }
 }
 
 /// The same, one column at a time: a whole-batch comparison can be satisfied by two columns whose
@@ -244,57 +256,19 @@ fn each_canonical_column_on_its_own_agrees_with_arrow_ipc() {
     }
 }
 
-/// `LIST<STRUCT<..>>` and `STRUCT<LIST<..>>`: the child buffers sit between the parent's, so a
-/// traversal that visited them in the wrong order is invisible to a self-consistent round trip.
-#[test]
-fn nested_columns_agree_with_arrow_ipc_in_both_directions() {
-    let batch = nested_batch();
-    assert_both_directions_agree(&batch.schema(), std::slice::from_ref(&batch));
-}
-
-/// A sliced batch, where the writer rebases offsets and repacks unaligned bitmaps rather than
-/// copying arrow's buffers verbatim. That rewriting is the writer's own, so the in-tree reader
-/// reading it back proves only that the two agree; `arrow-ipc` is what says it is Arrow IPC.
-#[test]
-fn a_sliced_batch_agrees_with_arrow_ipc_in_both_directions() {
-    let batch = canonical_batch();
-    assert_eq!(batch.num_rows(), ROWS);
-    let sliced = batch.slice(1, 2);
-    assert_both_directions_agree(&sliced.schema(), std::slice::from_ref(&sliced));
-}
-
-/// Several batches on one stream, encoded through a reused [`Writer`](super::writer::Writer):
-/// the scratch buffers it keeps between batches are cleared, not carried over.
-#[test]
-fn a_multi_batch_stream_agrees_with_arrow_ipc_in_both_directions() {
-    let batch = canonical_batch();
-    let batches = [batch.clone(), batch.slice(0, 1), batch.slice(2, 1)];
-    assert_both_directions_agree(&batch.schema(), &batches);
-}
-
-/// An empty batch still declares every buffer its schema calls for, which is the case where a
-/// missing descriptor is easiest to miss: nothing reads the bytes it would have pointed at.
-#[test]
-fn an_empty_batch_agrees_with_arrow_ipc_in_both_directions() {
-    let batch = canonical_batch();
-    assert_both_directions_agree(&batch.schema(), &[batch.slice(0, 0)]);
-}
-
 /// The two canonical ingest types [`canonical_schema`] has no column for.
 ///
 /// `canonical_schema` is a Storage Read result shape (`TIMESTAMP` with a zone, `INTERVAL` as
 /// `MonthDayNano`). Ingest also accepts a zoneless `DATETIME` and the four-byte `YearMonth`
 /// interval, whose width (4 bytes against 16) is where a length-per-element mistake would hide.
-#[test]
-fn the_ingest_only_canonical_types_agree_with_arrow_ipc() {
+fn ingest_only_batch() -> RecordBatch {
     let year_month = IntervalYearMonthArray::from(vec![Some(14), None, Some(-25)]);
     let datetime = TimestampMicrosecondArray::from(vec![Some(i64::MIN + 1), None, Some(0)]);
-    let batch = RecordBatch::try_from_iter_with_nullable([
+    RecordBatch::try_from_iter_with_nullable([
         ("year_month", Arc::new(year_month) as ArrayRef, true),
         ("datetime", Arc::new(datetime) as ArrayRef, true),
     ])
-    .expect("the ingest-only fixture is a valid batch");
-    assert_both_directions_agree(&batch.schema(), std::slice::from_ref(&batch));
+    .expect("the ingest-only fixture is a valid batch")
 }
 
 /// The compressed direction, which is the one Storage Read takes: every read session asks

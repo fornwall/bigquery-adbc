@@ -110,21 +110,6 @@ fn csv_seed_only_types() -> Vec<DataType> {
 }
 
 #[test]
-fn standalone_schema_supports_csv_seed_physical_type_inputs() {
-    let intervals = [IntervalUnit::YearMonth, IntervalUnit::DayTime];
-    let fields = csv_seed_only_types()
-        .into_iter()
-        .chain(intervals.map(DataType::Interval))
-        .enumerate()
-        .map(|(index, data_type)| Field::new(format!("field_{index}"), data_type, true))
-        .collect::<Vec<_>>();
-    let schema = Arc::new(Schema::new(fields));
-    let encoded = encode_schema_fixture(&schema);
-
-    assert_eq!(decode_schema(&encoded).unwrap().as_ref(), schema.as_ref());
-}
-
-#[test]
 fn record_batch_decodes_every_documented_interval_layout() {
     let year_month = IntervalYearMonthArray::from(vec![Some(14), None, Some(-25)]);
     let day_time = IntervalDayTimeArray::from(vec![

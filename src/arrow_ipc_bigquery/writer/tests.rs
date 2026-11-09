@@ -436,30 +436,9 @@ fn large_sliced_variable_width_batches_match_arrow_ipc() {
     }
 }
 
-#[test]
-fn an_interior_offset_below_the_first_offset_is_refused() {
-    // Rebasing -5 by 3 yields -8 without overflowing, so an overflow check alone would put a
-    // negative offset, pointing before the values buffer, into the Storage Write body;
-    // `offset_range` inspects only the first and last offsets.
-    let data = BinaryArray::from(vec![Some(b"abcdefg".as_slice())]).to_data();
-    let mut writer = Writer::new();
-    let error = writer
-        .plan_rebased_offsets(Some(ArrowBuffer::from_slice_ref([3_i32, -5, 7])), &data, 3)
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("offset -5 precedes first offset 3"),
-        "{error}"
-    );
-
-    // The same offsets with the interior value back in range are accepted, so the guard is
-    // rejecting the negative rebase rather than the shape of the buffer.
-    writer
-        .plan_rebased_offsets(Some(ArrowBuffer::from_slice_ref([3_i32, 5, 7])), &data, 3)
-        .unwrap();
-}
-
+/// `offset_range` inspects only the first and last offsets, and rebasing a negative interior
+/// offset does not overflow, so without this check it would point before the values buffer in
+/// the Storage Write body.
 #[test]
 fn offset_validation_checks_every_lane_and_tail_without_subtraction_overflow() {
     let data = BinaryArray::from(vec![Some(b"value".as_slice())]).to_data();
