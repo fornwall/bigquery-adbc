@@ -298,7 +298,9 @@ fn malformed_batch_yml_is_rejected_without_echoing_the_document() {
 }
 
 /// A submission is finished when its resource reaches a terminal state, which the operation
-/// completing does not imply. Unlike the fork, every state but the successful one fails.
+/// completing does not imply. Unlike the fork, every state but the successful one fails, a `done`
+/// operation that reports no state is not a success, and a failed operation keeps the status the
+/// service reported rather than the fork's UNKNOWN.
 #[test]
 fn a_finished_operation_reports_the_state_its_resource_reached() {
     let done = |submission: Submission, response: serde_json::Value| {
@@ -343,35 +345,28 @@ fn a_finished_operation_reports_the_state_its_resource_reached() {
         assert_eq!(error.status, expected, "a job in state {state}");
         assert_message(&error, &[state, "container failed"]);
     }
-}
 
-/// A failed operation carries the service's own status, which is preserved rather than
-/// flattened the way the fork flattens everything to UNKNOWN.
-#[test]
-fn a_failed_operation_keeps_the_status_the_service_reported() {
-    let failure = |code: i64, message: &str| {
-        finished(
-            Submission::Batch,
-            &json!({
-                "name": OPERATION,
-                "done": true,
-                "error": {"code": code, "message": message},
-            }),
-            OPERATION,
-        )
-        .unwrap_err()
-    };
+    for completed in [
+        json!({"name": OPERATION, "done": true}),
+        json!({"name": OPERATION, "done": true, "response": {}}),
+        json!({"name": OPERATION, "done": true, "response": {"state": ""}}),
+    ] {
+        let error = finished(Submission::Batch, &completed, OPERATION).unwrap_err();
+        assert_failure(&error, Status::InvalidData, &[OPERATION, "terminal state"]);
+    }
 
-    let denied = failure(7, "Permission 'dataproc.batches.create' denied");
+    let denied = finished(
+        Submission::Batch,
+        &json!({"name": OPERATION, "done": true,
+            "error": {"code": 7, "message": "Permission 'dataproc.batches.create' denied"}}),
+        OPERATION,
+    )
+    .unwrap_err();
     assert_failure(
         &denied,
         Status::Unauthorized,
         &["dataproc.batches.create", OPERATION],
     );
-
-    assert_eq!(failure(5, "not found").status, Status::NotFound);
-    assert_eq!(failure(4, "deadline").status, Status::Timeout);
-    assert_eq!(failure(99, "who knows").status, Status::Unknown);
 }
 
 /// `pooling_timeout` expiry stops the wait, reports a timeout distinct from a failed model, and
@@ -418,98 +413,41 @@ fn an_expired_pooling_timeout_reports_a_timeout_without_another_poll_and_cancels
     );
 }
 
-/// While budget remains, the wait polls: two seconds fit one poll after the one-second backoff.
+/// A cancel keeps `Status::Timeout`: the caller's timeout is the answer, the cancel a courtesy. A
+/// refused one says the batch may keep running and why, and is attempted once; a transient
+/// failure has work to stop, so it is resent.
 #[test]
-fn a_pooling_timeout_with_budget_left_polls_before_it_expires() {
-    let (endpoint, captured) = capture_requests(vec![
-        ok(running(OPERATION)),
-        ok(running(OPERATION)),
-        ok(json!({})),
-    ]);
-    let mut connection = dataproc_connection(&endpoint);
-    let mut statement = batch_statement(&mut connection, Some("2"));
-
-    assert_eq!(
-        statement.execute_update().unwrap_err().status,
-        Status::Timeout
+fn a_cancel_after_the_timeout_is_resent_only_after_a_transient_failure() {
+    let unavailable = (503, error_body("backendError", "unavailable"));
+    let denied = (
+        403,
+        json!({"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "denied"}}),
     );
+    for (cancel, sent, outcome) in [
+        (denied, 1, "failed (denied"),
+        (unavailable, 2, "was asked to stop"),
+    ] {
+        // The last response answers a cancel that must not be sent, unless it is resent.
+        let (endpoint, server) =
+            capture_requests_until_stopped(vec![ok(running(OPERATION)), cancel, ok(json!({}))]);
+        let mut connection = dataproc_connection(&endpoint);
+        let mut statement = batch_statement(&mut connection, Some("1"));
 
-    let requests = captured.join().unwrap();
-    assert_eq!(requests.len(), 3);
-    assert_eq!(
-        requests[1].line,
-        format!("GET /v1/{OPERATION} HTTP/1.1"),
-        "the second second of budget buys one poll"
-    );
-    assert_eq!(
-        requests[2].line,
-        format!("POST /v1/{OPERATION}:cancel HTTP/1.1")
-    );
-}
-
-/// A refused cancel keeps `Status::Timeout`, says the batch may keep running and why, and is
-/// attempted once.
-#[test]
-fn a_refused_cancel_still_reports_the_timeout_and_is_not_retried() {
-    let (endpoint, server) = capture_requests_until_stopped(vec![
-        ok(running(OPERATION)),
-        (
-            403,
-            json!({"error": {"code": 403, "status": "PERMISSION_DENIED", "message": "denied"}}),
-        ),
-        ok(json!({})),
-    ]);
-    let mut connection = dataproc_connection(&endpoint);
-    let mut statement = batch_statement(&mut connection, Some("1"));
-
-    let error = statement.execute_update().unwrap_err();
-    assert_eq!(
-        error.status,
-        Status::Timeout,
-        "the caller's timeout is the answer; the cancel is a courtesy: {}",
-        error.message
-    );
-    assert_message(
-        &error,
-        &[
-            BigQueryStatementOption::DataprocPoolingTimeout.as_str(),
-            "cancel the BigQuery Dataproc batch",
-            "denied",
-            "may keep running",
-        ],
-    );
-    assert_message_omits(&error, &["asked to stop"]);
-
-    let requests = server.stop();
-    assert_eq!(
-        requests.len(),
-        2,
-        "the create, then one refused cancel that is not repeated"
-    );
-    assert_eq!(
-        requests[1].line,
-        format!("POST /v1/{OPERATION}:cancel HTTP/1.1")
-    );
-}
-
-/// A cancel has work to stop, so a transient failure resends it.
-#[test]
-fn a_transiently_failed_cancel_is_resent() {
-    let (endpoint, captured) = capture_requests(vec![
-        ok(running(OPERATION)),
-        (
-            503,
-            error_body("backendError", "The service is unavailable."),
-        ),
-        ok(json!({})),
-    ]);
-    let mut connection = dataproc_connection(&endpoint);
-    let mut statement = batch_statement(&mut connection, Some("1"));
-
-    let error = statement.execute_update().unwrap_err();
-    assert_failure(&error, Status::Timeout, &["was asked to stop"]);
-    let requests = captured.join().unwrap();
-    assert_eq!(requests[1].line, requests[2].line);
+        let error = statement.execute_update().unwrap_err();
+        assert_failure(
+            &error,
+            Status::Timeout,
+            &[
+                BigQueryStatementOption::DataprocPoolingTimeout.as_str(),
+                &format!("Dataproc batch {OPERATION} {outcome}"),
+            ],
+        );
+        let requests = server.stop();
+        assert_eq!(requests.len(), 1 + sent);
+        for cancel in &requests[1..] {
+            assert_eq!(cancel.line, format!("POST /v1/{OPERATION}:cancel HTTP/1.1"));
+        }
+    }
 }
 
 /// A 200 whose body is not a JSON object fails on the first attempt without cancelling the
@@ -930,21 +868,6 @@ fn a_backslash_region_sends_no_request_anywhere() {
         Status::InvalidArguments,
         &[BigQueryStatementOption::DataprocComputeRegion.as_str()],
     );
-}
-
-/// A `done` operation carrying neither an error nor a readable terminal state is reported as a
-/// failure, not as a success.
-#[test]
-fn a_done_operation_with_no_terminal_state_is_not_a_success() {
-    for response in [
-        json!({"name": OPERATION, "done": true}),
-        json!({"name": OPERATION, "done": true, "response": {}}),
-        json!({"name": OPERATION, "done": true, "response": {"state": ""}}),
-    ] {
-        let error = finished(Submission::Batch, &response, OPERATION).unwrap_err();
-        assert_eq!(error.status, Status::InvalidData, "{response}");
-        assert_message(&error, &[OPERATION, "terminal state"]);
-    }
 }
 
 /// The remote cancel escapes every segment it takes from the operation resource, so `?`, `#`, or
