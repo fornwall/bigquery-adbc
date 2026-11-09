@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
 import duckdb
 
 EXTENSION_NAME = "adbc"
@@ -12,12 +10,9 @@ EXTENSION_NAME = "adbc"
 def connect(**config: str | bool | int | float | list[str]) -> duckdb.DuckDBPyConnection:
     """Return an in-memory DuckDB connection with the extension loaded.
 
-    `INSTALL ... FROM community` is a no-op once the extension is present in
-    the extension directory, which the runner shares across a whole run.
+    `INSTALL ... FROM community` is a no-op once the extension is in DuckDB's
+    extension directory, where install_extension.py puts it before the tests.
     """
-    extension_directory = os.environ.get("ADBC_DUCKDB_EXTENSION_DIRECTORY")
-    if extension_directory:
-        config.setdefault("extension_directory", extension_directory)
     connection = duckdb.connect(config=config)
     try:
         connection.execute(f"INSTALL {EXTENSION_NAME} FROM community")
