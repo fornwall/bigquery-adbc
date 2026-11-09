@@ -23,7 +23,7 @@ use arrow_array::{
     TimestampSecondArray,
 };
 use arrow_buffer::{IntervalDayTime, IntervalMonthDayNano, NullBuffer, OffsetBuffer, i256};
-use arrow_schema::{ArrowError, DataType, Field, IntervalUnit, Schema, TimeUnit};
+use arrow_schema::{ArrowError, DataType, Field, Schema, TimeUnit};
 
 use crate::support::{
     DropTable, SCRATCH_DATASET, assert_bignumeric_extremes, assert_decimal_domain_result,
@@ -903,9 +903,11 @@ fn refuses_array_timestamp_ingest_and_its_staging_workaround_works() {
     );
 }
 
+/// Arrow intervals and durations ingest as INTERVAL and read back as `MonthDayNano`. A duration is
+/// a span of time, so two days read back as 48 hours, not a calendar day, as for a bound parameter.
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
-fn bulk_ingests_interval_values() {
+fn bulk_ingests_interval_and_duration_values() {
     let (table, _drop_table, mut connection) = scratch_fixture("interval_ingest");
 
     let batch = RecordBatch::try_from_iter([
@@ -918,61 +920,33 @@ fn bulk_ingests_interval_values() {
             Arc::new(IntervalDayTimeArray::from(vec![IntervalDayTime::new(
                 -3,
                 -14_706_008,
-            )])) as ArrayRef,
+            )])),
         ),
         (
             "month_day_nano",
             Arc::new(IntervalMonthDayNanoArray::from(vec![
                 IntervalMonthDayNano::new(14, 3, 14_706_007_008_999),
-            ])) as ArrayRef,
+            ])),
         ),
-    ])
-    .unwrap();
-    assert_eq!(ingest_batch(&mut connection, &table, batch), Some(1));
-
-    let mut query = prepare_query(
-        &mut connection,
-        &format!("SELECT year_month, day_time, month_day_nano FROM `{table}`"),
-    );
-    let batch = single_batch(&mut query);
-    for column in batch.columns() {
-        assert_eq!(
-            column.data_type(),
-            &DataType::Interval(IntervalUnit::MonthDayNano)
-        );
-    }
-    assert_eq!(interval_at(&batch, 0), IntervalMonthDayNano::new(-25, 0, 0));
-    assert_eq!(
-        interval_at(&batch, 1),
-        IntervalMonthDayNano::new(0, -3, -14_706_008_000_000)
-    );
-    assert_eq!(
-        interval_at(&batch, 2),
-        IntervalMonthDayNano::new(14, 3, 14_706_007_008_000)
-    );
-}
-
-#[test]
-#[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
-fn bulk_ingests_duration_values() {
-    let (table, _drop_table, mut connection) = scratch_fixture("duration_ingest");
-
-    let batch = RecordBatch::try_from_iter([
         (
             "seconds",
-            Arc::new(DurationSecondArray::from(vec![-14_706])) as ArrayRef,
+            Arc::new(DurationSecondArray::from(vec![-14_706])),
         ),
         (
             "milliseconds",
-            Arc::new(DurationMillisecondArray::from(vec![-14_706_008])) as ArrayRef,
+            Arc::new(DurationMillisecondArray::from(vec![-14_706_008])),
         ),
         (
             "microseconds",
-            Arc::new(DurationMicrosecondArray::from(vec![14_706_007_008])) as ArrayRef,
+            Arc::new(DurationMicrosecondArray::from(vec![14_706_007_008])),
         ),
         (
             "nanoseconds",
-            Arc::new(DurationNanosecondArray::from(vec![-14_706_007_008_999])) as ArrayRef,
+            Arc::new(DurationNanosecondArray::from(vec![-14_706_007_008_999])),
+        ),
+        (
+            "two_days",
+            Arc::new(DurationSecondArray::from(vec![172_800])),
         ),
     ])
     .unwrap();
@@ -980,41 +954,28 @@ fn bulk_ingests_duration_values() {
 
     let mut query = prepare_query(
         &mut connection,
-        &format!("SELECT seconds, milliseconds, microseconds, nanoseconds FROM `{table}`"),
+        &format!(
+            "SELECT * EXCEPT (two_days), \
+             FORMAT('%d/%d', EXTRACT(DAY FROM two_days), EXTRACT(HOUR FROM two_days)) \
+             FROM `{table}`"
+        ),
     );
     let batch = single_batch(&mut query);
     for (column, expected) in [
-        -14_706_000_000_000,
-        -14_706_008_000_000,
-        14_706_007_008_000,
-        -14_706_007_008_000,
+        IntervalMonthDayNano::new(-25, 0, 0),
+        IntervalMonthDayNano::new(0, -3, -14_706_008_000_000),
+        IntervalMonthDayNano::new(14, 3, 14_706_007_008_000),
+        IntervalMonthDayNano::new(0, 0, -14_706_000_000_000),
+        IntervalMonthDayNano::new(0, 0, -14_706_008_000_000),
+        IntervalMonthDayNano::new(0, 0, 14_706_007_008_000),
+        IntervalMonthDayNano::new(0, 0, -14_706_007_008_000),
     ]
     .into_iter()
     .enumerate()
     {
-        assert_eq!(
-            interval_at(&batch, column),
-            IntervalMonthDayNano::new(0, 0, expected)
-        );
+        assert_eq!(interval_at(&batch, column), expected, "column {column}");
     }
-
-    // Two days of duration read back as 48 hours, not a calendar day, as for a bound parameter.
-    let two_days = scratch_table("duration_hours_ingest");
-    let _drop_two_days = DropTable::table(&two_days);
-    let batch = RecordBatch::try_from_iter([(
-        "span",
-        Arc::new(DurationSecondArray::from(vec![172_800])) as ArrayRef,
-    )])
-    .unwrap();
-    assert_eq!(ingest_batch(&mut connection, &two_days, batch), Some(1));
-    let mut query = prepare_query(
-        &mut connection,
-        &format!(
-            "SELECT FORMAT('%d/%d', EXTRACT(DAY FROM span), EXTRACT(HOUR FROM span)) \
-             FROM `{two_days}`"
-        ),
-    );
-    assert_eq!(read_single_string(&mut query), "0/48");
+    assert_eq!(str_at(&batch, 7), "0/48");
 }
 
 /// An empty stream (an empty DataFrame, or a header-only dbt seed) still creates the table with the

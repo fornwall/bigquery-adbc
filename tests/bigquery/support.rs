@@ -579,10 +579,10 @@ pub(crate) fn assert_decimal_domain_result(batch: &RecordBatch) {
 
 /// BIGNUMERIC's largest and smallest values: `i256::MAX` and `i256::MIN` at scale 38, one
 /// significant digit more than `Decimal256(76, 38)` can declare.
-pub(crate) const BIGNUMERIC_MAX: &str =
+const BIGNUMERIC_MAX: &str =
     "578960446186580977117854925043439539266.34992332820282019728792003956564819967";
 /// See [`BIGNUMERIC_MAX`].
-pub(crate) const BIGNUMERIC_MIN: &str =
+const BIGNUMERIC_MIN: &str =
     "-578960446186580977117854925043439539266.34992332820282019728792003956564819968";
 
 /// One row holding BIGNUMERIC's extremes, as columns `largest` and `smallest`.
