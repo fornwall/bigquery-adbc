@@ -32,10 +32,11 @@ A stock dbt loads `adbc_driver_bigquery` through the ADBC driver manager (`AdbcD
 1.1.0). Release builds download drivers from the dbt Labs CDN into
 `~/.cache/com.getdbt/adbc/<arch>-<os>/` on Linux (honoring `XDG_CACHE_HOME`) or
 `~/Library/Caches/com.getdbt/adbc/` on macOS, and verify a checksum only when downloading, so a
-library already cached under the expected name is loaded as is. dbt's default `bigquery` channel
-(the canonical driver) uses `dbt-labs/arrow-adbc`; the opt-in `bigquery_foundry` channel uses the
-fork and matches this driver's options. Cache this library under the Foundry filename your dbt
-expects (`0.21.0.dev+dbt0.1.11` for dbt 2.0.11). On x86-64 Linux:
+library already cached under the expected name is loaded as is. dbt keeps loaded drivers in a
+static cache, so this library stays loaded as its runtime requires. dbt's default `bigquery`
+channel (the canonical driver) uses `dbt-labs/arrow-adbc`; the opt-in `bigquery_foundry` channel
+uses the fork and matches this driver's options. Cache this library under the Foundry filename your
+dbt expects (`0.21.0.dev+dbt0.1.11` for dbt 2.0.11). On x86-64 Linux:
 
 ```sh
 cargo rustc --release --locked --lib --crate-type cdylib
@@ -222,10 +223,8 @@ an `If-Match` ETag so parallel builds keep each other's entries. A lost race or 
 backs off, re-reads the list and, unless the view is now listed, patches again under the fresh ETag;
 after 16 rounds a lost race is `INVALID_STATE`.
 
-Use the canonical project ID in an authorized view's name: like the fork, the driver compares
-existing view references literally, while BigQuery stores numeric project numbers as IDs, so
-repeated authorization with a numeric view project can append duplicate entries. Source-dataset
-project numbers do not cause this.
+Use the canonical project ID in a view's name: as in the fork, a numeric view project can append
+duplicate entries ([limitation](LIMITATIONS.md#authentication-and-access)).
 
 ### Dataset location
 
@@ -331,10 +330,13 @@ reports the names BigQuery resolves (G56).
 
 Compared against fork [revision `9499ba3`](https://github.com/dbt-labs/bigquery-adbc/tree/9499ba31235a85d11045422ab6037b5d26c9113b)
 and dbt [revision `301b305`](https://github.com/dbt-labs/dbt/tree/301b305e063fc305ff3e46cb9497c1f606e3b2fa)
-(Foundry `0.21.0.dev+dbt0.1.10`). Live comparisons used dbt 2.0.9 and a library built from that
-fork; `integration/dbt/run.py --compare` uses dbt's canonical driver instead. Before switching,
-review seed type parameters, job-ID consumers, destination-query macros, custom authentication
-endpoints, copy-job settings and IAM permissions.
+(Foundry `0.21.0.dev+dbt0.1.10`). Live comparisons used dbt 2.0.9, ADC and release builds of this
+driver and that fork: a 23-field query matched Arrow types and values for numeric and temporal
+limits, floating-point edge cases, intervals, ranges, JSON, geography, binary, nested, null and
+empty composites and collation. Authentication was compared only with mocks. The
+[integration suite](../integration/dbt/README.md)'s `--compare` repeats such checks against dbt's
+canonical driver. Before switching, review seed type parameters, job-ID consumers,
+destination-query macros, custom authentication endpoints, copy-job settings and IAM permissions.
 
 Both drivers behave the same here:
 
@@ -349,7 +351,7 @@ Both drivers behave the same here:
   [trust rules](REFERENCE.md#endpoint-overrides). No corporate proxy has been tested.
 - For `method: oauth`, `quota_project` overrides `GOOGLE_CLOUD_QUOTA_PROJECT`; when unset, normal
   ADC precedence applies. [Local tests](../src/config/tests/quota_project.rs) cover precedence, not
-  live billing or IAM permissions. Impersonation differs ([below](#job-options-and-iam-need-deployment-validation)).
+  live billing or IAM permissions. Impersonation differs ([below](#unreproduced-source-differences)).
 
 ### Paginated results select Storage Read before delivering rows
 
@@ -418,9 +420,9 @@ this combination. Also audit custom macros for unsupported legacy-SQL options,
 `result_buffer_size` and Go's result-format and job-creation controls
 ([inherited differences](GO-DRIVER-COMPARISON.md)).
 
-### Job options and IAM need deployment validation
+### Unreproduced source differences
 
-These source differences have no reproduced live failure:
+These differences, mostly in job options and IAM, have no reproduced live failure:
 
 - Copies enforce dbt's timeout and reservation; the fork ignores them. Seeds receive neither from
   dbt, though the driver supports both on load jobs.
@@ -434,28 +436,16 @@ These source differences have no reproduced live failure:
 - Initial `jobs.query` cancellation waits for a job reference, up to its ten-second completion wait
   plus transport time; without a recovered reference, remote work cannot be cancelled. Local
   cancellation is immediate. The fork normally knows the job ID from `jobs.insert` (G49).
-
-### Coverage and remaining validation
-
-The dbt 2.0.9 comparisons used ADC and release libraries: a 23-field query matched Arrow types and
-values for numeric and temporal limits, floating-point edge cases, intervals, ranges, JSON,
-geography, binary, nested/null/empty composites and collation. Authentication comparisons used
-mocks. Repeat them with the [integration suite](../integration/dbt/README.md). A view without a
-schema errors here and returns an empty schema in the fork (G39); deleting its source table did not
-reproduce that case, as both drivers rebuilt the view through dbt. Linux compatibility still needs
-validation: these wheels target `manylinux_2_28`, dbt's libraries `manylinux_2_17`. dbt's static
-cache keeps the library loaded, as this runtime requires.
+- A view without a schema errors here and returns an empty schema in the fork (G39); deleting its
+  source table did not reproduce that case, as both drivers rebuilt the view through dbt.
 
 ## Known gaps
 
 - dbt re-nests dotted `persist_docs` paths, so nested descriptions never reach the driver (UP-77),
-  and omits removed policy tags, leaving them on the column (UP-91).
-- dbt discards seed and copy result metadata, including their job IDs (UP-86). These and the
-  metadata-patch issues above affect both drivers.
-- Successful Dataproc/Vertex jobs, WIF and driver-managed impersonation have mock coverage only.
-  The live suite checks a Cloud Storage upload and a rejected Dataproc cluster submission. The fork
-  rejects dbt's string-valued `pooling_timeout` before submission, so accepting it alone does not
-  establish Python-model parity.
+  omits removed policy tags, leaving them on the column (UP-91), and discards seed and copy result
+  metadata, including their job IDs (UP-86). These affect both drivers.
+- Python models, WIF, driver-managed impersonation and Linux compatibility have open
+  [validation gaps](LIMITATIONS.md#validation-gaps).
 - Cancellation during a Python-model submission can leave an unnamed remote job running; find it
   by `batch_id` or in the console.
 - Run dbt from the project directory: it passes relative seed paths, which the driver opens

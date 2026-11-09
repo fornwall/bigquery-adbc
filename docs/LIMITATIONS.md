@@ -30,7 +30,8 @@ Open limitations and missing test coverage. Behavior is documented in the
   since readers never switch after delivering rows
   ([Storage Read](REFERENCE.md#reading-large-results-through-the-storage-read-api)).
 - All Storage Read traffic on a database shares one HTTP/2 connection, so three paused readers can
-  starve its other reads and new read sessions into `TIMEOUT`, even though BigQuery is healthy.
+  starve its other reads and new read sessions into `TIMEOUT`, even though BigQuery is healthy
+  ([flow control](REFERENCE.md#reading-large-results-through-the-storage-read-api)).
 - Storage Write schemas are fixed for an ingestion. Like the Go driver, the driver ignores
   `AppendRowsResponse.updated_schema`, so a concurrent incompatible change fails with
   `SCHEMA_MISMATCH_*` before commit.
@@ -39,9 +40,10 @@ Open limitations and missing test coverage. Behavior is documented in the
 
 ### Authentication and access
 
-- Authorized-view grants compare project spellings literally. BigQuery stores numeric view project
-  numbers as canonical IDs, so repeating a grant with a numeric view project can append duplicate
-  ACL entries, as in the [dbt-labs fork](DBT.md). Use the canonical project ID in the view name.
+- [Authorized-view grants](DBT.md#authorized-views) compare view project spellings literally.
+  BigQuery stores numeric view project numbers as canonical IDs, so repeating a grant with a numeric
+  view project can append duplicate ACL entries, as in the dbt-labs fork; source-dataset project
+  numbers do not cause this. Use the canonical project ID in the view name.
 - The discrete `bigquery.auth.external_account.*` options cannot configure workforce pools, which
   need a workforce user project; use a complete credential document with
   `bigquery.auth_type=json_credential_string`.
@@ -73,7 +75,8 @@ Open limitations and missing test coverage. Behavior is documented in the
 - CI checks that each [patched dbt](../tools/dbt-build/README.md) loads this driver, and on a tag
   that it downloads and verifies the release's asset, but never runs it against BigQuery. The dbt
   integration suite, which does, runs only on Linux, as do the only tests of the patched dbt's
-  `install.sh` and `system update`.
+  `install.sh` and `system update`. Linux compatibility with a stock dbt still needs validation:
+  release builds target `manylinux_2_28`, dbt's libraries `manylinux_2_17`.
 - The dbt integration suite runs manually against BigQuery with ADC. CI tests its assertion helpers
   but not dbt or the warehouse fixtures. Other dbt profile authentication methods are not covered
   end to end.
