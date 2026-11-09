@@ -1511,7 +1511,7 @@ impl Iterator for FailsAfterFirstBatch {
         std::thread::scope(|scope| scope.spawn(|| cancel.try_cancel()).join())
             .unwrap()
             .unwrap();
-        Some(Ok(int64_batch("id", vec![99])))
+        Some(Ok(nullable_id(99)))
     }
 }
 
@@ -1519,6 +1519,13 @@ impl RecordBatchReader for FailsAfterFirstBatch {
     fn schema(&self) -> Arc<Schema> {
         self.schema.clone()
     }
+}
+
+/// A one-row batch for a NULLABLE `id` column, as `CREATE TABLE ... AS SELECT` makes it: a
+/// non-nullable field binds as REQUIRED, which a `replace` would recreate rather than truncate.
+fn nullable_id(value: i64) -> RecordBatch {
+    let id = Arc::new(Int64Array::from(vec![value])) as ArrayRef;
+    RecordBatch::try_from_iter_with_nullable([("id", id, true)]).unwrap()
 }
 
 /// Runs an ingest of one batch holding `value` that then fails, with a reader error or by
@@ -1531,7 +1538,7 @@ fn failed_ingest(
     cancel: bool,
     concurrent_append: bool,
 ) -> adbc_core::error::Error {
-    let first = int64_batch("id", vec![value]);
+    let first = nullable_id(value);
     let mut ingest = connection.new_statement().unwrap();
     set_option(&mut ingest, OptionStatement::TargetTable, table.to_owned());
     set_option(&mut ingest, OptionStatement::IngestMode, mode);
@@ -1603,7 +1610,7 @@ fn a_failed_create_retains_its_table_and_can_retry_as_append() {
                 i64::from(concurrent_append)
             );
 
-            let retry = int64_batch("id", vec![2]);
+            let retry = nullable_id(2);
             assert_eq!(
                 ingest(&mut connection, &table, IngestMode::Append, retry).unwrap(),
                 Some(1)
