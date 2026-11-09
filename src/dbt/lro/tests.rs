@@ -87,29 +87,9 @@ fn request_retries_stop_when_the_deadline_expires_during_backoff() {
     });
 }
 
+/// A malformed `done` fails without a poll; an absent, null or false one polls until true.
 #[test]
-fn malformed_completion_flags_fail_without_polling() {
-    let runtime = crate::runtime::new_runtime().unwrap();
-    let (_cancellation, operation) = poller_operation(&runtime);
-    let credentials = anonymous::Builder::new().build();
-    let (endpoint, server) = capture_requests_until_stopped(vec![ok(json!({"done": true}))]);
-    let mut poller = test_poller(&operation, &credentials, endpoint.clone());
-
-    for done in [json!("true"), json!(0), json!([]), json!({})] {
-        let failure = runtime
-            .block_on(poller.wait_until_done(
-                &format!("{endpoint}/v1/operations/1"),
-                "poll the operation",
-                json!({"done": done}),
-            ))
-            .unwrap_err();
-        assert_failure(&failure, Status::InvalidData, &["non-boolean done field"]);
-    }
-    assert!(server.stop().is_empty());
-}
-
-#[test]
-fn unset_completion_flags_poll_until_done() {
+fn completion_flags_poll_until_done_and_malformed_ones_fail() {
     let runtime = crate::runtime::new_runtime().unwrap();
     let (_cancellation, operation) = poller_operation(&runtime);
     let credentials = anonymous::Builder::new().build();
@@ -119,14 +99,15 @@ fn unset_completion_flags_poll_until_done() {
         ok(json!({"done": true})),
     ]);
     let mut poller = test_poller(&operation, &credentials, endpoint.clone());
-    let completed = runtime
-        .block_on(poller.wait_until_done(
-            &format!("{endpoint}/v1/operations/1"),
-            "poll the operation",
-            json!({}),
-        ))
-        .unwrap();
-    assert_eq!(completed, json!({"done": true}));
+    let url = format!("{endpoint}/v1/operations/1");
+    let mut wait =
+        |latest| runtime.block_on(poller.wait_until_done(&url, "poll the operation", latest));
+
+    for done in [json!("true"), json!(0), json!([]), json!({})] {
+        let failure = wait(json!({"done": done})).unwrap_err();
+        assert_failure(&failure, Status::InvalidData, &["non-boolean done field"]);
+    }
+    assert_eq!(wait(json!({})).unwrap(), json!({"done": true}));
     assert_eq!(captured.join().unwrap().len(), 3);
 }
 
