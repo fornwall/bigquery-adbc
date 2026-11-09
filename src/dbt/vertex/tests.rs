@@ -38,10 +38,6 @@ fn connection_running_notebooks_at(endpoint: String) -> BigQueryConnection {
 
 const SERVICE_ACCOUNT: &str = "dbt-runner@data-project.iam.gserviceaccount.com";
 
-fn service_account_key() -> String {
-    service_account_json(SERVICE_ACCOUNT).to_string()
-}
-
 /// The mock is plaintext loopback, which a credential-bearing configuration refuses unless
 /// `bigquery.allow_untrusted_endpoint` is set.
 fn connection_running_notebooks_as_a_service_account(endpoint: String) -> BigQueryConnection {
@@ -58,7 +54,7 @@ fn connection_running_notebooks_as_a_service_account(endpoint: String) -> BigQue
             ),
             (
                 BigQueryDatabaseOption::AuthenticationCredentials.into(),
-                service_account_key().into(),
+                service_account_json(SERVICE_ACCOUNT).to_string().into(),
             ),
             (
                 BigQueryDatabaseOption::AllowUntrustedEndpoint.into(),
@@ -244,34 +240,35 @@ fn a_refused_request_names_the_resource_it_addressed() {
     assert_eq!(captured.join().unwrap().len(), 4);
 }
 
-/// The template listing is a read, so a transient failure is resent. The create carries no
-/// request ID that would let Vertex AI deduplicate it, so it is sent once.
+/// The template listing is a read, so a transient failure resends it. The create carries no
+/// request ID that would let Vertex AI deduplicate it, so only a rate-limit rejection, which
+/// applied nothing, resends it; one without a verdict is not resent (below).
 #[test]
-fn only_the_template_listing_is_resent_after_a_transient_failure() {
-    let unavailable = error_body("backendError", "The service is unavailable.");
+fn the_listing_is_resent_after_a_transient_failure_and_the_create_after_a_rate_limit() {
     let (endpoint, captured) = capture_requests(vec![
-        (503, unavailable.clone()),
+        (
+            503,
+            error_body("backendError", "The service is unavailable."),
+        ),
         ok(json!({"notebookRuntimeTemplates": [{"name": TEMPLATE}]})),
-        (503, unavailable),
+        (429, json!({"error": {"code": 429, "message": "Slow down"}})),
+        ok(lro(true)),
+        ok(job_in_state("JOB_STATE_SUCCEEDED")),
     ]);
     let mut connection = connection_running_notebooks_at(endpoint);
-
-    let error = bigframes_statement(&mut connection, None, "0")
+    bigframes_statement(&mut connection, None, "3600")
         .execute_update()
-        .unwrap_err();
-    assert_failure(
-        &error,
-        Status::IO,
-        &["failed to create the BigQuery Vertex AI notebook execution job"],
-    );
-    let requests = captured.join().unwrap();
-    assert_eq!(requests.len(), 3, "two listings and one create");
+        .unwrap();
+
+    let requests = captured.served(5);
     assert_eq!(requests[0].line, requests[1].line);
     assert!(
         requests[2].line.starts_with("POST "),
         "{}",
         requests[2].line
     );
+    assert_eq!(requests[2].line, requests[3].line);
+    assert_eq!(requests[2].body, requests[3].body);
 }
 
 /// A create with no verdict may have started a job nothing names, which only the error can say. A
@@ -298,24 +295,6 @@ fn a_create_without_a_verdict_says_the_job_may_have_started() {
     );
     assert_message_omits(&run(), &["may have started"]);
     captured.join().unwrap();
-}
-
-/// A rate-limit rejection applied nothing, so it alone resends the create.
-#[test]
-fn a_rate_limited_create_is_resent() {
-    let (endpoint, captured) = capture_requests(vec![
-        (429, json!({"error": {"code": 429, "message": "Slow down"}})),
-        ok(lro(true)),
-        ok(job_in_state("JOB_STATE_SUCCEEDED")),
-    ]);
-    let mut connection = connection_running_notebooks_at(endpoint);
-    bigframes_statement(&mut connection, Some("4242"), "3600")
-        .execute_update()
-        .unwrap();
-
-    let requests = captured.join().unwrap();
-    assert_eq!(requests[0].line, requests[1].line);
-    assert_eq!(requests[0].body, requests[1].body);
 }
 
 #[test]
