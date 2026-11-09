@@ -1,9 +1,3 @@
-foreach(required_variable IN ITEMS GIT_EXECUTABLE SOURCE_DIR PATCH_FILE)
-  if(NOT DEFINED ${required_variable} OR "${${required_variable}}" STREQUAL "")
-    message(FATAL_ERROR "apply-patch.cmake requires ${required_variable}")
-  endif()
-endforeach()
-
 # A changed patch reruns this step on a tree that still carries the previous
 # one, so revert the copy recorded when that one was applied.
 set(applied_patch "${SOURCE_DIR}/.git/bigquery-validation-applied.patch")

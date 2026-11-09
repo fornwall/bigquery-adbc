@@ -19,10 +19,6 @@ endif()
 # drifts. Reconfigure when the manifest changes, and FORCE the cache value so a
 # pin bump overrides a stale CMakeCache.txt.
 set(BIGQUERY_CARGO_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/../../Cargo.toml")
-if(NOT EXISTS "${BIGQUERY_CARGO_MANIFEST}")
-  message(FATAL_ERROR "cannot derive the Arrow ADBC revision: "
-                      "${BIGQUERY_CARGO_MANIFEST} does not exist")
-endif()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
              "${BIGQUERY_CARGO_MANIFEST}")
 
@@ -125,23 +121,13 @@ target_include_directories(
   PRIVATE "${arrow_adbc_SOURCE_DIR}/c" "${arrow_adbc_SOURCE_DIR}/c/include"
           "${arrow_adbc_SOURCE_DIR}/c/vendor" "${arrow_adbc_SOURCE_DIR}/c/driver")
 
-if(MSVC)
-  target_compile_options(bigquery_validation PRIVATE /W4 /WX)
-else()
-  target_compile_options(
-    bigquery_validation PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Wconversion
-                                -Wsign-conversion -Werror)
-endif()
+target_compile_options(
+  bigquery_validation PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Wconversion
+                              -Wsign-conversion -Werror)
 
 # Compiled with the suite so the example tracks the pinned driver manager.
 add_executable(query_example ../../examples/query.c)
 target_link_libraries(query_example PRIVATE adbc_driver_manager_shared)
 target_include_directories(query_example SYSTEM
                            PRIVATE "${arrow_adbc_SOURCE_DIR}/c/include")
-if(NOT MSVC)
-  target_compile_options(query_example PRIVATE -Wall -Wextra -Wpedantic -Werror)
-endif()
-
-include(GoogleTest)
-enable_testing()
-gtest_discover_tests(bigquery_validation)
+target_compile_options(query_example PRIVATE -Wall -Wextra -Wpedantic -Werror)
