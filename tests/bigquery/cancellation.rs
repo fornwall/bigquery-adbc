@@ -334,15 +334,10 @@ fn cancels_a_running_bulk_ingest() {
     assert_eq!(count_rows(&mut connection, &table), 0);
 }
 
-/// The ADBC error a stream item carries, or a panic naming what came instead.
+/// The ADBC error a stream item carries.
+#[track_caller]
 fn stream_error(item: Option<Result<RecordBatch, ArrowError>>, what: &str) -> Error {
-    match item {
-        Some(Err(ArrowError::ExternalError(source))) => match source.downcast::<Error>() {
-            Ok(error) => *error,
-            Err(source) => panic!("{what}: a non-ADBC stream error: {source}"),
-        },
-        other => panic!("{what}: expected an ADBC stream error, got {other:?}"),
-    }
+    outcome(Ok(item.into_iter())).expect_err(what)
 }
 
 /// adbc.h Cancel on a result stream, for both read paths: `INVALID_STATE` before execution and

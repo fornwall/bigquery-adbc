@@ -1,22 +1,19 @@
 //! Authentication, URI configuration, sessions and connection-level defaults.
 
-use std::sync::Arc;
-
 use adbc_core::constants::{ADBC_OPTION_VALUE_DISABLED, ADBC_OPTION_VALUE_ENABLED};
 use adbc_core::error::Status;
-use adbc_core::options::{OptionConnection, OptionDatabase, OptionStatement};
+use adbc_core::options::{OptionConnection, OptionDatabase, OptionStatement, OptionValue};
 use adbc_core::{Connection, Database, Optionable, Statement};
 use adbc_driver_bigquery::{
     BigQueryAuthenticationType, BigQueryCredentialsType, BigQueryDatabaseOption,
     BigQueryStatementOption,
 };
-use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::DataType;
 
 use crate::support::{
-    DropTable, SCRATCH_DATASET, SHAKESPEARE_ROWS, connect, execute_failure, execute_sql,
-    open_database, option_string, prepare_query, project, project_and_dataset_options,
-    read_single_i64, read_single_string, scratch_table, set_option,
+    DropTable, SCRATCH_DATASET, SHAKESPEARE_ROWS, TempFile, connect, db_option, execute_failure,
+    execute_sql, i64_at, int64_batch, open_database, option_string, prepare_query, project,
+    project_and_dataset_options, read_single_i64, read_single_string, scratch_table, set_option,
 };
 
 /// BigQuery resolves a numeric project to its assigned ID in returned job references. Both
@@ -32,14 +29,8 @@ fn numeric_project_identifiers_work_for_queries_metadata_and_copies() {
         "BIGQUERY_ADBC_PROJECT_NUMBER must contain decimal digits"
     );
     let database = open_database([
-        (
-            BigQueryDatabaseOption::ProjectId.into(),
-            project_number.clone().into(),
-        ),
-        (
-            BigQueryDatabaseOption::DatasetId.into(),
-            SCRATCH_DATASET.into(),
-        ),
+        db_option(BigQueryDatabaseOption::ProjectId, project_number.as_str()),
+        db_option(BigQueryDatabaseOption::DatasetId, SCRATCH_DATASET),
     ]);
     let mut connection = database.new_connection().unwrap();
     let mut query = prepare_query(&mut connection, "SELECT @@project_id");
@@ -79,16 +70,30 @@ fn numeric_project_identifiers_work_for_queries_metadata_and_copies() {
     assert_eq!(read_single_i64(&mut verify), 42);
 }
 
+/// `SESSION_USER()` on the integration project, authenticated by `options`.
+#[track_caller]
+fn session_user(
+    what: &str,
+    options: impl IntoIterator<Item = (OptionDatabase, OptionValue)>,
+) -> String {
+    let mut connection = open_database(
+        [db_option(BigQueryDatabaseOption::ProjectId, project())]
+            .into_iter()
+            .chain(options),
+    )
+    .new_connection()
+    .unwrap_or_else(|error| panic!("{what}: {error}"));
+    read_single_string(&mut prepare_query(&mut connection, "SELECT SESSION_USER()"))
+}
+
 #[test]
 #[ignore = "requires discrete Google OAuth user credentials and access to the integration project"]
 fn queries_with_discrete_user_oauth_credentials() {
     crate::backend::require_real_bigquery();
-    let client_id = std::env::var("BIGQUERY_ADBC_OAUTH_CLIENT_ID")
-        .expect("BIGQUERY_ADBC_OAUTH_CLIENT_ID must be set");
-    let client_secret = std::env::var("BIGQUERY_ADBC_OAUTH_CLIENT_SECRET")
-        .expect("BIGQUERY_ADBC_OAUTH_CLIENT_SECRET must be set");
-    let refresh_token = std::env::var("BIGQUERY_ADBC_OAUTH_REFRESH_TOKEN")
-        .expect("BIGQUERY_ADBC_OAUTH_REFRESH_TOKEN must be set");
+    let credential = |name| std::env::var(name).unwrap_or_else(|_| panic!("{name} must be set"));
+    let client_id = credential("BIGQUERY_ADBC_OAUTH_CLIENT_ID");
+    let client_secret = credential("BIGQUERY_ADBC_OAUTH_CLIENT_SECRET");
+    let refresh_token = credential("BIGQUERY_ADBC_OAUTH_REFRESH_TOKEN");
     let authorized_user = serde_json::json!({
         "type": "authorized_user",
         "client_id": client_id,
@@ -96,32 +101,32 @@ fn queries_with_discrete_user_oauth_credentials() {
         "refresh_token": refresh_token,
     });
 
-    let database = open_database([
-        (BigQueryDatabaseOption::ProjectId.into(), project().into()),
-        (
-            BigQueryDatabaseOption::AuthenticationType.into(),
-            BigQueryAuthenticationType::UserAuthentication.into(),
-        ),
-        (
-            BigQueryDatabaseOption::AuthenticationClientId.into(),
-            client_id.into(),
-        ),
-        (
-            BigQueryDatabaseOption::AuthenticationClientSecret.into(),
-            client_secret.into(),
-        ),
-        (
-            BigQueryDatabaseOption::AuthenticationRefreshToken.into(),
-            refresh_token.into(),
-        ),
-    ]);
-    let mut connection = database.new_connection().unwrap();
-    let mut statement = prepare_query(&mut connection, "SELECT SESSION_USER()");
-    let expected_principal = read_single_string(&mut statement);
+    let expected_principal = session_user(
+        "discrete OAuth credentials",
+        [
+            db_option(
+                BigQueryDatabaseOption::AuthenticationType,
+                BigQueryAuthenticationType::UserAuthentication,
+            ),
+            db_option(BigQueryDatabaseOption::AuthenticationClientId, client_id),
+            db_option(
+                BigQueryDatabaseOption::AuthenticationClientSecret,
+                client_secret,
+            ),
+            db_option(
+                BigQueryDatabaseOption::AuthenticationRefreshToken,
+                refresh_token,
+            ),
+        ],
+    );
     assert!(!expected_principal.is_empty());
 
     let document = authorized_user.to_string();
-    let file = OAuthCredentialFile::new(&document);
+    // The file holds a refresh token, so it is private and removed on unwind.
+    let file = TempFile::new(
+        &format!("{}.json", scratch_table("oauth")),
+        document.as_bytes(),
+    );
     for (credential_form, authentication_type, credentials) in [
         (
             "authorized-user JSON credential file",
@@ -134,30 +139,24 @@ fn queries_with_discrete_user_oauth_credentials() {
             document.as_str(),
         ),
     ] {
-        let database = open_database([
-            (BigQueryDatabaseOption::ProjectId.into(), project().into()),
-            (
-                BigQueryDatabaseOption::AuthenticationType.into(),
-                authentication_type.into(),
-            ),
-            (
-                BigQueryDatabaseOption::AuthenticationCredentials.into(),
-                credentials.into(),
-            ),
-            (
-                BigQueryDatabaseOption::AuthenticationCredentialsType.into(),
-                BigQueryCredentialsType::AuthorizedUser.into(),
-            ),
-        ]);
-        let mut connection = database
-            .new_connection()
-            .unwrap_or_else(|error| panic!("{credential_form}: {error}"));
-        let mut statement = prepare_query(&mut connection, "SELECT SESSION_USER()");
-        assert_eq!(
-            read_single_string(&mut statement),
-            expected_principal,
-            "{credential_form}"
+        let principal = session_user(
+            credential_form,
+            [
+                db_option(
+                    BigQueryDatabaseOption::AuthenticationType,
+                    authentication_type,
+                ),
+                db_option(
+                    BigQueryDatabaseOption::AuthenticationCredentials,
+                    credentials,
+                ),
+                db_option(
+                    BigQueryDatabaseOption::AuthenticationCredentialsType,
+                    BigQueryCredentialsType::AuthorizedUser,
+                ),
+            ],
         );
+        assert_eq!(principal, expected_principal, "{credential_form}");
     }
 
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -176,64 +175,20 @@ fn queries_with_discrete_user_oauth_credentials() {
             .unwrap_or_else(|_| panic!("could not refresh the OAuth access token"))
             .token
     });
-    let database = open_database([
-        (BigQueryDatabaseOption::ProjectId.into(), project().into()),
-        (
-            BigQueryDatabaseOption::AuthenticationType.into(),
-            BigQueryAuthenticationType::TemporaryAccessToken.into(),
-        ),
-        (
-            BigQueryDatabaseOption::AuthenticationAccessToken.into(),
-            access_token.into(),
-        ),
-    ]);
-    let mut connection = database.new_connection().unwrap();
-    let mut statement = prepare_query(&mut connection, "SELECT SESSION_USER()");
-    assert_eq!(read_single_string(&mut statement), expected_principal);
-}
-
-/// The live JSON file contains a refresh token, so create it privately and remove it on unwind.
-struct OAuthCredentialFile(std::path::PathBuf);
-
-impl OAuthCredentialFile {
-    fn new(document: &str) -> Self {
-        use std::io::Write;
-
-        let path = std::env::temp_dir().join(format!(
-            "bigquery-adbc-oauth-{}-{}.json",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let file = options.open(&path).unwrap();
-        // Close the handle before cleanup, including on unwind, so Windows can remove the file.
-        let (guard, mut file) = (Self(path), file);
-        file.write_all(document.as_bytes()).unwrap();
-        guard
-    }
-}
-
-impl Drop for OAuthCredentialFile {
-    fn drop(&mut self) {
-        use std::io::Write;
-
-        if let Err(error) = std::fs::remove_file(&self.0) {
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "could not remove temporary OAuth credential file {:?}: {error}",
-                self.0
-            );
-        }
-    }
+    let principal = session_user(
+        "temporary access token",
+        [
+            db_option(
+                BigQueryDatabaseOption::AuthenticationType,
+                BigQueryAuthenticationType::TemporaryAccessToken,
+            ),
+            db_option(
+                BigQueryDatabaseOption::AuthenticationAccessToken,
+                access_token,
+            ),
+        ],
+    );
+    assert_eq!(principal, expected_principal);
 }
 
 #[test]
@@ -262,30 +217,24 @@ fn queries_with_service_account_key_file_and_json_string() {
             key_json,
         ),
     ] {
-        let database = open_database([
-            (BigQueryDatabaseOption::ProjectId.into(), project().into()),
-            (
-                BigQueryDatabaseOption::AuthenticationType.into(),
-                authentication_type.into(),
-            ),
-            (
-                BigQueryDatabaseOption::AuthenticationCredentials.into(),
-                credentials.into(),
-            ),
-            (
-                BigQueryDatabaseOption::AuthenticationCredentialsType.into(),
-                BigQueryCredentialsType::ServiceAccount.into(),
-            ),
-        ]);
-        let mut connection = database
-            .new_connection()
-            .unwrap_or_else(|error| panic!("{credential_form}: {error}"));
-        let mut statement = prepare_query(&mut connection, "SELECT SESSION_USER()");
-        assert_eq!(
-            read_single_string(&mut statement),
-            expected_principal,
-            "{credential_form}"
+        let principal = session_user(
+            credential_form,
+            [
+                db_option(
+                    BigQueryDatabaseOption::AuthenticationType,
+                    authentication_type,
+                ),
+                db_option(
+                    BigQueryDatabaseOption::AuthenticationCredentials,
+                    credentials,
+                ),
+                db_option(
+                    BigQueryDatabaseOption::AuthenticationCredentialsType,
+                    BigQueryCredentialsType::ServiceAccount,
+                ),
+            ],
         );
+        assert_eq!(principal, expected_principal, "{credential_form}");
     }
 }
 
@@ -392,25 +341,11 @@ fn manages_transactions_in_a_bigquery_session() {
     statement
         .set_sql_query("INSERT adbc_transaction_values VALUES (?); SELECT COUNT(*) FROM adbc_transaction_values")
         .unwrap();
-    statement
-        .bind(
-            RecordBatch::try_from_iter([(
-                "value",
-                Arc::new(Int64Array::from(vec![8, 9])) as ArrayRef,
-            )])
-            .unwrap(),
-        )
-        .unwrap();
+    statement.bind(int64_batch("value", vec![8, 9])).unwrap();
     let mut reader = statement.execute().unwrap();
-    assert_eq!(
-        crate::support::i64_at(&reader.next().unwrap().unwrap(), 0),
-        2
-    );
+    assert_eq!(i64_at(&reader.next().unwrap().unwrap(), 0), 2);
     connection.commit().unwrap();
-    assert_eq!(
-        crate::support::i64_at(&reader.next().unwrap().unwrap(), 0),
-        3
-    );
+    assert_eq!(i64_at(&reader.next().unwrap().unwrap(), 0), 3);
     assert!(reader.next().is_none());
     connection.rollback().unwrap();
     statement
@@ -646,12 +581,7 @@ fn ingest_target_follows_the_statement_default_dataset() {
         BigQueryStatementOption::DryRun,
         ADBC_OPTION_VALUE_ENABLED,
     );
-    ingest
-        .bind(
-            RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![1])) as ArrayRef)])
-                .unwrap(),
-        )
-        .unwrap();
+    ingest.bind(int64_batch("id", vec![1])).unwrap();
     assert_eq!(ingest.execute_update().unwrap(), Some(0));
 }
 

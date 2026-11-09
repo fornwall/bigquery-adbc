@@ -8,8 +8,8 @@ use adbc_driver_bigquery::{
 };
 
 use crate::support::{
-    SCRATCH_DATASET, connect, connect_at_location, execute_failure, open_database, prepare_query,
-    project, set_option,
+    SCRATCH_DATASET, connect, connect_at_location, db_option, execute_failure, open_database,
+    prepare_query, project, set_option,
 };
 
 /// The `src/error.rs` status classification, which dbt 2.0 branches on, for real refusals:
@@ -112,16 +112,13 @@ fn a_rejected_static_token_or_anonymous_request_says_what_to_change() {
         ),
     ] {
         let mut options = vec![
-            (BigQueryDatabaseOption::ProjectId.into(), project().into()),
-            (
-                BigQueryDatabaseOption::AuthenticationType.into(),
-                authentication.into(),
-            ),
+            db_option(BigQueryDatabaseOption::ProjectId, project()),
+            db_option(BigQueryDatabaseOption::AuthenticationType, authentication),
         ];
         if let Some(token) = token {
-            options.push((
-                BigQueryDatabaseOption::AuthenticationAccessToken.into(),
-                token.into(),
+            options.push(db_option(
+                BigQueryDatabaseOption::AuthenticationAccessToken,
+                token,
             ));
         }
         let mut connection = open_database(options).new_connection().unwrap();

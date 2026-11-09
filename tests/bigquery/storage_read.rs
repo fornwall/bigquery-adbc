@@ -6,17 +6,17 @@ use adbc_core::constants::{ADBC_OPTION_VALUE_DISABLED, ADBC_OPTION_VALUE_ENABLED
 use adbc_core::options::OptionConnection;
 use adbc_core::{Connection, Database, Optionable, Statement};
 use adbc_driver_bigquery::{
-    BIGQUERY_SCHEMA_METADATA_QUERY_ID, BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE,
-    BigQueryAuthenticationType, BigQueryConnection, BigQueryConnectionOption,
-    BigQueryDatabaseOption, BigQueryStatementOption, BigQueryWriteDisposition,
+    BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE, BigQueryAuthenticationType, BigQueryConnection,
+    BigQueryConnectionOption, BigQueryDatabaseOption, BigQueryStatement, BigQueryStatementOption,
+    BigQueryWriteDisposition,
 };
-use arrow_array::{Array, Int64Array, RecordBatch, RecordBatchReader};
+use arrow_array::{Array, RecordBatch, RecordBatchReader};
 use arrow_schema::{ArrowError, DataType, Schema};
 
 use crate::support::{
     DropTable, assert_harvested_job_statistics, concatenated, connect, connect_with_dataset_at,
-    execute_sql, open_database, prepare_query, project, read_all, row_count,
-    schema_without_job_metadata, scratch_fixture, scratch_table, set_option, typed,
+    db_option, execute_sql, int64_column, open_database, prepare_query, project, read_all,
+    row_count, schema_without_job_metadata, scratch_fixture, scratch_table, set_option, typed,
 };
 
 /// Fixture row count. With [`PADDING`], the first `jobs.query` response (about 10 MB of JSON)
@@ -145,6 +145,25 @@ pub(crate) fn storage_read_row_sequence(order_by: &str) -> String {
     format!(
         "SELECT n, {PADDING} FROM UNNEST(GENERATE_ARRAY(1, {STORAGE_READ_ROWS})) AS n{order_by}"
     )
+}
+
+/// `1..=STORAGE_READ_ROWS`, the values of [`storage_read_row_sequence`] in ascending order.
+fn ascending() -> Vec<i64> {
+    (1..=i64::try_from(STORAGE_READ_ROWS).unwrap()).collect()
+}
+
+/// The batches of the single partition `statement` executes to.
+fn read_only_partition(
+    connection: &BigQueryConnection,
+    statement: &mut BigQueryStatement,
+) -> Vec<RecordBatch> {
+    let result = statement.execute_partitions().unwrap();
+    assert_eq!(result.partitions.len(), 1);
+    connection
+        .read_partition(result.partitions.first().unwrap())
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
 }
 
 /// Reads `sql` with Storage Read explicitly permitted or disabled.
@@ -280,14 +299,14 @@ fn storage_read_permission_denied_falls_back_to_rest() {
     let access_token = std::env::var("BIGQUERY_ADBC_STORAGE_READ_DENIED_ACCESS_TOKEN")
         .expect("BIGQUERY_ADBC_STORAGE_READ_DENIED_ACCESS_TOKEN must be set");
     let database = open_database([
-        (BigQueryDatabaseOption::ProjectId.into(), project().into()),
-        (
-            BigQueryDatabaseOption::AuthenticationType.into(),
-            BigQueryAuthenticationType::TemporaryAccessToken.into(),
+        db_option(BigQueryDatabaseOption::ProjectId, project()),
+        db_option(
+            BigQueryDatabaseOption::AuthenticationType,
+            BigQueryAuthenticationType::TemporaryAccessToken,
         ),
-        (
-            BigQueryDatabaseOption::AuthenticationAccessToken.into(),
-            access_token.into(),
+        db_option(
+            BigQueryDatabaseOption::AuthenticationAccessToken,
+            access_token,
         ),
     ]);
     let mut connection = database.new_connection().unwrap();
@@ -305,12 +324,7 @@ fn storage_read_permission_denied_falls_back_to_rest() {
             .get(BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE),
         Some(&"SELECT".to_owned())
     );
-    assert_eq!(row_count(&batches), STORAGE_READ_ROWS);
-    let columns = concatenated(&schema, &batches);
-    let values = typed::<Int64Array>(columns[0].as_ref());
-    for (index, value) in values.values().iter().enumerate() {
-        assert_eq!(*value, i64::try_from(index).unwrap() + 1);
-    }
+    assert_eq!(int64_column(&batches), ascending());
 
     assert_eq!(
         connection.get_option_string(option).unwrap(),
@@ -329,13 +343,10 @@ fn storage_read_preserves_query_ordering() {
     let mut connection = connect(project());
     let mut statement = prepare_query(&mut connection, &sql);
 
-    let (schema, batches) = read_all(&mut statement);
-    let column = &concatenated(&schema, &batches)[0];
-    let values = typed::<Int64Array>(column.as_ref());
-    assert_eq!(values.len(), STORAGE_READ_ROWS);
-    let last = i64::try_from(STORAGE_READ_ROWS).unwrap();
-    let descending = (1..=last).rev().collect::<Vec<i64>>();
-    assert_eq!(values.values(), descending.as_slice());
+    let (_, batches) = read_all(&mut statement);
+    let mut descending = ascending();
+    descending.reverse();
+    assert_eq!(int64_column(&batches), descending);
 
     assert_read_through_storage_read(&mut connection, &sql, &batches, "the ordered default read");
 }
@@ -356,12 +367,10 @@ fn unordered_storage_read_returns_the_same_rows() {
         "true",
     );
 
-    let (schema, batches) = read_all(&mut statement);
-    let column = &concatenated(&schema, &batches)[0];
-    let mut values = typed::<Int64Array>(column.as_ref()).values().to_vec();
+    let (_, batches) = read_all(&mut statement);
+    let mut values = int64_column(&batches);
     values.sort_unstable();
-    let ascending = (1..=i64::try_from(STORAGE_READ_ROWS).unwrap()).collect::<Vec<i64>>();
-    assert_eq!(values, ascending);
+    assert_eq!(values, ascending());
 
     // Equal sorted values alone would not detect a fallback to REST.
     assert_read_through_storage_read(&mut connection, &sql, &batches, "the unordered read");
@@ -387,11 +396,7 @@ fn reads_a_storage_read_sized_query_partition() {
     let batches = reader.collect::<Result<Vec<_>, ArrowError>>().unwrap();
 
     // Compare the sequence to catch lost or repeated chunks, including after a resume.
-    let column = &concatenated(&schema, &batches)[0];
-    let values = typed::<Int64Array>(column.as_ref());
-    assert_eq!(values.len(), STORAGE_READ_ROWS);
-    let ascending = (1..=i64::try_from(STORAGE_READ_ROWS).unwrap()).collect::<Vec<i64>>();
-    assert_eq!(values.values(), ascending.as_slice());
+    assert_eq!(int64_column(&batches), ascending());
 
     assert_read_through_storage_read(&mut connection, &sql, &batches, "the partition read");
 }
@@ -409,13 +414,7 @@ fn a_partition_keeps_the_result_options_of_its_statement() {
         BigQueryStatementOption::UseStorageApiDisabledClient,
         ADBC_OPTION_VALUE_ENABLED,
     );
-    let result = statement.execute_partitions().unwrap();
-
-    let batches = connection
-        .read_partition(&result.partitions[0])
-        .unwrap()
-        .collect::<Result<Vec<_>, ArrowError>>()
-        .unwrap();
+    let batches = read_only_partition(&connection, &mut statement);
     assert_eq!(row_count(&batches), STORAGE_READ_ROWS);
     assert!(
         batches.iter().all(|batch| batch.num_rows() <= 1024),
@@ -423,89 +422,49 @@ fn a_partition_keeps_the_result_options_of_its_statement() {
     );
 }
 
-/// A destination naming one partition carries a table decorator, which `CreateReadSession`
-/// refuses, so a Storage Read-sized partition of such a query is read over REST.
+/// `CreateReadSession` refuses a destination naming one partition, which carries a table
+/// decorator, and a table with `require_partition_filter` (`INVALID_ARGUMENT`), though REST reads
+/// both, so a Storage Read-sized partition written to either is read over REST.
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
-fn reads_a_partition_written_to_one_destination_partition() {
-    let table = scratch_table("storage_read_partition");
-    let _drop_table = DropTable::table(&table);
+fn reads_partitions_written_where_storage_read_refuses_a_session() {
     let mut connection = connect_with_dataset_at("US");
-    execute_sql(
-        &mut connection,
-        &format!("CREATE TABLE `{table}` (n INT64, d DATE, padding STRING) PARTITION BY d"),
-    );
-
-    let mut statement = connection.new_statement().unwrap();
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::DestinationTable,
-        format!("{table}$20240101"),
-    );
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::WriteDisposition,
-        BigQueryWriteDisposition::WriteTruncate,
-    );
-    statement
-        .set_sql_query(format!(
-            "SELECT n, DATE '2024-01-01' AS d, {PADDING} \
-             FROM UNNEST(GENERATE_ARRAY(1, {STORAGE_READ_ROWS})) AS n"
-        ))
-        .unwrap();
-    let result = statement.execute_partitions().unwrap();
-    assert_eq!(result.partitions.len(), 1);
-
-    let batches = connection
-        .read_partition(&result.partitions[0])
-        .unwrap()
-        .collect::<Result<Vec<_>, ArrowError>>()
-        .unwrap();
-    assert_eq!(row_count(&batches), STORAGE_READ_ROWS);
-}
-
-/// `CreateReadSession` refuses a table with `require_partition_filter` with `INVALID_ARGUMENT`,
-/// though REST reads it, so a Storage Read-sized partition written there is read over REST.
-#[test]
-#[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
-fn reads_a_partition_written_to_a_table_requiring_a_partition_filter() {
-    let table = scratch_table("storage_read_partition_filter");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset_at("US");
-    execute_sql(
-        &mut connection,
-        &format!(
-            "CREATE TABLE `{table}` (n INT64, d DATE, padding STRING) PARTITION BY d \
-             OPTIONS(require_partition_filter = true)"
-        ),
-    );
-
-    let mut statement = connection.new_statement().unwrap();
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::DestinationTable,
-        table,
-    );
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::WriteDisposition,
-        BigQueryWriteDisposition::WriteTruncate,
-    );
-    statement
-        .set_sql_query(format!(
-            "SELECT n, DATE '2024-01-01' AS d, {PADDING} \
-             FROM UNNEST(GENERATE_ARRAY(1, {STORAGE_READ_ROWS})) AS n"
-        ))
-        .unwrap();
-    let result = statement.execute_partitions().unwrap();
-    assert_eq!(result.partitions.len(), 1);
-
-    let batches = connection
-        .read_partition(&result.partitions[0])
-        .unwrap()
-        .collect::<Result<Vec<_>, ArrowError>>()
-        .unwrap();
-    assert_eq!(row_count(&batches), STORAGE_READ_ROWS);
+    for (options, decorator) in [
+        ("", "$20240101"),
+        (" OPTIONS(require_partition_filter = true)", ""),
+    ] {
+        let table = scratch_table("storage_read_partition");
+        let _drop_table = DropTable::table(&table);
+        execute_sql(
+            &mut connection,
+            &format!(
+                "CREATE TABLE `{table}` (n INT64, d DATE, padding STRING) PARTITION BY d{options}"
+            ),
+        );
+        let mut statement = prepare_query(
+            &mut connection,
+            &format!(
+                "SELECT n, DATE '2024-01-01' AS d, {PADDING} \
+                 FROM UNNEST(GENERATE_ARRAY(1, {STORAGE_READ_ROWS})) AS n"
+            ),
+        );
+        set_option(
+            &mut statement,
+            BigQueryStatementOption::DestinationTable,
+            format!("{table}{decorator}"),
+        );
+        set_option(
+            &mut statement,
+            BigQueryStatementOption::WriteDisposition,
+            BigQueryWriteDisposition::WriteTruncate,
+        );
+        let batches = read_only_partition(&connection, &mut statement);
+        assert_eq!(
+            row_count(&batches),
+            STORAGE_READ_ROWS,
+            "{options}{decorator}"
+        );
+    }
 }
 
 /// Reads stored `NUMERIC(10, 2)` / `BIGNUMERIC(20, 4)` columns; `CAST` cannot produce these
@@ -547,12 +506,13 @@ fn storage_read_matches_rest_for_parameterized_decimals() {
     assert_paths_match(&storage, &rest);
 }
 
-/// The statement type and cost statistics survive into a Storage Read result schema. Padding
-/// pushes the result past one `jobs.query` response (about 10 MB of JSON), so
-/// `JOB_CREATION_OPTIONAL` still creates the job and destination table Storage Read needs.
+/// Cost statistics survive into a Storage Read result schema of a stored table, which bills bytes
+/// where generated rows bill none. Padding pushes the result past one `jobs.query` response (about
+/// 10 MB of JSON), so `JOB_CREATION_OPTIONAL` still creates the job and destination table Storage
+/// Read needs.
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
-fn storage_read_results_report_the_statement_type() {
+fn storage_read_results_report_the_job_statistics() {
     let (table, _drop_table, mut connection) = scratch_fixture("storage_read_stats");
     execute_sql(
         &mut connection,
@@ -566,27 +526,8 @@ fn storage_read_results_report_the_statement_type() {
     let sql = format!("SELECT n, padding FROM `{table}`");
     let mut statement = prepare_query(&mut connection, &sql);
     let (schema, batches) = read_all(&mut statement);
-
-    let rows = row_count(&batches);
-    assert_eq!(
-        rows, STORAGE_READ_ROWS,
-        "the result must clear the Storage Read row threshold"
-    );
     assert_read_through_storage_read(&mut connection, &sql, &batches, "the default read");
-
-    let metadata = schema.metadata();
-    assert_eq!(
-        metadata.get(BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE),
-        Some(&"SELECT".to_owned()),
-        "the Storage Read path must preserve the statement type"
-    );
-    assert_harvested_job_statistics(metadata, "the Storage Read query");
-    assert!(
-        metadata
-            .get(BIGQUERY_SCHEMA_METADATA_QUERY_ID)
-            .is_some_and(|query_id| !query_id.is_empty()),
-        "result schema is missing BIGQUERY:query_id"
-    );
+    assert_harvested_job_statistics(schema.metadata(), "the Storage Read query");
 }
 
 /// BigQuery refuses every REST response holding a row over 20 MiB, even for a two-row result, but
@@ -600,9 +541,8 @@ fn reads_a_row_too_large_for_rest_through_storage_read() {
     let mut connection = connect(project());
 
     let (schema, batches) = read_storage_path(&mut connection, LARGE_ROWS, true);
-    assert_eq!(row_count(&batches), 2);
+    assert_eq!(int64_column(&batches), [1, 2]);
     let columns = concatenated(&schema, &batches);
-    assert_eq!(typed::<Int64Array>(columns[0].as_ref()).values(), &[1, 2]);
     let big = typed::<arrow_array::StringArray>(columns[1].as_ref());
     assert!((0..2).all(|row| big.value(row).len() == 21_000_000));
 
@@ -636,12 +576,8 @@ fn reads_a_later_row_too_large_for_rest_through_storage_read() {
         FROM UNNEST(GENERATE_ARRAY(1, 2001)) i ORDER BY i";
     let mut connection = connect(project());
     let (schema, batches) = read_storage_path(&mut connection, SQL, true);
-    assert_eq!(row_count(&batches), 2_001);
+    assert_eq!(int64_column(&batches), (1..=2_001).collect::<Vec<i64>>());
     let columns = concatenated(&schema, &batches);
-    assert_eq!(
-        typed::<Int64Array>(columns[0].as_ref()).values(),
-        &(1..=2_001).collect::<Vec<i64>>()
-    );
     let payloads = typed::<arrow_array::ListArray>(columns[1].as_ref());
     for row in 0..2_001 {
         let payload = payloads.value(row);

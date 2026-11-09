@@ -1,5 +1,7 @@
 //! Query execution, dry runs, destinations and result-schema job statistics.
 
+use std::collections::BTreeMap;
+
 use adbc_core::constants::ADBC_OPTION_VALUE_DISABLED;
 use adbc_core::error::Status;
 use adbc_core::options::OptionConnection;
@@ -7,22 +9,22 @@ use adbc_core::{Connection, Statement};
 use adbc_driver_bigquery::{
     BIGQUERY_SCHEMA_METADATA_NUM_DML_AFFECTED_ROWS, BIGQUERY_SCHEMA_METADATA_QUERY_ID,
     BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE, BigQueryConnection, BigQueryCreateDisposition,
-    BigQueryQueryPriority, BigQueryStatement, BigQueryStatementOption, BigQueryWriteDisposition,
+    BigQueryQueryPriority, BigQueryStatementOption, BigQueryWriteDisposition,
 };
 use arrow_array::{
     Array, BinaryArray, BooleanArray, Decimal128Array, Decimal256Array, Float64Array, Int64Array,
     ListArray, RecordBatchReader, StructArray, Time64MicrosecondArray,
 };
 use arrow_buffer::{IntervalMonthDayNano, i256};
-use arrow_schema::{ArrowError, DataType, IntervalUnit, TimeUnit};
+use arrow_schema::{DataType, IntervalUnit, TimeUnit};
 
 use crate::cancellation::CANCELLABLE_QUERY;
 use crate::support::{
     DropTable, SCRATCH_DATASET, assert_harvested_job_statistics, assert_matches_dry_run, bool_at,
     connect, connect_with_dataset, connect_with_dataset_at, count_rows, date_at, date_value,
-    execute_failure, execute_sql, i64_at, interval_at, list_at, prepare_query, project, read_all,
-    read_single_i64, row_count, scratch_fixture, scratch_table, set_option, single_batch, str_at,
-    str_value, struct_at, ts_at, ts_value, typed,
+    execute_failure, execute_sql, i64_at, int64_column, interval_at, list_at, prepare_query,
+    project, read_all, read_single_i64, scratch_fixture, scratch_table, set_option, single_batch,
+    str_at, str_value, struct_at, ts_at, ts_value, typed,
 };
 
 #[test]
@@ -303,49 +305,43 @@ fn query_limits_change_what_bigquery_does() {
 }
 
 /// dbt 2.0 derives its response code, row count, and cost telemetry from the job statistics on
-/// the result schema, so every key has to arrive with a real BigQuery job behind it.
+/// the result schema, so every key has to arrive with a real BigQuery job behind it. Results
+/// without rows report `StatementType` too: without it, dbt 2.0's `code_and_rows` returns early
+/// and never reads `NumDMLAffectedRows`. jobs.query supplies the type, with the job resource as
+/// the fallback.
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn result_schemas_report_the_job_statistics() {
-    /// The job statistics on `statement`'s result schema, sorted, with the query ID dropped.
-    fn statistics(statement: &mut BigQueryStatement) -> Vec<(String, String)> {
-        let reader = statement.execute().unwrap();
-        let schema = reader.schema();
-        let metadata = schema.metadata();
-        assert!(
-            metadata
-                .get(BIGQUERY_SCHEMA_METADATA_QUERY_ID)
-                .is_some_and(|query_id| !query_id.is_empty()),
-            "result schema is missing BIGQUERY:query_id"
-        );
-        let mut entries: Vec<_> = metadata
+    /// The job statistics on the result schema of `sql`, with the query ID checked and dropped.
+    fn statistics(connection: &mut BigQueryConnection, sql: &str) -> BTreeMap<String, String> {
+        let mut statement = prepare_query(connection, sql);
+        let schema = statement.execute().unwrap().schema();
+        let mut statistics: BTreeMap<_, _> = schema
+            .metadata()
             .iter()
-            .filter(|(key, _)| key.as_str() != BIGQUERY_SCHEMA_METADATA_QUERY_ID)
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
-        entries.sort_unstable();
-        entries
-    }
-
-    /// The value of `key`, which the caller has already established is present.
-    fn string<'a>(entries: &'a [(String, String)], key: &str) -> &'a str {
-        entries
-            .iter()
-            .find(|(entry, _)| entry == key)
-            .unwrap_or_else(|| panic!("result schema is missing {key}"))
-            .1
-            .as_str()
+        let query_id = statistics.remove(BIGQUERY_SCHEMA_METADATA_QUERY_ID);
+        assert!(
+            query_id.is_some_and(|query_id| !query_id.is_empty()),
+            "result schema is missing BIGQUERY:query_id"
+        );
+        statistics
     }
 
     /// The value of `key`, parsed as the decimal integer dbt 2.0 expects.
-    fn integer(entries: &[(String, String)], key: &str) -> i64 {
-        let value = string(entries, key);
+    fn integer(statistics: &BTreeMap<String, String>, key: &str) -> i64 {
+        let value = &statistics[key];
         value
             .parse()
             .unwrap_or_else(|_| panic!("{key} is {value:?}, not a decimal integer"))
     }
 
-    let (table, _drop_table, mut connection) = scratch_fixture("job_stats");
+    let table = scratch_table("job_stats");
+    let view = format!("{table}_view");
+    let _drop_table = DropTable::table(&table);
+    let _drop_view = DropTable::new("VIEW", &view);
+    let mut connection = connect_with_dataset();
     execute_sql(
         &mut connection,
         &format!("CREATE TABLE `{table}` AS SELECT * FROM UNNEST([1, 2, 3]) AS value"),
@@ -353,13 +349,9 @@ fn result_schemas_report_the_job_statistics() {
 
     // A SELECT reads a real table, so BigQuery has bytes and slots to report; a SELECT has no
     // affected-row count. jobs.query supplies the statement type even for jobless results.
-    let mut statement = prepare_query(&mut connection, &format!("SELECT value FROM `{table}`"));
-    let select = statistics(&mut statement);
+    let select = statistics(&mut connection, &format!("SELECT value FROM `{table}`"));
     assert_eq!(
-        select
-            .iter()
-            .map(|(key, _)| key.as_str())
-            .collect::<Vec<_>>(),
+        select.keys().map(String::as_str).collect::<Vec<_>>(),
         [
             "BIGQUERY:Statistics:Query:SlotMillis",
             "BIGQUERY:Statistics:Query:StatementType",
@@ -373,10 +365,7 @@ fn result_schemas_report_the_job_statistics() {
             "BIGQUERY:statistics:total_bytes_processed",
         ]
     );
-    assert_eq!(
-        string(&select, BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE),
-        "SELECT"
-    );
+    assert_eq!(select[BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE], "SELECT");
     assert!(integer(&select, "BIGQUERY:Statistics:Query:TotalBytesProcessed") > 0);
     assert_eq!(
         integer(&select, "BIGQUERY:Statistics:TotalBytesProcessed"),
@@ -389,15 +378,12 @@ fn result_schemas_report_the_job_statistics() {
 
     // DML additionally reports the row count dbt 2.0 turns into `rows_affected`, and the
     // statement type it gates that read on, both available directly from jobs.query.
-    statement
-        .set_sql_query(format!("UPDATE `{table}` SET value = value + 1 WHERE TRUE"))
-        .unwrap();
-    let update = statistics(&mut statement);
+    let update = statistics(
+        &mut connection,
+        &format!("UPDATE `{table}` SET value = value + 1 WHERE TRUE"),
+    );
     assert_eq!(
-        update
-            .iter()
-            .map(|(key, _)| key.as_str())
-            .collect::<Vec<_>>(),
+        update.keys().map(String::as_str).collect::<Vec<_>>(),
         [
             "BIGQUERY:Statistics:Query:NumDMLAffectedRows",
             "BIGQUERY:Statistics:Query:SlotMillis",
@@ -413,90 +399,49 @@ fn result_schemas_report_the_job_statistics() {
             "BIGQUERY:statistics:total_bytes_processed",
         ]
     );
+    assert_eq!(update[BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE], "UPDATE");
     assert_eq!(
-        integer(&update, "BIGQUERY:Statistics:Query:NumDMLAffectedRows"),
+        integer(&update, BIGQUERY_SCHEMA_METADATA_NUM_DML_AFFECTED_ROWS),
         3
     );
-    assert_eq!(
-        string(&update, "BIGQUERY:Statistics:Query:StatementType"),
-        "UPDATE"
-    );
-}
 
-/// Results without rows report `StatementType`; without it, dbt 2.0's `code_and_rows` returns
-/// early and never reads `NumDMLAffectedRows`. jobs.query supplies the type, with the job resource
-/// as the fallback.
-#[test]
-#[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
-fn results_that_carry_no_rows_report_the_statement_type() {
-    /// The result schema metadata of `sql`, as an ADBC consumer sees it on the stream.
-    fn metadata(connection: &mut BigQueryConnection, sql: &str) -> arrow_schema::Metadata {
-        let mut statement = prepare_query(connection, sql);
-        statement.execute().unwrap().schema().metadata().clone()
-    }
-
-    let table = scratch_table("statement_type");
-    let view = format!("{table}_view");
-    let _drop_table = DropTable::table(&table);
-    let _drop_view = DropTable::new("VIEW", &view);
-    let mut connection = connect_with_dataset();
-    execute_sql(
-        &mut connection,
-        &format!("CREATE TABLE `{table}` AS SELECT * FROM UNNEST([1, 2, 3]) AS value"),
-    );
-
-    // DML: the real statement type, and the row count dbt 2.0 only reads once it has it.
-    let merge = metadata(
-        &mut connection,
-        &format!(
-            "MERGE `{table}` AS target USING (SELECT 9 AS value) AS source \
-             ON target.value = source.value \
-             WHEN NOT MATCHED THEN INSERT (value) VALUES (source.value)"
+    for (sql, statement_type, affected_rows) in [
+        (
+            format!(
+                "MERGE `{table}` AS target USING (SELECT 9 AS value) AS source \
+                 ON target.value = source.value \
+                 WHEN NOT MATCHED THEN INSERT (value) VALUES (source.value)"
+            ),
+            "MERGE",
+            Some("1"),
         ),
-    );
-    assert_eq!(
-        merge.get(BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE),
-        Some(&"MERGE".to_owned())
-    );
-    assert_eq!(
-        merge.get(BIGQUERY_SCHEMA_METADATA_NUM_DML_AFFECTED_ROWS),
-        Some(&"1".to_owned()),
-        "the MERGE inserted exactly one row"
-    );
-
-    let delete = metadata(
-        &mut connection,
-        &format!("DELETE FROM `{table}` WHERE value < 9"),
-    );
-    assert_eq!(
-        delete.get(BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE),
-        Some(&"DELETE".to_owned())
-    );
-    assert_eq!(
-        delete.get(BIGQUERY_SCHEMA_METADATA_NUM_DML_AFFECTED_ROWS),
-        Some(&"3".to_owned())
-    );
-
-    // DDL: BigQuery reports a schema for a CREATE VIEW, so "no rows" is not "no columns".
-    let create_view = metadata(
-        &mut connection,
-        &format!("CREATE VIEW `{view}` AS SELECT value FROM `{table}`"),
-    );
-    assert_eq!(
-        create_view.get(BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE),
-        Some(&"CREATE_VIEW".to_owned())
-    );
-    assert_eq!(
-        create_view.get(BIGQUERY_SCHEMA_METADATA_NUM_DML_AFFECTED_ROWS),
-        None,
-        "a DDL statement affects no rows, and an unreported statistic stays unreported"
-    );
-
-    let drop_view = metadata(&mut connection, &format!("DROP VIEW `{view}`"));
-    assert_eq!(
-        drop_view.get(BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE),
-        Some(&"DROP_VIEW".to_owned())
-    );
+        (
+            format!("DELETE FROM `{table}` WHERE value < 9"),
+            "DELETE",
+            Some("3"),
+        ),
+        // BigQuery reports a schema for a CREATE VIEW, so "no rows" is not "no columns". DDL
+        // affects no rows, and an unreported statistic stays unreported.
+        (
+            format!("CREATE VIEW `{view}` AS SELECT value FROM `{table}`"),
+            "CREATE_VIEW",
+            None,
+        ),
+        (format!("DROP VIEW `{view}`"), "DROP_VIEW", None),
+    ] {
+        let statistics = statistics(&mut connection, &sql);
+        assert_eq!(
+            statistics[BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE], statement_type,
+            "{sql}"
+        );
+        assert_eq!(
+            statistics
+                .get(BIGQUERY_SCHEMA_METADATA_NUM_DML_AFFECTED_ROWS)
+                .map(String::as_str),
+            affected_rows,
+            "{sql}"
+        );
+    }
 }
 
 /// A polled query reports the statistics its response omits. A destination table forces
@@ -674,22 +619,14 @@ fn executes_a_multi_statement_script() {
          SELECT total AS total;",
     );
 
-    let reader = statement.execute().unwrap();
-    let metadata = reader.schema().metadata().clone();
-    let batches = reader.collect::<Result<Vec<_>, ArrowError>>().unwrap();
-
+    let (schema, batches) = read_all(&mut statement);
     assert_eq!(
-        metadata.get(BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE),
-        Some(&"SCRIPT".to_owned())
+        schema.metadata()[BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE],
+        "SCRIPT"
     );
-    let rows = row_count(&batches);
-    assert_eq!(
-        rows, 1,
-        "a script returns the one result its last statement did"
-    );
-    let batch = batches.iter().find(|batch| batch.num_rows() > 0).unwrap();
-    assert_eq!(batch.schema().field(0).name(), "total");
-    assert_eq!(i64_at(batch, 0), 55);
+    assert_eq!(schema.field(0).name(), "total");
+    // A script returns the one result its last statement did.
+    assert_eq!(int64_column(&batches), [55]);
 }
 
 /// A script that commits ends the driver's transaction although it reports `SCRIPT`, so the next
@@ -744,15 +681,7 @@ fn reads_a_rest_result_across_row_capped_pages() {
     );
     let (_, batches) = read_all(&mut statement);
 
-    let values = batches
-        .iter()
-        .flat_map(|batch| {
-            typed::<Int64Array>(batch.column(0).as_ref())
-                .values()
-                .to_vec()
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(values, (1..=ROWS).collect::<Vec<_>>());
+    assert_eq!(int64_column(&batches), (1..=ROWS).collect::<Vec<_>>());
     let mut boundaries = Vec::new();
     let mut read = 0;
     for batch in &batches {

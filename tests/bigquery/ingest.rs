@@ -14,7 +14,7 @@ use adbc_driver_bigquery::{
 };
 use arrow_array::types::Int8Type;
 use arrow_array::{
-    Array, ArrayRef, BinaryArray, Date32Array, Decimal32Array, Decimal128Array, Decimal256Array,
+    Array, ArrayRef, Date32Array, Decimal32Array, Decimal128Array, Decimal256Array,
     DictionaryArray, DurationMicrosecondArray, DurationMillisecondArray, DurationNanosecondArray,
     DurationSecondArray, FixedSizeBinaryArray, Int8Array, Int32Array, Int64Array,
     IntervalDayTimeArray, IntervalMonthDayNanoArray, IntervalYearMonthArray, ListArray,
@@ -28,9 +28,10 @@ use arrow_schema::{ArrowError, DataType, Field, IntervalUnit, Schema, TimeUnit};
 use crate::support::{
     DropTable, SCRATCH_DATASET, assert_bignumeric_extremes, assert_decimal_domain_result,
     bignumeric_extremes_batch, bignumeric_extremes_select, connect, connect_with_dataset,
-    count_rows, date_at, decimal_domain_batch, execute_sql, i64_at, ingest_batch, interval_at,
-    option_string, prepare_query, project, read_all, read_single_i64, read_single_string,
-    scratch_fixture, scratch_table, set_option, single_batch, str_at, struct_at, ts_at, typed,
+    count_rows, date_at, decimal_domain_batch, execute_sql, i64_at, ingest, ingest_batch,
+    int64_batch, interval_at, option_string, prepare_query, project, read_all, read_single_i64,
+    read_single_string, scratch_fixture, scratch_table, set_option, single_batch, str_at,
+    struct_at, ts_at, typed,
 };
 
 #[test]
@@ -161,12 +162,7 @@ fn bulk_ingests_arrow_with_standard_lifecycle_modes() {
     ingest.bind(round_trip_batch).unwrap();
     assert_eq!(ingest.execute_update().unwrap(), Some(1));
 
-    let mismatched = RecordBatch::try_from_iter([(
-        "different",
-        Arc::new(Int64Array::from(vec![4])) as ArrayRef,
-    )])
-    .unwrap();
-    ingest.bind(mismatched).unwrap();
+    ingest.bind(int64_batch("different", vec![4])).unwrap();
     assert_eq!(
         ingest.execute_update().unwrap_err().status,
         Status::AlreadyExists
@@ -410,10 +406,7 @@ fn bulk_ingests_null_structs_with_hidden_invalid_children() {
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn dry_runs_a_bulk_ingest_without_touching_the_target() {
     let (table, _drop_table, mut connection) = scratch_fixture("dry_run_ingest");
-
-    let batch = |ids: Vec<i64>| {
-        RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(ids)) as ArrayRef)]).unwrap()
-    };
+    let batch = |ids| int64_batch("id", ids);
 
     let mut ingest = connection.new_statement().unwrap();
     set_option(&mut ingest, OptionStatement::TargetTable, table.clone());
@@ -460,15 +453,7 @@ fn dry_runs_a_bulk_ingest_without_touching_the_target() {
     assert_eq!(count_rows(&mut connection, &table), 2);
 
     // A schema the existing table cannot accept is refused before anything is written.
-    ingest
-        .bind(
-            RecordBatch::try_from_iter([(
-                "different",
-                Arc::new(Int64Array::from(vec![4])) as ArrayRef,
-            )])
-            .unwrap(),
-        )
-        .unwrap();
+    ingest.bind(int64_batch("different", vec![4])).unwrap();
     assert_eq!(
         ingest.execute_update().unwrap_err().status,
         Status::AlreadyExists
@@ -485,64 +470,34 @@ fn dry_runs_a_bulk_ingest_without_touching_the_target() {
     );
 }
 
+/// BigQuery's AppendRows limit of 10,000,000 bytes covers the whole request: payload plus the
+/// repeated Arrow schema and protobuf envelope. Three 8 MB rows make one Arrow batch over the limit
+/// while every row remains shippable; about 10.5 MB in 32 KiB rows makes the encoder split at its
+/// size target rather than per row, so full-size chunks must fill the budget without exceeding it.
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
-fn bulk_ingests_a_batch_larger_than_the_append_rows_request_limit() {
-    let (table, _drop_table, mut connection) = scratch_fixture("large_ingest");
+fn bulk_ingests_batches_larger_than_the_append_rows_request_limit() {
+    let mut connection = connect_with_dataset();
+    for (row_bytes, rows) in [(8_000_000, 3), (32 * 1024, 320)] {
+        let table = scratch_table("large_ingest");
+        let _drop_table = DropTable::table(&table);
+        let value = "x".repeat(row_bytes);
+        let batch = RecordBatch::try_from_iter([(
+            "payload",
+            Arc::new(StringArray::from(vec![value.as_str(); rows])) as ArrayRef,
+        )])
+        .unwrap();
+        let rows = i64::try_from(rows).unwrap();
+        assert_eq!(ingest_batch(&mut connection, &table, batch), Some(rows));
 
-    // Three 8 MB values produce one Arrow IPC batch larger than BigQuery's strict
-    // 10,000,000-byte AppendRows request limit, while every individual row remains shippable.
-    const ROW_BYTES: usize = 8_000_000;
-    let value = vec![b'x'; ROW_BYTES];
-    let batch = RecordBatch::try_from_iter([(
-        "payload",
-        Arc::new(BinaryArray::from(vec![
-            value.as_slice(),
-            value.as_slice(),
-            value.as_slice(),
-        ])) as ArrayRef,
-    )])
-    .unwrap();
-    assert_eq!(ingest_batch(&mut connection, &table, batch), Some(3));
-
-    let mut query = prepare_query(
-        &mut connection,
-        &format!("SELECT COUNT(*), SUM(BYTE_LENGTH(payload)) FROM `{table}`"),
-    );
-    let result = single_batch(&mut query);
-    assert_eq!(i64_at(&result, 0), 3);
-    assert_eq!(i64_at(&result, 1), 3 * i64::try_from(ROW_BYTES).unwrap());
-}
-
-/// Full-size chunks must stay under BigQuery's 10,000,000-byte AppendRows limit, which covers the
-/// whole request: payload plus the repeated Arrow schema and protobuf envelope. The oversized-batch
-/// test sends one 8 MB row per request, so it never fills that budget.
-#[test]
-#[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
-fn bulk_ingests_chunks_that_fill_the_append_rows_size_budget() {
-    let (table, _drop_table, mut connection) = scratch_fixture("target_sized_ingest");
-
-    // About 10.5 MB in 32 KiB rows, so the encoder must split at the size target, not per row.
-    const ROW_BYTES: usize = 32 * 1024;
-    const ROWS: usize = 320;
-    let value = "x".repeat(ROW_BYTES);
-    let batch = RecordBatch::try_from_iter([(
-        "payload",
-        Arc::new(StringArray::from(vec![value.as_str(); ROWS])) as ArrayRef,
-    )])
-    .unwrap();
-    assert_eq!(
-        ingest_batch(&mut connection, &table, batch),
-        Some(i64::try_from(ROWS).unwrap())
-    );
-
-    let mut query = prepare_query(
-        &mut connection,
-        &format!("SELECT COUNT(*), SUM(BYTE_LENGTH(payload)) FROM `{table}`"),
-    );
-    let result = single_batch(&mut query);
-    assert_eq!(i64_at(&result, 0), i64::try_from(ROWS).unwrap());
-    assert_eq!(i64_at(&result, 1), i64::try_from(ROWS * ROW_BYTES).unwrap());
+        let mut query = prepare_query(
+            &mut connection,
+            &format!("SELECT COUNT(*), SUM(BYTE_LENGTH(payload)) FROM `{table}`"),
+        );
+        let result = single_batch(&mut query);
+        assert_eq!(i64_at(&result, 0), rows);
+        assert_eq!(i64_at(&result, 1), rows * i64::try_from(row_bytes).unwrap());
+    }
 }
 
 #[test]
@@ -638,18 +593,14 @@ fn bignumeric_ingest_distinguishes_parameterized_targets() {
              smallest BIGNUMERIC(76, 38) NOT NULL); INSERT INTO `{table}` VALUES (0, 0)"
         ),
     );
-    let ingest = |connection: &mut BigQueryConnection, mode| {
-        let mut statement = connection.new_statement().unwrap();
-        set_option(&mut statement, OptionStatement::TargetTable, table.clone());
-        set_option(&mut statement, OptionStatement::IngestMode, mode);
-        statement.bind(bignumeric_extremes_batch()).unwrap();
-        statement.execute_update()
+    let extremes = |connection: &mut BigQueryConnection, mode| {
+        ingest(connection, &table, mode, bignumeric_extremes_batch())
     };
 
     // An append takes the column's BIGNUMERIC(76, 38), which lacks plain BIGNUMERIC's partial
     // 77th digit, so the extremes are refused by row before anything is written.
     for mode in [IngestMode::Append, IngestMode::CreateAppend] {
-        let failure = ingest(&mut connection, mode).unwrap_err();
+        let failure = extremes(&mut connection, mode).unwrap_err();
         assert_eq!(failure.status, Status::InvalidData, "{failure}");
         assert!(
             failure.message.contains(
@@ -663,7 +614,7 @@ fn bignumeric_ingest_distinguishes_parameterized_targets() {
 
     // Replace must recreate the schema; truncating the bounded table would still reject the rows.
     assert_eq!(
-        ingest(&mut connection, IngestMode::Replace).unwrap(),
+        extremes(&mut connection, IngestMode::Replace).unwrap(),
         Some(1)
     );
     let mut query = prepare_query(
@@ -675,7 +626,7 @@ fn bignumeric_ingest_distinguishes_parameterized_targets() {
     );
     assert_bignumeric_extremes(&single_batch(&mut query));
     assert_eq!(
-        ingest(&mut connection, IngestMode::Append).unwrap(),
+        extremes(&mut connection, IngestMode::Append).unwrap(),
         Some(1)
     );
     assert_eq!(count_rows(&mut connection, &table), 2);
@@ -898,12 +849,8 @@ fn refuses_array_timestamp_ingest_and_its_staging_workaround_works() {
         )
     };
     let refused = |connection: &mut BigQueryConnection, mode: IngestMode| {
-        let mut ingest = connection.new_statement().unwrap();
-        set_option(&mut ingest, OptionStatement::TargetTable, table.clone());
-        set_option(&mut ingest, OptionStatement::IngestMode, mode);
-        ingest.bind(row(timestamps())).unwrap();
         let started = std::time::Instant::now();
-        let failure = ingest.execute_update().unwrap_err();
+        let failure = ingest(connection, &table, mode, row(timestamps())).unwrap_err();
         assert_eq!(failure.status, Status::NotImplemented, "{failure}");
         assert!(failure.message.contains("\"ts\""), "{failure}");
         assert!(
@@ -1276,35 +1223,19 @@ fn appends_to_a_table_with_a_flexible_column_name_are_refused() {
         &mut connection,
         &format!("CREATE TABLE `{table}` (id INT64, customer STRUCT<`first name` STRING>)"),
     );
-    let mut ingest = connection.new_statement().unwrap();
-    set_option(&mut ingest, OptionStatement::TargetTable, table.clone());
-    set_option(&mut ingest, OptionStatement::IngestMode, IngestMode::Append);
-    let batch =
-        RecordBatch::try_from_iter([("id", Arc::new(Int64Array::from(vec![1])) as ArrayRef)])
-            .unwrap();
-    ingest.bind(batch.clone()).unwrap();
-    let failure = ingest.execute_update().unwrap_err();
-    assert_eq!(
-        failure.status,
-        Status::NotImplemented,
-        "{}",
-        failure.message
-    );
+    let batch = int64_batch("id", vec![1]);
+    let failure = ingest(&mut connection, &table, IngestMode::Append, batch.clone()).unwrap_err();
+    assert_eq!(failure.status, Status::NotImplemented, "{failure}");
     assert!(
         failure
             .message
             .contains("has column \"customer.first name\", whose name contains \" \""),
-        "{}",
-        failure.message
+        "{failure}"
     );
-
-    set_option(
-        &mut ingest,
-        OptionStatement::IngestMode,
-        IngestMode::Replace,
+    assert_eq!(
+        ingest(&mut connection, &table, IngestMode::Replace, batch).unwrap(),
+        Some(1)
     );
-    ingest.bind(batch).unwrap();
-    assert_eq!(ingest.execute_update().unwrap(), Some(1));
     assert_eq!(count_rows(&mut connection, &table), 1);
 }
 
@@ -1324,13 +1255,8 @@ fn appends_resolve_columns_by_name_and_refuse_what_storage_write_would_alter() {
         ),
     );
     let append = |connection: &mut BigQueryConnection, columns: Vec<(&str, ArrayRef)>| {
-        let mut ingest = connection.new_statement().unwrap();
-        set_option(&mut ingest, OptionStatement::TargetTable, table.clone());
-        set_option(&mut ingest, OptionStatement::IngestMode, IngestMode::Append);
-        ingest
-            .bind(RecordBatch::try_from_iter(columns).unwrap())
-            .unwrap();
-        ingest.execute_update()
+        let batch = RecordBatch::try_from_iter(columns).unwrap();
+        ingest(connection, &table, IngestMode::Append, batch)
     };
     let amount = |value, precision, scale| {
         Arc::new(
@@ -1418,11 +1344,7 @@ fn appends_take_null_column_types_and_string_lengths_from_the_table() {
             ),
         ])
         .unwrap();
-        let mut ingest = connection.new_statement().unwrap();
-        set_option(&mut ingest, OptionStatement::TargetTable, table.clone());
-        set_option(&mut ingest, OptionStatement::IngestMode, IngestMode::Append);
-        ingest.bind(batch).unwrap();
-        ingest.execute_update()
+        ingest(connection, &table, IngestMode::Append, batch)
     };
 
     assert_eq!(
@@ -1493,11 +1415,10 @@ fn a_table_read_under_its_schema_ingests_into_the_same_declared_decimals() {
     };
     assert_eq!(declared(&copy), declared(&source));
 
-    let mut append = connection.new_statement().unwrap();
-    set_option(&mut append, OptionStatement::TargetTable, source.clone());
-    set_option(&mut append, OptionStatement::IngestMode, IngestMode::Append);
-    append.bind(rows).unwrap();
-    assert_eq!(append.execute_update().unwrap(), Some(1));
+    assert_eq!(
+        ingest(&mut connection, &source, IngestMode::Append, rows).unwrap(),
+        Some(1)
+    );
     let mut query = prepare_query(
         &mut connection,
         &format!(
@@ -1527,13 +1448,8 @@ fn appends_plain_strings_to_json_and_geography_columns() {
     );
     let append = |connection: &mut BigQueryConnection, columns: Vec<(Field, ArrayRef)>| {
         let (fields, columns): (Vec<_>, Vec<_>) = columns.into_iter().unzip();
-        let mut ingest = connection.new_statement().unwrap();
-        set_option(&mut ingest, OptionStatement::TargetTable, table.clone());
-        set_option(&mut ingest, OptionStatement::IngestMode, IngestMode::Append);
-        ingest
-            .bind(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap())
-            .unwrap();
-        ingest.execute_update()
+        let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+        ingest(connection, &table, IngestMode::Append, batch)
     };
     let string = |name: &str| Field::new(name, DataType::Utf8, true);
     let strings = |values: Vec<&str>| Arc::new(StringArray::from(values)) as ArrayRef;
@@ -1634,7 +1550,7 @@ impl Iterator for FailsAfterFirstBatch {
         std::thread::scope(|scope| scope.spawn(|| cancel.try_cancel()).join())
             .unwrap()
             .unwrap();
-        Some(Ok(int64_batch(&self.schema, 99)))
+        Some(Ok(int64_batch("id", vec![99])))
     }
 }
 
@@ -1642,14 +1558,6 @@ impl RecordBatchReader for FailsAfterFirstBatch {
     fn schema(&self) -> Arc<Schema> {
         self.schema.clone()
     }
-}
-
-fn int64_batch(schema: &Arc<Schema>, value: i64) -> RecordBatch {
-    RecordBatch::try_new(
-        schema.clone(),
-        vec![Arc::new(Int64Array::from(vec![value])) as ArrayRef],
-    )
-    .unwrap()
 }
 
 /// Runs an ingest of one batch holding `value` that then fails, with a reader error or by
@@ -1662,15 +1570,15 @@ fn failed_ingest(
     cancel: bool,
     concurrent_append: bool,
 ) -> adbc_core::error::Error {
-    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+    let first = int64_batch("id", vec![value]);
     let mut ingest = connection.new_statement().unwrap();
     set_option(&mut ingest, OptionStatement::TargetTable, table.to_owned());
     set_option(&mut ingest, OptionStatement::IngestMode, mode);
     let cancel = cancel.then(|| ingest.get_cancel_handle());
     ingest
         .bind_stream(Box::new(FailsAfterFirstBatch {
-            first: Some(int64_batch(&schema, value)),
-            schema,
+            schema: first.schema(),
+            first: Some(first),
             cancel,
             concurrent_append: concurrent_append.then(|| table.to_owned()),
         }))
@@ -1734,12 +1642,11 @@ fn a_failed_create_retains_its_table_and_can_retry_as_append() {
                 i64::from(concurrent_append)
             );
 
-            let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
-            let mut retry = connection.new_statement().unwrap();
-            set_option(&mut retry, OptionStatement::TargetTable, table.clone());
-            set_option(&mut retry, OptionStatement::IngestMode, IngestMode::Append);
-            retry.bind(int64_batch(&schema, 2)).unwrap();
-            assert_eq!(retry.execute_update().unwrap(), Some(1));
+            let retry = int64_batch("id", vec![2]);
+            assert_eq!(
+                ingest(&mut connection, &table, IngestMode::Append, retry).unwrap(),
+                Some(1)
+            );
 
             let mut query = prepare_query(
                 &mut connection,

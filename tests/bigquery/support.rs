@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use adbc_core::error::{Error, Status};
-use adbc_core::options::{OptionDatabase, OptionStatement, OptionValue};
+use adbc_core::options::{IngestMode, OptionDatabase, OptionStatement, OptionValue};
 use adbc_core::{Connection, Database, Driver, Optionable, Statement};
 use adbc_driver_bigquery::{
     BIGQUERY_SCHEMA_METADATA_JOB_KEYS, BIGQUERY_SCHEMA_METADATA_QUERY_ID,
@@ -33,13 +33,17 @@ pub(crate) fn scratch_bucket() -> &'static str {
     BUCKET.get_or_init(|| format!("{}-adbc-scratch", project()))
 }
 
+pub(crate) fn db_option(
+    key: BigQueryDatabaseOption,
+    value: impl Into<OptionValue>,
+) -> (OptionDatabase, OptionValue) {
+    (key.into(), value.into())
+}
+
 pub(crate) fn project_and_dataset_options() -> [(OptionDatabase, OptionValue); 2] {
     [
-        (BigQueryDatabaseOption::ProjectId.into(), project().into()),
-        (
-            BigQueryDatabaseOption::DatasetId.into(),
-            SCRATCH_DATASET.into(),
-        ),
+        db_option(BigQueryDatabaseOption::ProjectId, project()),
+        db_option(BigQueryDatabaseOption::DatasetId, SCRATCH_DATASET),
     ]
 }
 
@@ -63,7 +67,7 @@ fn try_open_database(
 
 #[track_caller]
 pub(crate) fn connect(project: &str) -> BigQueryConnection {
-    open_database([(BigQueryDatabaseOption::ProjectId.into(), project.into())])
+    open_database([db_option(BigQueryDatabaseOption::ProjectId, project)])
         .new_connection()
         .unwrap()
 }
@@ -82,7 +86,7 @@ pub(crate) fn connect_with_dataset_at(location: &str) -> BigQueryConnection {
     open_database(
         project_and_dataset_options()
             .into_iter()
-            .chain([(BigQueryDatabaseOption::Location.into(), location.into())]),
+            .chain([db_option(BigQueryDatabaseOption::Location, location)]),
     )
     .new_connection()
     .unwrap()
@@ -91,8 +95,8 @@ pub(crate) fn connect_with_dataset_at(location: &str) -> BigQueryConnection {
 #[track_caller]
 pub(crate) fn connect_at_location(project: &str, location: &str) -> BigQueryConnection {
     open_database([
-        (BigQueryDatabaseOption::ProjectId.into(), project.into()),
-        (BigQueryDatabaseOption::Location.into(), location.into()),
+        db_option(BigQueryDatabaseOption::ProjectId, project),
+        db_option(BigQueryDatabaseOption::Location, location),
     ])
     .new_connection()
     .unwrap()
@@ -222,6 +226,34 @@ pub(crate) fn scratch_fixture(prefix: &str) -> (String, DropTable, BigQueryConne
     (table, guard, connect_with_dataset())
 }
 
+/// A private temporary file, removed when the test ends.
+pub(crate) struct TempFile(pub(crate) std::path::PathBuf);
+
+impl TempFile {
+    /// Creates `name`, which must be unique, such as a [`scratch_table`] name, holding `contents`.
+    pub(crate) fn new(name: &str, contents: &[u8]) -> Self {
+        use std::io::Write;
+
+        // Armed before the file is opened, so the guard drops after the handle closes and Windows
+        // can remove the file.
+        let guard = Self(std::env::temp_dir().join(name));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        options.open(&guard.0).unwrap().write_all(contents).unwrap();
+        guard
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_file(&self.0) {
+            report_failed_cleanup(&format!("remove {}", self.0.display()), &error);
+        }
+    }
+}
+
 /// Reports a scratch resource that could not be cleaned up.
 ///
 /// Fails the test unless it is already unwinding. During unwinding, prints the leaked resource
@@ -235,17 +267,34 @@ pub(crate) fn report_failed_cleanup(what: &str, error: &dyn std::fmt::Display) {
     eprintln!("leaked: failed to {what} while the test was already failing: {error}");
 }
 
-/// Ingests one bound batch into `table` and returns the affected-row count.
+/// Ingests `batch` into `table` with `mode` and returns the affected-row count.
+#[track_caller]
+pub(crate) fn ingest(
+    connection: &mut BigQueryConnection,
+    table: &str,
+    mode: IngestMode,
+    batch: RecordBatch,
+) -> Result<Option<i64>, Error> {
+    let mut ingest = connection.new_statement().unwrap();
+    set_option(&mut ingest, OptionStatement::TargetTable, table.to_owned());
+    set_option(&mut ingest, OptionStatement::IngestMode, mode);
+    ingest.bind(batch).unwrap();
+    ingest.execute_update()
+}
+
+/// Ingests `batch` into a new `table`.
 #[track_caller]
 pub(crate) fn ingest_batch(
     connection: &mut BigQueryConnection,
     table: &str,
     batch: RecordBatch,
 ) -> Option<i64> {
-    let mut ingest = connection.new_statement().unwrap();
-    set_option(&mut ingest, OptionStatement::TargetTable, table.to_owned());
-    ingest.bind(batch).unwrap();
-    ingest.execute_update().unwrap()
+    ingest(connection, table, IngestMode::Create, batch).unwrap()
+}
+
+/// One `Int64` column named `name`.
+pub(crate) fn int64_batch(name: &str, values: Vec<i64>) -> RecordBatch {
+    RecordBatch::try_from_iter([(name, Arc::new(Int64Array::from(values)) as ArrayRef)]).unwrap()
 }
 
 #[track_caller]
@@ -368,76 +417,6 @@ pub(crate) fn read_single_i64(statement: &mut impl Statement) -> i64 {
     i64_at(&batch, 0)
 }
 
-#[test]
-fn scalar_assertions_reject_values_hidden_by_the_null_mask() {
-    use std::panic::{AssertUnwindSafe, catch_unwind};
-
-    use arrow_buffer::NullBuffer;
-
-    let nulls = Some(NullBuffer::new_null(1));
-    let (offsets, values, _) = StringArray::from(vec!["hidden"]).into_parts();
-    let columns: Vec<(&str, ArrayRef)> = vec![
-        (
-            "string",
-            Arc::new(StringArray::new(offsets, values, nulls.clone())),
-        ),
-        (
-            "integer",
-            Arc::new(Int64Array::new(vec![42].into(), nulls.clone())),
-        ),
-        (
-            "boolean",
-            Arc::new(BooleanArray::new(vec![true].into(), nulls.clone())),
-        ),
-        (
-            "date",
-            Arc::new(Date32Array::new(vec![42].into(), nulls.clone())),
-        ),
-        (
-            "timestamp",
-            Arc::new(TimestampMicrosecondArray::new(
-                vec![42].into(),
-                nulls.clone(),
-            )),
-        ),
-        (
-            "interval",
-            Arc::new(IntervalMonthDayNanoArray::new(
-                vec![IntervalMonthDayNano::new(1, 2, 3)].into(),
-                nulls,
-            )),
-        ),
-    ];
-    let batch = RecordBatch::try_from_iter(columns).unwrap();
-    let checks: [fn(&RecordBatch); 6] = [
-        |batch| {
-            str_at(batch, 0);
-        },
-        |batch| {
-            i64_at(batch, 1);
-        },
-        |batch| {
-            bool_at(batch, 2);
-        },
-        |batch| {
-            date_at(batch, 3);
-        },
-        |batch| {
-            ts_at(batch, 4);
-        },
-        |batch| {
-            interval_at(batch, 5);
-        },
-    ];
-    for (index, check) in checks.into_iter().enumerate() {
-        assert!(
-            catch_unwind(AssertUnwindSafe(|| check(&batch))).is_err(),
-            "{} assertion accepted a null cell",
-            batch.schema().field(index).name(),
-        );
-    }
-}
-
 /// Checks that execution returns the fields described by its dry run.
 ///
 /// Job metadata differs: execution reports its job ID and actual usage; a dry run estimates usage.
@@ -512,6 +491,20 @@ where
 pub(crate) fn execute_failure(statement: &mut impl Statement) -> (Status, String) {
     let error = outcome(statement.execute()).expect_err("the statement was expected to fail");
     (error.status, error.message)
+}
+
+/// The values of the first column of `batches`, a non-null `Int64` column.
+#[track_caller]
+pub(crate) fn int64_column(batches: &[RecordBatch]) -> Vec<i64> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            typed::<Int64Array>(batch.column(0).as_ref())
+                .values()
+                .iter()
+                .copied()
+        })
+        .collect()
 }
 
 /// The total row count of `batches`.

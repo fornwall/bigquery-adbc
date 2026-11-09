@@ -16,15 +16,14 @@ use arrow_array::{
     TimestampMicrosecondArray,
 };
 use arrow_buffer::{IntervalDayTime, IntervalMonthDayNano, NullBuffer};
-use arrow_schema::{ArrowError, DataType, Field, IntervalUnit, Metadata, Schema};
+use arrow_schema::{DataType, Field, IntervalUnit, Metadata, Schema};
 
 use crate::support::{
     DropTable, assert_bignumeric_extremes, assert_decimal_domain_result, bignumeric_extremes_batch,
-    bignumeric_extremes_select, bool_at, connect, connect_at_location, connect_with_dataset,
-    connect_with_dataset_at, count_rows, date_value, decimal_domain_batch, execute_sql, i64_at,
-    interval_at, list_at, named_parameter_query, prepare_query, project,
-    schema_without_job_metadata, scratch_table, set_option, single_batch, str_at, struct_at,
-    ts_value, typed,
+    bignumeric_extremes_select, bool_at, connect, connect_at_location, connect_with_dataset_at,
+    count_rows, date_value, decimal_domain_batch, execute_sql, i64_at, int64_batch, interval_at,
+    list_at, named_parameter_query, prepare_query, project, schema_without_job_metadata,
+    scratch_table, set_option, single_batch, str_at, struct_at, ts_value, typed,
 };
 
 #[test]
@@ -32,12 +31,7 @@ use crate::support::{
 fn executes_and_reads_parameterized_query_partitions() {
     let mut connection = connect(project());
     let mut statement = prepare_query(&mut connection, "SELECT ? AS value");
-    statement
-        .bind(
-            RecordBatch::try_from_iter([("", Arc::new(Int64Array::from(vec![7, 8])) as ArrayRef)])
-                .unwrap(),
-        )
-        .unwrap();
+    statement.bind(int64_batch("", vec![7, 8])).unwrap();
 
     let result = statement.execute_partitions().unwrap();
     // Each parameter row's job has completed, and each returned one row.
@@ -68,64 +62,41 @@ fn executes_and_reads_parameterized_query_partitions() {
     );
 }
 
-/// A DML statement returns no rows, so a caller has no reason to read its stream: every bound row
-/// has run when `execute` returns, as a DB-API `execute` that closes the cursor relies on.
+/// Every bound row has run when `execute` returns, for DML and for a query writing to an explicit
+/// destination. DML returns no rows, so a caller has no reason to read its stream, as a DB-API
+/// `execute` that closes the cursor relies on.
 #[test]
 #[ignore = "requires Google Cloud ADC and access to the integration project"]
-fn executes_every_bound_dml_row_before_execute_returns() {
-    let mut connection = connect_with_dataset();
-    let table = scratch_table("multi_row_dml");
-    let _drop = DropTable::table(&table);
+fn executes_every_bound_row_before_execute_returns() {
+    let mut connection = connect_with_dataset_at("US");
+    let target = scratch_table("multi_row_dml");
+    let destination = scratch_table("bound_destination");
+    let _drop_target = DropTable::table(&target);
+    let _drop_destination = DropTable::table(&destination);
     execute_sql(
         &mut connection,
-        &format!("CREATE TABLE `{table}` (a INT64)"),
+        &format!("CREATE TABLE `{target}` (a INT64)"),
     );
-    let mut statement = prepare_query(
+    let insert = prepare_query(
         &mut connection,
-        &format!("INSERT INTO `{table}` (a) VALUES (?)"),
+        &format!("INSERT INTO `{target}` (a) VALUES (?)"),
     );
-    statement
-        .bind(
-            RecordBatch::try_from_iter([(
-                "",
-                Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
-            )])
-            .unwrap(),
-        )
-        .unwrap();
-    drop(statement.execute().unwrap());
-    assert_eq!(count_rows(&mut connection, &table), 3);
-}
-
-#[test]
-#[ignore = "requires Google Cloud ADC and access to the integration project"]
-fn writes_every_bound_row_to_an_explicit_destination_before_execute_returns() {
-    let mut connection = connect_with_dataset_at("US");
-    let table = scratch_table("bound_destination");
-    let _drop = DropTable::table(&table);
-    let mut statement = prepare_query(&mut connection, "SELECT ? AS value");
+    let mut select = prepare_query(&mut connection, "SELECT ? AS value");
     set_option(
-        &mut statement,
+        &mut select,
         BigQueryStatementOption::DestinationTable,
-        table.clone(),
+        destination.clone(),
     );
     set_option(
-        &mut statement,
+        &mut select,
         BigQueryStatementOption::WriteDisposition,
         BigQueryWriteDisposition::WriteAppend,
     );
-    statement
-        .bind(
-            RecordBatch::try_from_iter([(
-                "",
-                Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
-            )])
-            .unwrap(),
-        )
-        .unwrap();
-
-    drop(statement.execute().unwrap());
-    assert_eq!(count_rows(&mut connection, &table), 3);
+    for (mut statement, table) in [(insert, &target), (select, &destination)] {
+        statement.bind(int64_batch("", vec![1, 2, 3])).unwrap();
+        drop(statement.execute().unwrap());
+        assert_eq!(count_rows(&mut connection, table), 3, "{table}");
+    }
 }
 
 #[test]
@@ -183,21 +154,10 @@ fn executes_named_parameters_for_each_bound_row() {
     assert_eq!(timestamps, [1_000_001, 2_000_002]);
 
     let mut positional = prepare_query(&mut connection, "SELECT ? AS value");
-    let stream_schema = Arc::new(Schema::new(vec![Field::new("", DataType::Int64, false)]));
-    let batches = [7, 8].map(|value| {
-        Ok::<_, ArrowError>(
-            RecordBatch::try_new(
-                stream_schema.clone(),
-                vec![Arc::new(Int64Array::from(vec![value]))],
-            )
-            .unwrap(),
-        )
-    });
+    let batches = [7, 8].map(|value| int64_batch("", vec![value]));
+    let schema = batches[0].schema();
     positional
-        .bind_stream(Box::new(RecordBatchIterator::new(
-            batches.into_iter(),
-            stream_schema,
-        )))
+        .bind_stream(Box::new(RecordBatchIterator::new(batches.map(Ok), schema)))
         .unwrap();
     let values = positional
         .execute()
@@ -213,8 +173,6 @@ fn executes_named_parameters_for_each_bound_row() {
 #[ignore = "requires Google Cloud ADC and access to the integration project"]
 fn a_placeholder_style_mismatch_names_the_parameter_mode_to_set() {
     let mut connection = connect(project());
-    let batch =
-        || RecordBatch::try_from_iter([("x", Arc::new(Int64Array::from(vec![1])) as ArrayRef)]);
     for (mut statement, remedy) in [
         (
             prepare_query(&mut connection, "SELECT @x + 1"),
@@ -225,7 +183,7 @@ fn a_placeholder_style_mismatch_names_the_parameter_mode_to_set() {
             "Positional parameters are not supported at [1:8]",
         ),
     ] {
-        statement.bind(batch().unwrap()).unwrap();
+        statement.bind(int64_batch("x", vec![1])).unwrap();
         let failure = statement.execute().err().unwrap();
         assert_eq!(failure.status, Status::InvalidArguments);
         let expected_mode = if remedy.starts_with("Named") {
@@ -392,12 +350,7 @@ fn gets_server_inferred_parameter_schemas() {
 
     // After execution consumes the binding, the statement is still describable.
     let mut consumed = prepare_query(&mut connection, "SELECT ? + 1 AS answer");
-    consumed
-        .bind(
-            RecordBatch::try_from_iter([("", Arc::new(Int64Array::from(vec![7])) as ArrayRef)])
-                .unwrap(),
-        )
-        .unwrap();
+    consumed.bind(int64_batch("", vec![7])).unwrap();
     consumed.execute_update().unwrap();
     let schema = consumed.execute_schema().unwrap();
     assert_eq!(schema.field(0).name(), "answer");
@@ -676,11 +629,13 @@ fn executes_rich_logical_parameters() {
 }
 
 /// A NULL parameter keeps its type: pandas and polars bind missing values as typed nulls, and
-/// BigQuery resolves function signatures from the declared type. Each expression type-checks only
-/// for its own type (an untyped or `STRING` NULL fails with "No matching signature").
+/// BigQuery resolves function signatures from the declared type. An Arrow `Null` column, which
+/// pyarrow infers for an all-`None` one, binds as a NULL of the type its `BIGQUERY:type` names.
+/// Each expression type-checks only for its own type (an untyped or `STRING` NULL fails with "No
+/// matching signature").
 #[test]
 #[ignore = "requires Google Cloud ADC and access to the integration project"]
-fn binds_typed_null_scalars() {
+fn binds_typed_null_parameters() {
     let mut connection = connect(project());
     let mut statement = named_parameter_query(
         &mut connection,
@@ -688,7 +643,9 @@ fn binds_typed_null_scalars() {
          CONCAT(@text, 'x') IS NULL, BYTE_LENGTH(@bytes) IS NULL, \
          DATE_ADD(@date, INTERVAL 1 DAY) IS NULL, \
          TIMESTAMP_ADD(@instant, INTERVAL 1 SECOND) IS NULL, \
-         DATETIME_ADD(@civil, INTERVAL 1 SECOND) IS NULL, @numeric + 1 IS NULL] AS null_results",
+         DATETIME_ADD(@civil, INTERVAL 1 SECOND) IS NULL, @numeric + 1 IS NULL, \
+         @null_integer + 1 IS NULL, DATE_ADD(@null_date, INTERVAL 1 DAY) IS NULL, \
+         JSON_TYPE(@null_document) IS NULL] AS null_results",
     );
     let columns: Vec<(&str, ArrayRef)> = vec![
         ("integer", Arc::new(Int64Array::from(vec![None]))),
@@ -714,8 +671,22 @@ fn binds_typed_null_scalars() {
             ),
         ),
     ];
+    let untyped = [
+        ("null_integer", "INT64"),
+        ("null_date", "DATE"),
+        ("null_document", "JSON"),
+    ];
+    let (fields, columns): (Vec<_>, Vec<_>) = columns
+        .into_iter()
+        .map(|(name, column)| (Field::new(name, column.data_type().clone(), true), column))
+        .chain(untyped.map(|(name, rich_type)| {
+            let field = Field::new(name, DataType::Null, true)
+                .with_metadata(Metadata::new().with("BIGQUERY:type", rich_type));
+            (field, Arc::new(NullArray::new(1)) as ArrayRef)
+        }))
+        .unzip();
     statement
-        .bind(RecordBatch::try_from_iter(columns).unwrap())
+        .bind(RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap())
         .unwrap();
 
     let batch = single_batch(&mut statement);
@@ -724,41 +695,6 @@ fn binds_typed_null_scalars() {
         typed::<BooleanArray>(nulls.as_ref())
             .iter()
             .collect::<Vec<_>>(),
-        [Some(true); 9]
-    );
-}
-
-/// An Arrow `Null` column, which pyarrow infers for an all-`None` one, binds as a NULL of the type
-/// its `BIGQUERY:type` names; each expression type-checks only for that type.
-#[test]
-#[ignore = "requires Google Cloud ADC and access to the integration project"]
-fn binds_null_columns_as_the_type_their_metadata_names() {
-    let mut connection = connect(project());
-    let mut statement = named_parameter_query(
-        &mut connection,
-        "SELECT [@integer + 1 IS NULL, DATE_ADD(@date, INTERVAL 1 DAY) IS NULL, \
-         JSON_TYPE(@document) IS NULL] AS null_results",
-    );
-    let field = |name: &str, rich_type: &str| {
-        Field::new(name, DataType::Null, true)
-            .with_metadata(Metadata::new().with("BIGQUERY:type", rich_type))
-    };
-    let schema = Arc::new(Schema::new(vec![
-        field("integer", "INT64"),
-        field("date", "DATE"),
-        field("document", "JSON"),
-    ]));
-    let columns = vec![Arc::new(NullArray::new(1)) as ArrayRef; 3];
-    statement
-        .bind(RecordBatch::try_new(schema, columns).unwrap())
-        .unwrap();
-
-    let batch = single_batch(&mut statement);
-    let nulls = list_at(&batch, 0).value(0);
-    assert_eq!(
-        typed::<BooleanArray>(nulls.as_ref())
-            .iter()
-            .collect::<Vec<_>>(),
-        [Some(true); 3]
+        [Some(true); 12]
     );
 }

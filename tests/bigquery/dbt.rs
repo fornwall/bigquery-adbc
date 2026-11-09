@@ -12,8 +12,8 @@ use arrow_array::{Int64Array, StringArray};
 use base64::Engine;
 
 use crate::support::{
-    DropTable, SCRATCH_DATASET, connect_with_dataset, connect_with_dataset_at, count_rows,
-    execute_sql, open_database, prepare_query, project, read_single_i64, read_single_string,
+    DropTable, SCRATCH_DATASET, TempFile, connect_with_dataset, connect_with_dataset_at,
+    count_rows, db_option, execute_sql, open_database, prepare_query, project, read_single_string,
     report_failed_cleanup, scratch_bucket, scratch_table, set_option, single_batch, typed,
 };
 
@@ -40,14 +40,41 @@ const CSV_SEED_SCHEMA_IPC_BASE64: &str = concat!(
 /// and then refuses the upload; BigQuery bills the job's project instead.
 fn connect_to_storage() -> BigQueryConnection {
     open_database([
-        (BigQueryDatabaseOption::ProjectId.into(), project().into()),
-        (
-            BigQueryDatabaseOption::AuthenticationQuotaProject.into(),
-            project().into(),
+        db_option(BigQueryDatabaseOption::ProjectId, project()),
+        db_option(
+            BigQueryDatabaseOption::AuthenticationQuotaProject,
+            project(),
         ),
     ])
     .new_connection()
     .unwrap()
+}
+
+/// A statement uploading `content` to `bucket` as `object`, the way dbt 2.0 writes a python
+/// model source.
+fn gcs_upload(
+    connection: &mut BigQueryConnection,
+    bucket: &str,
+    object: &str,
+    content: &str,
+) -> BigQueryStatement {
+    let mut statement = connection.new_statement().unwrap();
+    set_option(
+        &mut statement,
+        BigQueryStatementOption::WriteGcsBucket,
+        bucket,
+    );
+    set_option(
+        &mut statement,
+        BigQueryStatementOption::WriteGcsObjectName,
+        object,
+    );
+    set_option(
+        &mut statement,
+        BigQueryStatementOption::WriteGcsContent,
+        content,
+    );
+    statement
 }
 
 /// A unique object name shaped like dbt 2.0's python model source, `{schema}/{alias}.py`.
@@ -68,7 +95,7 @@ const OBJECT_PATH_ESCAPE: &percent_encoding::AsciiSet = &percent_encoding::NON_A
 /// as in [`connect_to_storage`].
 ///
 /// Returns errors rather than panicking so [`DeleteObject`] can use it while unwinding.
-fn try_storage_request(
+fn storage_request(
     method: reqwest::Method,
     url: String,
 ) -> Result<(reqwest::StatusCode, Vec<u8>), Box<dyn std::error::Error>> {
@@ -101,10 +128,6 @@ fn try_storage_request(
     })
 }
 
-fn storage_request(method: reqwest::Method, url: String) -> (reqwest::StatusCode, Vec<u8>) {
-    try_storage_request(method, url).unwrap()
-}
-
 /// The Cloud Storage JSON API URL of one object, with the name escaped into the path.
 fn object_url(object_name: &str, suffix: &str) -> String {
     let scratch_bucket = scratch_bucket();
@@ -120,7 +143,7 @@ struct DeleteObject(String);
 impl Drop for DeleteObject {
     fn drop(&mut self) {
         let scratch_bucket = scratch_bucket();
-        let deleted = match try_storage_request(reqwest::Method::DELETE, object_url(&self.0, "")) {
+        let deleted = match storage_request(reqwest::Method::DELETE, object_url(&self.0, "")) {
             Ok((status, _)) if status.is_success() || status == reqwest::StatusCode::NOT_FOUND => {
                 return;
             }
@@ -134,49 +157,34 @@ impl Drop for DeleteObject {
     }
 }
 
-/// A local seed file, deleted when the test that wrote it ends.
-struct SeedFile(std::path::PathBuf);
+/// The two-row seed that [`CSV_SEED_SCHEMA_IPC_BASE64`] describes.
+///
+/// Load schemas map CSV fields by position after skipping the first line, so header names do not
+/// matter. BigQuery rounds parameterized decimals, decodes BYTES as Base64, and keeps a literal
+/// NULL as STRING data when no null marker is set.
+const SEED_CSV: &[u8] = b"ignored,ignored,ignored,ignored,ignored\n\
+    7,1.239,2026-01-02 03:04:05,SGk=,NULL\n\
+    8,-1.235,2026-01-03 04:05:06,AAE=,\"\"\n";
 
-impl SeedFile {
-    /// Writes the two-row seed that [`CSV_SEED_SCHEMA_IPC_BASE64`] describes, named after `table`.
-    ///
-    /// Load schemas map CSV fields by position after skipping the first line, so header names do
-    /// not matter. BigQuery rounds parameterized decimals, decodes BYTES as Base64, and keeps a
-    /// literal NULL as STRING data when no null marker is set.
-    fn new(table: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("{table}.csv"));
-        std::fs::write(
-            &path,
-            b"ignored,ignored,ignored,ignored,ignored\n\
-              7,1.239,2026-01-02 03:04:05,SGk=,NULL\n\
-              8,-1.235,2026-01-03 04:05:06,AAE=,\"\"\n",
-        )
-        .unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for SeedFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
-
-/// A statement configured the way dbt 2.0 seeds `csv` into `table`.
+/// A statement configured the way dbt 2.0 seeds `csv` into `table`, with the Arrow IPC `schema`,
+/// by default [`CSV_SEED_SCHEMA_IPC_BASE64`].
 fn seed_statement(
     connection: &mut BigQueryConnection,
     table: &str,
-    csv: &SeedFile,
+    csv: &TempFile,
+    schema: Option<Vec<u8>>,
 ) -> BigQueryStatement {
-    let encoded_schema = base64::engine::general_purpose::STANDARD
-        .decode(CSV_SEED_SCHEMA_IPC_BASE64)
-        .unwrap();
+    let schema = schema.unwrap_or_else(|| {
+        base64::engine::general_purpose::STANDARD
+            .decode(CSV_SEED_SCHEMA_IPC_BASE64)
+            .unwrap()
+    });
     let mut seed = connection.new_statement().unwrap();
     set_option(&mut seed, BigQueryStatementOption::DestinationTable, table);
     set_option(
         &mut seed,
         BigQueryStatementOption::CsvSchema,
-        OptionValue::Bytes(encoded_schema),
+        OptionValue::Bytes(schema),
     );
     set_option(
         &mut seed,
@@ -193,9 +201,9 @@ fn loads_dbt_csv_seeds_atomically_with_bigquery_csv_semantics() {
     let table = scratch_table("csv_seed");
     let _drop_table = DropTable::table(&table);
     let mut connection = connect_with_dataset_at("US");
-    let csv = SeedFile::new(&table);
+    let csv = TempFile::new(&format!("{table}.csv"), SEED_CSV);
 
-    let mut seed = seed_statement(&mut connection, &table, &csv);
+    let mut seed = seed_statement(&mut connection, &table, &csv, None);
     let loaded = seed.execute_partitions().unwrap();
     assert_eq!(loaded.rows_affected, 2);
     let job_id = &loaded.schema.metadata()[BIGQUERY_SCHEMA_METADATA_QUERY_ID];
@@ -246,17 +254,15 @@ fn loads_dbt_csv_seeds_with_quoted_newlines() {
     let table = scratch_table("csv_seed_newlines");
     let _drop_table = DropTable::table(&table);
     let mut connection = connect_with_dataset_at("US");
-    let csv = SeedFile(std::env::temp_dir().join(format!("{table}.csv")));
-    std::fs::write(
-        &csv.0,
+    let csv = TempFile::new(
+        &format!("{table}.csv"),
         b"id,amount,civil,payload,label\r\n\
           1,1.00,2026-01-02 03:04:05,SGk=,\"first\nline, with \"\"quotes\"\"\"\r\n\
           2,2.00,2026-01-02 03:04:05,SGk=,\"second\r\nline\"\r\n\
           3,3.00,2026-01-02 03:04:05,SGk=,plain\r\n",
-    )
-    .unwrap();
+    );
 
-    let mut seed = seed_statement(&mut connection, &table, &csv);
+    let mut seed = seed_statement(&mut connection, &table, &csv, None);
     assert_eq!(seed.execute_update().unwrap(), Some(3));
 
     let mut verify = prepare_query(
@@ -314,26 +320,12 @@ fn seed_column_types_are_declared_exactly() {
         .unwrap()
         .finish()
         .unwrap();
-    let csv = SeedFile(std::env::temp_dir().join(format!("{table}.csv")));
-    std::fs::write(&csv.0, "a,b,c,d,e\n1.5,1.2345,1.5,1.5,short\n").unwrap();
+    let csv = TempFile::new(
+        &format!("{table}.csv"),
+        b"a,b,c,d,e\n1.5,1.2345,1.5,1.5,short\n",
+    );
 
-    let mut seed = connection.new_statement().unwrap();
-    set_option(
-        &mut seed,
-        BigQueryStatementOption::DestinationTable,
-        table.as_str(),
-    );
-    set_option(
-        &mut seed,
-        BigQueryStatementOption::CsvSchema,
-        OptionValue::Bytes(encoded_schema),
-    );
-    set_option(
-        &mut seed,
-        BigQueryStatementOption::CsvFilepath,
-        csv.0.to_string_lossy().into_owned(),
-    );
-    seed.set_sql_query("").unwrap();
+    let mut seed = seed_statement(&mut connection, &table, &csv, Some(encoded_schema));
     assert_eq!(seed.execute_update().unwrap(), Some(1));
 
     let mut columns = prepare_query(
@@ -409,50 +401,26 @@ fn copies_partitions_and_tables_without_running_a_query() {
         &format!("CREATE TABLE `{target}` (day DATE, id INT64) PARTITION BY day"),
     );
 
-    // One partition of the source replaces the same partition of the target.
-    assert_eq!(
-        copy_table(
-            &mut connection,
-            &format!("{source}$20240101"),
-            &format!("{target}$20240101"),
-            BigQueryWriteDisposition::WriteTruncate,
-        )
-        .unwrap(),
-        Some(2)
-    );
-    assert_eq!(count_rows(&mut connection, &target), 2);
-    assert_eq!(
-        read_single_i64(&mut prepare_query(
-            &mut connection,
-            &format!("SELECT COUNT(*) FROM `{target}` WHERE day = DATE '2024-01-01'")
-        )),
-        2,
-        "only the decorated partition is copied"
-    );
-
-    // Repeating it truncates rather than accumulating; appending then adds to the same partition.
-    assert_eq!(
-        copy_table(
-            &mut connection,
-            &format!("{source}$20240101"),
-            &format!("{target}$20240101"),
-            BigQueryWriteDisposition::WriteTruncate,
-        )
-        .unwrap(),
-        Some(2)
-    );
-    assert_eq!(count_rows(&mut connection, &target), 2);
-    assert_eq!(
-        copy_table(
-            &mut connection,
-            &format!("{source}$20240101"),
-            &format!("{target}$20240101"),
-            BigQueryWriteDisposition::WriteAppend,
-        )
-        .unwrap(),
-        Some(2)
-    );
-    assert_eq!(count_rows(&mut connection, &target), 4);
+    // One partition of the source replaces the same partition of the target: 2 rows, not the
+    // source's 3. Repeating it truncates rather than accumulating; appending then adds to the
+    // same partition.
+    for (disposition, rows) in [
+        (BigQueryWriteDisposition::WriteTruncate, 2),
+        (BigQueryWriteDisposition::WriteTruncate, 2),
+        (BigQueryWriteDisposition::WriteAppend, 4),
+    ] {
+        assert_eq!(
+            copy_table(
+                &mut connection,
+                &format!("{source}$20240101"),
+                &format!("{target}$20240101"),
+                disposition,
+            )
+            .unwrap(),
+            Some(2)
+        );
+        assert_eq!(count_rows(&mut connection, &target), rows);
+    }
 
     // A whole-table copy creates the destination and keeps the physical layout a CTAS would drop.
     assert_eq!(
@@ -566,9 +534,9 @@ fn seeds_and_copies_without_a_location_run_where_the_dataset_is() {
     let _drop_seeded = DropTable::table(&seeded);
     let _drop_copied = DropTable::table(&copied);
     let mut connection = connect_with_dataset();
-    let csv = SeedFile::new(&seeded);
+    let csv = TempFile::new(&format!("{seeded}.csv"), SEED_CSV);
 
-    let mut seed = seed_statement(&mut connection, &seeded, &csv);
+    let mut seed = seed_statement(&mut connection, &seeded, &csv, None);
     assert_eq!(seed.execute_update().unwrap(), Some(2));
     assert_eq!(
         copy_table(
@@ -656,21 +624,10 @@ fn writes_a_dbt_python_model_source_to_cloud_storage() {
     assert!(object_name.contains('/'), "{object_name}");
     let _delete_object = DeleteObject(object_name.clone());
 
-    let mut connection = connect_to_storage();
-    let mut statement = connection.new_statement().unwrap();
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::WriteGcsBucket,
+    let mut statement = gcs_upload(
+        &mut connect_to_storage(),
         scratch_bucket(),
-    );
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::WriteGcsObjectName,
-        object_name.as_str(),
-    );
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::WriteGcsContent,
+        &object_name,
         CONTENT,
     );
     // dbt 2.0 finalizes the statement with a real, executable query, which must not run.
@@ -683,7 +640,8 @@ fn writes_a_dbt_python_model_source_to_cloud_storage() {
         "an object write affects an unknown number of rows, not zero"
     );
 
-    let (status, metadata) = storage_request(reqwest::Method::GET, object_url(&object_name, ""));
+    let (status, metadata) =
+        storage_request(reqwest::Method::GET, object_url(&object_name, "")).unwrap();
     assert!(status.is_success(), "HTTP {status}");
     let metadata: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
     assert_eq!(
@@ -699,7 +657,7 @@ fn writes_a_dbt_python_model_source_to_cloud_storage() {
     );
 
     let (status, stored) =
-        storage_request(reqwest::Method::GET, object_url(&object_name, "?alt=media"));
+        storage_request(reqwest::Method::GET, object_url(&object_name, "?alt=media")).unwrap();
     assert!(status.is_success(), "HTTP {status}");
     assert_eq!(
         std::str::from_utf8(&stored),
@@ -715,21 +673,10 @@ fn writes_a_dbt_python_model_source_to_cloud_storage() {
 fn a_bucket_the_caller_cannot_write_to_reports_the_cloud_storage_status() {
     crate::backend::require_real_bigquery();
     let bucket = scratch_table("write_gcs_missing").replace('_', "-");
-    let mut connection = connect_to_storage();
-    let mut statement = connection.new_statement().unwrap();
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::WriteGcsBucket,
-        bucket.as_str(),
-    );
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::WriteGcsObjectName,
+    let mut statement = gcs_upload(
+        &mut connect_to_storage(),
+        &bucket,
         "sq_scratch/never_written.py",
-    );
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::WriteGcsContent,
         "print(1)\n",
     );
 

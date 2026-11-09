@@ -4,12 +4,12 @@ use adbc_core::error::Status;
 use adbc_core::options::{ObjectDepth, Statistics};
 use adbc_core::schemas;
 use adbc_core::{Connection, Statement};
-use adbc_driver_bigquery::BigQueryStatement;
+use adbc_driver_bigquery::{BigQueryConnection, BigQueryStatement};
 use arrow_array::{
-    Array, BooleanArray, Int16Array, Int64Array, ListArray, RecordBatchReader, StringArray,
-    StructArray, UnionArray,
+    Array, BooleanArray, Int16Array, Int64Array, ListArray, RecordBatch, RecordBatchReader,
+    StringArray, StructArray, UnionArray,
 };
-use arrow_schema::DataType;
+use arrow_schema::{DataType, Metadata};
 
 use crate::support::{
     DropTable, SCRATCH_DATASET, SHAKESPEARE_ROWS, all_struct_values, connect, connect_at_location,
@@ -89,27 +89,20 @@ fn table_metadata_describes_what_defines_each_relation() {
         &mut connection,
         &format!("ALTER TABLE `{table}` SET OPTIONS(expiration_timestamp=NULL)"),
     );
-    let metadata = connection
-        .get_table_schema(None, None, &table)
-        .unwrap()
-        .metadata()
-        .clone();
-    for (key, expected) in [
-        ("Type", "TABLE"),
-        ("Description", "definition metadata"),
-        ("Labels", r#"{"env":"test"}"#),
-        ("TimePartitioning.Type", "DAY"),
-        ("TimePartitioning.Field", "event_date"),
-        ("TimePartitioning.Expiration", "168h0m0s"),
-        ("RequirePartitionFilter", "true"),
-        ("Clustering.Fields", r#"["id"]"#),
-    ] {
-        assert_eq!(
-            metadata.get(key).map(String::as_str),
-            Some(expected),
-            "{key}"
-        );
-    }
+    let metadata = described(
+        &connection,
+        &table,
+        &[
+            ("Type", "TABLE"),
+            ("Description", "definition metadata"),
+            ("Labels", r#"{"env":"test"}"#),
+            ("TimePartitioning.Type", "DAY"),
+            ("TimePartitioning.Field", "event_date"),
+            ("TimePartitioning.Expiration", "168h0m0s"),
+            ("RequirePartitionFilter", "true"),
+            ("Clustering.Fields", r#"["id"]"#),
+        ],
+    );
     // An unset expiration stays absent.
     assert_eq!(metadata.get("ExpirationTime"), None);
     assert_eq!(metadata.get("ViewQuery"), None);
@@ -118,20 +111,15 @@ fn table_metadata_describes_what_defines_each_relation() {
         &mut connection,
         &format!("CREATE VIEW `{view}` AS SELECT 1 AS x"),
     );
-    let metadata = connection
-        .get_table_schema(None, None, &view)
-        .unwrap()
-        .metadata()
-        .clone();
-    assert_eq!(metadata.get("Type").map(String::as_str), Some("VIEW"));
-    assert_eq!(
-        metadata.get("ViewQuery").map(String::as_str),
-        Some("SELECT 1 AS x")
-    );
-    assert_eq!(
-        metadata.get("UseLegacySQL").map(String::as_str),
-        Some("false"),
-        "this driver runs GoogleSQL only, and reports which dialect defines a view it describes"
+    // This driver runs GoogleSQL only, and reports which dialect defines a view it describes.
+    let metadata = described(
+        &connection,
+        &view,
+        &[
+            ("Type", "VIEW"),
+            ("ViewQuery", "SELECT 1 AS x"),
+            ("UseLegacySQL", "false"),
+        ],
     );
     assert_eq!(metadata.get("Clustering.Fields"), None);
 
@@ -147,23 +135,16 @@ fn table_metadata_describes_what_defines_each_relation() {
              OPTIONS(enable_refresh=true, refresh_interval_minutes=30) AS {materialized_query}"
         ),
     );
-    let metadata = connection
-        .get_table_schema(None, None, &materialized_view)
-        .unwrap()
-        .metadata()
-        .clone();
-    for (key, expected) in [
-        ("Type", "MATERIALIZED_VIEW"),
-        ("MaterializedView.Query", materialized_query.as_str()),
-        ("MaterializedView.EnableRefresh", "true"),
-        ("MaterializedView.RefreshInterval", "30m0s"),
-    ] {
-        assert_eq!(
-            metadata.get(key).map(String::as_str),
-            Some(expected),
-            "{key}"
-        );
-    }
+    described(
+        &connection,
+        &materialized_view,
+        &[
+            ("Type", "MATERIALIZED_VIEW"),
+            ("MaterializedView.Query", materialized_query.as_str()),
+            ("MaterializedView.EnableRefresh", "true"),
+            ("MaterializedView.RefreshInterval", "30m0s"),
+        ],
+    );
 
     // The external table is never read, so its source objects need not exist.
     execute_sql(
@@ -174,28 +155,39 @@ fn table_metadata_describes_what_defines_each_relation() {
              compression='GZIP', ignore_unknown_values=true, max_bad_records=5)"
         ),
     );
+    described(
+        &connection,
+        &external,
+        &[
+            ("Type", "EXTERNAL"),
+            ("ExternalDataConfig.SourceFormat", "CSV"),
+            (
+                "ExternalDataConfig.SourceURIs",
+                format!(r#"["gs://{scratch_bucket}/{external}/*.csv"]"#).as_str(),
+            ),
+            ("ExternalDataConfig.Compression", "GZIP"),
+            ("ExternalDataConfig.IgnoreUnknownValues", "true"),
+            ("ExternalDataConfig.MaxBadRecords", "5"),
+        ],
+    );
+}
+
+/// The `get_table_schema` metadata of `name`, checked to hold `expected`.
+#[track_caller]
+fn described(connection: &BigQueryConnection, name: &str, expected: &[(&str, &str)]) -> Metadata {
     let metadata = connection
-        .get_table_schema(None, None, &external)
+        .get_table_schema(None, None, name)
         .unwrap()
         .metadata()
         .clone();
-    for (key, expected) in [
-        ("Type", "EXTERNAL"),
-        ("ExternalDataConfig.SourceFormat", "CSV"),
-        (
-            "ExternalDataConfig.SourceURIs",
-            format!(r#"["gs://{scratch_bucket}/{external}/*.csv"]"#).as_str(),
-        ),
-        ("ExternalDataConfig.Compression", "GZIP"),
-        ("ExternalDataConfig.IgnoreUnknownValues", "true"),
-        ("ExternalDataConfig.MaxBadRecords", "5"),
-    ] {
+    for (key, value) in expected {
         assert_eq!(
             metadata.get(key).map(String::as_str),
-            Some(expected),
-            "{key}"
+            Some(*value),
+            "{name}: {key}"
         );
     }
+    metadata
 }
 
 #[test]
@@ -270,10 +262,11 @@ fn lists_filtered_public_objects() {
 }
 
 /// `tables.get` answers a name that cannot be a table ID with 400 rather than 404, and resolves a
-/// snapshot decorator to the table; an exact filter naming either still matches no table.
+/// snapshot decorator to the table; `tables.list` answers a name that cannot be a dataset ID with
+/// 400. An exact filter naming any of them still matches nothing.
 #[test]
 #[ignore = "requires Google Cloud ADC and access to bigquery-public-data"]
-fn an_exact_filter_that_is_not_a_table_id_matches_no_table() {
+fn an_exact_filter_that_is_not_an_id_matches_nothing() {
     let connection = connect("bigquery-public-data");
 
     for name in ["a*b", "shakespeare@0", "shakespeare@-3600000"] {
@@ -287,40 +280,53 @@ fn an_exact_filter_that_is_not_a_table_id_matches_no_table() {
                 None,
             )
             .unwrap();
-        let batch = objects.next().unwrap().unwrap();
-        let schemas = all_struct_values(batch.column(1));
-        assert_eq!(schemas.len(), 1, "{name}");
-        assert_eq!(str_value(schemas.column(0)), "samples");
-        assert_eq!(all_struct_values(schemas.column(1)).len(), 0, "{name}");
-
         let mut statistics = connection
             .get_statistics(None, Some("samples"), Some(name), true)
             .unwrap();
-        let batch = statistics.next().unwrap().unwrap();
-        let schemas = all_struct_values(batch.column(1));
-        assert_eq!(schemas.len(), 1, "{name}");
-        assert_eq!(all_struct_values(schemas.column(1)).len(), 0, "{name}");
+        for batch in [objects.next(), statistics.next()] {
+            let schemas = all_struct_values(batch.unwrap().unwrap().column(1));
+            assert_eq!(schemas.len(), 1, "{name}");
+            assert_eq!(str_value(schemas.column(0)), "samples");
+            assert_eq!(all_struct_values(schemas.column(1)).len(), 0, "{name}");
+        }
     }
-}
-
-/// `tables.list` answers a name that cannot be a dataset ID with 400 rather than 404; an exact
-/// dataset filter naming one matches no dataset at table depth.
-#[test]
-#[ignore = "requires Google Cloud ADC and access to bigquery-public-data"]
-fn an_exact_filter_that_is_not_a_dataset_id_matches_no_dataset() {
-    let connection = connect("bigquery-public-data");
 
     let mut objects = connection
         .get_objects(ObjectDepth::Tables, None, Some("a b"), None, None, None)
         .unwrap();
-    let batch = objects.next().unwrap().unwrap();
-    assert_eq!(all_struct_values(batch.column(1)).len(), 0);
-
     let mut statistics = connection
         .get_statistics(None, Some("a b"), None, true)
         .unwrap();
-    let batch = statistics.next().unwrap().unwrap();
-    assert_eq!(all_struct_values(batch.column(1)).len(), 0);
+    for batch in [objects.next(), statistics.next()] {
+        assert_eq!(
+            all_struct_values(batch.unwrap().unwrap().column(1)).len(),
+            0
+        );
+    }
+}
+
+/// The table name, value and approximation flag of the row-count statistic in a
+/// `get_statistics` batch with one catalog and schema.
+#[track_caller]
+fn row_count_statistic(batch: &RecordBatch) -> (String, i64, bool) {
+    let db_schemas = all_struct_values(batch.column(1));
+    assert_eq!(db_schemas.len(), 1);
+    let statistics = all_struct_values(db_schemas.column(1));
+    let row = typed::<Int16Array>(statistics.column(2))
+        .values()
+        .iter()
+        .position(|key| *key == i16::from(Statistics::RowCount))
+        .unwrap();
+    // The union layout is tested offline in `src/connection/statistics.rs`.
+    let values = typed::<UnionArray>(statistics.column(3));
+    assert_eq!(values.type_id(row), 0);
+    (
+        typed::<StringArray>(statistics.column(0))
+            .value(row)
+            .to_owned(),
+        typed::<Int64Array>(values.child(0)).value(values.value_offset(row)),
+        typed::<BooleanArray>(statistics.column(4)).value(row),
+    )
 }
 
 #[test]
@@ -337,22 +343,8 @@ fn gets_public_table_statistics() {
         )
         .unwrap();
     assert_eq!(reader.schema(), schemas::GET_STATISTICS_SCHEMA.clone());
-    let batch = reader.next().unwrap().unwrap();
-    let db_schemas = all_struct_values(batch.column(1));
-    let statistics = all_struct_values(db_schemas.column(1));
-    let keys = typed::<Int16Array>(statistics.column(2).as_ref());
-    let row_count_index = keys
-        .values()
-        .iter()
-        .position(|key| *key == i16::from(Statistics::RowCount))
-        .unwrap();
-    // The union layout is tested offline in `src/connection/statistics.rs`.
-    let values = typed::<UnionArray>(statistics.column(3).as_ref());
-    assert_eq!(values.type_id(row_count_index), 0);
-    assert_eq!(
-        typed::<Int64Array>(values.child(0).as_ref()).value(values.value_offset(row_count_index)),
-        SHAKESPEARE_ROWS
-    );
+    let (table, rows, _) = row_count_statistic(&reader.next().unwrap().unwrap());
+    assert_eq!((table.as_str(), rows), ("shakespeare", SHAKESPEARE_ROWS));
     assert!(reader.next().is_none());
 }
 
@@ -414,27 +406,15 @@ fn gets_hidden_dataset_objects_and_statistics() {
             .unwrap();
         assert_eq!(reader.schema(), schemas::GET_STATISTICS_SCHEMA.clone());
         let batch = reader.next().unwrap().unwrap();
-        let db_schemas = all_struct_values(batch.column(1));
-        assert_eq!(db_schemas.len(), 1);
-        assert_eq!(typed::<StringArray>(db_schemas.column(0)).value(0), dataset);
-        let statistics = all_struct_values(db_schemas.column(1));
-        let keys = typed::<Int16Array>(statistics.column(2));
-        let row_count_index = keys
-            .values()
-            .iter()
-            .position(|key| *key == i16::from(Statistics::RowCount))
-            .unwrap();
         assert_eq!(
-            typed::<StringArray>(statistics.column(0)).value(row_count_index),
-            "events"
+            str_value(all_struct_values(batch.column(1)).column(0)),
+            dataset
         );
-        let values = typed::<UnionArray>(statistics.column(3));
-        assert_eq!(values.type_id(row_count_index), 0);
         assert_eq!(
-            typed::<Int64Array>(values.child(0)).value(values.value_offset(row_count_index)),
-            1
+            row_count_statistic(&batch),
+            ("events".to_owned(), 1, false),
+            "approximate: {approximate}"
         );
-        assert!(!typed::<BooleanArray>(statistics.column(4)).value(row_count_index));
         assert!(reader.next().is_none());
     }
 }

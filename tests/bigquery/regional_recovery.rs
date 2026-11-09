@@ -15,8 +15,8 @@ use google_cloud_auth::credentials::{Builder, CacheableResource, Credentials};
 use serde_json::{Value, json};
 
 use crate::support::{
-    connect_at_location, execute_sql, open_database, prepare_query, project, read_single_i64,
-    report_failed_cleanup, scratch_table, set_option,
+    connect_at_location, db_option, execute_sql, open_database, prepare_query, project,
+    read_single_i64, report_failed_cleanup, scratch_table, set_option,
 };
 
 const REGION: &str = "asia-northeast1";
@@ -424,11 +424,8 @@ impl Proxy {
 
     fn connection(&self) -> BigQueryConnection {
         open_database([
-            (BigQueryDatabaseOption::ProjectId.into(), project().into()),
-            (
-                BigQueryDatabaseOption::Endpoint.into(),
-                self.endpoint.clone().into(),
-            ),
+            db_option(BigQueryDatabaseOption::ProjectId, project()),
+            db_option(BigQueryDatabaseOption::Endpoint, self.endpoint.as_str()),
         ])
         .new_connection()
         .unwrap()
