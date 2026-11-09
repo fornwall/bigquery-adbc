@@ -26,12 +26,9 @@ The driver supports the ADBC 1.0 and 1.1 C interfaces and GoogleSQL:
   ([DBT.md](docs/DBT.md)).
 
 Legacy SQL, load jobs for ADBC bulk ingestion, incremental execution and temporary-table ingestion
-are not supported. dbt CSV seeds use a separate [load-job path](docs/DBT.md#csv-seeds).
-See the [known limitations](docs/LIMITATIONS.md) and the
+are not supported; dbt CSV seeds use a separate [load-job path](docs/DBT.md#csv-seeds). See the
+[known limitations](docs/LIMITATIONS.md) and the
 [differences from the Go driver](docs/GO-DRIVER-COMPARISON.md), the reference implementation.
-
-See [binary size](docs/BINARY-SIZE.md) and [performance](docs/PERFORMANCE.md#live-dbt-workload)
-for measurements and reproduction commands.
 
 ## Quickstart
 
@@ -43,9 +40,9 @@ python3 -m venv .venv
 python -m pip install "bigquery-adbc[dbapi]"
 ```
 
-The `dbapi` extra installs PyArrow; the `pandas` extra also adds pandas for `cursor.fetch_df()`. To
-build from source instead, see the [Python package](python/README.md#install).
-Configure Application Default Credentials (ADC) with the Google Cloud CLI:
+The `dbapi` extra installs PyArrow; the `pandas` extra also adds pandas for `cursor.fetch_df()`.
+To build from source, see the [Python package](python/README.md#install). Configure Application
+Default Credentials (ADC):
 
 ```sh
 gcloud auth application-default login
@@ -62,9 +59,8 @@ with dbapi.connect("bigquery:///my-project", autocommit=True) as connection:
         print(cursor.fetchone())  # (1,)
 ```
 
-Use `cursor.fetch_arrow_table()` for Arrow or `cursor.fetch_df()` for pandas.
-
-Use `autocommit=True` for independent queries. The DB-API default, `False`, opens a BigQuery
+Use `cursor.fetch_arrow_table()` for Arrow or `cursor.fetch_df()` for pandas. Use
+`autocommit=True` for independent queries: the DB-API default, `False`, opens a BigQuery
 transaction session when a query needs one, which adds round trips, and leaving the `with` block
 rolls back uncommitted work unless you call `connection.commit()`.
 
@@ -74,18 +70,16 @@ See [connection URIs](docs/REFERENCE.md#connection-uris),
 
 ## C and C++
 
-Build the shared library from the repository root:
+[GitHub releases](https://github.com/fornwall/bigquery-adbc/releases) provide native archives for
+Linux x86-64 and AArch64 (glibc 2.28 or newer), macOS x86-64 and arm64, and Windows x86-64, with a
+`SHA256SUMS` file. To build the shared library from the repository root:
 
 ```sh
 cargo rustc --release --locked --lib --crate-type cdylib
 ```
 
 This writes `target/release/libadbc_driver_bigquery.so` on Linux, `libadbc_driver_bigquery.dylib`
-on macOS, or `adbc_driver_bigquery.dll` on Windows. `cargo build` produces only the Rust library.
-
-[GitHub releases](https://github.com/fornwall/bigquery-adbc/releases) provide native archives for
-Linux x86-64 and AArch64 (glibc 2.28 or newer), macOS x86-64 and arm64, and Windows x86-64,
-with a `SHA256SUMS` file.
+on macOS, or `adbc_driver_bigquery.dll` on Windows; `cargo build` produces only the Rust library.
 
 The library exports `AdbcDriverBigqueryInit` and the generic `AdbcDriverInit`. Link your
 application with `-ladbc_driver_manager`, include `<arrow-adbc/adbc.h>`, and point the driver
@@ -98,24 +92,20 @@ AdbcDatabaseSetOption(&database, "uri", "bigquery:///my-project", &error);
 AdbcDatabaseInit(&database, &error);
 ```
 
-[`examples/query.c`](examples/query.c) is a complete program. Check each `AdbcStatusCode`, release
-Arrow streams and ADBC handles on every path, and call `AdbcError.release` when non-null. Keep the
-library loaded for the process lifetime: `AdbcDriver.release` does not stop its worker threads.
-The reference C driver manager never unloads drivers.
+[`examples/query.c`](examples/query.c) is a complete program. Keep the library loaded for the
+process lifetime: `AdbcDriver.release` does not stop its worker threads (the reference C driver
+manager never unloads drivers).
 
 ### Loading by name
 
 The [native packaging command](CONTRIBUTING.md#distribution-packaging) creates an archive with
 the library, license notices and `bigquery-adbc.toml`, a
 [driver manifest](https://arrow.apache.org/adbc/current/format/driver_manifests.html) that lets ADBC
-clients load the driver by name instead of by path. It expects the library in `/usr/local/lib` on
-Linux and macOS, and in `C:\Program Files\ADBC\Drivers` on Windows. For any other location, edit
-`Driver.shared`: a path must be absolute or on the dynamic loader's search path, because it is not
-resolved relative to the manifest.
-
+clients load the driver by name. It expects the library in `/usr/local/lib` on Linux and macOS, and
+in `C:\Program Files\ADBC\Drivers` on Windows; elsewhere, set `Driver.shared` to an absolute path
+or a name on the dynamic loader's search path (it is not resolved relative to the manifest).
 Install the manifest in `~/.config/adbc/drivers` on Linux,
-`~/Library/Application Support/ADBC/Drivers` on macOS, or `%LOCALAPPDATA%\ADBC\Drivers` on Windows.
-On Linux:
+`~/Library/Application Support/ADBC/Drivers` on macOS, or `%LOCALAPPDATA%\ADBC\Drivers` on Windows:
 
 ```sh
 sudo cp libadbc_driver_bigquery.so /usr/local/lib/
@@ -123,24 +113,24 @@ mkdir -p ~/.config/adbc/drivers
 cp bigquery-adbc.toml ~/.config/adbc/drivers/
 ```
 
-Then set `driver` to `bigquery-adbc`. The C driver manager looks for manifests only when asked to,
-so in C either set `driver` to the manifest's path or include `<arrow-adbc/adbc_driver_manager.h>`
-and enable the lookup first:
+Then set `driver` to `bigquery-adbc`. The C driver manager looks for manifests only when asked, so
+in C either set `driver` to the manifest's path or enable the lookup
+(`<arrow-adbc/adbc_driver_manager.h>`):
 
 ```c
 AdbcDriverManagerDatabaseSetLoadFlags(&database, ADBC_LOAD_FLAG_DEFAULT, &error);
 AdbcDatabaseSetOption(&database, "driver", "bigquery-adbc", &error);
 ```
 
-A driver's name is its manifest's file name, so this one can be installed beside a different
-`bigquery` driver. To also select it from a `bigquery://` URI with no `driver` option, install the
-manifest as `bigquery.toml` instead.
+A driver's name is its manifest's file name, so this one can coexist with another `bigquery`
+driver; install the manifest as `bigquery.toml` to also select it from a `bigquery://` URI with no
+`driver` option.
 
 ## Rust
 
-The supported interfaces are C and Python. The Rust crate is Git-only and unstable. See the
-[Rust API reference](docs/REFERENCE.md#rust-api) for required dependency revisions and patches.
-From a checkout, run [`examples/query.rs`](examples/query.rs) with:
+The supported interfaces are C and Python; the Rust crate is Git-only and unstable (see the
+[Rust API reference](docs/REFERENCE.md#rust-api)). From a checkout, run
+[`examples/query.rs`](examples/query.rs):
 
 ```sh
 cargo run --locked --example query -- my-project "SELECT 1 AS n"
@@ -169,12 +159,9 @@ with dbapi.connect("bigquery:///my-project", autocommit=True) as connection:
         print(rows)  # 3
 ```
 
-Ingestion requires autocommit. See [bulk ingest](docs/REFERENCE.md#bulk-ingest) for the other
-modes, column matching and failure handling.
-
-Parameters are bound as an Arrow record batch, and the statement runs once per row. Placeholders
-are positional (`?`) by default; in named mode each field fills the `@name` placeholder matching
-its name:
+Ingestion requires autocommit; see [bulk ingest](docs/REFERENCE.md#bulk-ingest). Parameters are
+bound as an Arrow record batch and the statement runs once per row. Placeholders are positional
+(`?`) by default; in named mode each field fills the `@name` placeholder matching its name:
 
 ```python
 import pyarrow as pa
@@ -191,15 +178,15 @@ with dbapi.connect("bigquery:///my-project", autocommit=True) as connection:
         print(cursor.fetchone())  # (7,)
 ```
 
-The standard `adbc.statement.bind_by_name=true` also selects named mode. See
-[bound parameters](docs/REFERENCE.md#bound-parameters) for the Arrow type mapping.
+`adbc.statement.bind_by_name=true` also selects named mode. See
+[bound parameters](docs/REFERENCE.md#bound-parameters).
 
 ## Testing
 
-CI runs Rust unit and mock tests on Linux, macOS and Windows, Python unit tests on Linux, wheel
-installation tests, Miri on the FFI layer, and fuzzing of the IPC and REST decoders. Live suites cover
-Rust, Python, ADBC C++ validation, Driver Foundry, DuckDB and dbt; they require a Google Cloud
-project and run outside CI. See [setup and coverage](CONTRIBUTING.md#live-tests).
+CI runs Rust unit and mock tests on Linux, macOS and Windows, Python unit and wheel tests, Miri on
+the FFI layer, and fuzzing of the IPC and REST decoders. Live suites (Rust, Python, ADBC C++
+validation, Driver Foundry, DuckDB and dbt) need a Google Cloud project and run outside CI; see
+[live tests](CONTRIBUTING.md#live-tests).
 
 ## Documentation
 
@@ -222,5 +209,5 @@ project and run outside CI. See [setup and coverage](CONTRIBUTING.md#live-tests)
 [Apache License, Version 2.0](LICENSE). See [NOTICE](NOTICE) for adapted-source attribution.
 Wheels and native release archives include the
 [dependency licenses](python/licenses/THIRD_PARTY_LICENSES.txt) and
-[Rust standard-library notices](python/licenses/RUST-STD.html).
-See [distribution packaging](CONTRIBUTING.md#distribution-packaging) before distributing a native build.
+[Rust standard-library notices](python/licenses/RUST-STD.html); see
+[distribution packaging](CONTRIBUTING.md#distribution-packaging) before distributing a native build.
