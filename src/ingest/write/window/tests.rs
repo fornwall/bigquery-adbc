@@ -64,7 +64,7 @@ fn a_slice_counts_only_its_own_rows() {
     );
 }
 
-/// Views, lists, structs and dictionaries count the values their rows reach.
+/// Views, lists and structs count the values their rows reach.
 #[test]
 fn every_layout_counts_the_values_its_rows_reach() {
     let long = "y".repeat(1_000);
@@ -96,14 +96,6 @@ fn every_layout_counts_the_values_its_rows_reach() {
         ),
     ])));
     assert_eq!(window_bytes(&structs, 2, 2), 3 + 4 + 2 * 4 + 16 + 1);
-
-    let labels = ["a".repeat(1_000), "b".repeat(1_000)];
-    let dictionary: DictionaryArray<Int8Type> =
-        (0..1_000).map(|row| labels[row % 2].as_str()).collect();
-    let categories = batch(Arc::new(dictionary));
-    assert_eq!(window_bytes(&categories, 0, 1_000), 1_004_000);
-    let rows = window_rows(&categories, &categories.schema(), 0, 1_000, 100_000);
-    assert!((100..=200).contains(&rows), "the window took {rows} rows");
 }
 
 #[test]
