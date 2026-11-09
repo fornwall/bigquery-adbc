@@ -5,10 +5,11 @@ use std::time::Duration;
 
 use adbc_core::error::Status;
 use google_cloud_auth::credentials::{
-    CacheableResource, Credentials, CredentialsProvider, EntityTag,
+    CacheableResource, Credentials, CredentialsProvider, EntityTag, anonymous,
 };
 use google_cloud_gax::error::CredentialsError;
 use http::{Extensions, HeaderMap};
+use serde_json::json;
 use tokio::sync::Notify;
 use tokio::time::Instant;
 
@@ -17,13 +18,13 @@ use crate::rest::client::rest_client;
 use crate::rest::request::Request;
 use crate::rest::retry::MAX_ATTEMPTS;
 use crate::test_support::errors::assert_failure;
-use crate::test_support::http::ok;
+use crate::test_support::http::{capture_requests, capture_requests_until_stopped, ok};
 
 #[test]
 fn an_expired_request_budget_sends_nothing() {
     let runtime = crate::runtime::new_runtime().unwrap();
     let (_cancellation, operation) = poller_operation(&runtime);
-    let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
+    let credentials = anonymous::Builder::new().build();
     let mut poller = test_poller(&operation, &credentials, "http://unused".to_owned());
     poller.backoff.deadline = Some(Instant::now());
     let attempts = std::cell::Cell::new(0);
@@ -47,7 +48,7 @@ fn request_retries_stop_when_the_deadline_expires_during_backoff() {
 
     let driver_runtime = crate::runtime::new_runtime().unwrap();
     let (_cancellation, operation) = poller_operation(&driver_runtime);
-    let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
+    let credentials = anonymous::Builder::new().build();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .start_paused(true)
@@ -90,23 +91,16 @@ fn request_retries_stop_when_the_deadline_expires_during_backoff() {
 fn malformed_completion_flags_fail_without_polling() {
     let runtime = crate::runtime::new_runtime().unwrap();
     let (_cancellation, operation) = poller_operation(&runtime);
-    let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
-    let (endpoint, server) = crate::test_support::http::capture_requests_until_stopped(vec![ok(
-        serde_json::json!({"done": true}),
-    )]);
+    let credentials = anonymous::Builder::new().build();
+    let (endpoint, server) = capture_requests_until_stopped(vec![ok(json!({"done": true}))]);
     let mut poller = test_poller(&operation, &credentials, endpoint.clone());
 
-    for done in [
-        serde_json::json!("true"),
-        serde_json::json!(0),
-        serde_json::json!([]),
-        serde_json::json!({}),
-    ] {
+    for done in [json!("true"), json!(0), json!([]), json!({})] {
         let failure = runtime
             .block_on(poller.wait_until_done(
                 &format!("{endpoint}/v1/operations/1"),
                 "poll the operation",
-                serde_json::json!({"done": done}),
+                json!({"done": done}),
             ))
             .unwrap_err();
         assert_failure(&failure, Status::InvalidData, &["non-boolean done field"]);
@@ -118,21 +112,21 @@ fn malformed_completion_flags_fail_without_polling() {
 fn unset_completion_flags_poll_until_done() {
     let runtime = crate::runtime::new_runtime().unwrap();
     let (_cancellation, operation) = poller_operation(&runtime);
-    let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
-    let (endpoint, captured) = crate::test_support::http::capture_requests(vec![
-        ok(serde_json::json!({"done": null})),
-        ok(serde_json::json!({"done": false})),
-        ok(serde_json::json!({"done": true})),
+    let credentials = anonymous::Builder::new().build();
+    let (endpoint, captured) = capture_requests(vec![
+        ok(json!({"done": null})),
+        ok(json!({"done": false})),
+        ok(json!({"done": true})),
     ]);
     let mut poller = test_poller(&operation, &credentials, endpoint.clone());
     let completed = runtime
         .block_on(poller.wait_until_done(
             &format!("{endpoint}/v1/operations/1"),
             "poll the operation",
-            serde_json::json!({}),
+            json!({}),
         ))
         .unwrap();
-    assert_eq!(completed, serde_json::json!({"done": true}));
+    assert_eq!(completed, json!({"done": true}));
     assert_eq!(captured.join().unwrap().len(), 3);
 }
 
@@ -149,8 +143,7 @@ fn response_resource_names_cannot_change_the_request_path() {
         "projects/./operations/1",
         "operations/..",
     ] {
-        let failure =
-            super::resource_name(&serde_json::json!({"name": name}), "operation").unwrap_err();
+        let failure = super::resource_name(&json!({"name": name}), "operation").unwrap_err();
         assert_eq!(failure.status, Status::InvalidData, "{name:?}");
     }
     for name in [
@@ -159,7 +152,7 @@ fn response_resource_names_cannot_change_the_request_path() {
         "operations/a.b",
     ] {
         assert_eq!(
-            super::resource_name(&serde_json::json!({"name": name}), "operation").unwrap(),
+            super::resource_name(&json!({"name": name}), "operation").unwrap(),
             name,
         );
     }
@@ -216,21 +209,21 @@ fn a_poll_absorbs_every_transient_failure_but_the_last_of_its_budget() {
     let unavailable = || {
         (
             500,
-            serde_json::json!({"error": {"message": "the service is unavailable"}}),
+            json!({"error": {"message": "the service is unavailable"}}),
         )
     };
 
     // One short of the budget, followed by the answer the wait was after.
     let mut responses: Vec<_> = std::iter::repeat_with(unavailable).take(absorbed).collect();
-    responses.push(ok(serde_json::json!({"done": true})));
-    let (endpoint, captured) = crate::test_support::http::capture_requests(responses);
+    responses.push(ok(json!({"done": true})));
+    let (endpoint, captured) = capture_requests(responses);
     let (cancellation, operation) = poller_operation(&runtime);
-    let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
+    let credentials = anonymous::Builder::new().build();
     let mut poller = test_poller(&operation, &credentials, endpoint.clone());
     let polled = runtime
         .block_on(poller.poll(&format!("{endpoint}/v1/operations/1"), "poll it"))
         .unwrap();
-    assert_eq!(polled, serde_json::json!({"done": true}));
+    assert_eq!(polled, json!({"done": true}));
     assert_eq!(captured.join().unwrap().len(), absorbed + 1);
     drop(cancellation);
 
@@ -238,7 +231,7 @@ fn a_poll_absorbs_every_transient_failure_but_the_last_of_its_budget() {
     let responses: Vec<_> = std::iter::repeat_with(unavailable)
         .take(absorbed + 1)
         .collect();
-    let (endpoint, captured) = crate::test_support::http::capture_requests(responses);
+    let (endpoint, captured) = capture_requests(responses);
     let (_cancellation, operation) = poller_operation(&runtime);
     let mut poller = test_poller(&operation, &credentials, endpoint.clone());
     let failure = runtime
@@ -258,11 +251,11 @@ fn a_poll_absorbs_every_transient_failure_but_the_last_of_its_budget() {
 fn a_poll_outlasts_an_outage_within_its_limit() {
     let runtime = crate::runtime::new_runtime().unwrap();
     let outage = usize::try_from(MAX_ATTEMPTS).unwrap() + 2;
-    let mut responses = vec![(500, serde_json::json!({"error": {"message": "down"}})); outage];
-    responses.push(ok(serde_json::json!({"done": true})));
-    let (endpoint, captured) = crate::test_support::http::capture_requests(responses);
+    let mut responses = vec![(500, json!({"error": {"message": "down"}})); outage];
+    responses.push(ok(json!({"done": true})));
+    let (endpoint, captured) = capture_requests(responses);
     let (_cancellation, operation) = poller_operation(&runtime);
-    let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
+    let credentials = anonymous::Builder::new().build();
     let mut poller = test_poller(&operation, &credentials, endpoint.clone());
     poller.outage = Duration::from_secs(60);
 
@@ -281,10 +274,10 @@ fn a_poll_outlasts_an_outage_within_its_limit() {
 fn a_rate_limited_poll_waits_the_quota_window_without_outliving_the_deadline() {
     let runtime = crate::runtime::new_runtime().unwrap();
     let (_cancellation, operation) = poller_operation(&runtime);
-    let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
-    let (endpoint, server) = crate::test_support::http::capture_requests_until_stopped(
+    let credentials = anonymous::Builder::new().build();
+    let (endpoint, server) = capture_requests_until_stopped(
         (0..MAX_ATTEMPTS)
-            .map(|_| (429, serde_json::json!({"error": {"message": "slow down"}})))
+            .map(|_| (429, json!({"error": {"message": "slow down"}})))
             .collect(),
     );
     let client = rest_client("poll quota test").unwrap();
@@ -360,9 +353,7 @@ fn a_cancel_during_the_token_mint_sends_nothing() {
         let token = Arc::new(Notify::new());
         let credentials = Credentials::from(HeldToken(token.clone()));
         let (endpoint, server) =
-            crate::test_support::http::capture_requests_until_stopped(vec![ok(
-                serde_json::json!({"name": "operations/1"}),
-            )]);
+            capture_requests_until_stopped(vec![ok(json!({"name": "operations/1"}))]);
         let poller = test_poller(&operation, &credentials, endpoint.clone());
         let url = format!("{endpoint}/v1/submit");
         let factory = || Request::post_json(&url, &b"{}"[..], "submit the work");
@@ -424,17 +415,17 @@ fn test_poller<'a>(
 #[test]
 fn a_failed_operation_forwards_its_status_details() {
     for completed in [
-        serde_json::json!({"done": true}),
-        serde_json::json!({"done": true, "error": null, "response": {}}),
+        json!({"done": true}),
+        json!({"done": true, "error": null, "response": {}}),
     ] {
         assert!(super::operation_failure(&completed, "operation", "no message").is_none());
     }
-    let error_info = serde_json::json!({
+    let error_info = json!({
         "@type": "type.googleapis.com/google.rpc.ErrorInfo",
         "reason": "QUOTA_EXCEEDED",
         "domain": "dataproc.googleapis.com",
     });
-    let completed = serde_json::json!({
+    let completed = json!({
         "done": true,
         "error": {
             "code": 8,
@@ -454,7 +445,7 @@ fn a_failed_operation_forwards_its_status_details() {
 
     // A status without details records only the code.
     let bare = super::operation_failure(
-        &serde_json::json!({"done": true, "error": {"code": 5, "message": "gone"}}),
+        &json!({"done": true, "error": {"code": 5, "message": "gone"}}),
         "the Dataproc batch failed",
         "no message",
     )
