@@ -1,6 +1,7 @@
 # Current dbt BigQuery integration issues
 
-Issues the integration suite pins, with the dbt version named in [README.md](README.md).
+Issues the integration suite pins against the dbt commit that
+[`tools/dbt-build`](../../tools/dbt-build/README.md) builds.
 
 ## Nested `persist_docs` never reaches BigQuery
 
