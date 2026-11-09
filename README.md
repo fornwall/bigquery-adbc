@@ -83,10 +83,9 @@ cargo rustc --release --locked --lib --crate-type cdylib
 This writes `target/release/libadbc_driver_bigquery.so` on Linux, `libadbc_driver_bigquery.dylib`
 on macOS, or `adbc_driver_bigquery.dll` on Windows. `cargo build` produces only the Rust library.
 
-Releases through 0.1.1 published Python distributions only. The release workflow now prepares
-native archives for Linux x86-64 and AArch64 (glibc 2.28 or newer), macOS x86-64 and arm64, and
-Windows x86-64, with a `SHA256SUMS` file, for the next
-[GitHub release](https://github.com/fornwall/bigquery-adbc/releases).
+[GitHub releases](https://github.com/fornwall/bigquery-adbc/releases) provide native archives for
+Linux x86-64 and AArch64 (glibc 2.28 or newer), macOS x86-64 and arm64, and Windows x86-64,
+with a `SHA256SUMS` file.
 
 The library exports `AdbcDriverBigqueryInit` and the generic `AdbcDriverInit`. Link your
 application with `-ladbc_driver_manager`, include `<arrow-adbc/adbc.h>`, and point the driver
