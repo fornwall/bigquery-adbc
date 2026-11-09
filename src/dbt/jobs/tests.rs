@@ -15,23 +15,22 @@ use crate::rest::jobs::{JobClient, JobReference};
 use crate::rest::retry::MAX_ATTEMPTS;
 use crate::runtime::new_runtime;
 use crate::test_support::driver::{test_connection_at, unlocated_connection_at};
+use crate::test_support::errors::assert_failure;
 use crate::test_support::http::{
     CapturedRequest, CapturedServer, capture_requests, capture_requests_responding,
     capture_requests_until_stopped, error_body, ok,
 };
 use crate::test_support::options::set_option;
-use crate::{BigQueryConnection, BigQueryStatementOption};
+use crate::{BigQueryConnection, BigQueryStatement, BigQueryStatementOption};
 
-/// The two operations sharing this job, by their `what`. Every message is asserted for both, so
-/// each keeps its own wording.
-const OPERATIONS: [&str; 2] = ["CSV load", "table copy"];
+const WHAT: &str = "table copy";
 
 fn requested() -> JobReference {
     JobReference::new("billing-project", Some("EU"), "job-1".to_owned())
 }
 
-fn job(body: &str, what: &str) -> super::LoadOrCopyJob {
-    super::decode_job(body.as_bytes(), what).unwrap()
+fn job(body: &str) -> super::LoadOrCopyJob {
+    super::decode_job(body.as_bytes(), WHAT).unwrap()
 }
 
 /// The identity check is what keeps a recovered submission from being some other job: only the
@@ -39,106 +38,74 @@ fn job(body: &str, what: &str) -> super::LoadOrCopyJob {
 /// one may differ only in case.
 #[test]
 fn a_job_response_must_identify_the_job_that_was_requested() {
-    for what in OPERATIONS {
-        for (body, expected) in [
-            (r#"{}"#, "contains no job reference"),
-            (
-                r#"{"jobReference":{"projectId":"billing-project"}}"#,
-                "contains an incomplete job reference billing-project:",
-            ),
-            (
-                r#"{"jobReference":{"projectId":"billing-project","jobId":"other"}}"#,
-                "names job billing-project:other, but the request was for job \
-                 billing-project:EU.job-1",
-            ),
-            (
-                r#"{"jobReference":{"projectId":"billing-project","jobId":"job-1","location":""}}"#,
-                "names an empty location for job billing-project:EU.job-1",
-            ),
-            (
-                r#"{"jobReference":{"projectId":"billing-project","jobId":"job-1","location":"US"}}"#,
-                "names location US for job billing-project:EU.job-1, but the request was for \
-                 location EU",
-            ),
-        ] {
-            let failure = resolved_reference(&job(body, what), &requested(), what).unwrap_err();
-            assert_eq!(failure.status, Status::InvalidData);
-            assert_eq!(
-                failure.message,
-                format!("the BigQuery {what} job response {expected}")
-            );
-        }
-
-        // A location the service inferred is adopted; one it spells differently is the same one.
-        let inferred = job(
-            r#"{"jobReference":{"projectId":"billing-project","jobId":"job-1"}}"#,
-            what,
-        );
-        let requested_without_location =
-            JobReference::new("billing-project", None, "job-1".to_owned());
+    for (body, expected) in [
+        (r#"{}"#, "contains no job reference"),
+        (
+            r#"{"jobReference":{"projectId":"billing-project"}}"#,
+            "contains an incomplete job reference billing-project:",
+        ),
+        (
+            r#"{"jobReference":{"projectId":"billing-project","jobId":"other"}}"#,
+            "names job billing-project:other, but the request was for job \
+             billing-project:EU.job-1",
+        ),
+        (
+            r#"{"jobReference":{"projectId":"billing-project","jobId":"job-1","location":""}}"#,
+            "names an empty location for job billing-project:EU.job-1",
+        ),
+        (
+            r#"{"jobReference":{"projectId":"billing-project","jobId":"job-1","location":"US"}}"#,
+            "names location US for job billing-project:EU.job-1, but the request was for \
+             location EU",
+        ),
+    ] {
+        let failure = resolved_reference(&job(body), &requested(), WHAT).unwrap_err();
+        assert_eq!(failure.status, Status::InvalidData);
         assert_eq!(
-            resolved_reference(&inferred, &requested_without_location, what)
-                .unwrap()
-                .location,
-            None
-        );
-        assert_eq!(
-            resolved_reference(&inferred, &requested(), what)
-                .unwrap()
-                .location
-                .as_deref(),
-            Some("EU")
-        );
-        let recased = job(
-            r#"{"jobReference":{"projectId":"billing-project","jobId":"job-1","location":"eu"}}"#,
-            what,
-        );
-        assert_eq!(
-            resolved_reference(&recased, &requested(), what)
-                .unwrap()
-                .location
-                .as_deref(),
-            Some("eu")
+            failure.message,
+            format!("the BigQuery {WHAT} job response {expected}")
         );
     }
+
+    let location = |body: &str, requested: &JobReference| {
+        resolved_reference(&job(body), requested, WHAT)
+            .unwrap()
+            .location
+    };
+    let inferred = r#"{"jobReference":{"projectId":"billing-project","jobId":"job-1"}}"#;
+    let unlocated = JobReference::new("billing-project", None, "job-1".to_owned());
+    assert_eq!(location(inferred, &unlocated), None);
+    assert_eq!(location(inferred, &requested()).as_deref(), Some("EU"));
+    let recased =
+        r#"{"jobReference":{"projectId":"billing-project","jobId":"job-1","location":"eu"}}"#;
+    assert_eq!(location(recased, &requested()).as_deref(), Some("eu"));
 }
 
 /// A poll accepts only the three states BigQuery runs a job through, and says which job and which
 /// states when it sees anything else.
 #[test]
 fn a_polled_job_reports_a_state_it_cannot_act_on() {
-    for what in OPERATIONS {
-        for state in ["PENDING", "RUNNING", "DONE"] {
-            let body = format!(
-                r#"{{"jobReference":{{"projectId":"billing-project","jobId":"job-1","location":"EU"}},"status":{{"state":"{state}"}}}}"#
-            );
-            decode_polled_job(body.as_bytes(), &requested(), what).unwrap();
-        }
-
-        let failure = decode_polled_job(
-            br#"{"jobReference":{"projectId":"billing-project","jobId":"job-1","location":"EU"},"status":{"state":"MYSTERY"}}"#,
-            &requested(),
-            what,
-        )
-        .unwrap_err();
+    let polled = |status: &str| {
+        let body = format!(
+            r#"{{"jobReference":{{"projectId":"billing-project","jobId":"job-1","location":"EU"}}{status}}}"#
+        );
+        decode_polled_job(body.as_bytes(), &requested(), WHAT)
+    };
+    for state in ["PENDING", "RUNNING", "DONE"] {
+        polled(&format!(r#","status":{{"state":"{state}"}}"#)).unwrap();
+    }
+    for (status, problem) in [
+        (
+            r#","status":{"state":"MYSTERY"}"#,
+            "returned unknown state \"MYSTERY\"; expected PENDING, RUNNING, or DONE",
+        ),
+        ("", "contained no state"),
+    ] {
+        let failure = polled(status).unwrap_err();
         assert_eq!(failure.status, Status::InvalidData);
         assert_eq!(
             failure.message,
-            format!(
-                "BigQuery {what} job billing-project:EU.job-1 poll returned unknown state \
-                 \"MYSTERY\"; expected PENDING, RUNNING, or DONE"
-            )
-        );
-
-        let failure = decode_polled_job(
-            br#"{"jobReference":{"projectId":"billing-project","jobId":"job-1","location":"EU"}}"#,
-            &requested(),
-            what,
-        )
-        .unwrap_err();
-        assert_eq!(
-            failure.message,
-            format!("BigQuery {what} job billing-project:EU.job-1 poll contained no state")
+            format!("BigQuery {WHAT} job billing-project:EU.job-1 poll {problem}")
         );
     }
 }
@@ -170,7 +137,7 @@ fn a_wait_outlasts_failed_polls_and_leaves_the_job_alone() {
     );
     let operation = cancellation.begin();
     operation.register_job(&requested()).unwrap();
-    let running = job(&polled("RUNNING").to_string(), "table copy");
+    let running = job(&polled("RUNNING").to_string());
 
     let finished = runtime
         .block_on(wait_for_job(
@@ -178,7 +145,7 @@ fn a_wait_outlasts_failed_polls_and_leaves_the_job_alone() {
             &operation,
             &requested(),
             running,
-            "table copy",
+            WHAT,
         ))
         .unwrap();
 
@@ -198,68 +165,80 @@ fn a_wait_outlasts_failed_polls_and_leaves_the_job_alone() {
 /// not a result.
 #[test]
 fn a_completed_job_reports_its_authoritative_error_first() {
-    for what in OPERATIONS {
-        let mut failed = job(
-            r#"{
-                "jobReference":{"projectId":"billing-project","jobId":"job-1","location":"EU"},
-                "status": {
-                    "state": "DONE",
-                    "errorResult": {"reason": "stopped", "message": "primary failure"},
-                    "errors": [
-                        {"reason": "invalidQuery", "message": "secondary failure"},
-                        {"reason": "stopped", "message": "primary failure", "debugInfo": "x"}
-                    ]
-                }
-            }"#,
-            what,
-        );
-        let failure = validate_completed(&mut failed, what).unwrap_err();
-        assert_eq!(failure.status, Status::Cancelled);
-        assert_eq!(
-            failure.message,
-            format!(
-                "BigQuery {what} job failed (job billing-project:EU.job-1): stopped: primary \
-                 failure; invalidQuery: secondary failure (Query: \
-                 https://console.cloud.google.com/bigquery?project=billing-project&j=bq:EU:job-1&page=queryresults)"
-            )
-        );
-        assert!(
-            failure.details.is_some_and(|details| details
-                .iter()
-                .any(|(key, value)| key == crate::error::DETAIL_JOB_ID
-                    && value == b"billing-project:EU.job-1")),
-            "the job ID goes out unflattened as well"
-        );
+    let mut failed = job(r#"{
+        "jobReference":{"projectId":"billing-project","jobId":"job-1","location":"EU"},
+        "status": {
+            "state": "DONE",
+            "errorResult": {"reason": "stopped", "message": "primary failure"},
+            "errors": [
+                {"reason": "invalidQuery", "message": "secondary failure"},
+                {"reason": "stopped", "message": "primary failure", "debugInfo": "x"}
+            ]
+        }
+    }"#);
+    let failure = validate_completed(&mut failed, WHAT).unwrap_err();
+    assert_eq!(failure.status, Status::Cancelled);
+    assert_eq!(
+        failure.message,
+        format!(
+            "BigQuery {WHAT} job failed (job billing-project:EU.job-1): stopped: primary \
+             failure; invalidQuery: secondary failure (Query: \
+             https://console.cloud.google.com/bigquery?project=billing-project&j=bq:EU:job-1&page=queryresults)"
+        )
+    );
+    assert!(
+        failure.details.is_some_and(|details| details
+            .iter()
+            .any(|(key, value)| key == crate::error::DETAIL_JOB_ID
+                && value == b"billing-project:EU.job-1")),
+        "the job ID goes out unflattened as well"
+    );
 
-        // The validator prioritizes errorResult over state. Production polling waits for DONE
-        // before calling it; this checks only the validator's diagnostic precedence.
-        let mut running = job(
+    // errorResult takes precedence over the state, which BigQuery can report before DONE.
+    for (body, status, message) in [
+        (
             r#"{"status":{"state":"RUNNING","errorResult":{"reason":"invalid","message":"bad"}}}"#,
-            what,
-        );
-        let failure = validate_completed(&mut running, what).unwrap_err();
-        assert_eq!(failure.status, Status::InvalidArguments);
-        assert_eq!(
-            failure.message,
-            format!("BigQuery {what} job failed: invalid: bad")
-        );
-
-        let mut unfinished = job(r#"{"status":{"state":"RUNNING"}}"#, what);
-        let failure = validate_completed(&mut unfinished, what).unwrap_err();
-        assert_eq!(failure.status, Status::InvalidData);
-        assert_eq!(
-            failure.message,
-            format!("BigQuery {what} job response was not complete")
-        );
-
-        let mut statusless = job(r#"{}"#, what);
-        assert_eq!(
-            validate_completed(&mut statusless, what)
-                .unwrap_err()
-                .message,
-            format!("completed BigQuery {what} job has no status")
-        );
+            Status::InvalidArguments,
+            format!("BigQuery {WHAT} job failed: invalid: bad"),
+        ),
+        (
+            r#"{"status":{"state":"RUNNING"}}"#,
+            Status::InvalidData,
+            format!("BigQuery {WHAT} job response was not complete"),
+        ),
+        (
+            r#"{}"#,
+            Status::InvalidData,
+            format!("completed BigQuery {WHAT} job has no status"),
+        ),
+    ] {
+        let failure = validate_completed(&mut job(body), WHAT).unwrap_err();
+        assert_eq!((failure.status, failure.message), (status, message));
     }
+}
+
+/// A load reports the rows it wrote and a copy the rows it copied, or ADBC's unknown count when
+/// BigQuery reports none (a copy it satisfies as metadata).
+#[test]
+fn a_completed_job_reports_its_row_count_when_bigquery_gives_one() {
+    for (statistics, loaded, copied) in [
+        (r#"{"load":{"outputRows":"9"}}"#, Some(9), None),
+        (r#"{"copy":{"copiedRows":"7"}}"#, None, Some(7)),
+        (r#"{"load":{},"copy":{}}"#, None, None),
+    ] {
+        let mut job = job(&format!(
+            r#"{{"status":{{"state":"DONE"}},"statistics":{statistics}}}"#
+        ));
+        validate_completed(&mut job, WHAT).unwrap();
+        assert_eq!((job.output_rows(), job.copied_rows()), (loaded, copied));
+    }
+
+    let mut missing = job(
+        r#"{"status":{"state":"DONE","errorResult":{"reason":"notFound","message":"Not found: Table p:d.missing"}}}"#,
+    );
+    let failure = validate_completed(&mut missing, WHAT).unwrap_err();
+    // dbt 2.0 classifies a missing relation by this prefix.
+    assert_failure(&failure, Status::NotFound, &["notFound:"]);
 }
 
 /// Where the mock datasets are: a single region, which a job reaches only with an explicit
@@ -322,13 +301,26 @@ fn csv_file(name: &str) -> PathBuf {
     path
 }
 
+/// The rows affected and the `BIGQUERY:query_id` of an option-only statement, which dbt 2.0
+/// finalizes with an empty query.
+fn run(mut statement: BigQueryStatement) -> Result<(i64, Option<String>)> {
+    statement.set_sql_query("").unwrap();
+    let result = statement.execute_partitions()?;
+    let query_id = result
+        .schema
+        .metadata()
+        .get(crate::BIGQUERY_SCHEMA_METADATA_QUERY_ID)
+        .cloned();
+    Ok((result.rows_affected, query_id))
+}
+
 /// One dbt 2.0 seed of `csv` into `destination`, on a fresh statement.
 fn seed(
     connection: &mut BigQueryConnection,
     csv: &Path,
     destination: &str,
     dry_run: bool,
-) -> Result<Option<i64>> {
+) -> Result<(i64, Option<String>)> {
     let schema = Schema::new(vec![Field::new("id", DataType::Int64, true)]);
     let mut statement = connection.new_statement().unwrap();
     for (option, value) in [
@@ -348,8 +340,7 @@ fn seed(
     ] {
         set_option(&mut statement, option, value);
     }
-    statement.set_sql_query("").unwrap();
-    statement.execute_update()
+    run(statement)
 }
 
 /// One dbt 2.0 `copy_partitions` copy, on a fresh statement.
@@ -358,25 +349,19 @@ fn copy(
     source: &str,
     destination: &str,
     dry_run: bool,
-) -> Result<Option<i64>> {
+) -> Result<(i64, Option<String>)> {
     let mut statement = connection.new_statement().unwrap();
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::CopyTableSource,
-        source,
-    );
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::CopyTableDestination,
-        destination,
-    );
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::DryRun,
-        dry_run.to_string(),
-    );
-    statement.set_sql_query("").unwrap();
-    statement.execute_update()
+    for (option, value) in [
+        (BigQueryStatementOption::CopyTableSource, source),
+        (BigQueryStatementOption::CopyTableDestination, destination),
+        (
+            BigQueryStatementOption::DryRun,
+            if dry_run { "true" } else { "false" },
+        ),
+    ] {
+        set_option(&mut statement, option, value);
+    }
+    run(statement)
 }
 
 /// Asserts that `submission` and `poll` address one job in `location`.
@@ -407,8 +392,8 @@ fn seeds_without_a_location_run_where_the_destination_dataset_is() {
     let first = seed(&mut connection, &csv, "data_set.first", false);
     let second = seed(&mut connection, &csv, "data_set.second", false);
     std::fs::remove_file(csv).unwrap();
-    assert_eq!(first.unwrap(), Some(1));
-    assert_eq!(second.unwrap(), Some(1));
+    assert_eq!(first.unwrap().0, 1);
+    assert_eq!(second.unwrap().0, 1);
 
     let captured = server.join().unwrap();
     assert!(captured[0].line.starts_with("GET "), "{}", captured[0].line);
@@ -435,16 +420,14 @@ fn a_copy_without_a_location_runs_where_the_destination_dataset_is() {
     let (endpoint, server) = bigquery(3, vec![located(DATASET_LOCATION)], vec![done()]);
     let mut connection = unlocated_connection_at(&endpoint);
 
-    assert_eq!(
-        copy(
-            &mut connection,
-            "data-project.staging.tmp_model$20240101",
-            "data-project.reporting.model$20240101",
-            false,
-        )
-        .unwrap(),
-        Some(1)
-    );
+    let (rows, _) = copy(
+        &mut connection,
+        "data-project.staging.tmp_model$20240101",
+        "data-project.reporting.model$20240101",
+        false,
+    )
+    .unwrap();
+    assert_eq!(rows, 1);
 
     let captured = server.join().unwrap();
     assert_eq!(
@@ -461,7 +444,8 @@ fn a_copy_without_a_location_runs_where_the_destination_dataset_is() {
     assert_job_in(&captured[1], &captured[2], DATASET_LOCATION);
 }
 
-/// A configured location always wins, so no dataset is looked up.
+/// A configured location always wins, so no dataset is looked up. Each job's ID is reported the
+/// way a query result reports its job, which dbt 2.0 records as the statement's query ID.
 #[test]
 fn a_configured_location_is_used_without_a_dataset_lookup() {
     let (endpoint, server) = bigquery(4, Vec::new(), vec![done(), done()]);
@@ -470,8 +454,8 @@ fn a_configured_location_is_used_without_a_dataset_lookup() {
 
     let seeded = seed(&mut connection, &csv, "data_set.seed", false);
     std::fs::remove_file(csv).unwrap();
-    seeded.unwrap();
-    copy(
+    let (_, seed_id) = seeded.unwrap();
+    let (_, copy_id) = copy(
         &mut connection,
         "data-project.staging.source",
         "data-project.reporting.destination",
@@ -480,11 +464,29 @@ fn a_configured_location_is_used_without_a_dataset_lookup() {
     .unwrap();
 
     let captured = server.join().unwrap();
-    assert_job_in(&captured[0], &captured[1], "EU");
-    assert_job_in(&captured[2], &captured[3], "EU");
+    for ((submission, poll), reported) in [
+        ((&captured[0], &captured[1]), seed_id),
+        ((&captured[2], &captured[3]), copy_id),
+    ] {
+        assert_job_in(submission, poll, "EU");
+        assert_eq!(
+            reported.as_deref(),
+            submitted_reference(submission)["jobId"].as_str()
+        );
+    }
+    assert!(
+        captured[0].line.contains("/upload/"),
+        "{}",
+        captured[0].line
+    );
+    assert_eq!(
+        captured[2].body["configuration"]["copy"]["writeDisposition"], "WRITE_EMPTY",
+        "an unset copy disposition is the non-destructive one"
+    );
 }
 
-/// Neither dry run submits a job, so neither needs a location or looks one up.
+/// Neither dry run submits a job, so neither needs a location or looks one up. BigQuery answers
+/// `dryRun` on a copy job with `400 Dry run not supported for copy job`, so that is refused.
 #[test]
 fn dry_runs_without_a_location_send_nothing() {
     let (endpoint, server) = capture_requests(Vec::new());
@@ -493,7 +495,7 @@ fn dry_runs_without_a_location_send_nothing() {
 
     let seeded = seed(&mut connection, &csv, "data_set.seed", true);
     std::fs::remove_file(csv).unwrap();
-    assert_eq!(seeded.unwrap(), None);
+    assert_eq!(seeded.unwrap(), (-1, None));
     let failure = copy(
         &mut connection,
         "data-project.staging.source",
@@ -502,7 +504,11 @@ fn dry_runs_without_a_location_send_nothing() {
     )
     .unwrap_err();
 
-    assert_eq!(failure.status, Status::NotImplemented);
+    assert_failure(
+        &failure,
+        Status::NotImplemented,
+        &[BigQueryStatementOption::DryRun.as_str()],
+    );
     assert!(server.join().unwrap().is_empty());
 }
 
@@ -515,7 +521,7 @@ fn a_query_job_without_a_location_runs_where_bigquery_infers() {
     let (endpoint, server) = capture_requests_responding(2, move |request| {
         if submitted.is_null() {
             submitted = submitted_reference(request);
-            submitted["location"] = json!("asia-northeast1");
+            submitted["location"] = json!(DATASET_LOCATION);
             return Some(ok(
                 json!({"jobReference": submitted, "status": {"state": "RUNNING"}}),
             ));
@@ -535,19 +541,16 @@ fn a_query_job_without_a_location_runs_where_bigquery_infers() {
 
     statement.execute_update().unwrap();
 
-    let requests = server.join().unwrap();
-    assert_eq!(requests.len(), 2);
+    let requests = server.served(2);
     let reference = submitted_reference(&requests[0]);
     assert!(reference.get("location").is_none(), "{reference}");
-    assert_eq!(
-        requests[0].body["configuration"]["query"]["destinationTable"]["datasetId"],
-        "data_set"
-    );
     assert!(
         requests[1].path().starts_with(&format!(
             "/bigquery/v2/projects/fixture-project/queries/{}?",
             reference["jobId"].as_str().unwrap()
-        )) && requests[1].path().ends_with("&location=asia-northeast1"),
+        )) && requests[1]
+            .path()
+            .ends_with(&format!("&location={DATASET_LOCATION}")),
         "{}",
         requests[1].path()
     );
@@ -580,7 +583,7 @@ fn a_failed_location_lookup_names_the_dataset_and_submits_no_job() {
          job: notFound: Not found: Dataset data-project:missing (HTTP 404); set BigQuery option \
          bigquery.location to submit the job without this lookup"
     );
-    assert_eq!(server.join().unwrap().len(), 1);
+    server.served(1);
 }
 
 /// A dataset dropped and recreated in another location makes a cached location wrong. The job
@@ -613,7 +616,7 @@ fn a_failed_job_forgets_the_location_it_ran_in() {
     };
 
     assert_eq!(run().unwrap_err().status, Status::NotFound);
-    assert_eq!(run().unwrap(), Some(1));
+    assert_eq!(run().unwrap().0, 1);
 
     let captured = server.join().unwrap();
     for (first, location) in [(0, "US"), (3, "EU")] {
