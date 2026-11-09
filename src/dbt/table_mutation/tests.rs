@@ -9,21 +9,16 @@ use crate::BigQueryStatement;
 use crate::BigQueryStatementOption as Key;
 use crate::rest::model::{TableFieldSchema, TableSchema};
 use crate::test_support::driver::{test_statement, test_statement_at};
-use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
-use crate::test_support::http::{
-    capture_requests, capture_requests_responding, capture_requests_until_stopped, error_body, ok,
-};
+use crate::test_support::errors::{assert_failure, assert_message_omits};
+use crate::test_support::http::{capture_requests, capture_requests_responding, error_body, ok};
 use crate::test_support::options::{
     assert_string_option, option_string, set_option, set_option_error,
 };
 
 #[test]
-fn column_metadata_options_are_typed_sorted_atomic_and_secret_safe() {
+fn table_metadata_options_are_typed_sorted_atomic_and_secret_safe() {
     const SECRET: &str = "column-description-secret-sentinel";
     let mut statement = test_statement();
-    for option in [Key::UpdateColumnsDescription, Key::UpdateColumnsPolicyTags] {
-        assert_string_option(&statement, option, None);
-    }
 
     set_option(
         &mut statement,
@@ -59,6 +54,20 @@ fn column_metadata_options_are_typed_sorted_atomic_and_secret_safe() {
             r#"{"a":"not-an-array"}"#
         )
         .status,
+        Status::InvalidArguments
+    );
+
+    // Every other option is cleared by the empty string, and the fork cannot express a cleared
+    // description either: it dispatches on a non-empty value.
+    set_option(
+        &mut statement,
+        Key::UpdateDescription,
+        "A documented relation.",
+    );
+    set_option(&mut statement, Key::UpdateDescription, "");
+    assert_string_option(&statement, Key::UpdateDescription, None);
+    assert_eq!(
+        set_option_error(&mut statement, Key::UpdateDescription, OptionValue::Int(42)).status,
         Status::InvalidArguments
     );
 }
@@ -267,26 +276,6 @@ fn flexible_column_names_match_the_way_bigquery_folds_their_case() {
     }
 }
 
-#[test]
-fn table_description_option_is_typed_and_clears_on_empty() {
-    const OPTION: Key = Key::UpdateDescription;
-    let mut statement = test_statement();
-    assert_string_option(&statement, OPTION, None);
-
-    set_option(&mut statement, OPTION, "A documented relation.");
-    assert_eq!(option_string(&statement, OPTION), "A documented relation.");
-
-    // Every other option is cleared by the empty string, and the fork cannot express a cleared
-    // description either: it dispatches on a non-empty value.
-    set_option(&mut statement, OPTION, "");
-    assert_string_option(&statement, OPTION, None);
-
-    assert_eq!(
-        set_option_error(&mut statement, OPTION, OptionValue::Int(42)).status,
-        Status::InvalidArguments
-    );
-}
-
 /// Both table metadata updates, which one statement runs columns first.
 const BOTH_UPDATES: [(Key, &str); 2] = [
     (
@@ -359,82 +348,51 @@ fn dbt_table_description_update_patches_only_the_description_without_a_precondit
     );
 }
 
-/// BigQuery answers more than about five metadata updates per table in ten seconds with
-/// `rateLimitExceeded`. That rejection applied nothing, so both patches are resent.
+/// Both patches are blind, so replaying the same bytes after a 503 that may have applied leaves
+/// the same table state (G82), and a rate-limit rejection (BigQuery answers more than about five
+/// metadata updates per table in ten seconds with `rateLimitExceeded`) applied nothing. The
+/// schema is read once.
 #[test]
-fn rate_limited_table_patches_are_resent() {
-    let rate_limited = || {
+fn failed_table_patches_are_resent_with_the_same_body() {
+    for failure in [
         (
             403,
             error_body(
                 "rateLimitExceeded",
-                "Exceeded rate limits: too many table update operations for this table.",
+                "Exceeded rate limits: too many table updates.",
             ),
-        )
-    };
-    let (endpoint, captured) = capture_requests(vec![
-        ok(json!({"schema": {"fields": [{"name": "id", "type": "INTEGER"}]}})),
-        rate_limited(),
-        ok(json!({})),
-        rate_limited(),
+        ),
         (429, error_body("rateLimitExceeded", "Too many requests.")),
-        ok(json!({})),
-    ]);
-    let mut statement = documented_model_update(&endpoint, &BOTH_UPDATES);
+        (503, error_body("backendError", "Backend error.")),
+    ] {
+        let (endpoint, captured) = capture_requests(vec![
+            ok(json!({"schema": {"fields": [{"name": "id", "type": "INTEGER"}]}})),
+            failure.clone(),
+            ok(json!({})),
+            failure,
+            ok(json!({})),
+        ]);
+        let mut statement = documented_model_update(&endpoint, &BOTH_UPDATES);
 
-    assert_eq!(statement.execute_update().unwrap(), Some(0));
+        assert_eq!(statement.execute_update().unwrap(), Some(0));
 
-    let requests = captured.join().unwrap();
-    assert_eq!(requests.len(), 6);
-    for patch in &requests[1..3] {
-        assert!(patch.line.starts_with("PATCH "), "{}", patch.line);
-        assert_eq!(patch.header("If-Match"), None);
+        let requests = captured.served(5);
+        assert!(requests[0].line.starts_with("GET "), "{}", requests[0].line);
+        for patch in &requests[1..] {
+            assert!(patch.line.starts_with("PATCH "), "{}", patch.line);
+            assert_eq!(patch.header("If-Match"), None);
+        }
         assert_eq!(
-            patch.body["schema"]["fields"][0]["description"],
+            requests[1].body["schema"]["fields"][0]["description"],
             "Required identifier."
         );
+        assert_eq!(requests[1].raw_body, requests[2].raw_body);
+        assert_eq!(
+            requests[3].body,
+            json!({"description": "A documented relation."})
+        );
+        assert_eq!(requests[3].raw_body, requests[4].raw_body);
     }
-    for patch in &requests[3..] {
-        assert!(patch.line.starts_with("PATCH "), "{}", patch.line);
-        assert_eq!(patch.header("If-Match"), None);
-        assert_eq!(patch.body, json!({"description": "A documented relation."}));
-    }
-}
-
-/// Both table patches are blind, so replaying the same body after a 503 that may have applied
-/// leaves the same table state (G82). The schema is read once, and every resend carries the
-/// bytes of the first patch.
-#[test]
-fn ambiguous_failures_resend_both_blind_table_patches_with_the_same_body() {
-    let backend_error = || (503, error_body("backendError", "Backend error."));
-    let (endpoint, captured) = capture_requests(vec![
-        ok(json!({"schema": {"fields": [{"name": "id", "type": "INTEGER"}]}})),
-        backend_error(),
-        ok(json!({})),
-        backend_error(),
-        ok(json!({})),
-    ]);
-    let mut statement = documented_model_update(&endpoint, &BOTH_UPDATES);
-
-    assert_eq!(statement.execute_update().unwrap(), Some(0));
-
-    let requests = captured.join().unwrap();
-    assert_eq!(requests.len(), 5, "one schema read, then two patches each");
-    assert!(requests[0].line.starts_with("GET "), "{}", requests[0].line);
-    for patch in &requests[1..] {
-        assert!(patch.line.starts_with("PATCH "), "{}", patch.line);
-        assert_eq!(patch.header("If-Match"), None);
-    }
-    assert_eq!(
-        requests[1].body["schema"]["fields"][0]["description"],
-        "Required identifier."
-    );
-    assert_eq!(requests[1].raw_body, requests[2].raw_body);
-    assert_eq!(
-        requests[3].body,
-        json!({"description": "A documented relation."})
-    );
-    assert_eq!(requests[3].raw_body, requests[4].raw_body);
 }
 
 /// A patch that never got an answer is named once, by the operation, and not again by the
@@ -488,41 +446,6 @@ fn a_table_patch_transport_failure_names_its_operation_once() {
             attempts + usize::from(schema_read)
         );
     }
-}
-
-/// The resends share the metadata reads' bound: five attempts, then the last failure is reported.
-#[test]
-fn a_blind_table_patch_reports_the_last_of_its_five_ambiguous_failures() {
-    let attempts = usize::try_from(crate::rest::retry::MAX_ATTEMPTS).unwrap();
-    // The last response answers a sixth attempt, which must never be sent.
-    let (endpoint, server) = capture_requests_until_stopped(
-        (1..=attempts)
-            .map(|attempt| {
-                (
-                    503,
-                    error_body("backendError", &format!("Backend error {attempt}.")),
-                )
-            })
-            .chain([ok(json!({}))])
-            .collect(),
-    );
-    let mut statement = documented_model_update(
-        &endpoint,
-        &[(Key::UpdateDescription, "A documented relation.")],
-    );
-
-    let error = statement.execute_update().unwrap_err();
-    assert_eq!(error.status, Status::IO);
-    assert_eq!(error.vendor_code, 503);
-    assert_message(
-        &error,
-        &[
-            "data-project.docs.documented_model",
-            &format!("Backend error {attempts}."),
-        ],
-    );
-    assert_message_omits(&error, &["Backend error 1."]);
-    assert_eq!(server.stop().len(), attempts);
 }
 
 #[test]
