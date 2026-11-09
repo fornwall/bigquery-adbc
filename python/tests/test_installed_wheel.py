@@ -275,6 +275,19 @@ def test_native_user_authentication_options_build_credentials() -> None:
         assert database.get_option(driver.DatabaseOptions.AUTHENTICATION_CLIENT_ID) == "wheel-client-id"
 
 
+def test_invalid_database_option_has_a_useful_error() -> None:
+    with pytest.raises(adbc_driver_manager.NotSupportedError) as error:
+        adbc_driver_manager.AdbcDatabase(
+            driver=driver.driver_path(),
+            entrypoint=driver.ENTRYPOINT,
+            uri="bigquery:///offline-wheel-test",
+            **{"bigquery.invalid_option": "invalid"},
+        )
+
+    assert "bigquery.invalid_option" in str(error.value)
+    assert error.value.status_code == adbc_driver_manager.AdbcStatusCode.NOT_IMPLEMENTED
+
+
 def test_native_ingest_method_option_is_storage_write_only() -> None:
     key = driver.ConnectionOptions.BULK_INGEST_METHOD
     value = driver.BulkIngestMethod.STORAGE_WRITE
