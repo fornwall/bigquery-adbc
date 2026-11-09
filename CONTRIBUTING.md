@@ -15,10 +15,68 @@ cd bigquery-adbc
 cargo test --locked --all-features
 ```
 
-See [ARCHITECTURE.md](docs/ARCHITECTURE.md) and [`examples/`](examples). `Cargo.toml` declares only
-an `rlib`; build the shared library with
-`cargo rustc --release --locked --lib --crate-type cdylib`. Integration runners build the library or
-a wheel themselves.
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) and [`examples/`](examples). The Rust crate is Git-only
+and unstable ([Rust API](docs/REFERENCE.md#rust-api)); [`examples/query.rs`](examples/query.rs) runs
+a query through it:
+
+```sh
+cargo run --locked --example query -- my-project "SELECT 1 AS n"
+```
+
+## Native library
+
+`Cargo.toml` declares only an `rlib`; build the shared library with:
+
+```sh
+cargo rustc --release --locked --lib --crate-type cdylib
+```
+
+This writes `target/release/libadbc_driver_bigquery.so` on Linux, `libadbc_driver_bigquery.dylib`
+on macOS, or `adbc_driver_bigquery.dll` on Windows. Integration runners build the library or a wheel
+themselves. [GitHub releases](https://github.com/fornwall/bigquery-adbc/releases) provide
+[native archives](#distribution-packaging) for Linux x86-64 and AArch64 (glibc 2.28 or newer), macOS
+x86-64 and arm64, and Windows x86-64, with a `SHA256SUMS` file.
+
+The library exports `AdbcDriverBigqueryInit` and the generic `AdbcDriverInit`. From C or C++, link
+with `-ladbc_driver_manager`, include `<arrow-adbc/adbc.h>`, and point the driver manager at the
+library before `AdbcDatabaseInit` ([`examples/query.c`](examples/query.c) is a complete program):
+
+```c
+AdbcDatabaseNew(&database, &error);
+AdbcDatabaseSetOption(&database, "driver", "/path/to/libadbc_driver_bigquery.so", &error);
+AdbcDatabaseSetOption(&database, "uri", "bigquery:///my-project", &error);
+AdbcDatabaseInit(&database, &error);
+```
+
+Keep the library loaded for the process lifetime: `AdbcDriver.release` does not stop its worker
+threads (the reference C driver manager never unloads drivers).
+
+### Loading by name
+
+Native archives include `bigquery-adbc.toml`, a
+[driver manifest](https://arrow.apache.org/adbc/current/format/driver_manifests.html) that lets ADBC
+clients load the driver as `bigquery-adbc`. Install it in `~/.config/adbc/drivers` on Linux,
+`~/Library/Application Support/ADBC/Drivers` on macOS, or `%LOCALAPPDATA%\ADBC\Drivers` on Windows.
+It expects the library in `/usr/local/lib` on Linux and macOS, and in
+`C:\Program Files\ADBC\Drivers` on Windows; elsewhere, set `Driver.shared` to an absolute path or a
+name on the dynamic loader's search path (it is not resolved relative to the manifest):
+
+```sh
+sudo cp libadbc_driver_bigquery.so /usr/local/lib/
+mkdir -p ~/.config/adbc/drivers
+cp bigquery-adbc.toml ~/.config/adbc/drivers/
+```
+
+The C driver manager reads manifests only when asked: set `driver` to the manifest's path, or enable
+the lookup (`<arrow-adbc/adbc_driver_manager.h>`):
+
+```c
+AdbcDriverManagerDatabaseSetLoadFlags(&database, ADBC_LOAD_FLAG_DEFAULT, &error);
+AdbcDatabaseSetOption(&database, "driver", "bigquery-adbc", &error);
+```
+
+The manifest's file name is the driver's name, so it can coexist with another `bigquery` driver;
+installed as `bigquery.toml`, it is also selected by a `bigquery://` URI with no `driver` option.
 
 ## Local checks
 

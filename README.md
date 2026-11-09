@@ -81,74 +81,6 @@ curl -fsSL https://raw.githubusercontent.com/fornwall/bigquery-adbc/main/tools/d
 This installs the latest release into `~/.local/bin`. Run `dbt-bigquery-adbc build` from your dbt
 project. See [DBT.md](docs/DBT.md) for usage, compatibility notes and developer instructions.
 
-## C and C++
-
-[GitHub releases](https://github.com/fornwall/bigquery-adbc/releases) provide native archives for
-Linux x86-64 and AArch64 (glibc 2.28 or newer), macOS x86-64 and arm64, and Windows x86-64, with a
-`SHA256SUMS` file. To build the shared library from the repository root:
-
-```sh
-cargo rustc --release --locked --lib --crate-type cdylib
-```
-
-This writes `target/release/libadbc_driver_bigquery.so` on Linux, `libadbc_driver_bigquery.dylib`
-on macOS, or `adbc_driver_bigquery.dll` on Windows; `cargo build` produces only the Rust library.
-
-The library exports `AdbcDriverBigqueryInit` and the generic `AdbcDriverInit`. Link your
-application with `-ladbc_driver_manager`, include `<arrow-adbc/adbc.h>`, and point the driver
-manager at the library before `AdbcDatabaseInit`:
-
-```c
-AdbcDatabaseNew(&database, &error);
-AdbcDatabaseSetOption(&database, "driver", "/path/to/libadbc_driver_bigquery.so", &error);
-AdbcDatabaseSetOption(&database, "uri", "bigquery:///my-project", &error);
-AdbcDatabaseInit(&database, &error);
-```
-
-[`examples/query.c`](examples/query.c) is a complete program. Keep the library loaded for the
-process lifetime: `AdbcDriver.release` does not stop its worker threads (the reference C driver
-manager never unloads drivers).
-
-### Loading by name
-
-The [native packaging command](CONTRIBUTING.md#distribution-packaging) creates an archive with
-the library, license notices and `bigquery-adbc.toml`, a
-[driver manifest](https://arrow.apache.org/adbc/current/format/driver_manifests.html) that lets ADBC
-clients load the driver by name. It expects the library in `/usr/local/lib` on Linux and macOS, and
-in `C:\Program Files\ADBC\Drivers` on Windows; elsewhere, set `Driver.shared` to an absolute path
-or a name on the dynamic loader's search path (it is not resolved relative to the manifest).
-Install the manifest in `~/.config/adbc/drivers` on Linux,
-`~/Library/Application Support/ADBC/Drivers` on macOS, or `%LOCALAPPDATA%\ADBC\Drivers` on Windows:
-
-```sh
-sudo cp libadbc_driver_bigquery.so /usr/local/lib/
-mkdir -p ~/.config/adbc/drivers
-cp bigquery-adbc.toml ~/.config/adbc/drivers/
-```
-
-Then set `driver` to `bigquery-adbc`. The C driver manager looks for manifests only when asked, so
-in C either set `driver` to the manifest's path or enable the lookup
-(`<arrow-adbc/adbc_driver_manager.h>`):
-
-```c
-AdbcDriverManagerDatabaseSetLoadFlags(&database, ADBC_LOAD_FLAG_DEFAULT, &error);
-AdbcDatabaseSetOption(&database, "driver", "bigquery-adbc", &error);
-```
-
-A driver's name is its manifest's file name, so this one can coexist with another `bigquery`
-driver; install the manifest as `bigquery.toml` to also select it from a `bigquery://` URI with no
-`driver` option.
-
-## Rust
-
-The supported interfaces are C and Python; the Rust crate is Git-only and unstable (see the
-[Rust API reference](docs/REFERENCE.md#rust-api)). From a checkout, run
-[`examples/query.rs`](examples/query.rs):
-
-```sh
-cargo run --locked --example query -- my-project "SELECT 1 AS n"
-```
-
 ## More examples
 
 Bulk ingestion streams Arrow data through the Storage Write API. The dataset must exist, and
@@ -208,7 +140,7 @@ validation, Driver Foundry, DuckDB and dbt) need a Google Cloud project and run 
 | [Driver reference](docs/REFERENCE.md) | Options, type mappings, row counts, result metadata and diagnostics. |
 | [Python](python/README.md) | Installation, DB-API usage and options. |
 | [Architecture](docs/ARCHITECTURE.md) | How a query and a bulk load move through the code. |
-| [Contributing](CONTRIBUTING.md) | Local checks, live tests and contribution guidelines. |
+| [Contributing](CONTRIBUTING.md) | Building and loading the native library from C, C++ and Rust, local checks, live tests and contribution guidelines. |
 | [Changelog](CHANGELOG.md) | Changes in each release. |
 | [Known limitations](docs/LIMITATIONS.md) | Open limitations and validation gaps. |
 | [Go driver comparison](docs/GO-DRIVER-COMPARISON.md) | Differences from the Go implementation. |
