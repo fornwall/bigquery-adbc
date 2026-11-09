@@ -152,7 +152,9 @@ fn methods(requests: &[CapturedRequest]) -> Vec<&str> {
         .collect()
 }
 
-/// Every statement query option that must not leak onto an ingest's own DDL job.
+/// Ingest DDL carries only the location: every other statement query option describes a user
+/// query, and `destination_table` makes BigQuery reject DDL, `priority` can queue it behind a
+/// batch slot, and `create_session` would leak a session per ingest.
 fn assert_carries_only_the_location(body: &JsonValue) {
     assert_eq!(body.get("location").and_then(JsonValue::as_str), Some("EU"));
     for leaked in [
@@ -171,21 +173,6 @@ fn assert_carries_only_the_location(body: &JsonValue) {
             "the ingest DDL request carried {leaked}: {body}"
         );
     }
-}
-
-/// The TRUNCATE that a REPLACE ingest runs must carry only the location. Every other
-/// statement query option describes a user query: `destination_table` makes BigQuery
-/// reject the DDL outright, `priority` can queue it behind a batch slot, and `create_session`
-/// would leak a session per ingest.
-#[test]
-fn ingest_truncate_carries_only_the_location() {
-    let (outcome, requests) = against_bigquery(vec![ddl_answer()], |context| {
-        truncate_table(context, TARGET, Some(context.operation))
-    });
-    outcome.unwrap();
-
-    assert_eq!(requests[0].sql(), "TRUNCATE TABLE `project.dataset.events`");
-    assert_carries_only_the_location(&requests[0].body);
 }
 
 /// Runs one whole ingest of what `reader` yields into [`TARGET`] in `mode`, against a

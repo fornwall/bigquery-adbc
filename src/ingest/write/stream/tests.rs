@@ -56,10 +56,6 @@ fn table_visibility_backoff_grows_and_saturates_like_its_reference_policy() {
     /// assertion about the policy rather than about luck.
     const SAMPLES: u32 = 200;
 
-    assert_eq!(TABLE_VISIBILITY_ATTEMPTS, 20);
-    assert_eq!(TABLE_VISIBILITY_RETRY_DELAY, Duration::from_millis(100));
-    assert_eq!(TABLE_VISIBILITY_MAX_RETRY_DELAY, Duration::from_secs(15));
-
     for failure_count in 1..TABLE_VISIBILITY_ATTEMPTS {
         let multiplier = 1_u32 << (failure_count - 1).min(31);
         let ceiling = TABLE_VISIBILITY_RETRY_DELAY

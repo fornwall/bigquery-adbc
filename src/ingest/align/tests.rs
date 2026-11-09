@@ -9,8 +9,14 @@ use super::*;
 use crate::ingest::normalize::normalize_batch;
 use crate::ingest::schema::{arrow_schema_to_bigquery, normalize_schema, validate_existing_schema};
 use crate::rest::metadata::TableId;
-use crate::test_support::schema::{field, field_mode, record, table_schema};
+use crate::test_support::schema::{decimal, field, field_mode, record, table_schema};
 use crate::types::{ARROW_EXTENSION_NAME_KEY, BIGQUERY_TYPE_METADATA_KEY};
+
+const TARGET: TableId<'static> = TableId {
+    project_id: "p",
+    dataset_id: "d",
+    table_id: "t",
+};
 
 fn max_length(field: &Field) -> Option<&str> {
     field
@@ -174,11 +180,6 @@ fn plain_strings_take_the_columns_maximum_length() {
 
 #[test]
 fn unknown_extensions_do_not_hide_column_length_limits() {
-    let target = TableId {
-        project_id: "p",
-        dataset_id: "d",
-        table_id: "t",
-    };
     for (data_type, kind) in [(DataType::Utf8, "STRING"), (DataType::Binary, "BYTES")] {
         for repeated in [false, true] {
             let mut value = Field::new("value", data_type.clone(), true)
@@ -202,16 +203,8 @@ fn unknown_extensions_do_not_hide_column_length_limits() {
             };
             assert_eq!(max_length(values), Some("5"));
             let checked = arrow_schema_to_bigquery(&aligned).unwrap();
-            validate_existing_schema(target, Some(&table), &checked).unwrap();
+            validate_existing_schema(TARGET, Some(&table), &checked).unwrap();
         }
-    }
-}
-
-fn decimal_column(name: &str, kind: &str, precision: i64, scale: i64) -> TableFieldSchema {
-    TableFieldSchema {
-        precision,
-        scale,
-        ..field(name, kind)
     }
 }
 
@@ -221,11 +214,11 @@ fn decimal_column(name: &str, kind: &str, precision: i64, scale: i64) -> TableFi
 #[test]
 fn a_decimal_takes_the_shape_of_the_column_it_fills() {
     let table = table_schema([
-        decimal_column("amount", "NUMERIC", 10, 2),
-        decimal_column("big", "BIGNUMERIC", 0, 0),
+        decimal(field("amount", "NUMERIC"), 10, 2),
+        decimal(field("big", "BIGNUMERIC"), 0, 0),
         TableFieldSchema {
             mode: "REPEATED".to_owned(),
-            ..decimal_column("amounts", "NUMERIC", 10, 2)
+            ..decimal(field("amounts", "NUMERIC"), 10, 2)
         },
     ]);
     let bound = Schema::new(vec![
@@ -277,10 +270,10 @@ fn a_decimal_takes_the_shape_of_the_column_it_fills() {
 #[test]
 fn a_null_field_takes_its_decimal_columns_declared_shape() {
     let table = table_schema([
-        decimal_column("amount", "NUMERIC", 10, 2),
+        decimal(field("amount", "NUMERIC"), 10, 2),
         TableFieldSchema {
             mode: "REPEATED".to_owned(),
-            ..decimal_column("amounts", "NUMERIC", 10, 2)
+            ..decimal(field("amounts", "NUMERIC"), 10, 2)
         },
     ]);
     let bound = Schema::new(vec![
@@ -298,7 +291,7 @@ fn a_null_field_takes_its_decimal_columns_declared_shape() {
 /// goes with it keeps it parameterized, so an append into it is admitted.
 #[test]
 fn an_append_into_a_bignumeric_76_38_column_keeps_its_shape() {
-    let table = table_schema([decimal_column("big", "BIGNUMERIC", 76, 38)]);
+    let table = table_schema([decimal(field("big", "BIGNUMERIC"), 76, 38)]);
     let bound = Schema::new(vec![Field::new("big", DataType::Decimal128(10, 2), true)]);
     let aligned = align_with_table(&bound, &table).unwrap();
     assert_eq!(aligned.field(0).data_type(), &DataType::Decimal256(76, 38));
@@ -307,10 +300,5 @@ fn an_append_into_a_bignumeric_76_38_column_keeps_its_shape() {
         (checked.fields[0].precision, checked.fields[0].scale),
         (76, 38)
     );
-    let target = TableId {
-        project_id: "p",
-        dataset_id: "d",
-        table_id: "t",
-    };
-    validate_existing_schema(target, Some(&table), &checked).unwrap();
+    validate_existing_schema(TARGET, Some(&table), &checked).unwrap();
 }
