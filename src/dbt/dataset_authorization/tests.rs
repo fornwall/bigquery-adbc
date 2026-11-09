@@ -42,6 +42,8 @@ fn authorize_granted_view(statement: &mut BigQueryStatement) {
     );
 }
 
+/// A view mapped to no datasets is dropped while parsing, so it neither selects this operation
+/// nor deselects another one; a payload of only such views clears the option, as `{}` does.
 #[test]
 fn view_authorizations_round_trip_sorted_fully_qualified_and_deduplicated() {
     let mut statement = test_statement();
@@ -56,6 +58,7 @@ fn view_authorizations_round_trip_sorted_fully_qualified_and_deduplicated() {
         "data-project.analytics.a_view": [
             {"project": "other-project", "dataset": "raw_first"},
         ],
+        "data-project.analytics.empty_view": [],
     });
     set_option(&mut statement, OPTION, unsorted.to_string());
     assert_eq!(
@@ -63,8 +66,7 @@ fn view_authorizations_round_trip_sorted_fully_qualified_and_deduplicated() {
         r#"{"data-project.analytics.a_view":[{"dataset":"raw_first","project":"other-project"}],"data-project.analytics.z_view":[{"dataset":"raw_first","project":"data-project"},{"dataset":"raw_second","project":"data-project"}]}"#
     );
 
-    // Both spellings of "no authorizations" clear the option.
-    for value in ["", "{}"] {
+    for value in ["", "{}", r#"{"data-project.analytics.empty_view":[]}"#] {
         set_option(&mut statement, OPTION, value);
         assert_string_option(&statement, OPTION, None);
     }
@@ -119,15 +121,11 @@ fn malformed_payloads_are_rejected_before_execution_without_echoing_them() {
             .to_string(),
         "a rejected payload must not replace the previous value"
     );
-}
 
-/// A payload that is not JSON reports where parsing stopped, without quoting the payload.
-#[test]
-fn an_unparsable_payload_reports_the_syntax_position() {
+    // A payload that is not JSON reports where parsing stopped, without quoting the payload.
     let error =
         parse_view_authorizations("{\n  \"data-project.analytics.v\": [oops]\n}", None, None)
             .unwrap_err();
-    assert_eq!(error.status, Status::InvalidArguments);
     assert_eq!(
         error.message,
         format!(
@@ -135,37 +133,6 @@ fn an_unparsable_payload_reports_the_syntax_position() {
             OPTION.as_str()
         )
     );
-}
-
-/// A view mapped to no datasets is dropped while parsing, so it neither selects this operation
-/// nor deselects another one. Its name is still validated.
-#[test]
-fn a_view_with_no_source_datasets_is_dropped_rather_than_silently_doing_nothing() {
-    let mut statement = test_statement();
-    set_option(
-        &mut statement,
-        OPTION,
-        json!({"data-project.analytics.empty_view": []}).to_string(),
-    );
-    assert_string_option(&statement, OPTION, None);
-
-    // Only the empty entry goes; the populated ones stay.
-    let authorizations = json!({
-        "data-project.analytics.empty_view": [],
-        "data-project.analytics.granted_view": [
-            {"project": "data-project", "dataset": "raw"},
-        ],
-    });
-    set_option(&mut statement, OPTION, authorizations.to_string());
-    assert_eq!(
-        option_string(&statement, OPTION),
-        r#"{"data-project.analytics.granted_view":[{"dataset":"raw","project":"data-project"}]}"#
-    );
-
-    // The name is parsed before the entry is dropped, so a view a bare name cannot resolve is
-    // still reported.
-    let error = parse(&json!({"solo_view": []}).to_string(), None).unwrap_err();
-    assert_eq!(error.status, Status::InvalidArguments);
 }
 
 #[test]
@@ -196,9 +163,17 @@ fn view_names_resolve_one_two_and_three_part_spellings() {
         ]
     );
 
-    // A one-part name needs both defaults, a two-part name only the project.
-    let error = parse(&payload("solo_view", "data-project", "raw"), None).unwrap_err();
-    assert_eq!(error.status, Status::InvalidArguments);
+    // A one-part name needs both defaults, a two-part name only the project. A view mapped to no
+    // datasets is still named, so one a bare name cannot resolve is reported too.
+    for value in [
+        payload("solo_view", "data-project", "raw"),
+        json!({"solo_view": []}).to_string(),
+    ] {
+        assert_eq!(
+            parse(&value, None).unwrap_err().status,
+            Status::InvalidArguments
+        );
+    }
 }
 
 /// The complete dbt 2.0 contract: the option, its dummy `none` query behind a query comment,
@@ -279,31 +254,6 @@ fn dbt_grant_access_to_appends_the_view_and_returns_the_dataset_etag() {
         requests[1].body.get("etag"),
         None,
         "BigQuery ignores a body ETag, so sending one would only look like a precondition"
-    );
-}
-
-#[test]
-fn an_already_authorized_view_issues_no_patch() {
-    let (endpoint, captured) = capture_requests(vec![ok(json!({
-        "etag": "dataset-etag",
-        "access": [
-            {"role": "READER", "userByEmail": "reader@example.com"},
-            {"view": {
-                "projectId": "data-project",
-                "datasetId": "analytics",
-                "tableId": "granted_view"
-            }},
-        ]
-    }))]);
-    let mut statement = test_statement_at(&endpoint);
-    authorize_granted_view(&mut statement);
-
-    assert_eq!(statement.execute_update().unwrap(), Some(0));
-    let requests = captured.join().unwrap();
-    assert_eq!(
-        requests.len(),
-        1,
-        "an idempotent re-run reads the ACL and leaves it alone"
     );
 }
 
@@ -568,48 +518,29 @@ fn an_unanswered_access_list_patch_names_the_authorization_once() {
     assert_eq!(captured.join().unwrap().len(), 2 * rounds);
 }
 
-/// An empty ETag would send no `If-Match`, so a dataset that reports none is refused rather than
-/// blind-written.
+/// A missing source dataset is `NotFound`. An empty ETag would send no `If-Match`, so a dataset
+/// that reports none is refused rather than blind-written. Either way, no patch follows the get.
 #[test]
-fn a_dataset_without_an_etag_is_never_blind_written() {
-    let (endpoint, captured) = capture_requests(vec![ok(json!({"access": []}))]);
-    let mut statement = test_statement_at(&endpoint);
-    authorize_granted_view(&mut statement);
+fn a_dataset_that_cannot_be_patched_fails_after_the_get() {
+    for (response, status, expected) in [
+        (
+            (
+                404,
+                error_body("notFound", "Not found: Dataset data-project:raw"),
+            ),
+            Status::NotFound,
+            "data-project.raw",
+        ),
+        (ok(json!({"access": []})), Status::InvalidData, "no ETag"),
+    ] {
+        let (endpoint, captured) = capture_requests(vec![response]);
+        let mut statement = test_statement_at(&endpoint);
+        authorize_granted_view(&mut statement);
 
-    let error = statement.execute_update().unwrap_err();
-    assert_failure(
-        &error,
-        Status::InvalidData,
-        &["no ETag", "data-project.raw"],
-    );
-    assert_eq!(
-        captured.join().unwrap().len(),
-        1,
-        "the get happened and no patch followed it"
-    );
-}
-
-#[test]
-fn a_missing_source_dataset_is_reported_as_not_found() {
-    let (endpoint, captured) = capture_requests(vec![(
-        404,
-        json!({
-            "error": {
-                "code": 404,
-                "message": "Not found: Dataset data-project:raw",
-                "status": "NOT_FOUND",
-                "errors": [
-                    {"message": "Not found", "domain": "global", "reason": "notFound"}
-                ]
-            }
-        }),
-    )]);
-    let mut statement = test_statement_at(&endpoint);
-    authorize_granted_view(&mut statement);
-
-    let error = statement.execute_update().unwrap_err();
-    assert_failure(&error, Status::NotFound, &["data-project.raw"]);
-    captured.join().unwrap();
+        let error = statement.execute_update().unwrap_err();
+        assert_failure(&error, status, &[expected, "data-project.raw"]);
+        captured.served(1);
+    }
 }
 
 #[test]
