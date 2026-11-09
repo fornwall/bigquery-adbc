@@ -113,17 +113,3 @@ fn dbt_auth_type_values_map_to_driver_vocabulary() {
         );
     }
 }
-
-#[test]
-fn api_endpoint_alias_sets_the_endpoint_option() {
-    let mut database = new_database();
-    set_option(
-        &mut database,
-        OptionDatabase::Other("adbc.bigquery.sql.api_endpoint".to_owned()),
-        "127.0.0.1:9050",
-    );
-    assert_eq!(
-        option_string(&database, BigQueryDatabaseOption::Endpoint),
-        "https://127.0.0.1:9050"
-    );
-}

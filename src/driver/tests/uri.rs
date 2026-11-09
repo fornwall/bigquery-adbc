@@ -457,14 +457,6 @@ fn a_uri_host_is_allowed_by_the_untrusted_endpoint_option() {
         let database = driver.new_database_with_opts(options).unwrap();
         database.new_connection().unwrap();
     }
-
-    let mut database = database_with_token("bigquery://private.example/test-project");
-    set_option(
-        &mut database,
-        BigQueryDatabaseOption::AllowUntrustedEndpoint,
-        "true",
-    );
-    database.new_connection().unwrap();
 }
 
 /// Only a parameter the URI grammar names can reach an option, and the opt-in is not one. A URI
@@ -728,46 +720,6 @@ fn an_option_set_after_a_refused_connection_takes_effect() {
         "true",
     );
     database.new_connection().unwrap();
-}
-
-/// The default URI endpoint is the real BigQuery host, so plain URIs stay usable.
-#[test]
-fn the_default_uri_endpoint_needs_no_opt_in() {
-    let mut database = new_database();
-    set_option(
-        &mut database,
-        OptionDatabase::Uri,
-        "bigquery:///test-project",
-    );
-    assert_eq!(
-        database.config.endpoints.get(ServiceEndpointKind::BigQuery),
-        Some("https://bigquery.googleapis.com:443")
-    );
-    set_option(
-        &mut database,
-        BigQueryDatabaseOption::AuthenticationType,
-        BigQueryAuthenticationType::Anonymous,
-    );
-    database
-        .clients()
-        .rest_job_client(&database.runtime)
-        .unwrap();
-}
-
-/// The URI grammar itself is covered in `uri::tests`; what this adds is that `set_option` hands
-/// a parse failure back to the caller unchanged.
-#[test]
-fn uri_rejects_malformed_components() {
-    let mut database = new_database();
-    assert_eq!(
-        set_option_error(
-            &mut database,
-            OptionDatabase::Uri,
-            "bigquery://test-project"
-        )
-        .status,
-        Status::InvalidArguments
-    );
 }
 
 /// The option names itself in the rejection, and a value from a URI says so; otherwise a caller

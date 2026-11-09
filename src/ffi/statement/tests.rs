@@ -17,7 +17,7 @@ use crate::ffi::options::{
 };
 use crate::ffi::test_support::{
     RecordingCancel, assert_refused, call, edit_stream, get, hold_the_dispatch_turn, nested_schema,
-    nested_struct_array, null, release, set, zeroed_handle,
+    nested_struct_array, null, release, set,
 };
 use crate::test_support::driver::{publish_progress, test_statement};
 use crate::types::{MAX_SCHEMA_NESTING_DEPTH, validate_schema_nesting};
@@ -54,7 +54,7 @@ fn assert_nothing_to_cancel(handle: &mut AdbcStatement) {
 }
 
 fn installed(exported: Exported<State>) -> AdbcStatement {
-    let mut handle: AdbcStatement = zeroed_handle();
+    let mut handle = AdbcStatement::default();
     // SAFETY: The handle is a live local whose slot is empty.
     unsafe { install(&raw mut handle.private_data, KIND, exported) }.unwrap();
     handle
@@ -183,7 +183,7 @@ fn a_second_new_on_a_populated_handle_is_refused() {
 
 #[test]
 fn every_entry_point_refuses_a_released_handle() {
-    let mut handle: AdbcStatement = zeroed_handle();
+    let mut handle = AdbcStatement::default();
     let s = &raw mut handle;
     let name = c"adbc.ingest.target_table".as_ptr();
     let progress = PROGRESS.as_ptr();
@@ -382,7 +382,7 @@ fn a_refused_bind_still_releases_the_array_it_was_handed() {
 /// The same holds when the handle, not an argument, is refused.
 #[test]
 fn binding_to_a_released_handle_still_releases_what_it_was_handed() {
-    let mut handle: AdbcStatement = zeroed_handle();
+    let mut handle = AdbcStatement::default();
     let (mut values, mut schema) = fresh_bind_arguments();
     let (status, _) = bind(&mut handle, &mut values, &mut schema);
     assert_eq!(status, ADBC_STATUS_INVALID_STATE);

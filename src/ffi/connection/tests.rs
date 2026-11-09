@@ -17,7 +17,7 @@ use crate::ffi::options::{
 };
 use crate::ffi::test_support::{
     allocated, assert_refused, call, database_at, get, hold_the_dispatch_turn,
-    initialized_database, null, release, set, zeroed_handle,
+    initialized_database, null, release, set,
 };
 use crate::test_support::http::capture_requests_gated;
 
@@ -68,7 +68,7 @@ fn a_null_handle_is_a_bad_argument_not_a_crash() {
     };
     assert_eq!(statuses, [ADBC_STATUS_INVALID_ARGUMENT; 3]);
     // An unpopulated `private_data` is an object used out of order, not a bad pointer.
-    let mut connection: AdbcConnection = zeroed_handle();
+    let mut connection = AdbcConnection::default();
     // SAFETY: The handle structure is writable; commit checks its null private data.
     let status = unsafe { connection_commit(&raw mut connection, null()) };
     assert_eq!(status, ADBC_STATUS_INVALID_STATE);
@@ -526,11 +526,11 @@ fn the_namespace_aliases_answer_the_same_way_before_and_after_init() {
 /// dereference.
 #[test]
 fn every_entry_point_refuses_a_released_handle() {
-    let mut handle: AdbcConnection = zeroed_handle();
+    let mut handle = AdbcConnection::default();
     let c = &raw mut handle;
     let name = c"adbc.connection.autocommit".as_ptr();
     let (mut length, mut integer, mut double) = (0_usize, 0_i64, 0.0_f64);
-    let mut database: AdbcDatabase = zeroed_handle();
+    let mut database = AdbcDatabase::default();
 
     // SAFETY: `c` points to a live handle struct whose null private data every entry point checks
     // before dispatch. The other arguments are live locals, static strings or literals covering
@@ -566,7 +566,7 @@ fn every_entry_point_refuses_a_released_handle() {
 #[test]
 fn creating_a_statement_needs_an_initialized_connection() {
     let mut connection = pending();
-    let mut statement: AdbcStatement = zeroed_handle();
+    let mut statement = AdbcStatement::default();
     let refusal = call(|error| {
         // SAFETY: The connection, empty statement destination, and error are live writable
         // locals.

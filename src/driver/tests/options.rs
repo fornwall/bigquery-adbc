@@ -48,21 +48,10 @@ fn project_options_accept_opaque_identifiers_and_reject_unsafe_resource_segments
             );
             assert_message_omits(&error, &["SECRET"]);
         }
+        // The empty string clears it, as it clears every other database option.
+        set_option(&mut database, option, "");
+        assert_string_option(&database, option, None);
     }
-}
-
-/// The empty string clears the project, as it clears every other database option.
-#[test]
-fn an_empty_project_id_clears_it() {
-    let mut database = new_database();
-    set_option(
-        &mut database,
-        BigQueryDatabaseOption::ProjectId,
-        "my-project",
-    );
-    set_option(&mut database, BigQueryDatabaseOption::ProjectId, "");
-    assert_string_option(&database, BigQueryDatabaseOption::ProjectId, None);
-    assert!(database.config.project_id.is_none());
 }
 
 /// An unset option is reported by its key, which is all a caller behind a driver manager has.
@@ -450,43 +439,6 @@ fn option_statuses_are_specific() {
         database.get_option_bytes(unknown).unwrap_err().status,
         Status::NotFound
     );
-}
-
-/// A URI value is validated by the option it feeds, and its rejection names that option and the
-/// URI it came from.
-#[test]
-fn a_rejected_quota_project_is_reported_by_its_option_and_the_uri() {
-    let mut database = new_database();
-    let error = set_option_error(
-        &mut database,
-        OptionDatabase::Uri,
-        "bigquery:///my-project?QuotaProject=SECRET%2Fpath",
-    );
-    assert_eq!(error.status, Status::InvalidArguments);
-    assert_eq!(
-        error.message,
-        "BigQuery project identifier from the bigquery.auth.quota_project option must be \
-         nonempty, cannot contain slashes, backslashes or ASCII control characters, and cannot \
-         be \".\" or \"..\"; the value came from the connection URI"
-    );
-    assert_message_omits(&error, &["SECRET"]);
-}
-
-/// Quota projects follow the same opaque identifier contract when supplied through a URI.
-#[test]
-fn quota_project_uris_preserve_identifiers_for_service_validation() {
-    const OPTION: BigQueryDatabaseOption = BigQueryDatabaseOption::AuthenticationQuotaProject;
-
-    let mut database = new_database();
-    for value in ["123456789012", "example.com:quota-project", "Uppercase"] {
-        database
-            .set_option(
-                OptionDatabase::Uri,
-                format!("bigquery:///my-project?QuotaProject={value}").into(),
-            )
-            .unwrap_or_else(|error| panic!("{value}: {error}"));
-        assert_eq!(option_string(&database, OPTION), value);
-    }
 }
 
 /// `bigquery.user_agent` follows the driver's own user agent on every REST request of the

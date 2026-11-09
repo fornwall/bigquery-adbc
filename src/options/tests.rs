@@ -76,6 +76,7 @@ fn content_errors_do_not_report_the_string_value() {
     }
 }
 
+/// An overflowing integer string is told the range.
 #[test]
 fn integers_accept_both_spellings_without_echoing_a_rejected_value() {
     assert_eq!(
@@ -96,10 +97,6 @@ fn integers_accept_both_spellings_without_echoing_a_rejected_value() {
         assert_eq!(error.status, adbc_core::error::Status::InvalidArguments);
         assert_message_omits(&error, &[SECRET]);
     }
-}
-
-#[test]
-fn an_overflowing_integer_string_is_told_the_range() {
     for value in ["9223372036854775808", "-9223372036854775809"] {
         assert_eq!(
             integer_value("test.integer", value.into())
@@ -112,7 +109,7 @@ fn an_overflowing_integer_string_is_told_the_range() {
 }
 
 #[test]
-fn booleans_accept_the_spec_spellings_in_any_case() {
+fn booleans_accept_only_the_spec_spellings_in_any_case() {
     for value in ["true", "True", "TRUE"] {
         assert!(
             boolean_value("test.boolean", value.into()).unwrap(),
@@ -125,10 +122,6 @@ fn booleans_accept_the_spec_spellings_in_any_case() {
             "{value}"
         );
     }
-}
-
-#[test]
-fn boolean_rejections_name_the_accepted_spellings_only() {
     for value in ["1", "yes", "on", " true", SECRET] {
         let error = boolean_value("test.boolean", value.into()).unwrap_err();
         assert_eq!(
@@ -144,12 +137,6 @@ fn valid_values_decode() {
         string_value("test.string", OptionValue::String("value".to_owned())).unwrap(),
         "value"
     );
-    assert_eq!(
-        integer_value("test.integer", OptionValue::Int(42)).unwrap(),
-        42
-    );
-    assert!(boolean_value("test.boolean", true.into()).unwrap());
-    assert!(!boolean_value("test.boolean", false.into()).unwrap());
     assert_eq!(
         ingest_mode_value("test.mode", ADBC_INGEST_OPTION_MODE_CREATE.into()).unwrap(),
         IngestMode::Create

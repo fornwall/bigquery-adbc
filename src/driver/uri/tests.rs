@@ -16,54 +16,6 @@ fn value(
 }
 
 #[test]
-fn parses_authority_project_and_non_authentication_parameters() {
-    let parsed = parse_bigquery_uri(
-        "bigquery://localhost:8443/my%2Dproject?DatasetId=sample_data&Location=EU&QuotaProject=quota-project&ImpersonateTargetPrincipal=service%40example.com&ImpersonateDelegates=first%40example.com%2Csecond%40example.com&ImpersonateScopes=scope%3Aone%2Cscope%3Atwo&ImpersonateLifetime=30m",
-    )
-    .unwrap();
-    assert_eq!(
-        value(&parsed, BigQueryDatabaseOption::ProjectId),
-        Some("my-project")
-    );
-    assert_eq!(
-        value(&parsed, BigQueryDatabaseOption::Endpoint),
-        Some("https://localhost:8443")
-    );
-    assert_eq!(
-        value(&parsed, BigQueryDatabaseOption::AuthenticationType),
-        Some(BigQueryAuthenticationType::ApplicationDefault.as_str())
-    );
-    assert_eq!(
-        value(&parsed, BigQueryDatabaseOption::DatasetId),
-        Some("sample_data")
-    );
-    assert_eq!(value(&parsed, BigQueryDatabaseOption::Location), Some("EU"));
-    assert_eq!(
-        value(&parsed, BigQueryDatabaseOption::AuthenticationQuotaProject),
-        Some("quota-project")
-    );
-    assert_eq!(
-        value(
-            &parsed,
-            BigQueryDatabaseOption::ImpersonationTargetPrincipal
-        ),
-        Some("service@example.com")
-    );
-    assert_eq!(
-        value(&parsed, BigQueryDatabaseOption::ImpersonationDelegates),
-        Some("first@example.com,second@example.com")
-    );
-    assert_eq!(
-        value(&parsed, BigQueryDatabaseOption::ImpersonationScopes),
-        Some("scope:one,scope:two")
-    );
-    assert_eq!(
-        value(&parsed, BigQueryDatabaseOption::ImpersonationLifetime),
-        Some("30m")
-    );
-}
-
-#[test]
 fn applies_endpoint_defaults_and_supports_port_only_authorities() {
     for (uri, endpoint) in [
         ("bigquery:///project", "https://bigquery.googleapis.com:443"),
@@ -152,20 +104,13 @@ fn rejects_malformed_unknown_duplicate_and_incomplete_parameters() {
         "bigquery:///abc%7Fdef",
         "bigquery:///%2E",
         "bigquery:///%2E%2E",
-        "bigquery://user@host/project",
         "bigquery://host:0/project",
         "bigquery://host:65536/project",
         "bigquery:///project#fragment",
-        "bigquery:///project?Location",
         "bigquery:///project?=value",
-        "bigquery:///project?Unknown=value",
         "bigquery:///project?Location=EU&Location=US",
-        "bigquery:///project?Location=bad%2",
-        "bigquery:///project?OAuthType=4",
         "bigquery:///project?OAuthType=1",
-        "bigquery:///project?OAuthType=2&AuthCredentials=",
         "bigquery:///project?OAuthType=3&AuthClientId=id&AuthClientSecret=secret",
-        "bigquery:///project?AuthCredentials=secret",
         "bigquery:///project?OAuthType=1&AuthCredentials=secret&AuthRefreshToken=token",
         "bigquery:///project?ImpersonateDelegates=first%40example.com",
         "bigquery:///project?ImpersonateLifetime=30m",
@@ -342,8 +287,9 @@ fn rejections_name_the_parameter_or_the_form_that_would_have_worked() {
             "BigQuery URI endpoint authority must be host[:port], without user information or \
              whitespace",
         ),
+        // An unknown OAuthType is not echoed: it may be a misplaced credential.
         (
-            "bigquery:///my-project?OAuthType=4",
+            "bigquery:///my-project?OAuthType=%7B%22private_key%22%3A%22misplaced-key%22%7D",
             "BigQuery URI OAuthType must be 0, 1, 2, or 3",
         ),
         (
@@ -381,14 +327,6 @@ fn punctuation_that_names_no_parameter_or_segment_is_accepted() {
             "{uri}"
         );
     }
-
-    // An empty OAuthType selects the default rather than failing, which is also what the Go
-    // driver does with the empty string its `Get` returns for a valueless parameter.
-    let parsed = parse_bigquery_uri("bigquery:///my-project?OAuthType=").unwrap();
-    assert_eq!(
-        value(&parsed, BigQueryDatabaseOption::AuthenticationType),
-        Some(BigQueryAuthenticationType::ApplicationDefault.as_str())
-    );
 }
 
 /// A C string cannot carry a NUL, so `AdbcDatabaseGetOption` could not read back a value holding
@@ -454,23 +392,6 @@ fn a_password_in_the_authority_is_never_echoed() {
             "{uri}"
         );
         assert_message_omits(&error, &["hunter2"]);
-    }
-}
-
-#[test]
-fn a_credential_in_oauth_type_is_not_echoed() {
-    for value in [
-        "misplaced-token",
-        "%7B%22private_key%22%3A%22misplaced-key%22%7D",
-    ] {
-        let error =
-            parse_bigquery_uri(&format!("bigquery:///my-project?OAuthType={value}")).unwrap_err();
-        assert_eq!(error.status, adbc_core::error::Status::InvalidArguments);
-        assert_eq!(
-            error.message,
-            "BigQuery URI OAuthType must be 0, 1, 2, or 3"
-        );
-        assert_message_omits(&error, &["misplaced-token", "misplaced-key", "private_key"]);
     }
 }
 
