@@ -7,6 +7,7 @@
 
 > [!WARNING]
 > **Experimental.** This project is AI-generated and has not seen real-world use.
+> For an established alternative, use the [Go Bigquery ADBC driver](https://github.com/adbc-drivers/bigquery/tree/main/go).
 
 An [ADBC](https://arrow.apache.org/adbc/current/format/specification.html) driver for Google
 BigQuery, written in Rust, for Python, C, C++, Rust, DuckDB and dbt. Python wheels bundle the
