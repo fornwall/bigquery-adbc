@@ -135,7 +135,7 @@ fn null_handles_keys_and_values_are_rejected() {
 }
 
 /// Every database option is a string, so the typed getters must refuse rather than return a
-/// default.
+/// default, with the `NOT_FOUND` adbc.h documents for a value of another type.
 #[test]
 fn typed_getters_reject_string_options() {
     let mut database = initialized_database();
@@ -149,7 +149,8 @@ fn typed_getters_reject_string_options() {
             null(),
         )
     };
-    assert_ne!(status, ADBC_STATUS_OK);
+    assert_eq!(status, ADBC_STATUS_NOT_FOUND);
+    assert_eq!(value, 0);
     release(&mut database);
 }
 
