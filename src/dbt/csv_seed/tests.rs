@@ -32,7 +32,8 @@ fn column(name: &str, r#type: &str, parameters: JsonValue) -> JsonValue {
 }
 
 /// dbt's `column_types` reach the load job exactly as declared, parameters included and absent
-/// parameters left absent, whatever Arrow type dbt inferred; nothing in the CSV is parsed.
+/// parameters left absent, whatever Arrow type dbt inferred; nothing in the CSV is parsed. dbt's
+/// BigQuery type aliases are canonicalized.
 #[test]
 fn declared_column_types_become_the_load_schema_exactly() {
     let fields = load_fields(vec![
@@ -49,6 +50,9 @@ fn declared_column_types_become_the_load_schema_exactly() {
         field("label", DataType::Int64, "string(100)"),
         field("payload", DataType::Utf8, "bytes(16)"),
         field("duration", DataType::Utf8, "interval"),
+        field("text_value", DataType::Int64, "text"),
+        field("float_value", DataType::Utf8, "float"),
+        field("integer_value", DataType::Utf8, "integer"),
     ]);
     assert_eq!(
         fields,
@@ -78,6 +82,9 @@ fn declared_column_types_become_the_load_schema_exactly() {
             column("label", "STRING", json!({"maxLength": "100"})),
             column("payload", "BYTES", json!({"maxLength": "16"})),
             column("duration", "INTERVAL", json!({})),
+            column("text_value", "STRING", json!({})),
+            column("float_value", "FLOAT", json!({})),
+            column("integer_value", "INTEGER", json!({})),
         ])
     );
 }
@@ -186,7 +193,9 @@ fn delimiter_and_schema_are_validated_when_set() {
 }
 
 /// A column without `column_types` takes the type its Arrow type implies, including extension
-/// types, a decimal's own parameters and its nullability.
+/// types, a decimal's own parameters and its nullability. An undeclared `Decimal256(76, 38)`
+/// carries values up to about 5.79e38, which a declared `BIGNUMERIC(76, 38)` (38 integer digits)
+/// would refuse, so it loads as a plain BIGNUMERIC.
 #[test]
 fn undeclared_columns_take_the_type_their_arrow_type_implies() {
     let extension_field = |name: &str, data_type: DataType, extension: &str| {
@@ -209,6 +218,7 @@ fn undeclared_columns_take_the_type_their_arrow_type_implies() {
         ),
         extension_field("document", DataType::LargeUtf8, "arrow.json"),
         extension_field("location", DataType::Utf8View, "geoarrow.wkt"),
+        Field::new("widest", DataType::Decimal256(76, 38), true),
     ]);
     assert_eq!(
         fields,
@@ -222,35 +232,7 @@ fn undeclared_columns_take_the_type_their_arrow_type_implies() {
             column("local_time", "DATETIME", json!({})),
             column("document", "JSON", json!({})),
             column("location", "GEOGRAPHY", json!({})),
-        ])
-    );
-}
-
-/// An undeclared `Decimal256(76, 38)` carries values up to about 5.79e38, which a declared
-/// `BIGNUMERIC(76, 38)` (38 integer digits) would refuse, so it loads as a plain BIGNUMERIC.
-#[test]
-fn the_widest_undeclared_decimal_loads_as_a_plain_bignumeric() {
-    let fields = load_fields(vec![Field::new(
-        "physical",
-        DataType::Decimal256(76, 38),
-        true,
-    )]);
-    assert_eq!(fields, json!([column("physical", "BIGNUMERIC", json!({}))]));
-}
-
-#[test]
-fn dbt_bigquery_column_type_aliases_are_canonicalized() {
-    let fields = load_fields(vec![
-        field("text_value", DataType::Int64, "text"),
-        field("integer_value", DataType::Utf8, "integer"),
-        field("float_value", DataType::Utf8, "float"),
-    ]);
-    assert_eq!(
-        fields,
-        json!([
-            column("text_value", "STRING", json!({})),
-            column("integer_value", "INTEGER", json!({})),
-            column("float_value", "FLOAT", json!({})),
+            column("widest", "BIGNUMERIC", json!({})),
         ])
     );
 }
