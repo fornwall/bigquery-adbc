@@ -1,8 +1,8 @@
 # Driver reference
 
 Options, Arrow type mappings and behavior of this [ADBC][adbc-spec] driver. For installation, see
-the [README](../README.md). `G<n>` and `UP-<n>` IDs refer to the [Go driver
-comparison][go-comparison] and [UPSTREAM.md](UPSTREAM.md).
+the [README](../README.md); for dbt 2.0, [DBT.md](DBT.md). `G<n>` and `UP-<n>` IDs refer to the
+[Go driver comparison][go-comparison] and [UPSTREAM.md](UPSTREAM.md).
 
 [adbc-spec]: https://arrow.apache.org/adbc/current/format/specification.html
 [go-comparison]: GO-DRIVER-COMPARISON.md
@@ -76,7 +76,7 @@ configuration.
 | Namespace | Contents |
 | --- | --- |
 | `bigquery.*` | The driver's own option keys. Use these. |
-| `adbc.bigquery.sql.*` | Go-compatible aliases for most `bigquery.*` keys and some values; `adbc.bigquery.sql.api_endpoint`, which [dbt 2.0](#dbt-20) sends, also aliases `bigquery.endpoint`. Getters return canonical values; errors name the key as the caller spelled it. |
+| `adbc.bigquery.sql.*` | Go-compatible aliases for most `bigquery.*` keys and some values; `adbc.bigquery.sql.api_endpoint`, which [dbt 2.0](DBT.md) sends, also aliases `bigquery.endpoint`. Getters return canonical values; errors name the key as the caller spelled it. |
 | `adbc.bigquery.*` (no `sql`) | dbt 2.0 option-only operations with no `bigquery.*` equivalent; see [DBT.md](DBT.md). |
 
 [Standard ADBC options](#standard-adbc-options) are also accepted. Use one spelling per option
@@ -304,9 +304,10 @@ Conversion rules:
   requests, so a wait can overrun by one round (with every request at its 60-second timeout, about
   ten minutes for a query, five for a copy or load). A job `jobs.get` reports finished without an
   error completes without its results when a read could add nothing, as for DML and other
-  statements that return no rows; its counts and statement type come from the job. A wait that gives up fails with the last error and says the job's outcome is unknown, so
-  check the job before running it again. It requests cancellation of the unfinished job, except for
-  a statement the driver runs outside any operation, such as a `COMMIT`.
+  statements that return no rows; its counts and statement type come from the job. A wait that
+  gives up fails with the last error and says the job's outcome is unknown, so check the job before
+  running it again. It requests cancellation of the unfinished job, except for a statement the
+  driver runs outside any operation, such as a `COMMIT`.
 - Cancellation stops local work immediately and
   [requests cancellation](https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/jobs/cancel)
   of any unfinished remote job, which BigQuery handles asynchronously. During the initial
@@ -685,8 +686,3 @@ REST and Storage Read requests, including every row-stream open and resume, send
 `User-Agent: bigquery-adbc/<version>`, followed by a space and the `bigquery.user_agent` text when
 set, which Cloud Audit Logs record as `callerSuppliedUserAgent`. Storage Write requests cannot carry
 it (UP-93).
-
-## dbt 2.0
-
-The driver can replace the dbt-labs Go driver fork that dbt 2.0 loads. [DBT.md](DBT.md) covers
-loading it, the `adbc.bigquery.*` options and option-only operations, and known gaps.
