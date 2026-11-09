@@ -24,24 +24,28 @@ def test_installed_distribution_metadata() -> None:
     assert distribution.metadata["Name"] == "bigquery-adbc"
 
 
-def test_public_function_signatures() -> None:
-    low_level = inspect.signature(driver.connect).parameters
-    assert list(low_level) == ["uri", "db_kwargs"]
-    assert low_level["uri"].default is None
-    assert low_level["db_kwargs"].default is None
+def _offline_options(**options: object) -> dict[str, object]:
+    return {
+        "driver": driver.driver_path(),
+        "entrypoint": driver.ENTRYPOINT,
+        "uri": "bigquery:///offline-wheel-test",
+        driver.DatabaseOptions.AUTHENTICATION_TYPE: driver.AuthenticationType.ANONYMOUS,
+        **options,
+    }
 
-    pep249 = inspect.signature(dbapi.connect).parameters
-    assert list(pep249) == [
-        "uri",
-        "db_kwargs",
-        "conn_kwargs",
-        "autocommit",
-        "kwargs",
+
+def test_public_function_signatures() -> None:
+    def defaults(function: object) -> list[tuple[str, object]]:
+        return [(name, parameter.default) for name, parameter in inspect.signature(function).parameters.items()]
+
+    assert defaults(driver.connect) == [("uri", None), ("db_kwargs", None)]
+    assert defaults(dbapi.connect) == [
+        ("uri", None),
+        ("db_kwargs", None),
+        ("conn_kwargs", None),
+        ("autocommit", False),
+        ("kwargs", inspect.Parameter.empty),
     ]
-    assert pep249["uri"].default is None
-    assert pep249["db_kwargs"].default is None
-    assert pep249["conn_kwargs"].default is None
-    assert pep249["autocommit"].default is False
 
 
 def test_wheel_ships_the_checked_in_option_enums() -> None:
@@ -54,33 +58,18 @@ def test_wheel_ships_the_checked_in_option_enums() -> None:
 
 
 def test_wheel_bundles_exactly_one_native_library() -> None:
-    package_dir = Path(driver.__file__).resolve().parent
-    libraries = [
-        path
-        for path in package_dir.iterdir()
-        if path.name
-        in {
-            "libadbc_driver_bigquery.so",
-            "libadbc_driver_bigquery.dylib",
-            "adbc_driver_bigquery.dll",
-        }
-    ]
+    names = {"libadbc_driver_bigquery.so", "libadbc_driver_bigquery.dylib", "adbc_driver_bigquery.dll"}
+    libraries = [path for path in Path(driver.__file__).resolve().parent.iterdir() if path.name in names]
 
     assert libraries == [Path(driver.driver_path())]
     assert libraries[0].is_absolute()
 
 
 @pytest.mark.parametrize("explicit_entrypoint", [True, False])
-def test_native_database_handle_loads_and_closes(
-    explicit_entrypoint: bool,
-) -> None:
-    options = {
-        "driver": driver.driver_path(),
-        "uri": "bigquery:///offline-wheel-test",
-        driver.DatabaseOptions.AUTHENTICATION_TYPE: driver.AuthenticationType.ANONYMOUS,
-    }
-    if explicit_entrypoint:
-        options["entrypoint"] = driver.ENTRYPOINT
+def test_native_database_handle_loads_and_closes(explicit_entrypoint: bool) -> None:
+    options = _offline_options()
+    if not explicit_entrypoint:
+        del options["entrypoint"]
 
     database = adbc_driver_manager.AdbcDatabase(**options)
     try:
@@ -218,19 +207,10 @@ def test_native_database_parses_go_compatible_uris(uri: str, expected: dict[str,
         assert {option: database.get_option(option) for option in expected} == expected
 
 
-def test_native_database_uri_does_not_expose_secrets() -> None:
-    uri = (
-        "bigquery:///dummyproject"
-        "?OAuthType=3"
-        "&AuthClientId=test-client-id"
-        "&AuthClientSecret=test-client-secret"
-        "&AuthRefreshToken=test-refresh-token"
-    )
+def test_native_database_secrets_are_write_only() -> None:
+    # test_native_database_parses_go_compatible_uris checks that the URI redacts them.
+    uri = "bigquery:///dummyproject?OAuthType=3&AuthClientId=id&AuthClientSecret=secret&AuthRefreshToken=token"
     with driver.connect(uri) as database:
-        assert database.get_option("uri") == (
-            "bigquery:///dummyproject?OAuthType=3&AuthClientId=test-client-id"
-            "&AuthClientSecret=<redacted>&AuthRefreshToken=<redacted>"
-        )
         for option in (
             driver.DatabaseOptions.AUTHENTICATION_CLIENT_SECRET,
             driver.DatabaseOptions.AUTHENTICATION_REFRESH_TOKEN,
@@ -276,15 +256,14 @@ def test_native_database_rejects_invalid_go_compatible_uris(uri: str, message: s
 
 
 def test_native_user_authentication_options_build_credentials() -> None:
-    options = {
-        "driver": driver.driver_path(),
-        "entrypoint": driver.ENTRYPOINT,
-        "uri": "bigquery:///offline-wheel-test",
-        driver.DatabaseOptions.AUTHENTICATION_TYPE: driver.AuthenticationType.USER_AUTHENTICATION,
-        driver.DatabaseOptions.AUTHENTICATION_CLIENT_ID: "wheel-client-id",
-        driver.DatabaseOptions.AUTHENTICATION_CLIENT_SECRET: "wheel-client-secret",
-        driver.DatabaseOptions.AUTHENTICATION_REFRESH_TOKEN: "wheel-refresh-token",
-    }
+    options = _offline_options(
+        **{
+            driver.DatabaseOptions.AUTHENTICATION_TYPE: driver.AuthenticationType.USER_AUTHENTICATION,
+            driver.DatabaseOptions.AUTHENTICATION_CLIENT_ID: "wheel-client-id",
+            driver.DatabaseOptions.AUTHENTICATION_CLIENT_SECRET: "wheel-client-secret",
+            driver.DatabaseOptions.AUTHENTICATION_REFRESH_TOKEN: "wheel-refresh-token",
+        }
+    )
     with (
         adbc_driver_manager.AdbcDatabase(**options) as database,
         adbc_driver_manager.AdbcConnection(database),
@@ -297,16 +276,10 @@ def test_native_user_authentication_options_build_credentials() -> None:
 
 
 def test_native_ingest_method_option_is_storage_write_only() -> None:
-    options = {
-        "driver": driver.driver_path(),
-        "entrypoint": driver.ENTRYPOINT,
-        "uri": "bigquery:///offline-wheel-test",
-        driver.DatabaseOptions.AUTHENTICATION_TYPE: driver.AuthenticationType.ANONYMOUS,
-    }
     key = driver.ConnectionOptions.BULK_INGEST_METHOD
     value = driver.BulkIngestMethod.STORAGE_WRITE
     with (
-        adbc_driver_manager.AdbcDatabase(**options) as database,
+        adbc_driver_manager.AdbcDatabase(**_offline_options()) as database,
         adbc_driver_manager.AdbcConnection(database) as connection,
         adbc_driver_manager.AdbcStatement(connection) as statement,
     ):
@@ -339,14 +312,12 @@ def test_native_ingest_target_is_cleared_by_an_empty_value() -> None:
 
 
 def test_native_query_prefetch_concurrency_round_trip_and_snapshot() -> None:
-    options = {
-        "driver": driver.driver_path(),
-        "entrypoint": driver.ENTRYPOINT,
-        "uri": "bigquery:///offline-wheel-test",
-        driver.DatabaseOptions.AUTHENTICATION_TYPE: driver.AuthenticationType.ANONYMOUS,
-        driver.DatabaseOptions.ENDPOINT: "http://127.0.0.1:1",
-        driver.DatabaseOptions.STORAGE_ENDPOINT: "http://127.0.0.1:2",
-    }
+    options = _offline_options(
+        **{
+            driver.DatabaseOptions.ENDPOINT: "http://127.0.0.1:1",
+            driver.DatabaseOptions.STORAGE_ENDPOINT: "http://127.0.0.1:2",
+        }
+    )
     # Cython types `get_option_int(key)` as `str` and rejects str subclasses, so it
     # needs `.value`; dict keys and **kwargs accept the enum member.
     prefetch_key = driver.ConnectionOptions.QUERY_PREFETCH_CONCURRENCY.value
@@ -362,16 +333,6 @@ def test_native_query_prefetch_concurrency_round_trip_and_snapshot() -> None:
             assert statement.get_option_int(prefetch_key) == 3
             statement.set_options(**{prefetch_key: 2})
             assert statement.get_option_int(prefetch_key) == 2
-
-
-def test_package_connect_uses_the_named_entrypoint() -> None:
-    # Reaching a driver option at all proves the bundled library loaded through
-    # AdbcDriverBigqueryInit rather than the manager's default entrypoint.
-    database = driver.connect("bigquery:///offline-wheel-test")
-    try:
-        assert database.get_option("uri") == "bigquery:///offline-wheel-test"
-    finally:
-        database.close()
 
 
 def test_formatted_enums_and_standard_options_reach_native_driver() -> None:
@@ -407,35 +368,8 @@ def test_formatted_enums_and_standard_options_reach_native_driver() -> None:
                 handle.set_options(**{key: "true"})
 
 
-def test_missing_library_override_has_a_useful_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    missing = tmp_path / "missing-driver.so"
-    monkeypatch.setenv("BIGQUERY_ADBC_LIBRARY", str(missing))
-
-    with pytest.raises(FileNotFoundError, match="environment variable") as error:
-        driver.driver_path()
-
-    assert str(missing) in str(error.value)
-
-
-def test_invalid_database_option_has_a_useful_error() -> None:
-    with pytest.raises(adbc_driver_manager.NotSupportedError) as error:
-        adbc_driver_manager.AdbcDatabase(
-            driver=driver.driver_path(),
-            entrypoint=driver.ENTRYPOINT,
-            uri="bigquery:///offline-wheel-test",
-            **{"bigquery.invalid_option": "invalid"},
-        )
-
-    assert "bigquery.invalid_option" in str(error.value)
-    assert error.value.status_code == adbc_driver_manager.AdbcStatusCode.NOT_IMPLEMENTED
-
-
 def _offline_connection(*, autocommit: bool = True) -> dbapi.Connection:
-    """Open a DB-API connection that never reaches BigQuery.
-
-    Anonymous authentication needs no credentials, and the tests below send no query.
-    """
-
+    # Anonymous authentication needs no credentials, and no test sends a query through this.
     return dbapi.connect(
         "bigquery:///offline-wheel-test",
         db_kwargs={driver.DatabaseOptions.AUTHENTICATION_TYPE: driver.AuthenticationType.ANONYMOUS},
@@ -574,21 +508,3 @@ def test_mid_stream_failure_details_reach_the_caller(second_page_denied: str) ->
         "bigquery.error.http_status": b"403",
         "bigquery.job_id": b"offline-wheel-test:EU.job",
     }
-
-
-def test_dbapi_exception_hierarchy_is_the_pep249_one() -> None:
-    assert issubclass(dbapi.Warning, Exception)
-    for name in (
-        "InterfaceError",
-        "DatabaseError",
-    ):
-        assert issubclass(getattr(dbapi, name), dbapi.Error)
-    for name in (
-        "DataError",
-        "OperationalError",
-        "IntegrityError",
-        "InternalError",
-        "ProgrammingError",
-        "NotSupportedError",
-    ):
-        assert issubclass(getattr(dbapi, name), dbapi.DatabaseError)

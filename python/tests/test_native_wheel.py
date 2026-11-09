@@ -52,38 +52,29 @@ def test_missing_nm_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
         exported_symbols(Path("driver"), "elf")
 
 
-def test_inspects_elf_architecture(tmp_path: Path) -> None:
-    header = bytearray(20)
-    header[:4] = b"\x7fELF"
-    header[5] = 1
-    struct.pack_into("<H", header, 18, 183)
-    library = tmp_path / "driver.so"
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        (b"\x7fELF\x00\x01" + bytes(12) + struct.pack("<H", 183), NativeBinaryInfo("elf", "aarch64")),
+        (b"\xcf\xfa\xed\xfe" + struct.pack("<I", 0x0100000C), NativeBinaryInfo("macho", "aarch64")),
+        (
+            b"MZ" + bytes(58) + struct.pack("<I", 64) + b"PE\0\0" + struct.pack("<H", 0x8664),
+            NativeBinaryInfo("pe", "x86_64"),
+        ),
+    ],
+    ids=["elf", "macho", "pe"],
+)
+def test_inspects_architecture(tmp_path: Path, header: bytes, expected: NativeBinaryInfo) -> None:
+    library = tmp_path / "driver"
     library.write_bytes(header)
+    assert inspect_native_binary(library) == expected
 
-    assert inspect_native_binary(library) == NativeBinaryInfo("elf", "aarch64")
 
-
-def test_inspects_macho_architecture_and_rejects_universal_libraries(tmp_path: Path) -> None:
-    thin = tmp_path / "thin.dylib"
-    thin.write_bytes(b"\xcf\xfa\xed\xfe" + struct.pack("<I", 0x0100000C))
-    assert inspect_native_binary(thin) == NativeBinaryInfo("macho", "aarch64")
-
+def test_rejects_universal_macho_libraries(tmp_path: Path) -> None:
     universal = tmp_path / "universal.dylib"
     universal.write_bytes(b"\xca\xfe\xba\xbe" + struct.pack(">I", 2) + bytes(40))
     with pytest.raises(RuntimeError, match="universal Mach-O library"):
         inspect_native_binary(universal)
-
-
-def test_inspects_pe_architecture(tmp_path: Path) -> None:
-    header = bytearray(70)
-    header[:2] = b"MZ"
-    struct.pack_into("<I", header, 60, 64)
-    header[64:68] = b"PE\0\0"
-    struct.pack_into("<H", header, 68, 0x8664)
-    library = tmp_path / "driver.dll"
-    library.write_bytes(header)
-
-    assert inspect_native_binary(library) == NativeBinaryInfo("pe", "x86_64")
 
 
 @pytest.mark.parametrize(
@@ -103,18 +94,13 @@ def test_platform_tag_architecture_comes_from_native_library(
     assert platform_tag_for_binary(platform_tag, binary) == expected
 
 
-def test_rejects_tag_architecture_mismatch() -> None:
-    binary = NativeBinaryInfo("macho", "aarch64")
-
-    with pytest.raises(RuntimeError, match="expected 'macosx_11_0_arm64'"):
-        validate_platform_tag("macosx_11_0_x86_64", binary)
-
-
-def test_rejects_tag_binary_format_mismatch() -> None:
-    binary = NativeBinaryInfo("elf", "aarch64")
-
-    with pytest.raises(RuntimeError, match="requires a macho native library"):
-        validate_platform_tag("macosx_11_0_arm64", binary)
+@pytest.mark.parametrize(
+    ("binary_format", "message"),
+    [("macho", "expected 'macosx_11_0_arm64'"), ("elf", "requires a macho native library")],
+)
+def test_rejects_tag_that_does_not_match_the_library(binary_format: str, message: str) -> None:
+    with pytest.raises(RuntimeError, match=message):
+        validate_platform_tag("macosx_11_0_x86_64", NativeBinaryInfo(binary_format, "aarch64"))
 
 
 @pytest.mark.parametrize("platform_tag", ["any", "linux_i686", "macosx_11_0_universal2"])

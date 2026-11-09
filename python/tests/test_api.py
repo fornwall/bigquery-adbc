@@ -34,13 +34,17 @@ def test_public_low_level_api() -> None:
     }
 
 
-def test_driver_path_uses_development_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    library = tmp_path / "development-driver.so"
-    library.touch()
+def test_driver_path_rereads_the_development_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    first = tmp_path / "first.so"
+    second = tmp_path / "second.so"
+    first.touch()
+    second.touch()
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("BIGQUERY_ADBC_LIBRARY", library.name)
 
-    assert driver.driver_path() == str(library.resolve())
+    monkeypatch.setenv("BIGQUERY_ADBC_LIBRARY", first.name)
+    assert driver.driver_path() == str(first.resolve())
+    monkeypatch.setenv("BIGQUERY_ADBC_LIBRARY", str(second))
+    assert driver.driver_path() == str(second.resolve())
 
 
 @pytest.mark.parametrize("kind", ["missing", "directory"])
@@ -50,17 +54,9 @@ def test_driver_path_rejects_invalid_override(monkeypatch: pytest.MonkeyPatch, t
         path.mkdir()
     monkeypatch.setenv("BIGQUERY_ADBC_LIBRARY", str(path))
 
-    with pytest.raises(FileNotFoundError, match="not a regular file"):
+    with pytest.raises(FileNotFoundError, match="environment variable is not a regular file") as caught:
         driver.driver_path()
-
-
-def test_driver_path_finds_one_bundled_library(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    library = tmp_path / "libadbc_driver_bigquery.so"
-    library.touch()
-    monkeypatch.delenv("BIGQUERY_ADBC_LIBRARY", raising=False)
-    monkeypatch.setattr(driver, "_PACKAGE_DIR", tmp_path)
-
-    assert driver.driver_path() == str(library.resolve())
+    assert str(path) in str(caught.value)
 
 
 def test_driver_path_requires_exactly_one_bundled_library(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -70,22 +66,13 @@ def test_driver_path_requires_exactly_one_bundled_library(monkeypatch: pytest.Mo
     with pytest.raises(FileNotFoundError, match="Install a platform wheel"):
         driver.driver_path()
 
-    (tmp_path / "libadbc_driver_bigquery.so").touch()
+    library = tmp_path / "libadbc_driver_bigquery.so"
+    library.touch()
+    assert driver.driver_path() == str(library.resolve())
+
     (tmp_path / "libadbc_driver_bigquery.dylib").touch()
     with pytest.raises(RuntimeError, match="exactly one"):
         driver.driver_path()
-
-
-def test_driver_path_rereads_the_override_on_every_call(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    first = tmp_path / "first.so"
-    second = tmp_path / "second.so"
-    first.touch()
-    second.touch()
-
-    monkeypatch.setenv("BIGQUERY_ADBC_LIBRARY", str(first))
-    assert driver.driver_path() == str(first.resolve())
-    monkeypatch.setenv("BIGQUERY_ADBC_LIBRARY", str(second))
-    assert driver.driver_path() == str(second.resolve())
 
 
 @pytest.mark.parametrize(
@@ -219,30 +206,17 @@ def test_dbapi_type_objects_support_both_comparison_operators(
     assert (value != arrow_type) is not equal
 
 
-def test_dbapi_binary_constructs_from_str_and_bytes() -> None:
-    # PEP 249 defines Binary(string); `bytes("abc")` would raise TypeError.
-    assert dbapi.Binary("abc") == b"abc"
-    assert dbapi.Binary("smörgås") == "smörgås".encode()
-    assert dbapi.Binary(b"\x00\xff") == b"\x00\xff"
-    assert isinstance(dbapi.Binary("abc"), bytes)
-
-
-@pytest.mark.parametrize("use_view", [False, True])
-def test_dbapi_binary_copies_mutable_buffers(use_view: bool) -> None:
-    source = bytearray(b"\x00\xff")
-    result = dbapi.Binary(memoryview(source) if use_view else source)
-    source[0] = 1
-    assert type(result) is bytes
-    assert result == b"\x00\xff"
-
-
-def test_dbapi_binary_normalizes_bytes_subclasses() -> None:
-    class BinarySubclass(bytes):
+def test_dbapi_binary_returns_independent_bytes() -> None:
+    class BytesSubclass(bytes):
         pass
 
-    result = dbapi.Binary(BinarySubclass(b"\x00\xff"))
-    assert type(result) is bytes
-    assert result == b"\x00\xff"
+    source = bytearray(b"\x00\xff")
+    # PEP 249 defines Binary(string); `bytes("abc")` would raise TypeError.
+    values = ["abc", "smörgås", b"\x00\xff", source, memoryview(source), BytesSubclass(b"\x00\xff")]
+    results = [dbapi.Binary(value) for value in values]
+    source[0] = 1
+    assert results == [b"abc", "smörgås".encode(), *[b"\x00\xff"] * 4]
+    assert all(type(result) is bytes for result in results)
 
 
 @pytest.mark.parametrize(

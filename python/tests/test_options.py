@@ -1,50 +1,28 @@
 from __future__ import annotations
 
-import enum
+import bigquery_adbc
 
-from bigquery_adbc import (
-    AuthenticationType,
-    BulkIngestMethod,
-    ConnectionOptions,
-    CreateDisposition,
-    CredentialsType,
-    DatabaseOptions,
-    ParameterMode,
-    QueryPriority,
-    StatementOptions,
-    WriteDisposition,
-)
-
-_OPTION_ENUMS = (DatabaseOptions, ConnectionOptions, StatementOptions)
-_VALUE_ENUMS = (
-    AuthenticationType,
-    BulkIngestMethod,
-    CreateDisposition,
-    CredentialsType,
-    ParameterMode,
-    QueryPriority,
-    WriteDisposition,
+_ENUMS = (
+    bigquery_adbc.DatabaseOptions,
+    bigquery_adbc.ConnectionOptions,
+    bigquery_adbc.StatementOptions,
+    bigquery_adbc.AuthenticationType,
+    bigquery_adbc.BulkIngestMethod,
+    bigquery_adbc.CreateDisposition,
+    bigquery_adbc.CredentialsType,
+    bigquery_adbc.ParameterMode,
+    bigquery_adbc.QueryPriority,
+    bigquery_adbc.WriteDisposition,
 )
 
 
-def _members(enum_types: tuple[type[enum.Enum], ...]) -> set[enum.Enum]:
-    return {member for enum_type in enum_types for member in enum_type}
-
-
-def test_generated_public_members_remain_wire_strings() -> None:
-    for member in _members(_OPTION_ENUMS + _VALUE_ENUMS):
+def test_generated_members_are_public_wire_strings_on_every_interpreter() -> None:
+    for member in (member for enum_type in _ENUMS for member in enum_type):
         assert isinstance(member, str)
         assert member == member.value
         assert hash(member) == hash(member.value)
-
-
-def test_legacy_aliases_and_dbt_options_are_not_public() -> None:
-    public_values = {member.value for member in _members(_OPTION_ENUMS + _VALUE_ENUMS)}
-    assert not any(value.startswith("adbc.bigquery.") for value in public_values)
-
-
-def test_string_conversions_use_wire_values_on_every_interpreter() -> None:
-    for member in _members(_OPTION_ENUMS + _VALUE_ENUMS):
+        # Legacy aliases and dbt-only options are not public.
+        assert not member.value.startswith("adbc.bigquery.")
         assert str(member) == member.value
         assert "%s" % member == member.value  # noqa: UP031
         assert f"{member}" == member.value

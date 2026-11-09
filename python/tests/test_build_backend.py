@@ -8,6 +8,7 @@ import sys
 import tarfile
 import tomllib
 import zipfile
+from collections.abc import Callable
 from email import policy
 from email.parser import BytesParser
 from pathlib import Path, PureWindowsPath
@@ -352,11 +353,27 @@ def license_checkout(tmp_path: Path) -> Path:
     return root
 
 
-@pytest.mark.parametrize("document", ["Cargo.lock", "Cargo.toml"])
-def test_license_bundle_rejects_changed_dependency_inputs(license_checkout: Path, document: str) -> None:
+@pytest.mark.parametrize(
+    ("document", "change"),
+    [
+        pytest.param("Cargo.lock", lambda text: text + "\n# Changed\n", id="lock"),
+        pytest.param("Cargo.toml", lambda text: text + "\n# Changed\n", id="manifest"),
+        pytest.param(
+            "Cargo.lock",
+            lambda text: text.replace('name = "adbc_core"\nversion = "', 'name = "adbc_core"\nversion = "9', 1),
+            id="dependency-version",
+        ),
+        pytest.param("rust-toolchain.toml", lambda text: '[toolchain]\nchannel = "other"\n', id="toolchain"),
+    ],
+)
+def test_license_bundle_rejects_changed_inputs(
+    license_checkout: Path, document: str, change: Callable[[str], str]
+) -> None:
     validate_bundle(license_checkout)
-    with (license_checkout / document).open("a") as source:
-        source.write("\n# Changed dependency input\n")
+    path = license_checkout / document
+    text = path.read_text(encoding="utf-8")
+    assert change(text) != text
+    path.write_text(change(text), encoding="utf-8")
     with pytest.raises(RuntimeError, match="license bundle is stale"):
         validate_bundle(license_checkout)
 
@@ -371,22 +388,6 @@ def test_license_bundle_ignores_the_crate_version(license_checkout: Path) -> Non
         assert bumped != text
         path.write_text(bumped, encoding="utf-8")
     validate_bundle(license_checkout)
-
-
-def test_license_bundle_rejects_a_changed_dependency_version(license_checkout: Path) -> None:
-    path = license_checkout / "Cargo.lock"
-    text = path.read_text(encoding="utf-8")
-    changed = text.replace('name = "adbc_core"\nversion = "', 'name = "adbc_core"\nversion = "9', 1)
-    assert changed != text
-    path.write_text(changed, encoding="utf-8")
-    with pytest.raises(RuntimeError, match="license bundle is stale"):
-        validate_bundle(license_checkout)
-
-
-def test_license_bundle_rejects_changed_toolchain(license_checkout: Path) -> None:
-    (license_checkout / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "other"\n')
-    with pytest.raises(RuntimeError, match="license bundle is stale"):
-        validate_bundle(license_checkout)
 
 
 @pytest.mark.parametrize("document", ["THIRD_PARTY_LICENSES.txt", "RUST-STD.html"])
@@ -433,6 +434,16 @@ def test_license_graph_includes_build_dependencies_but_not_development_only() ->
     assert generate_licenses.reachable_packages(metadata) == {"root", "runtime", "build", "transitive"}
 
 
+def _fixture_package(directory: Path, source: str = "registry+fixture") -> dict:
+    return {
+        "name": "fixture",
+        "version": "1",
+        "manifest_path": str(directory / "Cargo.toml"),
+        "source": source,
+        "license_file": None,
+    }
+
+
 def test_collects_nested_licenses_notices_and_source_copyrights(tmp_path: Path) -> None:
     (tmp_path / "LICENSE").write_text("Top-level license terms\n")
     (tmp_path / "third_party").mkdir()
@@ -442,14 +453,7 @@ def test_collects_nested_licenses_notices_and_source_copyrights(tmp_path: Path) 
     (tmp_path / "native.c").write_text(
         "/* Copyright Example Authors\n * Permission is hereby granted...\n */\nint x;\n"
     )
-    package = {
-        "name": "fixture",
-        "version": "1",
-        "manifest_path": str(tmp_path / "Cargo.toml"),
-        "source": "registry+fixture",
-        "license_file": None,
-    }
-    documents = generate_licenses.package_documents(package, {})
+    documents = generate_licenses.package_documents(_fixture_package(tmp_path), {})
     assert documents["third_party/NOTICE"] == "Third-party attribution\n"
     assert documents["third_party/COPYING"] == "Additional license terms\n"
     assert documents["UNLICENSE"] == "Public domain dedication\n"
@@ -459,15 +463,8 @@ def test_collects_nested_licenses_notices_and_source_copyrights(tmp_path: Path) 
 
 def test_missing_dependency_license_requires_review(tmp_path: Path) -> None:
     (tmp_path / "lib.rs").write_text("// Copyright Example Authors\nfn main() {}\n")
-    package = {
-        "name": "fixture",
-        "version": "1",
-        "manifest_path": str(tmp_path / "Cargo.toml"),
-        "source": "registry+fixture",
-        "license_file": None,
-    }
     with pytest.raises(RuntimeError, match="No complete license text found"):
-        generate_licenses.package_documents(package, {})
+        generate_licenses.package_documents(_fixture_package(tmp_path), {})
 
 
 @pytest.mark.parametrize(
@@ -531,18 +528,15 @@ def test_native_archives_can_take_the_library_from_a_wheel(tmp_path: Path) -> No
     filename = _build_support.native_library_name()
     wheel = tmp_path / "driver.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("other/file", b"")
+    with pytest.raises(RuntimeError, match="does not contain"):
+        package_native.library_from_wheel(wheel, tmp_path)
+
+    with zipfile.ZipFile(wheel, "a") as archive:
         archive.writestr(f"{_build_support.PACKAGE}/{filename}", b"native fixture")
     library = package_native.library_from_wheel(wheel, tmp_path)
     assert library.name == filename
     assert library.read_bytes() == b"native fixture"
-
-
-def test_native_archives_reject_a_wheel_without_the_library(tmp_path: Path) -> None:
-    wheel = tmp_path / "driver.whl"
-    with zipfile.ZipFile(wheel, "w") as archive:
-        archive.writestr("other/file", b"")
-    with pytest.raises(RuntimeError, match="does not contain"):
-        package_native.library_from_wheel(wheel, tmp_path)
 
 
 def test_built_wheel_preserves_dependency_licenses(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -588,14 +582,7 @@ def test_git_dependency_keeps_each_ancestor_license(tmp_path: Path) -> None:
     crate.mkdir(parents=True)
     (crate / "LICENSE").write_text("Crate license\n")
     (crate.parent / "LICENSE").write_text("Intermediate license\n")
-    package = {
-        "name": "fixture",
-        "version": "1",
-        "manifest_path": str(crate / "Cargo.toml"),
-        "source": "git+fixture",
-        "license_file": None,
-    }
-    documents = generate_licenses.package_documents(package, {})
+    documents = generate_licenses.package_documents(_fixture_package(crate, "git+fixture"), {})
     assert {"Repository license\n", "Repository notice\n", "Crate license\n", "Intermediate license\n"} <= set(
         documents.values()
     )

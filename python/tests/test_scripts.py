@@ -13,6 +13,17 @@ from pathlib import Path
 import pytest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+posix = pytest.mark.skipif(sys.platform == "win32" or shutil.which("bash") is None, reason="requires POSIX Bash")
+
+
+def fake_path(tmp_path: Path, **tools: str) -> str:
+    """Write executable stand-ins for `tools` and return a PATH that finds them first."""
+    directory = tmp_path / "bin"
+    directory.mkdir()
+    for name, script in tools.items():
+        (directory / name).write_text(script, encoding="utf-8")
+        (directory / name).chmod(0o755)
+    return f"{directory}{os.pathsep}{os.environ['PATH']}"
 
 
 @pytest.mark.parametrize(
@@ -31,7 +42,7 @@ def test_suites_using_duckdb_select_a_python_build_with_the_gil(lock: Path) -> N
     assert len(requests) == 1 and requests[0].endswith("+gil")
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX Bash")
+@posix
 @pytest.mark.parametrize("value", [None, "", "project/dataset"])
 @pytest.mark.parametrize(
     "command",
@@ -71,7 +82,7 @@ def test_integration_runners_require_project_before_external_work(
     assert variable in result.stderr
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX Bash")
+@posix
 def test_project_preflight_exports_the_explicit_value() -> None:
     result = subprocess.run(
         [
@@ -91,7 +102,7 @@ def test_project_preflight_exports_the_explicit_value() -> None:
     assert result.stdout == "chosen-project"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX Bash")
+@posix
 @pytest.mark.parametrize(
     ("output", "cargo_status", "status"),
     [
@@ -106,22 +117,18 @@ def test_project_preflight_exports_the_explicit_value() -> None:
 def test_one_live_test_runner_trusts_cargo_once_the_test_ran(
     tmp_path: Path, output: str, cargo_status: int, status: int
 ) -> None:
-    tools = tmp_path / "bin"
-    tools.mkdir()
-    (tools / "cargo").write_text(
-        "#!/usr/bin/env bash\n"
+    path = fake_path(
+        tmp_path,
+        cargo="#!/usr/bin/env bash\n"
         'if [[ " $* " == *" --list "* ]]; then echo "query::case: test"; exit; fi\n'
         'printf "%s" "$CARGO_OUTPUT"\n'
         'exit "$CARGO_STATUS"\n',
-        encoding="utf-8",
     )
-    (tools / "cargo").chmod(0o755)
-
     result = subprocess.run(
         [str(REPOSITORY_ROOT / "scripts/run-one-live-test.sh"), "case", "--nocapture"],
         env={
             **os.environ,
-            "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}",
+            "PATH": path,
             "BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT": "chosen-project",
             "CARGO_OUTPUT": output,
             "CARGO_STATUS": str(cargo_status),
@@ -200,7 +207,7 @@ def assert_process_stopped(pid_path: Path) -> None:
         os.kill(pid, 0)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX process groups")
+@posix
 @pytest.mark.parametrize("value", [None, ""])
 def test_emulator_runner_requires_an_explicit_executable(tmp_path: Path, value: str | None) -> None:
     environment = emulator_environment(tmp_path)
@@ -214,7 +221,7 @@ def test_emulator_runner_requires_an_explicit_executable(tmp_path: Path, value: 
     assert not (tmp_path / "server.pid").exists()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX process groups")
+@posix
 @pytest.mark.parametrize("status", [0, 7])
 @pytest.mark.parametrize("stdout_logging", [False, True])
 def test_emulator_runner_bootstraps_exports_and_cleans_up(tmp_path: Path, status: int, stdout_logging: bool) -> None:
@@ -259,7 +266,7 @@ def test_emulator_runner_bootstraps_exports_and_cleans_up(tmp_path: Path, status
     assert_process_stopped(tmp_path / "server.pid")
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX process groups")
+@posix
 @pytest.mark.parametrize("failure", ["startup", "bootstrap"])
 def test_emulator_runner_cleans_up_a_failed_start_without_running_tests(tmp_path: Path, failure: str) -> None:
     result = run_emulator(
@@ -274,7 +281,7 @@ def test_emulator_runner_cleans_up_a_failed_start_without_running_tests(tmp_path
     assert_process_stopped(tmp_path / "server.pid")
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="requires POSIX process groups")
+@posix
 def test_emulator_runner_terminates_its_server_and_test_on_signal(tmp_path: Path) -> None:
     with subprocess.Popen(
         [
@@ -307,7 +314,7 @@ def test_emulator_runner_terminates_its_server_and_test_on_signal(tmp_path: Path
     assert_process_stopped(tmp_path / "child.pid")
 
 
-@pytest.mark.skipif(sys.platform == "win32" or shutil.which("bash") is None, reason="requires POSIX Bash")
+@posix
 @pytest.mark.parametrize("count", [0, 1, 2])
 @pytest.mark.parametrize("nullglob", ["-s", "-u"])
 def test_built_wheel_helper_under_errexit(tmp_path: Path, count: int, nullglob: str) -> None:
@@ -343,7 +350,7 @@ def test_built_wheel_helper_under_errexit(tmp_path: Path, count: int, nullglob: 
         assert f"expected exactly one built wheel in {wheel_dir}, found {count}" in result.stderr
 
 
-@pytest.mark.skipif(sys.platform == "win32" or shutil.which("bash") is None, reason="requires POSIX Bash")
+@posix
 @pytest.mark.parametrize("libraries", [0, 1, 2, None])
 @pytest.mark.parametrize("target_directory", ["target dir", 'target ["quoted"] \\ café'])
 def test_cargo_driver_library_helper_reports_the_built_library(
@@ -365,18 +372,15 @@ def test_cargo_driver_library_helper_reports_the_built_library(
         },
         {"reason": "build-finished", "success": libraries is not None},
     ]
-    tools = tmp_path / "bin"
-    tools.mkdir()
-    (tools / "cargo").write_text(
-        "#!/usr/bin/env bash\n"
+    path = fake_path(
+        tmp_path,
+        cargo="#!/usr/bin/env bash\n"
         '[[ $1 == rustc && " $* " == *" --crate-type cdylib "* ]] || exit 3\n'
         '[[ " $* " == *" --manifest-path $EXPECTED_MANIFEST "* && " $* " == *" --release "* ]] || exit 3\n'
         "printf 'macro output\\n\\n'\n"
         'printf "%s\\n" "$CARGO_MESSAGES"\n'
         "[[ $CARGO_MESSAGES == *'\"success\":true'* ]] || exit 101\n",
-        encoding="utf-8",
     )
-    (tools / "cargo").chmod(0o755)
     manifest = tmp_path / "Cargo.toml"
 
     result = subprocess.run(
@@ -390,7 +394,7 @@ def test_cargo_driver_library_helper_reports_the_built_library(
         ],
         env={
             **os.environ,
-            "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}",
+            "PATH": path,
             "BIGQUERY_ADBC_PYTHON": sys.executable,
             "EXPECTED_MANIFEST": str(manifest),
             "CARGO_MESSAGES": "\n".join(json.dumps(message, separators=(",", ":")) for message in messages),
@@ -429,23 +433,17 @@ def test_binary_size_report_distinguishes_artifact_from_reporting_context(
         "target": {"kind": ["cdylib"], "crate_types": ["cdylib"], "name": "adbc_driver_bigquery"},
         "filenames": [str(library)],
     }
-    tools = tmp_path / "bin"
-    tools.mkdir()
-    (tools / "cargo").write_text(
-        "#!/usr/bin/env bash\n"
+    path = fake_path(
+        tmp_path,
+        cargo="#!/usr/bin/env bash\n"
         'if [[ $1 == -V ]]; then echo "cargo 1.0.0"; exit; fi\n'
         "[[ $EXPECT_BUILD == 1 ]] || exit 3\n"
         '[[ $1 == rustc && " $* " == *" --crate-type cdylib "* ]] || exit 3\n'
         f'[[ " $* " == *" --lib "* && " $* " == *" --profile {profile} "* ]] || exit 3\n'
         'printf "%s\\n" "$CARGO_MESSAGE"\n',
-        encoding="utf-8",
+        rustc="#!/usr/bin/env bash\n"
+        "printf 'release: 1.0.0\\nhost: x86_64-unknown-linux-gnu\\ncommit-hash: unknown\\n'\n",
     )
-    (tools / "rustc").write_text(
-        "#!/usr/bin/env bash\nprintf 'release: 1.0.0\\nhost: x86_64-unknown-linux-gnu\\ncommit-hash: unknown\\n'\n",
-        encoding="utf-8",
-    )
-    for tool in tools.iterdir():
-        tool.chmod(0o755)
 
     command = [str(REPOSITORY_ROOT / "scripts/report-binary-size.sh"), "--profile", profile, "--top", "1"]
     if not build:
@@ -454,7 +452,7 @@ def test_binary_size_report_distinguishes_artifact_from_reporting_context(
         command,
         env={
             **os.environ,
-            "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}",
+            "PATH": path,
             "BIGQUERY_ADBC_PYTHON": sys.executable,
             "EXPECT_BUILD": "1" if build else "0",
             "CARGO_BUILD_TARGET": "",

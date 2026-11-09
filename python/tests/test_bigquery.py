@@ -51,9 +51,13 @@ def _db_options(dataset: str | None = None) -> dict[str, str]:
     return options
 
 
+def _connect(project: str, dataset: str | None = None) -> dbapi.Connection:
+    return dbapi.connect(_uri(project), _db_options(dataset), autocommit=True)
+
+
 def _execute_update(project: str, sql: str) -> int:
     with (
-        dbapi.connect(_uri(project), _db_options(), autocommit=True) as connection,
+        _connect(project) as connection,
         adbc_driver_manager.AdbcStatement(connection.adbc_connection) as statement,
     ):
         statement.set_sql_query(sql)
@@ -67,18 +71,10 @@ def _dataset_label_value(project: str, dataset: str) -> str | None:
         WHERE schema_name = {_string_literal(dataset)}
           AND option_name = 'labels'
     """
-    with (
-        dbapi.connect(_uri(project), _db_options(), autocommit=True) as connection,
-        connection.cursor() as cursor,
-    ):
+    with _connect(project) as connection, connection.cursor() as cursor:
         cursor.execute(sql)
         row = cursor.fetchone()
     return None if row is None else row[0]
-
-
-def _has_label(labels: str, key: str, value: str) -> bool:
-    pair = re.compile(rf'STRUCT\(\s*"{re.escape(key)}"\s*,\s*"{re.escape(value)}"\s*\)')
-    return pair.search(labels) is not None
 
 
 def _cleanup_dataset(project: str, dataset: str, run_label: str) -> None:
@@ -86,16 +82,12 @@ def _cleanup_dataset(project: str, dataset: str, run_label: str) -> None:
     if dataset != expected_dataset or not re.fullmatch(r"[a-z0-9_]+", dataset):
         raise RuntimeError(f"refusing to clean up unsafe dataset ID: {dataset!r}")
 
-    expected_labels = (_OWNER_LABEL, (_RUN_LABEL_KEY, run_label))
-    labels = _dataset_label_value(project, dataset)
-    owned = labels is not None and all(_has_label(labels, key, value) for key, value in expected_labels)
-    if not owned:
-        raise RuntimeError(f"refusing to clean up {project}.{dataset}: ownership labels do not match")
+    labels = _dataset_label_value(project, dataset) or ""
+    for key, value in (_OWNER_LABEL, (_RUN_LABEL_KEY, run_label)):
+        if not re.search(rf'STRUCT\(\s*"{re.escape(key)}"\s*,\s*"{re.escape(value)}"\s*\)', labels):
+            raise RuntimeError(f"refusing to clean up {project}.{dataset}: ownership labels do not match")
 
-    _execute_update(
-        project,
-        f"DROP SCHEMA {_identifier(f'{project}.{dataset}')} CASCADE",
-    )
+    _execute_update(project, f"DROP SCHEMA {_identifier(f'{project}.{dataset}')} CASCADE")
 
 
 @pytest.fixture(scope="session")
@@ -107,29 +99,24 @@ def bigquery_dataset() -> Iterator[tuple[str, str]]:
 
     run_label = (datetime.now(UTC).strftime("%Y%m%d_%H%M%S") + f"_{os.getpid()}_{secrets.token_hex(4)}").lower()
     dataset = _DATASET_PREFIX + run_label
-    created = False
+    _execute_update(
+        project,
+        f"""
+            CREATE SCHEMA {_identifier(f"{project}.{dataset}")}
+            OPTIONS (
+                location = 'US',
+                default_table_expiration_days = 1,
+                labels = [
+                    ({_string_literal(_OWNER_LABEL[0])}, {_string_literal(_OWNER_LABEL[1])}),
+                    ({_string_literal(_RUN_LABEL_KEY)}, {_string_literal(run_label)})
+                ]
+            )
+        """,
+    )
     try:
-        _execute_update(
-            project,
-            f"""
-                CREATE SCHEMA {_identifier(f"{project}.{dataset}")}
-                OPTIONS (
-                    location = 'US',
-                    default_table_expiration_days = 1,
-                    labels = [
-                        ({_string_literal(_OWNER_LABEL[0])},
-                         {_string_literal(_OWNER_LABEL[1])}),
-                        ({_string_literal(_RUN_LABEL_KEY)},
-                         {_string_literal(run_label)})
-                    ]
-                )
-            """,
-        )
-        created = True
         yield project, dataset
     finally:
-        if created:
-            _cleanup_dataset(project, dataset, run_label)
+        _cleanup_dataset(project, dataset, run_label)
 
 
 @contextlib.contextmanager
@@ -143,10 +130,7 @@ def _low_level_connection(project: str, dataset: str) -> Iterator[adbc_driver_ma
 
 @contextlib.contextmanager
 def _cursor(project: str, dataset: str) -> Iterator[dbapi.Cursor]:
-    with (
-        dbapi.connect(_uri(project), _db_options(dataset), autocommit=True) as connection,
-        connection.cursor() as cursor,
-    ):
+    with _connect(project, dataset) as connection, connection.cursor() as cursor:
         yield cursor
 
 
@@ -154,8 +138,13 @@ def _read_stream(stream: adbc_driver_manager.ArrowArrayStreamHandle) -> pa.Table
     return pa.RecordBatchReader.from_stream(stream).read_all()
 
 
-def _metadata_table(values: list[dict[str, Any]], dataset: str, table: str) -> dict[str, Any] | None:
-    for catalog in values:
+def _table_object(
+    connection: dbapi.Connection, project: str, dataset: str, table: str, **filters: Any
+) -> dict[str, Any] | None:
+    objects = connection.adbc_get_objects(
+        catalog_filter=project, db_schema_filter=dataset, table_name_filter=table, **filters
+    )
+    for catalog in objects.read_all().to_pylist():
         for schema in catalog.get("catalog_db_schemas") or []:
             if schema["db_schema_name"] != dataset:
                 continue
@@ -182,25 +171,15 @@ def _wait_for_metadata(call: Callable[[], _Value], predicate: Callable[[_Value],
     raise AssertionError(f"BigQuery metadata did not propagate; last value: {value!r}")
 
 
-def _wait_for_table(connection: dbapi.Connection, project: str, dataset: str, table_name: str) -> None:
-    _wait_for_metadata(
-        lambda: (
-            connection.adbc_get_objects(
-                depth="tables",
-                catalog_filter=project,
-                db_schema_filter=dataset,
-                table_name_filter=table_name,
-            )
-            .read_all()
-            .to_pylist()
-        ),
-        lambda values: _metadata_table(values, dataset, table_name) is not None,
+def _wait_for_table(
+    connection: dbapi.Connection, project: str, dataset: str, table: str, depth: str = "tables"
+) -> dict[str, Any]:
+    return _wait_for_metadata(
+        lambda: _table_object(connection, project, dataset, table, depth=depth), lambda value: value is not None
     )
 
 
-def test_select_through_low_level_and_dbapi(
-    bigquery_dataset: tuple[str, str],
-) -> None:
+def test_select_through_low_level_and_dbapi(bigquery_dataset: tuple[str, str]) -> None:
     project, dataset = bigquery_dataset
     with (
         _low_level_connection(project, dataset) as connection,
@@ -221,9 +200,7 @@ def test_select_through_low_level_and_dbapi(
         assert cursor.fetchone() is None
 
 
-def test_description_type_codes_match_pep249_type_objects(
-    bigquery_dataset: tuple[str, str],
-) -> None:
+def test_description_type_codes_match_pep249_type_objects(bigquery_dataset: tuple[str, str]) -> None:
     project, dataset = bigquery_dataset
     columns = {
         "string": ("'a'", dbapi.STRING),
@@ -245,9 +222,7 @@ def test_description_type_codes_match_pep249_type_objects(
     assert [name for name, (_, type_object) in columns.items() if type_codes[name] != type_object] == []
 
 
-def test_rowcount_reports_result_size_and_dml_count(
-    bigquery_dataset: tuple[str, str],
-) -> None:
+def test_rowcount_reports_result_size_and_dml_count(bigquery_dataset: tuple[str, str]) -> None:
     project, dataset = bigquery_dataset
     table = _identifier(f"rowcount_{secrets.token_hex(8)}")
     with _cursor(project, dataset) as cursor:
@@ -266,9 +241,7 @@ def test_rowcount_reports_result_size_and_dml_count(
         assert cursor.rowcount == 0
 
 
-def test_go_compatible_host_uri_connects(
-    bigquery_dataset: tuple[str, str],
-) -> None:
+def test_go_compatible_host_uri_connects(bigquery_dataset: tuple[str, str]) -> None:
     project, dataset = bigquery_dataset
     uri = f"bigquery://bigquery.googleapis.com/{project}?DatasetId={dataset}"
     with (
@@ -307,11 +280,9 @@ def test_empty_impersonation_lists_do_not_enable_impersonation(bigquery_dataset:
             assert _read_stream(stream).to_pylist() == [{"value": 1}]
 
 
-def test_arrow_fetching_and_parameter_binding(
-    bigquery_dataset: tuple[str, str],
-) -> None:
+def test_arrow_fetching_and_parameter_binding(bigquery_dataset: tuple[str, str]) -> None:
     project, dataset = bigquery_dataset
-    with dbapi.connect(_uri(project), _db_options(dataset), autocommit=True) as connection:
+    with _connect(project, dataset) as connection:
         with connection.cursor() as cursor:
             cursor.execute("SELECT 7 AS value UNION ALL SELECT 8 ORDER BY value")
             assert cursor.fetch_arrow_table().to_pylist() == [
@@ -348,53 +319,42 @@ def test_arrow_fetching_and_parameter_binding(
             assert cursor.fetchall() == [(1,), (2,), (3,)]
 
 
-def test_parameter_bind_execution_shapes(
-    bigquery_dataset: tuple[str, str],
-) -> None:
+def test_parameter_bind_execution_shapes(bigquery_dataset: tuple[str, str]) -> None:
     project, dataset = bigquery_dataset
     parameter_schema = pa.schema([pa.field("", pa.int64(), nullable=False)])
 
     def batch(values: list[int]) -> pa.RecordBatch:
-        return pa.RecordBatch.from_arrays(
-            [pa.array(values, type=pa.int64())],
-            schema=parameter_schema,
-        )
+        return pa.RecordBatch.from_arrays([pa.array(values, type=pa.int64())], schema=parameter_schema)
+
+    def stream(*batches: pa.RecordBatch) -> pa.RecordBatchReader:
+        return pa.RecordBatchReader.from_batches(parameter_schema, batches)
+
+    def statement(sql: str, parameters: pa.RecordBatch | pa.RecordBatchReader) -> adbc_driver_manager.AdbcStatement:
+        result = adbc_driver_manager.AdbcStatement(connection)
+        result.set_sql_query(sql)
+        if isinstance(parameters, pa.RecordBatch):
+            result.bind(parameters)
+        else:
+            result.bind_stream(parameters)
+        return result
 
     with _low_level_connection(project, dataset) as connection:
-        with adbc_driver_manager.AdbcStatement(connection) as statement:
-            statement.set_sql_query("SELECT ? AS value")
-            statement.bind_stream(
-                pa.RecordBatchReader.from_batches(
-                    parameter_schema,
-                    [batch([7]), batch([8, 9])],
-                )
-            )
-            stream, rows_affected = statement.execute_query()
-            result = _read_stream(stream)
+        with statement("SELECT ? AS value", stream(batch([7]), batch([8, 9]))) as query:
+            results, rows_affected = query.execute_query()
+            result = _read_stream(results)
         # Later parameter rows run while the stream is drained, so the total is unknown.
         assert rows_affected == -1
         assert result.column("value").to_pylist() == [7, 8, 9]
 
         empty_inputs = [
             ("batch", batch([])),
-            (
-                "empty stream",
-                pa.RecordBatchReader.from_batches(parameter_schema, []),
-            ),
-            (
-                "stream with empty batch",
-                pa.RecordBatchReader.from_batches(parameter_schema, [batch([])]),
-            ),
+            ("empty stream", stream()),
+            ("stream with empty batch", stream(batch([]))),
         ]
         for input_name, parameters in empty_inputs:
-            with adbc_driver_manager.AdbcStatement(connection) as statement:
-                statement.set_sql_query("SELECT ? AS value")
-                if isinstance(parameters, pa.RecordBatch):
-                    statement.bind(parameters)
-                else:
-                    statement.bind_stream(parameters)
-                stream, rows_affected = statement.execute_query()
-                result = _read_stream(stream)
+            with statement("SELECT ? AS value", parameters) as query:
+                results, rows_affected = query.execute_query()
+                result = _read_stream(results)
             # Nothing executed, so the count is known.
             assert rows_affected == 0, input_name
             assert result.num_rows == 0, input_name
@@ -402,38 +362,26 @@ def test_parameter_bind_execution_shapes(
             assert result.schema.field("value").type == pa.int64(), input_name
 
         table_name = "bind_execution_shapes"
-        with adbc_driver_manager.AdbcStatement(connection) as statement:
-            statement.set_sql_query(f"CREATE TABLE {_identifier(table_name)} (value INT64)")
-            assert statement.execute_update() == -1
+        with adbc_driver_manager.AdbcStatement(connection) as create:
+            create.set_sql_query(f"CREATE TABLE {_identifier(table_name)} (value INT64)")
+            assert create.execute_update() == -1
 
         inserts = [
             ("batch", batch([1, 2]), 2),
-            (
-                "stream",
-                pa.RecordBatchReader.from_batches(parameter_schema, [batch([3]), batch([4, 5])]),
-                3,
-            ),
-            ("empty stream", pa.RecordBatchReader.from_batches(parameter_schema, []), 0),
+            ("stream", stream(batch([3]), batch([4, 5])), 3),
+            ("empty stream", stream(), 0),
         ]
         for input_name, parameters, expected_rows in inserts:
-            with adbc_driver_manager.AdbcStatement(connection) as statement:
-                statement.set_sql_query(f"INSERT INTO {_identifier(table_name)} VALUES (?)")
-                if isinstance(parameters, pa.RecordBatch):
-                    statement.bind(parameters)
-                else:
-                    statement.bind_stream(parameters)
-                assert statement.execute_update() == expected_rows, input_name
+            with statement(f"INSERT INTO {_identifier(table_name)} VALUES (?)", parameters) as insert:
+                assert insert.execute_update() == expected_rows, input_name
 
-        with adbc_driver_manager.AdbcStatement(connection) as statement:
-            statement.set_sql_query(f"SELECT value FROM {_identifier(table_name)} ORDER BY value")
-            stream, _ = statement.execute_query()
-            result = _read_stream(stream)
+        with adbc_driver_manager.AdbcStatement(connection) as query:
+            query.set_sql_query(f"SELECT value FROM {_identifier(table_name)} ORDER BY value")
+            result = _read_stream(query.execute_query()[0])
         assert result.column("value").to_pylist() == [1, 2, 3, 4, 5]
 
 
-def test_dry_run_reports_schema_without_query_id(
-    bigquery_dataset: tuple[str, str],
-) -> None:
+def test_dry_run_reports_schema_without_query_id(bigquery_dataset: tuple[str, str]) -> None:
     project, dataset = bigquery_dataset
     with _cursor(project, dataset) as cursor:
         cursor.adbc_statement.set_options(**{driver.StatementOptions.QUERY_DRY_RUN: True})
@@ -456,9 +404,7 @@ def test_dry_run_reports_schema_without_query_id(
         assert _QUERY_ID_KEY not in result.schema.metadata
 
 
-def test_script_without_results_returns_empty_arrow_result(
-    bigquery_dataset: tuple[str, str],
-) -> None:
+def test_script_without_results_returns_empty_arrow_result(bigquery_dataset: tuple[str, str]) -> None:
     project, dataset = bigquery_dataset
     table_name = f"script_no_results_{secrets.token_hex(8)}"
     with _cursor(project, dataset) as cursor:
@@ -487,9 +433,7 @@ def test_script_without_results_returns_empty_arrow_result(
         assert cursor.fetchone() == (2,)
 
 
-def test_script_with_results_returns_one_result_set(
-    bigquery_dataset: tuple[str, str],
-) -> None:
+def test_script_with_results_returns_one_result_set(bigquery_dataset: tuple[str, str]) -> None:
     project, dataset = bigquery_dataset
     with _cursor(project, dataset) as cursor:
         cursor.execute("SELECT 1 AS first_value; SELECT 'foobar' AS second_value")
@@ -503,33 +447,18 @@ def test_script_with_results_returns_one_result_set(
     assert result.schema.metadata[_STATEMENT_TYPE_KEY] == b"SCRIPT"
 
 
-def test_query_id_metadata_is_present_and_unique(
-    bigquery_dataset: tuple[str, str],
-) -> None:
+def test_query_id_metadata_is_present_and_unique(bigquery_dataset: tuple[str, str]) -> None:
     project, dataset = bigquery_dataset
+    query_ids = []
     with _cursor(project, dataset) as cursor:
-        cursor.execute("SELECT 1 AS value")
-        first_query_id = cursor.fetch_arrow_table().schema.metadata[_QUERY_ID_KEY]
-        assert first_query_id
-
-        cursor.execute("SELECT 1 AS value")
-        second_query_id = cursor.fetch_arrow_table().schema.metadata[_QUERY_ID_KEY]
-        assert second_query_id
-        assert second_query_id != first_query_id
+        for sql, parameters in (("SELECT 1 AS value", None), ("SELECT 1 AS value", None), ("SELECT ? AS value", (1,))):
+            cursor.execute(sql, parameters)
+            query_ids.append(cursor.fetch_arrow_table().schema.metadata[_QUERY_ID_KEY])
+    assert all(query_ids)
+    assert len(set(query_ids)) == 3
 
 
-def test_bound_query_has_query_id_metadata(
-    bigquery_dataset: tuple[str, str],
-) -> None:
-    project, dataset = bigquery_dataset
-    with _cursor(project, dataset) as cursor:
-        cursor.execute("SELECT ? AS value", (1,))
-        assert cursor.fetch_arrow_table().schema.metadata[_QUERY_ID_KEY]
-
-
-def test_bulk_ingest_and_metadata(
-    bigquery_dataset: tuple[str, str],
-) -> None:
+def test_bulk_ingest_and_metadata(bigquery_dataset: tuple[str, str]) -> None:
     project, dataset = bigquery_dataset
     table_name = "ingested_values"
     data = pa.table(
@@ -539,7 +468,7 @@ def test_bulk_ingest_and_metadata(
         }
     )
 
-    with dbapi.connect(_uri(project), _db_options(dataset), autocommit=True) as connection:
+    with _connect(project, dataset) as connection:
         with connection.cursor() as cursor:
             assert (
                 cursor.adbc_ingest(
@@ -570,95 +499,47 @@ def test_bulk_ingest_and_metadata(
         assert schema.field("id").type == pa.int64()
         assert schema.field("name").type == pa.string()
 
-        objects = _wait_for_metadata(
-            lambda: (
-                connection.adbc_get_objects(
-                    depth="all",
-                    catalog_filter=project,
-                    db_schema_filter=dataset,
-                    table_name_filter=table_name,
-                )
-                .read_all()
-                .to_pylist()
-            ),
-            lambda value: _metadata_table(value, dataset, table_name) is not None,
-        )
-        metadata = _metadata_table(objects, dataset, table_name)
-        assert metadata is not None
-        assert [column["column_name"] for column in metadata["table_columns"]] == [
-            "id",
-            "name",
-        ]
+        metadata = _wait_for_table(connection, project, dataset, table_name, depth="all")
+        common = {
+            "xdbc_nullable": 1,
+            "xdbc_is_nullable": "YES",
+            "xdbc_is_autoincrement": False,
+            "xdbc_is_generatedcolumn": False,
+        }
         assert [
-            {
-                key: column[key]
-                for key in (
-                    "xdbc_type_name",
-                    "xdbc_nullable",
-                    "xdbc_is_nullable",
-                    "xdbc_is_autoincrement",
-                    "xdbc_is_generatedcolumn",
-                )
-            }
+            {key: column[key] for key in ("column_name", "xdbc_type_name", *common)}
             for column in metadata["table_columns"]
         ] == [
-            {
-                "xdbc_type_name": "INT64",
-                "xdbc_nullable": 1,
-                "xdbc_is_nullable": "YES",
-                "xdbc_is_autoincrement": False,
-                "xdbc_is_generatedcolumn": False,
-            },
-            {
-                "xdbc_type_name": "STRING",
-                "xdbc_nullable": 1,
-                "xdbc_is_nullable": "YES",
-                "xdbc_is_autoincrement": False,
-                "xdbc_is_generatedcolumn": False,
-            },
+            {"column_name": "id", "xdbc_type_name": "INT64", **common},
+            {"column_name": "name", "xdbc_type_name": "STRING", **common},
         ]
 
-        def filtered_object(table_types: list[str]) -> dict[str, Any] | None:
-            values = (
-                connection.adbc_get_objects(
-                    depth="tables",
-                    catalog_filter=project,
-                    db_schema_filter=dataset,
-                    table_name_filter=table_name,
-                    table_types_filter=table_types,
-                )
-                .read_all()
-                .to_pylist()
+        def filtered_type(table_types: list[str]) -> str | None:
+            table = _table_object(
+                connection, project, dataset, table_name, depth="tables", table_types_filter=table_types
             )
-            return _metadata_table(values, dataset, table_name)
+            return None if table is None else table["table_type"]
 
-        assert filtered_object(["VIEW"]) is None
-        table_only = filtered_object(["TABLE"])
-        table_or_view = filtered_object(["TABLE", "VIEW"])
-        assert table_only is not None and table_only["table_type"] == "TABLE"
-        assert table_or_view is not None and table_or_view["table_type"] == "TABLE"
+        assert filtered_type(["VIEW"]) is None
+        assert filtered_type(["TABLE"]) == "TABLE"
+        assert filtered_type(["TABLE", "VIEW"]) == "TABLE"
 
         statistics = _wait_for_metadata(
             lambda: (
                 connection.adbc_get_statistics(
-                    catalog_filter=project,
-                    db_schema_filter=dataset,
-                    table_name_filter=table_name,
-                    approximate=True,
+                    catalog_filter=project, db_schema_filter=dataset, table_name_filter=table_name, approximate=True
                 )
                 .read_all()
                 .to_pylist()
             ),
-            lambda value: bool(value),
+            bool,
         )
         assert statistics[0]["catalog_name"] == project
 
 
-def test_current_catalog_and_schema_changes(
-    bigquery_dataset: tuple[str, str],
-) -> None:
+def test_current_catalog_and_schema_changes(bigquery_dataset: tuple[str, str]) -> None:
     project, dataset = bigquery_dataset
-    with dbapi.connect(_uri(project), _db_options(dataset), autocommit=True) as connection:
+    with _connect(project, dataset) as connection:
         assert connection.adbc_current_catalog == project
         assert connection.adbc_current_db_schema == dataset
 
@@ -710,7 +591,7 @@ def test_commit_and_rollback(bigquery_dataset: tuple[str, str]) -> None:
 def test_partitioned_execution(bigquery_dataset: tuple[str, str]) -> None:
     project, dataset = bigquery_dataset
     parameters = pa.record_batch([pa.array([7, 8])], names=[""])
-    with dbapi.connect(_uri(project), _db_options(dataset), autocommit=True) as connection:
+    with _connect(project, dataset) as connection:
         with connection.cursor() as cursor:
             partitions, schema = cursor.adbc_execute_partitions("SELECT ? AS value", parameters)
         assert schema.field("value").type == pa.int64()
@@ -725,9 +606,7 @@ def test_partitioned_execution(bigquery_dataset: tuple[str, str]) -> None:
         assert values == [7, 8]
 
 
-def test_driver_manager_fetch_frame_helpers(
-    bigquery_dataset: tuple[str, str],
-) -> None:
+def test_driver_manager_fetch_frame_helpers(bigquery_dataset: tuple[str, str]) -> None:
     import pandas
     import polars
 
@@ -748,7 +627,7 @@ def test_pandas_read_sql(bigquery_dataset: tuple[str, str]) -> None:
     import pandas
 
     project, dataset = bigquery_dataset
-    with dbapi.connect(_uri(project), _db_options(dataset), autocommit=True) as connection:
+    with _connect(project, dataset) as connection:
         frame = pandas.read_sql(
             """
                 SELECT
@@ -857,46 +736,17 @@ def test_pandas_to_sql(bigquery_dataset: tuple[str, str]) -> None:
         }
     )
 
-    with dbapi.connect(_uri(project), _db_options(dataset), autocommit=True) as connection:
-        assert (
-            empty.to_sql(
-                table_name,
-                connection,
-                schema=dataset,
-                if_exists="fail",
-                index=False,
-            )
-            == 0
-        )
+    with _connect(project, dataset) as connection:
+
+        def to_sql(frame: pandas.DataFrame, if_exists: str) -> int | None:
+            return frame.to_sql(table_name, connection, schema=dataset, if_exists=if_exists, index=False)
+
+        assert to_sql(empty, "fail") == 0
         _wait_for_table(connection, project, dataset, table_name)
         with pytest.raises(ValueError, match=r"Table 'pandas_to_sql_values' already"):
-            first.head(1).to_sql(
-                table_name,
-                connection,
-                schema=dataset,
-                if_exists="fail",
-                index=False,
-            )
-        assert (
-            first.to_sql(
-                table_name,
-                connection,
-                schema=dataset,
-                if_exists="append",
-                index=False,
-            )
-            == 2
-        )
-        assert (
-            second.to_sql(
-                table_name,
-                connection,
-                schema=dataset,
-                if_exists="append",
-                index=False,
-            )
-            == 1
-        )
+            to_sql(first.head(1), "fail")
+        assert to_sql(first, "append") == 2
+        assert to_sql(second, "append") == 1
 
     with _cursor(project, dataset) as cursor:
         cursor.execute(f"SELECT id, name, exact, payload FROM {_identifier(table_name)} ORDER BY id")
@@ -911,7 +761,7 @@ def test_polars_read_database(bigquery_dataset: tuple[str, str]) -> None:
     import polars
 
     project, dataset = bigquery_dataset
-    with dbapi.connect(_uri(project), _db_options(dataset), autocommit=True) as connection:
+    with _connect(project, dataset) as connection:
         frame = polars.read_database(
             """
                 SELECT
@@ -988,7 +838,7 @@ def test_polars_read_database_batches(bigquery_dataset: tuple[str, str]) -> None
     import polars
 
     project, dataset = bigquery_dataset
-    with dbapi.connect(_uri(project), _db_options(dataset), autocommit=True) as connection:
+    with _connect(project, dataset) as connection:
         batches = list(
             polars.read_database(
                 """
@@ -1017,59 +867,26 @@ def test_polars_write_database(bigquery_dataset: tuple[str, str]) -> None:
 
     project, dataset = bigquery_dataset
     table_name = "polars_write_database_values"
-    qualified_table_name = f"{project}.{dataset}.{table_name}"
     append_missing_table_name = "polars_append_missing_values"
-    qualified_append_missing_table_name = f"{project}.{dataset}.{append_missing_table_name}"
-    first = polars.DataFrame(
-        {"id": [2, 1], "name": ["two", "one"]},
-        schema={"id": polars.Int64, "name": polars.String},
-    )
-    second = polars.DataFrame(
-        {"id": [3], "name": [None]},
-        schema={"id": polars.Int64, "name": polars.String},
-    )
+    schema = {"id": polars.Int64, "name": polars.String}
+    first = polars.DataFrame({"id": [2, 1], "name": ["two", "one"]}, schema=schema)
+    second = polars.DataFrame({"id": [3], "name": [None]}, schema=schema)
     empty_replacement = polars.DataFrame(schema={"replacement_id": polars.Int64, "payload": polars.Binary})
 
-    with dbapi.connect(_uri(project), _db_options(dataset), autocommit=True) as connection:
-        assert (
-            first.head(1).write_database(
-                qualified_append_missing_table_name,
-                connection,
-                if_table_exists="append",
-                engine="adbc",
-            )
-            == 1
-        )
+    def write(frame: polars.DataFrame, connection: dbapi.Connection, mode: str, table: str = table_name) -> int:
+        return frame.write_database(f"{project}.{dataset}.{table}", connection, if_table_exists=mode, engine="adbc")
+
+    with _connect(project, dataset) as connection:
+        assert write(first.head(1), connection, "append", append_missing_table_name) == 1
         _wait_for_table(connection, project, dataset, append_missing_table_name)
-        assert (
-            first.write_database(
-                qualified_table_name,
-                connection,
-                if_table_exists="fail",
-                engine="adbc",
-            )
-            == 2
-        )
+        assert write(first, connection, "fail") == 2
         _wait_for_table(connection, project, dataset, table_name)
         with pytest.raises(adbc_driver_manager.Error) as error:
-            first.head(1).write_database(
-                qualified_table_name,
-                connection,
-                if_table_exists="fail",
-                engine="adbc",
-            )
+            write(first.head(1), connection, "fail")
         assert error.value.status_code == adbc_driver_manager.AdbcStatusCode.ALREADY_EXISTS
-        assert (
-            second.write_database(
-                qualified_table_name,
-                connection,
-                if_table_exists="append",
-                engine="adbc",
-            )
-            == 1
-        )
+        assert write(second, connection, "append") == 1
 
-    with dbapi.connect(_uri(project), _db_options(dataset), autocommit=True) as connection:
+    with _connect(project, dataset) as connection:
         with connection.cursor() as cursor:
             cursor.execute(f"SELECT id, name FROM {_identifier(table_name)} ORDER BY id")
             assert cursor.fetchall() == [(1, "one"), (2, "two"), (3, None)]
@@ -1077,15 +894,7 @@ def test_polars_write_database(bigquery_dataset: tuple[str, str]) -> None:
             cursor.execute(f"SELECT id, name FROM {_identifier(append_missing_table_name)}")
             assert cursor.fetchall() == [(2, "two")]
 
-        assert (
-            empty_replacement.write_database(
-                qualified_table_name,
-                connection,
-                if_table_exists="replace",
-                engine="adbc",
-            )
-            == 0
-        )
+        assert write(empty_replacement, connection, "replace") == 0
 
         with connection.cursor() as cursor:
             cursor.execute(f"SELECT replacement_id, payload FROM {_identifier(table_name)}")
