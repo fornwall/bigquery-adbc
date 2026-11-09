@@ -432,22 +432,14 @@ impl DbtStatementState {
         operation: DbtOperation,
         statement: &DbtExecution<'_>,
     ) -> Result<OptionOnlyOutcome> {
-        let rows_affected = match operation {
-            DbtOperation::DatasetAuthorization => self.execute_dataset_authorization(statement)?,
-            DbtOperation::TableMutation => self.execute_table_mutation(statement)?,
-            DbtOperation::DatasetLocation => return self.execute_dataset_location(statement),
-            DbtOperation::CsvSeed => return self.execute_csv_seed(statement),
-            DbtOperation::TableCopy => return self.execute_table_copy(statement),
-            // None of the python models touches a table, so the count is unknown.
-            DbtOperation::PythonModel(selected) => {
-                return Ok(OptionOnlyOutcome {
-                    rows_affected: None,
-                    job: self.execute_python_model(selected, statement)?,
-                    rows: None,
-                });
-            }
-        };
-        Ok(OptionOnlyOutcome::rows(Some(rows_affected)))
+        match operation {
+            DbtOperation::DatasetAuthorization => self.execute_dataset_authorization(statement),
+            DbtOperation::TableMutation => self.execute_table_mutation(statement),
+            DbtOperation::DatasetLocation => self.execute_dataset_location(statement),
+            DbtOperation::CsvSeed => self.execute_csv_seed(statement),
+            DbtOperation::TableCopy => self.execute_table_copy(statement),
+            DbtOperation::PythonModel(selected) => self.execute_python_model(selected, statement),
+        }
     }
 
     /// Rejects the `family` operation while a table metadata update is also configured: no setter
@@ -499,7 +491,10 @@ impl DbtStatementState {
             .map(OptionOnlyOutcome::from)
     }
 
-    fn execute_dataset_authorization(&self, statement: &DbtExecution<'_>) -> Result<i64> {
+    fn execute_dataset_authorization(
+        &self,
+        statement: &DbtExecution<'_>,
+    ) -> Result<OptionOnlyOutcome> {
         self.reject_pending_table_mutation(
             BigQueryStatementOption::AuthorizeViewToDatasets.as_str(),
         )?;
@@ -512,7 +507,7 @@ impl DbtStatementState {
                 self.dataset_authorization
                     .execute(statement.context, operation)
             })
-            .map(|()| 0)
+            .map(|()| OptionOnlyOutcome::rows(Some(0)))
     }
 
     /// Reads the configured dataset's location. Unlike the operations that change something it
@@ -532,7 +527,7 @@ impl DbtStatementState {
     /// Updates the configured table's metadata, refusing a configured python model, table copy
     /// or SQL query rather than silently dropping it. Operations of higher precedence refuse
     /// through [`Self::reject_pending_table_mutation`].
-    fn execute_table_mutation(&self, statement: &DbtExecution<'_>) -> Result<i64> {
+    fn execute_table_mutation(&self, statement: &DbtExecution<'_>) -> Result<OptionOnlyOutcome> {
         let competing = self
             .python_model_operation()
             .map(PythonModelOperation::option_family)
@@ -571,7 +566,7 @@ impl DbtStatementState {
                 self.table_mutation
                     .execute(statement.context, table, operation)
             })
-            .map(|()| 0)
+            .map(|()| OptionOnlyOutcome::rows(Some(0)))
     }
 
     fn execute_table_copy(&self, statement: &DbtExecution<'_>) -> Result<OptionOnlyOutcome> {
@@ -586,16 +581,16 @@ impl DbtStatementState {
     }
 
     /// Runs the selected Python-model operation, answering its remote job; a Cloud Storage
-    /// write runs no job.
+    /// write runs no job. None of them touches a table, so the row count is unknown.
     fn execute_python_model(
         &self,
         selected: PythonModelOperation,
         statement: &DbtExecution<'_>,
-    ) -> Result<Option<String>> {
+    ) -> Result<OptionOnlyOutcome> {
         statement
             .transaction
             .require_autocommit(selected.subject())?;
-        statement.cancellation.run(|operation| match selected {
+        let job = statement.cancellation.run(|operation| match selected {
             PythonModelOperation::DataprocBatch => self
                 .dataproc
                 .execute_batch(statement.context, operation)
@@ -612,6 +607,11 @@ impl DbtStatementState {
                 .gcs_write
                 .execute(statement.context, operation)
                 .map(|()| None),
+        })?;
+        Ok(OptionOnlyOutcome {
+            rows_affected: None,
+            job,
+            rows: None,
         })
     }
 

@@ -182,8 +182,8 @@ impl<'a> LroPoller<'a> {
 
     /// Sends `request` under `delivery`, within the deadline and the [`MAX_ATTEMPTS`] limit. A
     /// submission that ends without a verdict says the work may have started, since nothing names
-    /// it yet. Errors must not expose raw response bodies.
-    /// The borrowed factory shares one retry state machine across all callers.
+    /// it yet. Errors must not expose raw response bodies. The factory is a `dyn` so that one
+    /// retry loop serves every caller.
     pub(super) async fn request<'r>(
         &self,
         delivery: Delivery,
