@@ -62,7 +62,7 @@ than one fails) and reconfigures when the manifest changes; the driver and vendo
 The Rust live test `bulk_ingests_after_rapid_table_recreation` covers rapid recreation without that
 workaround: it reuses one table name for 16 temporal schemas, ingesting right after each drop with
 no retries or pacing, so it can fail on the UP-26 service race and the
-[Rust live-suite command](../../CONTRIBUTING.md#live-tests) runs it separately.
+[Rust live-suite command](../../CONTRIBUTING.md#live-tests) skips it.
 
 ## Sanitizers
 
