@@ -1,4 +1,4 @@
-//! Map normalization errors back to the caller's field and batch row.
+//! Map normalization errors back to the caller's field and row of the bound stream.
 //!
 //! List validation sees flattened child indexes under a synthetic `"item"` field. [`ValueSite`]
 //! retains the original field name and list offsets through nested lists and structs. It resolves
@@ -8,12 +8,12 @@
 #[derive(Clone, Copy)]
 pub(super) struct ValueSite<'a> {
     name: &'a str,
-    /// The first row of this normalization window in the caller's batch.
+    /// The first row of this normalization window in the caller's bound stream.
     first_row: usize,
     elements_of: Option<ListEntries<'a>>,
 }
 
-/// Map a child index to its list entry, then through any enclosing lists to the batch row.
+/// Map a child index to its list entry, then through any enclosing lists to the stream row.
 #[derive(Clone, Copy)]
 struct ListEntries<'a> {
     offsets: &'a [i32],
@@ -22,7 +22,7 @@ struct ListEntries<'a> {
 }
 
 impl<'a> ValueSite<'a> {
-    /// A column of the bound batch whose first value is at batch row `first_row`.
+    /// A column of the bound stream whose first value is at stream row `first_row`.
     pub(super) fn column(name: &'a str, first_row: usize) -> Self {
         Self {
             name,
@@ -58,7 +58,7 @@ impl<'a> ValueSite<'a> {
         self.name
     }
 
-    /// Resolve `index` through any enclosing lists to the caller's batch row.
+    /// Resolve `index` through any enclosing lists to the caller's stream row.
     ///
     /// A binary search finds the last offset not past `index`. Empty entries repeat an offset, and
     /// the search steps over them to the entry that holds the element.

@@ -50,7 +50,7 @@ impl FirstBatch {
         let mut offset = 0;
         while offset < batch.num_rows() {
             operation.check()?;
-            let window = encoder.window(&batch, offset, encoder.target_batch_bytes)?;
+            let window = encoder.window(&batch, offset, offset, encoder.target_batch_bytes)?;
             offset += encoder.plan(&window, offset)?;
         }
         Ok(Self {
@@ -87,7 +87,7 @@ pub(super) async fn write_batches(
     };
     // `first` was checked before table preparation, so invalid input cannot create or truncate
     // the target.
-    let window = encoder.window(&first, 0, FIRST_APPEND_TARGET_BYTES)?;
+    let window = encoder.window(&first, 0, 0, FIRST_APPEND_TARGET_BYTES)?;
     let chunk = encoder.encode(window, 0)?;
     let writer = pending_writer(&target, chunk.rows).await?;
     let mut stream = StreamWriter {
@@ -95,7 +95,7 @@ pub(super) async fn write_batches(
         encoder,
         writer,
         pipeline: AppendPipeline::default(),
-        total_rows: stream_rows(chunk.row_count),
+        total_rows: chunk.row_count,
     };
     let outcome = match stream
         .append_all(&input_schema, first, chunk.row_count, reader.as_mut())
@@ -115,7 +115,7 @@ pub(super) async fn write_batches(
     }
     outcome.map(|()| FinalizedStream {
         writer: stream.writer,
-        total_rows: stream.total_rows,
+        total_rows: stream_rows(stream.total_rows),
     })
 }
 
@@ -152,10 +152,10 @@ fn commit_already_landed(errors: &[StorageError]) -> bool {
 /// would hold back the rest of the upload for its whole round trip.
 const FIRST_APPEND_TARGET_BYTES: usize = 1_000_000;
 
-/// A chunk's rows as the stream counts them: a chunk fits one request, and an ingest could not
-/// send `i64::MAX` rows in a lifetime, so neither this nor the running total can overflow.
+/// A row count as the stream's offsets count them: an ingest could not send `i64::MAX` rows in a
+/// lifetime, so this cannot overflow.
 fn stream_rows(rows: usize) -> i64 {
-    i64::try_from(rows).expect("a chunk's rows fit one AppendRows request")
+    i64::try_from(rows).expect("an ingest's rows fit a stream offset")
 }
 
 /// Append destination and reconnection state. A transport failure terminates the upstream
@@ -173,7 +173,8 @@ struct StreamWriter<'a> {
     encoder: ChunkEncoder,
     writer: PendingWriter<Arrow>,
     pipeline: AppendPipeline,
-    total_rows: i64,
+    /// Rows queued so far, which is also the stream position of the next row.
+    total_rows: usize,
 }
 
 impl StreamWriter<'_> {
@@ -208,12 +209,19 @@ impl StreamWriter<'_> {
         while offset < input.num_rows() {
             self.target.operation.check()?;
             let target_size = self.encoder.target_batch_bytes;
-            let window = self.encoder.window(input, offset, target_size)?;
-            let chunk = self.encoder.encode(window, offset)?;
+            let window = self
+                .encoder
+                .window(input, offset, self.total_rows, target_size)?;
+            let chunk = self.encoder.encode(window, self.total_rows)?;
             self.pipeline
-                .submit(&self.target, &mut self.writer, chunk.rows, self.total_rows)
+                .submit(
+                    &self.target,
+                    &mut self.writer,
+                    chunk.rows,
+                    stream_rows(self.total_rows),
+                )
                 .await?;
-            self.total_rows += stream_rows(chunk.row_count);
+            self.total_rows += chunk.row_count;
             offset += chunk.row_count;
         }
         Ok(())
@@ -232,7 +240,7 @@ impl StreamWriter<'_> {
         let stream = writer.write_stream();
         let finalized =
             close_stream_call(|| writer.finalize(), "finalize", stream, table_path).await?;
-        if finalized.row_count != *total_rows {
+        if finalized.row_count != stream_rows(*total_rows) {
             return Err(error(
                 format!(
                     "BigQuery finalized ingest stream {stream} for {table_path} with {} rows, \

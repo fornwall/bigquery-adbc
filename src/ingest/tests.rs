@@ -370,7 +370,7 @@ fn data_too_large_to_append_is_refused_before_the_target_changes() {
         (
             oversized_row,
             Status::InvalidArguments,
-            "row 1 of its input batch",
+            "input row 1 serializes",
         ),
         (
             oversized_schema,
@@ -1225,6 +1225,33 @@ fn rejected_rows_keep_the_input_offset_and_are_never_replayed() {
     );
     assert_eq!(mock.write_streams(), (1, 0));
     assert!(!mock.finalized().1);
+}
+
+/// A row the driver refuses in a later batch is named by its row in the whole bound stream, as
+/// BigQuery's own row errors are, not by its row in that batch.
+#[test]
+fn a_row_refused_in_a_later_batch_is_named_by_its_stream_row() {
+    let runtime = new_runtime().unwrap();
+    let day = Arc::new(Date32Array::from(vec![0, 3_000_000])) as ArrayRef;
+    let label = Arc::new(StringArray::from(vec![
+        "x".to_owned(),
+        "x".repeat(10_000_000),
+    ]));
+    for (column, cause) in [
+        (day, "out-of-range value at row 4"),
+        (label as ArrayRef, "input row 4 serializes"),
+    ] {
+        let mock = StorageMock::start(&runtime, MockPlan::default());
+        let later = RecordBatch::try_from_iter([("value", column)]).unwrap();
+        let schema = later.schema();
+        let earlier =
+            RecordBatch::try_new(schema.clone(), vec![later.column(0).slice(0, 1)]).unwrap();
+        let batches = [earlier.clone(), earlier.clone(), earlier, later];
+        let reader = RecordBatchIterator::new(batches.map(Ok), schema.clone());
+        let failure = ingest_from(&runtime, &mock, &schema, Box::new(reader)).unwrap_err();
+        assert_message(&failure, &[cause]);
+        assert!(!mock.finalized().1);
+    }
 }
 
 #[test]

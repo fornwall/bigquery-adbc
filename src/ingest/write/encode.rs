@@ -140,11 +140,13 @@ impl ChunkEncoder {
 
     /// Normalizes the rows of `input` from `offset` that should make a chunk of about
     /// `target_size` bytes: as many as the last chunk's density predicts, and no more than the
-    /// bytes they address allow.
+    /// bytes they address allow. `stream_row` is row `offset`'s position in the whole bound
+    /// stream, which is what a rejection names.
     pub(super) fn window(
         &self,
         input: &RecordBatch,
         offset: usize,
+        stream_row: usize,
         target_size: usize,
     ) -> Result<RecordBatch> {
         let suggested = match self.last_chunk {
@@ -157,11 +159,11 @@ impl ChunkEncoder {
         } else {
             input.slice(offset, rows)
         };
-        normalize_rows(window, self.schema.clone(), offset)
+        normalize_rows(window, self.schema.clone(), stream_row)
     }
 
     /// Encodes the longest prefix of the normalized `window` that fits a request; `first_row` is
-    /// the window's first row in its input batch. A single row may use the hard request limit.
+    /// the window's first row in the bound stream. A single row may use the hard request limit.
     /// Consumes the window so its normalization buffers are released before append can wait.
     /// Oversized candidates are never materialized.
     pub(super) fn encode(
@@ -221,7 +223,7 @@ impl ChunkEncoder {
             if row_count == 1 {
                 let max_size = self.max_batch_bytes;
                 return Err(invalid_argument(format!(
-                    "BigQuery ingest row {first_row} of its input batch serializes to \
+                    "BigQuery ingest input row {first_row} serializes to \
                      {serialized_size} bytes, more than the {max_size} bytes of row data an \
                      AppendRows request can carry; shorten its STRING or BYTES values, or split \
                      them across rows"

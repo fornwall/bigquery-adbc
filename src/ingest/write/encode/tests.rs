@@ -38,7 +38,7 @@ fn encoded_chunks_release_their_normalized_window() {
     for reject in [false, true] {
         let (mut encoder, _) = ChunkEncoder::new(normalized.clone()).unwrap();
         let window = encoder
-            .window(&input, 0, encoder.target_batch_bytes)
+            .window(&input, 0, 0, encoder.target_batch_bytes)
             .unwrap();
         let observer = window.column(0).to_data().buffers()[0].clone();
         assert_eq!(observer.capacity(), 8 * 1024 * 1024);
@@ -174,7 +174,7 @@ fn splits_ingest_batches_by_serialized_size_without_losing_rows() {
         if offset == batch.num_rows() {
             break;
         }
-        window = encoder.window(&batch, offset, target_size).unwrap();
+        window = encoder.window(&batch, offset, offset, target_size).unwrap();
     }
 
     assert!(chunks.len() > 1);
@@ -290,7 +290,7 @@ fn permits_one_row_above_the_target_but_rejects_one_above_the_request_budget() {
     assert_eq!(
         error.message,
         format!(
-            "BigQuery ingest row 0 of its input batch serializes to {serialized_size} bytes, \
+            "BigQuery ingest input row 0 serializes to {serialized_size} bytes, \
              more than the {} bytes of row data an AppendRows request can carry; shorten its \
              STRING or BYTES values, or split them across rows",
             serialized_size - 1
@@ -357,7 +357,7 @@ fn a_large_batch_is_normalized_one_request_sized_window_at_a_time() {
     let mut offset = 0;
     let mut windows = 0;
     let failure = loop {
-        let window = match encoder.window(&input, offset, target) {
+        let window = match encoder.window(&input, offset, offset, target) {
             Ok(window) => window,
             Err(failure) => break failure,
         };
@@ -398,7 +398,7 @@ fn each_window(column: ArrayRef, target: usize, mut check: impl FnMut(&RecordBat
     let mut offset = 0;
     let mut windows = 0;
     while offset < input.num_rows() {
-        let window = encoder.window(&input, offset, target).unwrap();
+        let window = encoder.window(&input, offset, offset, target).unwrap();
         check(&window);
         offset += encoder.encode(window, offset).unwrap().row_count;
         windows += 1;
@@ -507,7 +507,7 @@ fn resolved_null_columns_normalize_in_bounded_windows() {
         let input = RecordBatch::try_from_iter([("value", column)]).unwrap();
         let schema = Arc::new(Schema::new(vec![Field::new("value", target_type, true)]));
         let encoder = limited_encoder(schema, 100, 200);
-        let window = encoder.window(&input, 0, 100).unwrap();
+        let window = encoder.window(&input, 0, 0, 100).unwrap();
         assert!(
             window.num_rows() <= 50,
             "normalized {} rows",
@@ -532,7 +532,7 @@ fn widened_columns_are_sized_at_their_normalized_width() {
         let input = RecordBatch::try_from_iter([("value", column)]).unwrap();
         let schema = Arc::new(crate::ingest::schema::normalize_schema(&input.schema()).unwrap());
         let encoder = limited_encoder(schema, 100, 200);
-        let window = encoder.window(&input, 0, 100).unwrap();
+        let window = encoder.window(&input, 0, 0, 100).unwrap();
         assert!(
             window.num_rows() <= 12,
             "normalized {} rows",

@@ -237,7 +237,7 @@ where
         values
     } else {
         // The gathered child no longer addresses anything the caller handed over, so only the
-        // offsets built alongside it can put an element back on its batch row.
+        // offsets built alongside it can put an element back on its row.
         normalize_column(&values, item, &site.list_elements(&normalized_offsets, 0))?
     };
 

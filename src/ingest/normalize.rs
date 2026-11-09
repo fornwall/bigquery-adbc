@@ -2,7 +2,7 @@
 //!
 //! [`list`] canonicalizes list layouts; [`validate`] checks BigQuery value domains; [`encode`]
 //! handles duration, interval and datetime-range wire encodings. [`site`] maps nested failures
-//! back to the caller's field and batch row.
+//! back to the caller's field and stream row.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -52,8 +52,8 @@ pub(crate) fn normalize_batch(batch: RecordBatch, schema: SchemaRef) -> Result<R
     normalize_rows(batch, schema, 0)
 }
 
-/// [`normalize_batch`] for rows sliced from a larger batch, starting at its row `first_row`; a
-/// rejection names the row of that larger batch.
+/// [`normalize_batch`] for a window of the bound stream whose first row is stream row
+/// `first_row`, which a rejection counts from.
 pub(crate) fn normalize_rows(
     batch: RecordBatch,
     schema: SchemaRef,
