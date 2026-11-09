@@ -312,27 +312,6 @@ fn a_service_failure_reports_the_number_its_status_was_decided_from() {
     );
 }
 
-#[test]
-fn the_reported_rpc_code_numbers_are_the_ones_the_protocol_assigns() {
-    for number in (0..=16).chain([99]) {
-        let failure = google_error("test RPC code", service(Code::from(number)));
-        let expected = if number == 99 { 2 } else { number };
-        assert_eq!(
-            failure.status,
-            rpc_code_status(i64::from(number)),
-            "{number}"
-        );
-        assert_eq!(failure.vendor_code, expected, "{number}");
-        assert_eq!(
-            failure.details,
-            Some(vec![(
-                DETAIL_RPC_CODE.to_owned(),
-                expected.to_string().into_bytes()
-            )]),
-        );
-    }
-}
-
 /// `Aborted` is BigQuery's concurrent-modification verdict, not `Unknown`. The typed and numeric
 /// code paths must agree on it and on every other code.
 #[test]

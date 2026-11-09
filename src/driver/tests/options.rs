@@ -16,30 +16,17 @@ fn project_options_accept_opaque_identifiers_and_reject_unsafe_resource_segments
         BigQueryDatabaseOption::ProjectId,
         BigQueryDatabaseOption::AuthenticationQuotaProject,
     ] {
+        // The identifier rules themselves are covered in `identifiers::tests`.
         for value in [
-            "abcde",
             "INVALID",
-            "1abcde",
-            "abcdef-",
-            "abc_def",
             "example.com:project",
             "123456789012",
-            "123456789012345678901",
-            "12 34",
-            "åbcdef",
             "project?#%",
         ] {
             set_option(&mut database, option, value);
             assert_eq!(option_string(&database, option), value);
         }
-        for value in [
-            "SECRET/path",
-            "SECRET\\path",
-            "SECRET\nline",
-            "SECRET\u{7f}",
-            ".",
-            "..",
-        ] {
+        for value in ["SECRET/path", "SECRET\nline", ".."] {
             let error = set_option_error(&mut database, option, value);
             assert_eq!(
                 error.status,
