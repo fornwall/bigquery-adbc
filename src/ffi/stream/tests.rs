@@ -79,6 +79,13 @@ fn release(stream: &mut FFI_ArrowArrayStream) {
 struct PanickingReader {
     schema: SchemaRef,
     panic_in_schema: bool,
+    panic_in_drop: bool,
+}
+
+impl Drop for PanickingReader {
+    fn drop(&mut self) {
+        assert!(!self.panic_in_drop, "drop failed");
+    }
 }
 
 impl Iterator for PanickingReader {
@@ -337,6 +344,7 @@ fn contains_reader_panics_in_get_next() {
     let mut stream = export_reader(Box::new(PanickingReader {
         schema: Arc::new(Schema::empty()),
         panic_in_schema: false,
+        panic_in_drop: false,
     }));
     assert_eq!(next(&mut stream), EINVAL);
     let message = last_error(&mut stream).unwrap();
@@ -352,6 +360,7 @@ fn contains_reader_panics_in_get_schema() {
     let mut stream = export_reader(Box::new(PanickingReader {
         schema,
         panic_in_schema: true,
+        panic_in_drop: false,
     }));
     assert_eq!(schema_of(&mut stream), EINVAL);
     let message = last_error(&mut stream).unwrap();
@@ -360,32 +369,11 @@ fn contains_reader_panics_in_get_schema() {
 
 #[test]
 fn contains_reader_panics_in_release() {
-    struct DropPanic(PanickingReader);
-
-    impl Iterator for DropPanic {
-        type Item = Result<RecordBatch, ArrowError>;
-
-        fn next(&mut self) -> Option<Self::Item> {
-            self.0.next()
-        }
-    }
-
-    impl RecordBatchReader for DropPanic {
-        fn schema(&self) -> SchemaRef {
-            self.0.schema()
-        }
-    }
-
-    impl Drop for DropPanic {
-        fn drop(&mut self) {
-            panic!("drop failed")
-        }
-    }
-
-    let mut stream = export_reader(Box::new(DropPanic(PanickingReader {
+    let mut stream = export_reader(Box::new(PanickingReader {
         schema: Arc::new(Schema::empty()),
         panic_in_schema: false,
-    })));
+        panic_in_drop: true,
+    }));
     release(&mut stream);
     assert!(stream.release().is_none());
     assert!(stream.private_data().is_null());
