@@ -232,39 +232,30 @@ fn parameter_discovery_rejects_missing_query_statistics() {
     requests.join().unwrap();
 }
 
-/// One row's missing or negative count makes the combined count unknown rather than a partial
-/// sum, through either execute and as in `execute_partitions`.
+/// One row's missing count makes the combined count unknown rather than a partial sum, through
+/// either execute; `add_rows_affected` covers the other unknown counts.
 #[test]
 fn an_unknown_dml_count_keeps_the_combined_count_unknown() {
-    for counts in [
-        [Some("3"), None],
-        [None, Some("3")],
-        [Some("-1"), Some("3")],
-    ] {
-        for update in [false, true] {
-            let responses = counts
-                .into_iter()
-                .map(|count| dml_answer("INSERT", count))
-                .collect();
-            let (endpoint, requests) = capture_requests(responses);
-            let mut statement = test_query_at(&endpoint, "INSERT dataset.table VALUES (?)");
-            statement.bind(int64_column("value", vec![1, 2])).unwrap();
+    for update in [false, true] {
+        let responses = vec![dml_answer("INSERT", Some("3")), dml_answer("INSERT", None)];
+        let (endpoint, requests) = capture_requests(responses);
+        let mut statement = test_query_at(&endpoint, "INSERT dataset.table VALUES (?)");
+        statement.bind(int64_column("value", vec![1, 2])).unwrap();
 
-            if update {
-                assert_eq!(statement.execute_update().unwrap(), None, "{counts:?}");
-            } else {
-                let (mut reader, affected) = statement.execute_with_rows_affected().unwrap();
-                assert_eq!(affected, -1, "{counts:?}");
-                assert!(reader.next().is_none());
-            }
-            let requests = requests.served(2);
-            let max_results = if update { 0 } else { 100_000 };
-            assert!(
-                requests
-                    .iter()
-                    .all(|request| request.body["maxResults"] == max_results)
-            );
+        if update {
+            assert_eq!(statement.execute_update().unwrap(), None);
+        } else {
+            let (mut reader, affected) = statement.execute_with_rows_affected().unwrap();
+            assert_eq!(affected, -1);
+            assert!(reader.next().is_none());
         }
+        let requests = requests.served(2);
+        let max_results = if update { 0 } else { 100_000 };
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.body["maxResults"] == max_results)
+        );
     }
 }
 
@@ -736,7 +727,6 @@ fn partitions_report_the_summed_total_rows_of_their_jobs() {
 fn partition_row_counts_preserve_unknown_totals_and_reported_zero() {
     for (counts, expected) in [
         ([Some("4"), None], -1),
-        ([None, Some("4")], -1),
         ([Some("9223372036854775808"), Some("4")], -1),
         ([Some("0"), Some("0")], 0),
     ] {

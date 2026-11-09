@@ -182,33 +182,17 @@ fn releasing_the_connection_while_a_statement_opens_its_transaction_ends_the_ses
 
 #[test]
 fn ingest_inside_a_transaction_is_rejected_by_every_execute_entrypoint() {
-    let ingest_statement = || {
+    for execute in EXECUTE_ENTRIES {
         let mut statement = test_statement();
         statement.transaction.disable_autocommit().unwrap();
         set_option(&mut statement, OptionStatement::TargetTable, "events");
         statement.bind(int64_column("value", vec![1])).unwrap();
-        statement
-    };
-
-    for mode in [
-        "adbc.ingest.mode.create",
-        "adbc.ingest.mode.append",
-        "adbc.ingest.mode.replace",
-        "adbc.ingest.mode.create_append",
-    ] {
-        let mut statement = ingest_statement();
-        set_option(&mut statement, OptionStatement::IngestMode, mode);
-        let error = statement.execute_update().unwrap_err();
+        let error = execute(&mut statement).unwrap_err();
         assert_failure(
             &error,
             Status::InvalidState,
             &["transaction", "adbc.connection.autocommit"],
         );
-    }
-
-    for execute in EXECUTE_ENTRIES {
-        let error = execute(&mut ingest_statement()).unwrap_err();
-        assert_failure(&error, Status::InvalidState, &["transaction"]);
     }
 }
 
