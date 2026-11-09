@@ -115,7 +115,7 @@ impl Cancellation {
         operation: &OperationInner,
         retained: Option<&Arc<OperationInner>>,
     ) {
-        let Some(reference) = operation.job_to_cancel() else {
+        let Some((reference, _)) = operation.job_to_cancel() else {
             // If registration races with cancellation, register_job observes the local flag and
             // performs the remote cancellation itself once the reference becomes available.
             return;
@@ -250,8 +250,7 @@ impl Cancellation {
         let mut jobs = Vec::with_capacity(operations.len());
         for operation in &operations {
             operation.cancel_local();
-            if let Some(reference) = operation.job_to_cancel() {
-                let provisional = !operation.job_is_confirmed(&reference);
+            if let Some((reference, provisional)) = operation.job_to_cancel() {
                 jobs.push((operation.clone(), reference, provisional));
             }
         }
@@ -473,15 +472,16 @@ impl OperationInner {
         claim_remote_cancel(&mut job)
     }
 
-    /// Claims at most one remote cancellation for the currently registered identity.
-    fn job_to_cancel(&self) -> Option<JobReference> {
-        claim_remote_cancel(&mut self.job())
-    }
-
-    fn job_is_confirmed(&self, reference: &JobReference) -> bool {
-        self.job()
+    /// Claims at most one remote cancellation for the currently registered identity, and says
+    /// whether that identity was still provisional. Both are read under one lock: a submission
+    /// that settles as finished right after the claim must not make a provisional cancel's 404
+    /// look like a failure to cancel a confirmed job.
+    fn job_to_cancel(&self) -> Option<(JobReference, bool)> {
+        let mut job = self.job();
+        let provisional = job
             .as_ref()
-            .is_some_and(|job| job.reference == *reference && job.state != JobState::Provisional)
+            .is_some_and(|job| job.state == JobState::Provisional);
+        claim_remote_cancel(&mut job).map(|reference| (reference, provisional))
     }
 
     /// Rearms a failed provisional cancel, and claims the one post-confirmation retry when the

@@ -10,6 +10,11 @@ changes.
 - The dbt installer accepts dbt's Rust target triples with `--target`, and rejects unknown
   options and missing values before installing.
 
+### Fixed
+
+- Cancel no longer fails with `UNKNOWN` and BigQuery's 404 after stopping a job submission before
+  the job was created, when that submission ended just as the cancel claimed it.
+
 ## [0.5.0] - 2026-11-09
 
 ### Added

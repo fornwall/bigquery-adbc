@@ -113,6 +113,33 @@ fn cancellation_tracks_active_operation_lifecycle() {
     assert_status(handle.try_cancel(), Status::InvalidState);
 }
 
+/// A cancel's claim records whether the identity was still provisional. The submission it stops
+/// may settle as finished at once, before the cancel is sent; that must leave the claim
+/// provisional, so the cancel's 404 for a job that was never created is not a failure.
+#[test]
+fn a_cancel_claim_keeps_the_state_it_claimed() {
+    let cancellation = cancellation();
+    let submitting = cancellation.begin();
+    submitting
+        .register_provisional_job(&job("never-created"))
+        .unwrap();
+    submitting.inner.cancel_local();
+    let (claimed, provisional) = submitting.inner.job_to_cancel().unwrap();
+    assert_eq!(claimed, job("never-created"));
+    assert!(provisional);
+    assert_status(
+        submitting.register_completed_job(&claimed),
+        Status::Cancelled,
+    );
+    assert!(submitting.inner.job_to_cancel().is_none());
+
+    let running = cancellation.begin();
+    running.register_job(&job("running")).unwrap();
+    let (claimed, provisional) = running.inner.job_to_cancel().unwrap();
+    assert_eq!(claimed, job("running"));
+    assert!(!provisional);
+}
+
 #[test]
 fn synchronous_work_finishes_retained_operations_and_cancels_unfinished_jobs() {
     for succeeds in [true, false] {
