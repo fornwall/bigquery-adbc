@@ -126,11 +126,7 @@ impl<'a> JobsQueryRequest<'a> {
             timeout_ms: 10_000,
             max_results: result_mode.max_results(),
             location: plan.location.as_deref(),
-            job: JobOptions::new(
-                plan.options.job_timeout_ms,
-                plan.options.labels.as_deref(),
-                plan.options.reservation.as_deref(),
-            ),
+            job: job_options(plan),
         }
     }
 
@@ -156,13 +152,18 @@ impl<'a> QueryJobConfiguration<'a> {
         Self {
             query: QueryJob::new(plan),
             dry_run: plan.options.dry_run,
-            job: JobOptions::new(
-                plan.options.job_timeout_ms,
-                plan.options.labels.as_deref(),
-                plan.options.reservation.as_deref(),
-            ),
+            job: job_options(plan),
         }
     }
+}
+
+fn job_options(plan: &QueryPlan) -> JobOptions<'_> {
+    let options = &plan.options;
+    JobOptions::new(
+        options.job_timeout_ms,
+        options.labels.as_deref(),
+        options.reservation.as_deref(),
+    )
 }
 
 #[derive(Debug, Serialize)]
@@ -182,21 +183,20 @@ struct QueryJob<'a> {
 
 impl<'a> QueryJob<'a> {
     fn new(plan: &'a QueryPlan) -> Self {
+        let options = &plan.options;
         Self {
             query: QueryFields::new(plan),
-            destination_table: plan
-                .options
+            destination_table: options
                 .destination_table
                 .as_ref()
                 .map(QualifiedTableName::id),
-            create_disposition: (plan.options.create_disposition
+            create_disposition: (options.create_disposition
                 != BigQueryCreateDisposition::default())
-            .then_some(plan.options.create_disposition.as_str()),
-            write_disposition: (plan.options.write_disposition
-                != BigQueryWriteDisposition::default())
-            .then_some(plan.options.write_disposition.as_str()),
-            priority: (plan.options.priority != BigQueryQueryPriority::default())
-                .then_some(plan.options.priority.as_str()),
+            .then_some(options.create_disposition.as_str()),
+            write_disposition: (options.write_disposition != BigQueryWriteDisposition::default())
+                .then_some(options.write_disposition.as_str()),
+            priority: (options.priority != BigQueryQueryPriority::default())
+                .then_some(options.priority.as_str()),
         }
     }
 }
@@ -234,16 +234,23 @@ impl<'a> QueryFields<'a> {
             ),
             None => (None, None),
         };
+        let options = &plan.options;
         Self {
             query: &plan.sql,
             use_legacy_sql: false,
             default_dataset: plan.default_dataset.as_ref().map(QueryDefaultDataset::id),
-            connection_properties: connection_properties(plan.session_id.as_deref()),
+            connection_properties: plan.session_id.as_deref().map(|value| {
+                [ConnectionProperty {
+                    key: "session_id",
+                    value,
+                }]
+            }),
             parameter_mode,
             query_parameters,
-            maximum_bytes_billed: nonzero_i64(plan.options.maximum_bytes_billed),
-            create_session: plan.options.create_session.then_some(true),
-            use_query_cache: plan.options.disable_query_cache.then_some(false),
+            maximum_bytes_billed: (options.maximum_bytes_billed != 0)
+                .then_some(JsonInt(options.maximum_bytes_billed)),
+            create_session: options.create_session.then_some(true),
+            use_query_cache: options.disable_query_cache.then_some(false),
         }
     }
 }
@@ -258,19 +265,6 @@ struct FormatOptions {
 struct ConnectionProperty<'a> {
     key: &'static str,
     value: &'a str,
-}
-
-fn connection_properties(session_id: Option<&str>) -> Option<[ConnectionProperty<'_>; 1]> {
-    session_id.map(|value| {
-        [ConnectionProperty {
-            key: "session_id",
-            value,
-        }]
-    })
-}
-
-fn nonzero_i64(value: i64) -> Option<JsonInt<i64>> {
-    (value != 0).then_some(JsonInt(value))
 }
 
 fn parameters_absent_or_empty(value: &Option<&[QueryParameter]>) -> bool {
