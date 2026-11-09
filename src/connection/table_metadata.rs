@@ -28,20 +28,18 @@ const TABLE_METADATA_CONCURRENCY: usize = 16;
 
 /// Guards a paginated listing against a repeated page token, which would otherwise loop forever
 /// while the result grows without bound.
-#[derive(Debug, Default)]
-struct PageTokens(HashSet<String>);
-
-impl PageTokens {
-    /// Accepts `token` as the next page to request, or fails if it has already been served.
-    fn accept(&mut self, token: &str, subject: &str) -> Result<()> {
-        if self.0.insert(token.to_owned()) {
-            return Ok(());
-        }
-        Err(error(
-            format!("BigQuery repeated a page token while listing {subject}"),
-            Status::InvalidData,
-        ))
+fn accept_page_token(
+    seen: &mut HashSet<String>,
+    token: &str,
+    subject: std::fmt::Arguments<'_>,
+) -> Result<()> {
+    if seen.insert(token.to_owned()) {
+        return Ok(());
     }
+    Err(error(
+        format!("BigQuery repeated a page token while listing {subject}"),
+        Status::InvalidData,
+    ))
 }
 
 /// Which of a dataset's tables a scan keeps, and what it asks BigQuery about each.
@@ -155,7 +153,7 @@ impl BigQueryConnection {
         self.context.runtime.block_on(async {
             let mut datasets = Vec::new();
             let mut page_token = String::new();
-            let mut seen_tokens = PageTokens::default();
+            let mut seen_tokens = HashSet::new();
             loop {
                 let page = metadata_client
                     .list_datasets(
@@ -186,9 +184,10 @@ impl BigQueryConnection {
                 if page.next_page_token.is_empty() {
                     break;
                 }
-                seen_tokens.accept(
+                accept_page_token(
+                    &mut seen_tokens,
                     &page.next_page_token,
-                    &format!("datasets in project {project_id}"),
+                    format_args!("datasets in project {project_id}"),
                 )?;
                 page_token = page.next_page_token;
             }
@@ -218,7 +217,7 @@ impl BigQueryConnection {
             .iter()
             .map(|dataset_id| DatasetWalk {
                 id: Arc::from(dataset_id.as_str()),
-                page_tokens: PageTokens::default(),
+                page_tokens: HashSet::new(),
                 scan: DatasetScan::Tables {
                     tables: Vec::new(),
                     dataset_id: None,
@@ -300,7 +299,7 @@ impl BigQueryConnection {
                         // `invalid` rather than 404; only an exact filter can supply one. Pages
                         // are requested one after another, so no token yet means the first page.
                         if source.is_not_found()
-                            || (dataset.page_tokens.0.is_empty() && rejected_as_invalid(&source))
+                            || (dataset.page_tokens.is_empty() && rejected_as_invalid(&source))
                         {
                             dataset.scan = DatasetScan::Missing;
                             continue;
@@ -343,9 +342,10 @@ impl BigQueryConnection {
                             }
                         }
                         if !page.next_page_token.is_empty() {
-                            dataset.page_tokens.accept(
+                            accept_page_token(
+                                &mut dataset.page_tokens,
                                 &page.next_page_token,
-                                &format!("tables in {project_id}.{dataset_id}"),
+                                format_args!("tables in {project_id}.{dataset_id}"),
                             )?;
                             lists.push_back((
                                 index,
@@ -434,7 +434,7 @@ fn rejected_as_invalid(source: &MetadataError) -> bool {
 /// One dataset's progress through [`BigQueryConnection::scan_tables`].
 struct DatasetWalk {
     id: Arc<str>,
-    page_tokens: PageTokens,
+    page_tokens: HashSet<String>,
     scan: DatasetScan,
 }
 

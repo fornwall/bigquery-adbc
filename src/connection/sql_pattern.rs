@@ -74,10 +74,6 @@ impl<'a> SqlPattern<'a> {
 mod tests {
     use super::SqlPattern;
 
-    fn sql_pattern_matches(pattern: &str, value: &str) -> bool {
-        SqlPattern::new(pattern).matches(value)
-    }
-
     #[test]
     fn object_search_patterns_support_sql_wildcards() {
         for (pattern, value) in [
@@ -106,7 +102,7 @@ mod tests {
             (r"%\", "trailing\\"),
         ] {
             assert!(
-                sql_pattern_matches(pattern, value),
+                SqlPattern::new(pattern).matches(value),
                 "{pattern:?} vs {value:?}"
             );
         }
@@ -128,20 +124,20 @@ mod tests {
             (r"trailing\", "trailing"),
         ] {
             assert!(
-                !sql_pattern_matches(pattern, value),
+                !SqlPattern::new(pattern).matches(value),
                 "{pattern:?} vs {value:?}"
             );
         }
     }
 
-    /// Direct lookup must agree with [`sql_pattern_matches`] on what a pattern means: every
+    /// Direct lookup must agree with [`SqlPattern::matches`] on what a pattern means: every
     /// character but `%` and `_`, backslash included, is part of the literal name.
     #[test]
     fn a_wildcard_free_pattern_is_the_literal_name() {
         for pattern in ["events", r"back\slash", r"trailing\", ""] {
             assert_eq!(SqlPattern::new(pattern).exact(), Some(pattern));
             assert!(
-                sql_pattern_matches(pattern, pattern),
+                SqlPattern::new(pattern).matches(pattern),
                 "{pattern:?} must match itself"
             );
         }
@@ -157,7 +153,7 @@ mod tests {
         for pattern in [".", ".."] {
             assert_eq!(SqlPattern::new(pattern).exact(), None, "{pattern:?}");
             assert_eq!(SqlPattern::literal(pattern).exact(), None, "{pattern:?}");
-            assert!(sql_pattern_matches(pattern, pattern), "{pattern:?}");
+            assert!(SqlPattern::new(pattern).matches(pattern), "{pattern:?}");
         }
         // Only those two spellings: a name that merely contains a dot is an ordinary name.
         for pattern in ["...", "events.2026", ".events"] {
@@ -173,9 +169,9 @@ mod tests {
     #[test]
     fn a_pathological_pattern_does_not_backtrack_exponentially() {
         let value = "a".repeat(50_000);
-        assert!(!sql_pattern_matches("%a%a%a%a%a%a%b", &value));
-        assert!(sql_pattern_matches("%a%a%a%a%a%a%a", &value));
-        assert!(!sql_pattern_matches(&"%a".repeat(500), &"a".repeat(499)));
+        assert!(!SqlPattern::new("%a%a%a%a%a%a%b").matches(&value));
+        assert!(SqlPattern::new("%a%a%a%a%a%a%a").matches(&value));
+        assert!(!SqlPattern::new(&"%a".repeat(500)).matches(&"a".repeat(499)));
     }
 
     #[test]
@@ -196,23 +192,25 @@ mod tests {
         }
 
         let mut words = vec![String::new()];
+        let mut start = 0;
         for _ in 0..4 {
-            let next = words
-                .iter()
-                .flat_map(|word| ['a', 'å', '%', '_'].map(|character| format!("{word}{character}")))
-                .collect::<Vec<_>>();
-            words.extend(next);
+            let end = words.len();
+            for index in start..end {
+                for character in ['a', 'å', '%', '_'] {
+                    words.push(format!("{}{character}", words[index]));
+                }
+            }
+            start = end;
         }
-        words.sort_unstable();
-        words.dedup();
-        for pattern in &words {
-            for value in &words {
+        let words = words
+            .iter()
+            .map(|word| (word, word.chars().collect::<Vec<_>>()))
+            .collect::<Vec<_>>();
+        for (pattern, pattern_chars) in &words {
+            for (value, value_chars) in &words {
                 assert_eq!(
-                    sql_pattern_matches(pattern, value),
-                    exhaustive(
-                        &pattern.chars().collect::<Vec<_>>(),
-                        &value.chars().collect::<Vec<_>>()
-                    ),
+                    SqlPattern::new(pattern).matches(value),
+                    exhaustive(pattern_chars, value_chars),
                     "{pattern:?} vs {value:?}"
                 );
             }
