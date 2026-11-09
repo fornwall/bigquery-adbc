@@ -124,7 +124,7 @@ fn releasing_an_autocommit_connection_issues_no_cleanup() {
     assert!(requests.join().unwrap().is_empty());
 }
 
-/// dbt-core 2.0 consumes the driver as an rlib inside its own Tokio runtime, so a release can
+/// dbt 2.0 consumes the driver as an rlib inside its own Tokio runtime, so a release can
 /// land on a worker thread where `block_on` panics. The cleanup still has to reach BigQuery.
 #[test]
 fn releasing_a_connection_inside_a_tokio_host_still_ends_its_session() {

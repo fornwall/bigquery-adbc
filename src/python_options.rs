@@ -55,7 +55,7 @@ fn member(name: String, doc: &str, value: &str) -> Member {
     (name, doc.replace("`BigQuery", "`"), value.to_owned())
 }
 
-/// An enum of standard ADBC options followed by the exposed driver options. Only dbt-core 2.0 sets
+/// An enum of standard ADBC options followed by the exposed driver options. Only dbt 2.0 sets
 /// the `adbc.bigquery.*` operations and the dataset location lookup, so Python names neither.
 fn options<K: AsRef<str>>(
     name: &'static str,

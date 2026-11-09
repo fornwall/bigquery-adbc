@@ -1,7 +1,7 @@
-//! dbt-core 2.0's option-only Cloud Storage object write.
+//! dbt 2.0's option-only Cloud Storage object write.
 //!
 //! A dbt python model uploads its compiled source here before the Dataproc or Vertex AI job that
-//! runs it is submitted. See `DBT-CORE.md`.
+//! runs it is submitted. See `DBT.md`.
 
 use adbc_core::error::Result;
 
@@ -18,7 +18,7 @@ use crate::rest::url::escape_url_component;
 /// The operation's name in error messages.
 const OPERATION: &str = "Cloud Storage object write";
 
-/// A Cloud Storage object write configured on an ADBC statement by dbt-core 2.0.
+/// A Cloud Storage object write configured on an ADBC statement by dbt 2.0.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GcsWriteOptions {
     bucket: Option<String>,

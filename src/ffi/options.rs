@@ -83,7 +83,7 @@ pub(super) trait RecognizedKey: AsRef<str> {
             OptionKind::String => matches!(value, OptionValue::String(_)),
             OptionKind::Bytes => matches!(value, OptionValue::Bytes(_)),
             // `options::integer_value` also accepts base-10 strings, since some transports carry
-            // only strings (dbt-core 2.0's does).
+            // only strings (dbt 2.0's does).
             OptionKind::Int => matches!(value, OptionValue::Int(_) | OptionValue::String(_)),
         };
         if accepted {

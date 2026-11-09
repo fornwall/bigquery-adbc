@@ -103,7 +103,7 @@ class DatabaseOptions(enum.StrEnum):
     #: `host[:port]` is HTTPS; an emulator needs an explicit `http://`. Set as an option, the
     #: endpoint is trusted to receive the credentials on any host and scheme, unlike the host of
     #: a `bigquery://` URI. The `api_endpoint` alias is the retired `apache/arrow-adbc`
-    #: spelling, which dbt-core 2.0 still sends.
+    #: spelling, which dbt 2.0 still sends.
     ENDPOINT = "bigquery.endpoint"
 
     #: Overrides the BigQuery Storage API endpoint, shared by the Read and Write halves of that
@@ -144,7 +144,7 @@ class DatabaseOptions(enum.StrEnum):
     #: Comma-separated OAuth scopes for the impersonated token. Without an impersonation layer,
     #: also the base credential's fallback when `bigquery.auth.scopes` is unset. Discrete
     #: external-account credentials use this fallback even with an impersonation layer. Scopes
-    #: alone do not turn impersonation on, because dbt-core 2.0 sets them on every connection. A
+    #: alone do not turn impersonation on, because dbt 2.0 sets them on every connection. A
     #: temporary access token is sent unchanged.
     IMPERSONATION_SCOPES = "bigquery.impersonate.scopes"
 
@@ -372,7 +372,7 @@ class AuthenticationType(enum.StrEnum):
     EXTERNAL_ACCOUNT = "external_account"
 
     #: A caller-supplied short-lived OAuth access token, used as-is and never refreshed.
-    #: Supports dbt-core 2.0 (Go driver) profiles.
+    #: Supports dbt 2.0 (Go driver) profiles.
     TEMPORARY_ACCESS_TOKEN = "temporary_access_token"
 
     #: No credentials: requests carry no token. For emulators and offline tests, and

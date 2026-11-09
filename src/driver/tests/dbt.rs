@@ -3,7 +3,7 @@
 use super::*;
 use crate::test_support::options::{option_string, set_option};
 
-/// Every database key dbt-core 2.0 sets (crates/dbt-xdbc/src/bigquery.rs plus
+/// Every database key dbt 2.0 sets (crates/dbt-xdbc/src/bigquery.rs plus
 /// crates/dbt-auth/src/bigquery) must resolve to a driver option.
 #[test]
 fn dbt_database_keys_resolve_to_driver_options() {
@@ -73,7 +73,7 @@ fn dbt_database_keys_resolve_to_driver_options() {
     }
 }
 
-/// The `adbc.bigquery.sql.auth_type.*` value spellings dbt-core 2.0 sends must map onto the
+/// The `adbc.bigquery.sql.auth_type.*` value spellings dbt 2.0 sends must map onto the
 /// driver's canonical authentication-type vocabulary.
 #[test]
 fn dbt_auth_type_values_map_to_driver_vocabulary() {

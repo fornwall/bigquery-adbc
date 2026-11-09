@@ -1,4 +1,4 @@
-//! dbt-core 2.0's option-only Dataproc python-model submissions.
+//! dbt 2.0's option-only Dataproc python-model submissions.
 //!
 //! The Spark submission methods share region, project and timeout options:
 //!
@@ -11,7 +11,7 @@
 //! read by the Vertex AI notebook job in `src/dbt/vertex.rs`, so they select nothing on their own.
 //!
 //! Both are long-running operations polled until `done`, which only means Dataproc stopped
-//! working; the batch's or job's own terminal state decides success. See `DBT-CORE.md`.
+//! working; the batch's or job's own terminal state decides success. See `DBT.md`.
 
 use std::time::Duration;
 
@@ -150,7 +150,7 @@ impl DataprocOptions {
     }
 
     /// Submits a PySpark job to an existing Dataproc cluster and waits for it, answering the job
-    /// ID. Only the cluster and the main python file are configured, as in the fork: dbt-core 2.0
+    /// ID. Only the cluster and the main python file are configured, as in the fork: dbt 2.0
     /// sends no jars, arguments, properties or labels.
     pub(crate) fn execute_cluster_job(
         &self,

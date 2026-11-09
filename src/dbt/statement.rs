@@ -70,10 +70,10 @@ pub(crate) use dbt_statement_option;
 /// Mutually exclusive dbt execution modes, which also exclude ingest and a SQL query.
 ///
 /// A table metadata update is not one of these: it names the statement's own destination table,
-/// so combining it with another operation is rejected at execution instead; see `DBT-CORE.md`.
+/// so combining it with another operation is rejected at execution instead; see `DBT.md`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DbtMode {
-    /// The dbt-core 2.0 CSV seed load.
+    /// The dbt 2.0 CSV seed load.
     CsvSeed,
     /// The authorized-view payload.
     DatasetAuthorization,
@@ -81,7 +81,7 @@ pub(crate) enum DbtMode {
     DatasetLocation,
     /// A BigQuery table copy job.
     TableCopy,
-    /// Any of the three dbt-core 2.0 python-model operations.
+    /// Any of the three dbt 2.0 python-model operations.
     PythonModel,
 }
 
@@ -132,7 +132,7 @@ impl DbtOperation {
 /// What setting a SQL query does, given the dbt operation configured on the statement.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SqlDisposition {
-    /// A dbt-core placeholder, dropped rather than stored: were the option cleared afterwards,
+    /// A dbt placeholder, dropped rather than stored: were the option cleared afterwards,
     /// executing must report a missing query, not send the placeholder to BigQuery.
     Drop,
     /// Stored without leaving the configured operation.
@@ -187,7 +187,7 @@ pub(crate) struct DbtStatementState {
     dataset_location: DatasetLocationOptions,
     table_mutation: TableMutationOptions,
     table_copy: TableCopyOptions,
-    /// The three dbt-core 2.0 python-model operations share one mode because their option
+    /// The three dbt 2.0 python-model operations share one mode because their option
     /// families overlap (see [`crate::dbt::dataproc`]).
     gcs_write: GcsWriteOptions,
     dataproc: DataprocOptions,
@@ -400,7 +400,7 @@ impl DbtStatementState {
         if self.python_model_is_active() && is_select_one_statement(query) {
             return SqlDisposition::Drop;
         }
-        // dbt-core 2.0 finalizes option-only operations with empty SQL, which its query-comment
+        // dbt 2.0 finalizes option-only operations with empty SQL, which its query-comment
         // machinery may turn into a lone comment. Neither may discard the CSV seed, table copy or
         // python-model state configured before it; otherwise, setting SQL still exits ingest.
         if has_no_statement(query)
@@ -553,7 +553,7 @@ impl DbtStatementState {
         if let Some(family) = competing {
             self.reject_pending_table_mutation(family)?;
         }
-        // dbt-core 2.0 finalizes an option-only statement with a comment-only placeholder.
+        // dbt 2.0 finalizes an option-only statement with a comment-only placeholder.
         if statement.sql.is_some_and(|sql| !has_no_statement(sql)) {
             return Err(invalid_state(format!(
                 "a SQL query cannot be combined with {} on one BigQuery statement; clear the \
@@ -671,7 +671,7 @@ impl DbtStatementState {
 
 /// Decodes `adbc.bigquery.dataproc.pooling_timeout`, in seconds.
 ///
-/// dbt-core 2.0 sends the string form; the integer form is accepted too. Zero and the empty string
+/// dbt 2.0 sends the string form; the integer form is accepted too. Zero and the empty string
 /// mean no client-side deadline, so the unset value round-trips through `get_option_int` as `0`.
 /// In the dbt-labs fork, zero is an already-expired deadline instead. Negative values are
 /// rejected.
@@ -707,7 +707,7 @@ impl From<FinishedJob> for OptionOnlyOutcome {
     }
 }
 
-/// Recognizes dbt-core's `none` placeholder, allowing comments and a terminator. Other SQL
+/// Recognizes dbt's `none` placeholder, allowing comments and a terminator. Other SQL
 /// replaces the configured view authorization or dataset location lookup.
 fn is_placeholder_statement(query: &str) -> bool {
     const PLACEHOLDER: &str = "none";
@@ -717,7 +717,7 @@ fn is_placeholder_statement(query: &str) -> bool {
     }
 }
 
-/// Recognizes dbt-core's Python-model placeholder without discarding additional SQL.
+/// Recognizes dbt's Python-model placeholder without discarding additional SQL.
 fn is_select_one_statement(query: &str) -> bool {
     let Some((keyword, tail)) = next_token(query) else {
         return false;

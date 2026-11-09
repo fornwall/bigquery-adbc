@@ -4,7 +4,7 @@
 //! general-purpose crate adds about 1.3 MB to the shipped library (`docs/BINARY-SIZE.md`). It
 //! covers only what BigQuery puts on the wire: Storage Read schemas and record batches, with or
 //! without LZ4 frame compression, and Storage Write's canonical layouts. Standalone schemas also
-//! accept dbt-core 2.0's CSV seed types. Dictionaries, ZSTD and the rest of Arrow IPC are refused.
+//! accept dbt 2.0's CSV seed types. Dictionaries, ZSTD and the rest of Arrow IPC are refused.
 //!
 //! `arrow-ipc` stays a dev-dependency as an independent test oracle: `oracle` exchanges bytes with
 //! it in both directions, and a captured BigQuery stream must decode identically under both. The

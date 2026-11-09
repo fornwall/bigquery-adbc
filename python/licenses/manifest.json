@@ -5,7 +5,7 @@
   },
   "inputs": {
     "Cargo.lock": "c0c08b99ea80a2575528a60bcc3524ed082176fbb3add11ef2b2ce8ea03d6400",
-    "Cargo.toml": "72c568b55b08a3b3537524b12c554ee5c8ef916a5e67ffc3c9373b19d7ccc379",
+    "Cargo.toml": "514aa14fb50141c61a05d1283af4f5bdaea99faac494fd32c2b12660da9e68ab",
     "rust-toolchain": "1.99.1"
   },
   "packages": [

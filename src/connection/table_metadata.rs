@@ -550,7 +550,7 @@ fn skip_unreadable(source: MetadataError, context: &str) -> Result<()> {
 
 /// Maps a `tables.get` failure for `project.dataset.table` to an ADBC error.
 ///
-/// The `404 Not Found:` text is load-bearing: dbt-core 2.0 detects a missing relation by that
+/// The `404 Not Found:` text is load-bearing: dbt 2.0 detects a missing relation by that
 /// substring (`is_bigquery_not_found_error` in `crates/dbt-adapter/src/metadata/bigquery/mod.rs`),
 /// not by the ADBC status. It is only a compatibility marker, so the rejection's usual details
 /// and `(HTTP n)` still follow, and a rejected table ID shows both the 404 and the service's 400.
@@ -585,7 +585,7 @@ pub(super) fn table_metadata_error(
 /// The table type a listing reports, restricted to the five [`TABLE_TYPES`].
 ///
 /// An omitted type, or one the REST API added later, is reported as `TABLE`, which keeps the
-/// relation listed: dbt-core 2.0's `RelationType::from_adapter_type`
+/// relation listed: dbt 2.0's `RelationType::from_adapter_type`
 /// (`crates/dbt-schemas/src/dbt_types.rs`) panics on an unknown BigQuery type.
 pub(super) fn bigquery_table_type(table_type: &str) -> &'static str {
     if let Some(known) = TABLE_TYPES.iter().find(|&&known| known == table_type) {

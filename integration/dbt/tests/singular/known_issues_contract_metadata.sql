@@ -1,4 +1,4 @@
--- Regression for dbt-labs/dbt-core#15105. A green query has no rows.
+-- Regression for dbt-labs/dbt#15105. A green query has no rows.
 -- depends_on: {{ ref('known_issues_contract_nested_types') }}
 with metadata as (
     select column_name, is_nullable

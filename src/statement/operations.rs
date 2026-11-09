@@ -93,7 +93,7 @@ impl OptionOnlyOutcome {
         }
     }
 
-    /// Empty schema carrying the job ID as `BIGQUERY:query_id` for dbt-core 2.0.
+    /// Empty schema carrying the job ID as `BIGQUERY:query_id` for dbt 2.0.
     pub(super) fn schema(&self) -> Schema {
         let metadata = self
             .job

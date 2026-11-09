@@ -8,7 +8,7 @@ use crate::error::invalid_state;
 
 /// Requires a query containing more than whitespace and comments.
 ///
-/// Option-only operations handle dbt-core's comment-only placeholders before calling this.
+/// Option-only operations handle dbt's comment-only placeholders before calling this.
 /// `operation` names the entry point in the error: execute, prepare or describe.
 pub(super) fn require_sql<'a>(
     query: Option<&'a Arc<str>>,

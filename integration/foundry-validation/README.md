@@ -2,7 +2,7 @@
 
 The pinned [Driver Foundry validation suite](https://github.com/adbc-drivers/validation) runs
 against an installed `bigquery-adbc` wheel, loading its library through `driver_path()`.
-For dbt's separate `bigquery_foundry` channel, see [DBT-CORE.md](../../docs/DBT-CORE.md#installing).
+For dbt's separate `bigquery_foundry` channel, see [DBT.md](../../docs/DBT.md#installing).
 
 ## Running
 

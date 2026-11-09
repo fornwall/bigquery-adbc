@@ -322,7 +322,7 @@ fn dbt_table_description_update_patches_only_the_description_without_a_precondit
         &endpoint,
         &[(Key::UpdateDescription, "A documented relation.")],
     );
-    // dbt-core 2.0's `execute_with_options(sql = "", ...)` behind its query comment.
+    // dbt 2.0's `execute_with_options(sql = "", ...)` behind its query comment.
     statement
         .set_sql_query("/* bigquery-adbc: model.project.documented_model */\n")
         .unwrap();

@@ -7,7 +7,7 @@ Issues the integration suite pins, with the dbt version named in [README.md](REA
 `models/known_issues/schema.yml` documents six nested paths on
 `known_issues_contract_nested_types` under `persist_docs={'relation': true, 'columns': true}`.
 After `dbt build`, BigQuery holds the three top-level descriptions and none of the nested ones,
-because dbt-core 2.0 re-nests dotted paths by their first segment before calling the driver (UP-77
+because dbt 2.0 re-nests dotted paths by their first segment before calling the driver (UP-77
 in [UPSTREAM.md](../../docs/UPSTREAM.md)). `assert_nested_persist_docs` in `run.py` requires the
 nested descriptions to stay missing, so it fails once the upstream fix lands.
 

@@ -1,7 +1,7 @@
 # Performance
 
 Local benchmarks cover REST decoding, result delivery, ingest normalization and Storage API IPC.
-Live benchmarks measure `dbt build` runs of [dbt-core 2.0](DBT-CORE.md); `example-project` anonymizes
+Live benchmarks measure `dbt build` runs of [dbt 2.0](DBT.md); `example-project` anonymizes
 the test project here and in saved artifacts. See [BINARY-SIZE.md](BINARY-SIZE.md) for library size.
 
 ## Reproducing
@@ -436,7 +436,7 @@ Instruction counts provide a less timing-sensitive check: three alternating runs
 dbt `2.0.9` ran the default 13-model, 26-test workload (50,000 base rows, eight threads, fresh
 datasets) on `example-project` in `US`. The host was Linux x86-64 on an AMD Ryzen 9 7950X3D; this
 driver's release library used the pinned Rust `1.99.1` and locked dependencies. Three rounds
-alternated dbt's opt-in [Foundry driver](DBT-CORE.md#installing) `0.21.0.dev+dbt0.1.5` and this
+alternated dbt's opt-in [Foundry driver](DBT.md#installing) `0.21.0.dev+dbt0.1.5` and this
 driver, before the metadata change below:
 
 | Driver | Median wall | Range | Median jobs/s | Median warehouse span |
@@ -528,7 +528,7 @@ cargo test --locked --all-features disabling_wildcards_keeps_unfiltered_dataset_
 [Upstream dbt commit `7f6844449`](https://github.com/dbt-labs/dbt/commit/7f6844449b13b920dc9ea4da49806d1d835f718b)
 enables literal filters best-effort in `crates/dbt-adapter/src/engine/adbc.rs` on upstream `main`;
 the `2.0.9` binary lacks it. This driver accepts the option. The
-[canonical](DBT-CORE.md#installing) `0.21.0.dev+dbt0.21.19` and opt-in Foundry `0.21.0.dev+dbt0.1.5` libraries return
+[canonical](DBT.md#installing) `0.21.0.dev+dbt0.21.19` and opt-in Foundry `0.21.0.dev+dbt0.1.5` libraries return
 `NOT_IMPLEMENTED` for `disable_wildcards` and `skip_table_metadata`. Caller configuration and
 driver support must both be present; a driver-wide dataset cache or changing default ADBC
 wildcard semantics is unnecessary.

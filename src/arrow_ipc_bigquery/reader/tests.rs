@@ -80,7 +80,7 @@ fn standalone_schema_rejects_a_partial_trailing_message() {
     assert!(decode_schema(&encoded).is_err());
 }
 
-/// The physical types dbt-core 2.0 CSV seeds declare that no Storage Read batch carries.
+/// The physical types dbt 2.0 CSV seeds declare that no Storage Read batch carries.
 fn csv_seed_only_types() -> Vec<DataType> {
     vec![
         DataType::Int8,

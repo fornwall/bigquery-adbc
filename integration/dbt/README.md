@@ -1,8 +1,8 @@
 # dbt 2.0 integration project
 
-This suite runs [dbt-core 2.0](../../docs/DBT-CORE.md), as built by
+This suite runs [dbt 2.0](../../docs/DBT.md), as built by
 [`tools/dbt-build`](../../tools/dbt-build/README.md), against BigQuery with ADC, using this driver
-or dbt's [canonical driver](../../docs/DBT-CORE.md#installing).
+or dbt's [canonical driver](../../docs/DBT.md#installing).
 [KNOWN_ISSUES.md](KNOWN_ISSUES.md) lists the current issues the suite pins.
 
 ## Coverage
@@ -61,7 +61,7 @@ which this driver keeps and the canonical driver drops.
 | `DBT_BIGQUERY_GCS_BUCKET` | `<project>-adbc-scratch` | Writable bucket for the python model upload. |
 | `DBT_BIGQUERY_COMPUTE_REGION` | `us-central1` | Dataproc region of the python-model submission. |
 | `DBT_BIGQUERY_DATAPROC_CLUSTER` | `bigquery-adbc-integration-absent-cluster` | Cluster the submission targets; keep it nonexistent. |
-| `DBT_FOUNDRY_DRIVER_VERSION` | the pinned dbt version's | [Foundry driver](../../docs/DBT-CORE.md#installing) version the [benchmark](PERFORMANCE.md) stages; set it for another dbt 2.0 build. |
+| `DBT_FOUNDRY_DRIVER_VERSION` | the pinned dbt version's | [Foundry driver](../../docs/DBT.md#installing) version the [benchmark](PERFORMANCE.md) stages; set it for another dbt 2.0 build. |
 
 The profile uses the integration project as `quota_project` and requests only `cloud-platform`:
 dbt's default Drive scope makes ordinary ADC refresh fail with `invalid_scope`. Runs verify the

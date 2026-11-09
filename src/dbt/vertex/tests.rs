@@ -68,7 +68,7 @@ fn connection_running_notebooks_as_a_service_account(endpoint: String) -> BigQue
     )
 }
 
-/// The `bigframes` option order and SQL placeholder emitted by dbt-core 2.0.
+/// The `bigframes` option order and SQL placeholder emitted by dbt 2.0.
 fn bigframes_statement(
     connection: &mut BigQueryConnection,
     template_id: Option<&str>,
@@ -101,7 +101,7 @@ fn bigframes_statement(
             template_id.to_owned(),
         );
     }
-    // dbt-core 2.0 finalizes the statement with a real, executable query, which must not run.
+    // dbt 2.0 finalizes the statement with a real, executable query, which must not run.
     statement.set_sql_query("SELECT 1").unwrap();
     statement
 }
@@ -137,7 +137,7 @@ fn dbt_bigframes_model_submits_one_notebook_execution_job() {
             .metadata()
             .get(crate::BIGQUERY_SCHEMA_METADATA_QUERY_ID),
         Some(&JOB.to_owned()),
-        "the job is the only place the notebook's output can be found, and dbt-core 2.0 copies \
+        "the job is the only place the notebook's output can be found, and dbt 2.0 copies \
          this key into run_results.json"
     );
     assert!(reader.next().is_none());
@@ -184,7 +184,7 @@ fn dbt_bigframes_model_submits_one_notebook_execution_job() {
     }
 }
 
-/// dbt-core 2.0 sends the template ID only when `notebook_template_id` parses as an integer.
+/// dbt 2.0 sends the template ID only when `notebook_template_id` parses as an integer.
 #[test]
 fn a_configured_template_id_names_the_template_without_listing() {
     let (endpoint, captured) =

@@ -1,8 +1,8 @@
-//! dbt-core 2.0's option-only BigQuery table metadata operations.
+//! dbt 2.0's option-only BigQuery table metadata operations.
 //!
 //! Two operations against one relation, both naming it with `bigquery.query.destination_table`:
 //! the column metadata update behind `persist_docs: {columns: true}`, and the table description
-//! update behind `persist_docs: {relation: true}`. See `DBT-CORE.md`.
+//! update behind `persist_docs: {relation: true}`. See `DBT.md`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -21,7 +21,7 @@ use crate::types::{BigQueryType, folded_name};
 type ColumnDescriptions = BTreeMap<String, String>;
 type ColumnPolicyTags = BTreeMap<String, Vec<String>>;
 
-/// Table metadata configured on an ADBC statement by dbt-core 2.0.
+/// Table metadata configured on an ADBC statement by dbt 2.0.
 ///
 /// Payloads are parsed when set, so a malformed one fails immediately, and kept in sorted maps so
 /// read-back is deterministic. An empty string or empty object clears a value.
@@ -219,7 +219,7 @@ fn apply_field_metadata(fields: &mut [TableFieldSchema], path: &mut String, inde
             // serializes it).
             field.description = (!description.is_empty()).then(|| description.to_owned());
         }
-        // Match dbt Core and dbt-core 2.0's bundled driver: policy tags belong to leaf columns,
+        // Match dbt Core and dbt 2.0's bundled driver: policy tags belong to leaf columns,
         // not to the RECORDs containing them.
         if !is_record(field)
             && let Some(names) = policy_tags

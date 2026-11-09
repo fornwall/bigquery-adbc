@@ -1,6 +1,6 @@
-//! Option-only `adbc.bigquery.*` operations for dbt-core 2.0.
+//! Option-only `adbc.bigquery.*` operations for dbt 2.0.
 //!
-//! See `docs/DBT-CORE.md` for the supported operations and their option contracts.
+//! See `docs/DBT.md` for the supported operations and their option contracts.
 
 mod csv_load;
 mod csv_seed;

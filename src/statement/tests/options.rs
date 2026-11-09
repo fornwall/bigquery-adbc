@@ -583,10 +583,10 @@ fn statement_options_reject_invalid_values() {
     );
 }
 
-/// Every option key dbt-core 2.0 sends for a python model, in its exact spelling: unset reads
+/// Every option key dbt 2.0 sends for a python model, in its exact spelling: unset reads
 /// back empty, a value round-trips through the canonical key, and the empty string clears it.
 ///
-/// `gsc` is dbt-core 2.0's misspelling of `gcs`, kept verbatim as part of the public contract.
+/// `gsc` is dbt 2.0's misspelling of `gcs`, kept verbatim as part of the public contract.
 #[test]
 fn python_model_options_round_trip_and_clear_under_the_dbt_key_spellings() {
     const KEYS: [(&str, &str); 19] = [
@@ -634,7 +634,7 @@ fn python_model_options_round_trip_and_clear_under_the_dbt_key_spellings() {
             "compute-project",
         ),
         ("adbc.bigquery.notebook_execute_job.region", "europe-west1"),
-        // Not a key dbt-core 2.0 sends: an explicit execution principal for the notebook job, for
+        // Not a key dbt 2.0 sends: an explicit execution principal for the notebook job, for
         // credentials that name none of their own.
         (
             "adbc.bigquery.notebook_execute_job.service_account",
@@ -651,7 +651,7 @@ fn python_model_options_round_trip_and_clear_under_the_dbt_key_spellings() {
         assert_eq!(
             option.as_str(),
             key,
-            "the dbt-core 2.0 spelling is the canonical key"
+            "the dbt 2.0 spelling is the canonical key"
         );
         assert!(option.legacy_aliases().is_empty(), "{key}");
         assert_string_option(&statement, option, None);
@@ -686,7 +686,7 @@ fn python_model_options_round_trip_and_clear_under_the_dbt_key_spellings() {
     assert_failure(&error, Status::InvalidState, &["without a SQL query"]);
 }
 
-/// dbt-core 2.0 sends the timeout as a string, which the dbt-labs fork rejects, so its python
+/// dbt 2.0 sends the timeout as a string, which the dbt-labs fork rejects, so its python
 /// models never reach a service. Both forms are accepted here, and the value reads back as an
 /// integer.
 #[test]
@@ -746,8 +746,8 @@ fn pooling_timeout_is_accepted_as_a_string_and_as_an_integer() {
     }
 }
 
-/// The statement options dbt-core 2.0 sets on nearly every query: job labels, the job timeout,
-/// and the accepted-but-inert link_failed_job flag, all through the dbt-core 2.0 key spellings.
+/// The statement options dbt 2.0 sets on nearly every query: job labels, the job timeout,
+/// and the accepted-but-inert link_failed_job flag, all through the dbt 2.0 key spellings.
 #[test]
 fn dbt_statement_options_round_trip() {
     let mut statement = test_statement();

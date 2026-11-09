@@ -125,7 +125,7 @@ fn structured_fields_and_sqlstate_follow_what_the_service_sent() {
     assert_eq!(converted.sqlstate, [0; 5]);
 }
 
-/// An entry without a message keeps its `reason:` prefix, which dbt-core 2.0 matches on, and
+/// An entry without a message keeps its `reason:` prefix, which dbt 2.0 matches on, and
 /// does not claim a job failed: REST rejections render their entries the same way.
 #[test]
 fn an_entry_without_a_message_keeps_its_reason_prefix() {
@@ -258,7 +258,7 @@ fn job_links_require_a_complete_reference_and_escape_url_components() {
     );
 }
 
-/// dbt-core 2.0's not-found matcher needs the `notFound:` substring.
+/// dbt 2.0's not-found matcher needs the `notFound:` substring.
 #[test]
 fn job_error_keeps_the_not_found_spelling_dbt_matches() {
     let not_found = "Not found: Table proj:ds.missing was not found";

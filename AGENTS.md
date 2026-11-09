@@ -46,7 +46,7 @@ behavior changes:
 | [REFERENCE.md](docs/REFERENCE.md) | Public options, type mappings and behavior. |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Code structure and data flow; update when module roles change. |
 | [GO-DRIVER-COMPARISON.md](docs/GO-DRIVER-COMPARISON.md) | All Go differences: bugs, missing features and deliberate changes, including behavior the dbt-labs fork inherits from Go. |
-| [DBT-CORE.md](docs/DBT-CORE.md) | Behavior specific to `dbt-labs/bigquery-adbc`. |
+| [DBT.md](docs/DBT.md) | Behavior specific to `dbt-labs/bigquery-adbc`. |
 | [UPSTREAM.md](docs/UPSTREAM.md) | Dependency issues only; submit upstream fixes when practical. |
 | [LIMITATIONS.md](docs/LIMITATIONS.md) | Open limitations and validation gaps; completed work belongs in git history. |
 

@@ -3,7 +3,7 @@
     tags=['known_dbt_issue']
 ) }}
 
--- Exact or reduced regressions from dbt-labs/dbt-core issues:
+-- Exact or reduced regressions from dbt-labs/dbt issues:
 -- #13561, #13568, #13624, #13793, #13806, #13811, #14089 and #14106.
 with timestamp_union as (
     select 0 as row_id, timestamp '2008-12-25 15:30:00+00' as event_at

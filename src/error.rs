@@ -114,7 +114,7 @@ pub(crate) fn unreadable_file(message: String, source: &std::io::Error) -> Error
 ///
 /// Callers pass maps or arrays of strings the driver built, which `serde_json` cannot fail to
 /// render, so a failure is reported as a driver defect. `what` names the payload, such as "job
-/// labels". Shared by the dbt-core 2.0 options and the statement's `labels` readback.
+/// labels". Shared by the dbt 2.0 options and the statement's `labels` readback.
 pub(crate) fn option_value_json<T: serde::Serialize + ?Sized>(
     payload: &T,
     what: &str,
@@ -441,7 +441,7 @@ fn summarize_error_entries(entries: &mut dyn ExactSizeIterator<Item = String>) -
 
 /// Render one job error as `{reason}: {message}`, the dbt-labs Go fork's spelling.
 ///
-/// dbt-core 2.0 detects missing relations by searching the message for `notFound:`
+/// dbt 2.0 detects missing relations by searching the message for `notFound:`
 /// (`is_bigquery_not_found_error` in `crates/dbt-adapter/src/metadata/bigquery/mod.rs`), not by
 /// the ADBC status, so the prefix must keep this spelling.
 fn format_error_proto(source: &ErrorProto) -> String {

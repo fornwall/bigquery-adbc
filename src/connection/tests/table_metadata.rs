@@ -78,7 +78,7 @@ fn cancelled_table_discovery_keeps_the_last_retry_diagnostics() {
     }
 }
 
-/// dbt-core 2.0 classifies a missing relation by the literal `404 Not Found:` substring in
+/// dbt 2.0 classifies a missing relation by the literal `404 Not Found:` substring in
 /// the message (`is_bigquery_not_found_error`), ignoring the ADBC status, so both
 /// missing-table shapes must contain that exact spelling.
 #[test]
@@ -146,7 +146,7 @@ fn table_metadata_errors_keep_the_not_found_spelling_dbt_matches() {
     );
 }
 
-/// dbt-core 2.0 panics on an unknown BigQuery table type, so only the five `GetTableTypes`
+/// dbt 2.0 panics on an unknown BigQuery table type, so only the five `GetTableTypes`
 /// spellings pass through; anything else, including an omitted type, is `TABLE`.
 #[test]
 fn a_table_type_outside_the_advertised_set_is_reported_as_table() {

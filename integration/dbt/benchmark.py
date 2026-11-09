@@ -1,4 +1,4 @@
-"""Benchmark dbt-core 2.0 with its opt-in Foundry and local BigQuery drivers."""
+"""Benchmark dbt 2.0 with its opt-in Foundry and local BigQuery drivers."""
 
 from __future__ import annotations
 

@@ -859,7 +859,7 @@ fn metadata_listings_answer_an_unmatched_catalog_with_an_empty_result() {
 }
 
 /// A catalog filter naming one project enumerates it, even a foreign one: `datasets.list` takes
-/// the project in its URL, and refusing would cost dbt-core 2.0 a billed
+/// the project in its URL, and refusing would cost dbt 2.0 a billed
 /// `INFORMATION_SCHEMA.TABLES` query per schema. The connection's own project need not exist.
 #[test]
 fn an_exactly_named_catalog_is_enumerated_even_when_it_is_not_the_current_one() {
@@ -1142,7 +1142,7 @@ fn a_catalog_filter_that_is_not_a_project_id_lists_nothing() {
 }
 
 /// adbc.h calls the table-type filter values "table types [that] can be fetched from
-/// GetTableTypes", and dbt-core 2.0 panics on an unknown BigQuery type (G73).
+/// GetTableTypes", and dbt 2.0 panics on an unknown BigQuery type (G73).
 ///
 /// Checked on returned rows, not on `bigquery_table_type` alone, because the `tables.list` entry
 /// and the `tables.get` description each carry their own `type`. The type filter is checked too,

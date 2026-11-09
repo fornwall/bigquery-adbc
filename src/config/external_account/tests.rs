@@ -535,7 +535,7 @@ fn an_opaque_subject_token_type_and_a_scope_list_reach_the_token_exchange() {
     runtime.block_on(async {
         let mut settings = settings(&endpoint);
         settings.external_account.subject_token_type = Some(Arc::from(SUBJECT_TOKEN_TYPES[1]));
-        // `bigquery.impersonate.scopes` is the fallback for a dbt-core 2.0 profile that sets only
+        // `bigquery.impersonate.scopes` is the fallback for a dbt 2.0 profile that sets only
         // it; `bigquery.auth.scopes` wins when both are set.
         settings.impersonation.scopes = vec![Arc::from("https://www.googleapis.com/auth/bigquery")];
         settings.scopes = vec![Arc::from("https://www.googleapis.com/auth/drive")];

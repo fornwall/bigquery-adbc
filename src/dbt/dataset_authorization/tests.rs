@@ -19,7 +19,7 @@ use crate::test_support::options::{
 
 const OPTION: BigQueryStatementOption = BigQueryStatementOption::AuthorizeViewToDatasets;
 
-/// The payload dbt-core 2.0 sends for one view: exactly one view mapped to exactly one dataset.
+/// The payload dbt 2.0 sends for one view: exactly one view mapped to exactly one dataset.
 fn payload(view: &str, project: &str, dataset: &str) -> String {
     json!({view: [{"project": project, "dataset": dataset}]}).to_string()
 }
@@ -209,8 +209,8 @@ fn view_names_resolve_one_two_and_three_part_spellings() {
     );
 }
 
-/// The complete dbt-core 2.0 contract: the option, its dummy `none` query behind a query comment,
-/// and the job labels dbt-core 2.0 adds to every statement. One view is appended to one dataset.
+/// The complete dbt 2.0 contract: the option, its dummy `none` query behind a query comment,
+/// and the job labels dbt 2.0 adds to every statement. One view is appended to one dataset.
 #[test]
 fn dbt_grant_access_to_appends_the_view_and_returns_the_dataset_etag() {
     let (endpoint, captured) = capture_requests(vec![
@@ -235,7 +235,7 @@ fn dbt_grant_access_to_appends_the_view_and_returns_the_dataset_etag() {
         r#"{"dbt_invocation_id":"abc"}"#,
     );
     authorize_granted_view(&mut statement);
-    // dbt-core 2.0's `execute_with_options(sql = "none", ...)` behind its query comment.
+    // dbt 2.0's `execute_with_options(sql = "none", ...)` behind its query comment.
     statement
         .set_sql_query("/* bigquery-adbc: model.project.granted_view */\nnone")
         .unwrap();
@@ -351,7 +351,7 @@ fn domain_scoped_projects_survive_authorization_paths_and_view_references() {
     );
 }
 
-/// dbt-core 2.0 sends one view per statement, but the option's shape is a map of lists; several
+/// dbt 2.0 sends one view per statement, but the option's shape is a map of lists; several
 /// views and several datasets must each be visited exactly once, in a deterministic order.
 #[test]
 fn multiple_views_and_datasets_visit_every_pair() {
@@ -668,7 +668,7 @@ fn cancelling_an_authorization_interrupts_the_request() {
     captured.join().unwrap();
 }
 
-/// dbt-core 2.0 sends `sql = "none"` behind its query comment, so only that exact placeholder is
+/// dbt 2.0 sends `sql = "none"` behind its query comment, so only that exact placeholder is
 /// discarded. Any other query wins, leaving the authorization behind rather than being silently
 /// ignored.
 #[test]
@@ -690,7 +690,7 @@ fn only_the_dbt_placeholder_query_keeps_an_authorization() {
         statement.set_sql_query(query).unwrap();
         assert!(
             statement.get_option_string(OPTION.into()).is_ok(),
-            "dbt-core 2.0's placeholder must not discard the authorization: {query:?}"
+            "dbt 2.0's placeholder must not discard the authorization: {query:?}"
         );
     }
 

@@ -31,7 +31,7 @@ contributors looking for gaps. User-facing behavior is documented in the
 
 - When Storage Read is disabled or unavailable, a row over 20 MiB on a later REST page fails the
   read. Readers cannot switch after delivering rows without proving identical order across APIs.
-  With Storage Read available, [paginated results select it before delivery](DBT-CORE.md#2-paginated-results-select-storage-read-before-delivering-rows).
+  With Storage Read available, [paginated results select it before delivery](DBT.md#2-paginated-results-select-storage-read-before-delivering-rows).
 - All Storage Read traffic on a database shares one HTTP/2 connection, so three paused readers
   holding unread rows can starve its other reads and new read sessions, which then fail with
   `TIMEOUT` ([details](REFERENCE.md#reading-large-results-through-the-storage-read-api)). A healthy
@@ -47,7 +47,7 @@ failure behavior of each ingest mode.
 
 - Authorized-view grants compare project spellings literally. BigQuery stores numeric view
   project numbers as canonical IDs, so repeating a grant with a numeric view project can append
-  duplicate ACL entries, as in the [dbt-labs fork](DBT-CORE.md). Use the canonical project ID in the
+  duplicate ACL entries, as in the [dbt-labs fork](DBT.md). Use the canonical project ID in the
   view name.
 - The discrete `bigquery.auth.external_account.*` options cannot configure workforce pools, which
   need a workforce user project; use a complete credential document in

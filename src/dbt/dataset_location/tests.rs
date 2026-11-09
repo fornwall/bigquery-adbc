@@ -25,7 +25,7 @@ fn missing_dataset() -> Value {
     google_error(404, "notFound", "Not found: Dataset data-project:analytics")
 }
 
-/// A statement against `endpoint`, finalized as dbt-core 2.0 finalizes an option-only statement.
+/// A statement against `endpoint`, finalized as dbt 2.0 finalizes an option-only statement.
 fn lookup_at(endpoint: &str) -> BigQueryStatement {
     let mut statement = test_statement_at(endpoint);
     set_option(&mut statement, OPTION, PAYLOAD);

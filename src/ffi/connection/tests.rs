@@ -149,7 +149,7 @@ fn options_set_before_init_are_buffered_in_order_with_last_write_winning() {
 /// A pre-`Init` set with the wrong type fails at that call, with the live setter's error, rather
 /// than at `AdbcConnectionInit`.
 ///
-/// A base-10 string stays a legal integer, since some transports carry only strings (dbt-core
+/// A base-10 string stays a legal integer, since some transports carry only strings (dbt
 /// 2.0's does).
 #[test]
 fn a_pre_init_set_of_the_wrong_value_type_is_refused_by_the_call_that_carried_it() {

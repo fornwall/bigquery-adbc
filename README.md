@@ -22,11 +22,11 @@ The driver supports the ADBC 1.0 and 1.1 C interfaces and GoogleSQL:
 - Bulk ingestion through the BigQuery Storage Write API, in all four ADBC ingest modes.
 - Metadata: `GetObjects`, `GetTableSchema`, `GetTableTypes`, `GetStatistics` and `GetInfo`.
 - Manual-commit transactions, cancellation, `ExecutePartitions`, dry runs and progress reporting.
-- The option keys and option-only operations that dbt-core 2.0 uses
-  ([DBT-CORE.md](docs/DBT-CORE.md)).
+- The option keys and option-only operations that dbt 2.0 uses
+  ([DBT.md](docs/DBT.md)).
 
 Legacy SQL, load jobs for ADBC bulk ingestion, incremental execution and temporary-table ingestion
-are not supported. dbt CSV seeds use a separate [load-job path](docs/DBT-CORE.md#csv-seeds).
+are not supported. dbt CSV seeds use a separate [load-job path](docs/DBT.md#csv-seeds).
 See the [known limitations](docs/LIMITATIONS.md) and the
 [differences from the Go driver](docs/GO-DRIVER-COMPARISON.md), the reference implementation.
 
@@ -213,7 +213,7 @@ project and run outside CI. See [setup and coverage](CONTRIBUTING.md#live-tests)
 | [Changelog](CHANGELOG.md) | Changes in each release. |
 | [Known limitations](docs/LIMITATIONS.md) | Open limitations and validation gaps. |
 | [Go driver comparison](docs/GO-DRIVER-COMPARISON.md) | Differences from the Go implementation. |
-| [dbt-core 2.0](docs/DBT-CORE.md) | Loading the driver in dbt, supported operations and known gaps. |
+| [dbt 2.0](docs/DBT.md) | Loading the driver in dbt, supported operations and known gaps. |
 | [Performance](docs/PERFORMANCE.md) and [binary size](docs/BINARY-SIZE.md) | Measurements and how to reproduce them. |
 | [Upstream issues](docs/UPSTREAM.md) | Issues in dependencies and services. |
 | [Security policy](SECURITY.md) | Reporting vulnerabilities, and what is in scope. |

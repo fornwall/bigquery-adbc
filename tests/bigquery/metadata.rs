@@ -31,7 +31,7 @@ fn gets_public_table_schema() {
     assert_eq!(schema.field(0).data_type(), &DataType::Utf8);
     assert_eq!(schema.field(1).name(), "word_count");
     assert_eq!(schema.field(1).data_type(), &DataType::Int64);
-    // dbt-core 2.0's get_relation requires the relation type in the schema metadata.
+    // dbt 2.0's get_relation requires the relation type in the schema metadata.
     assert_eq!(
         schema.metadata().get("Type").map(String::as_str),
         Some("TABLE")
@@ -45,7 +45,7 @@ fn gets_public_table_schema() {
         )
         .unwrap_err();
     assert_eq!(missing.status, Status::NotFound);
-    // dbt-core 2.0 matches this exact substring to classify missing relations.
+    // dbt 2.0 matches this exact substring to classify missing relations.
     assert!(
         missing.message.contains("404 Not Found:"),
         "message: {}",

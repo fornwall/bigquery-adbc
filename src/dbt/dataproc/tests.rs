@@ -16,7 +16,7 @@ use crate::dbt::{region_segment, resource_path, resource_segment};
 use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
 use crate::test_support::options::set_option;
 
-/// The document `batch_to_str` produces for a serverless python model, with dbt-core 2.0's own
+/// The document `batch_to_str` produces for a serverless python model, with dbt 2.0's own
 /// defaults and its quoted `"2"`.
 const DBT_BATCH_YML: &str = "runtime_config:\n  \
     version: \"1.1\"\n  \
@@ -43,7 +43,7 @@ fn dataproc_connection(endpoint: &str) -> crate::connection::BigQueryConnection 
     )
 }
 
-/// A statement carrying `options` and the `SELECT 1` placeholder dbt-core 2.0 finalizes every
+/// A statement carrying `options` and the `SELECT 1` placeholder dbt 2.0 finalizes every
 /// python-model statement with, which must not discard the submission.
 fn submission_statement(
     connection: &mut crate::connection::BigQueryConnection,
@@ -57,7 +57,7 @@ fn submission_statement(
     statement
 }
 
-/// Exactly what dbt-core 2.0 sets for `submission_method: serverless`, with `pooling_timeout` sent
+/// Exactly what dbt 2.0 sets for `submission_method: serverless`, with `pooling_timeout` sent
 /// only when the caller bounds the wait.
 fn batch_statement(
     connection: &mut crate::connection::BigQueryConnection,
@@ -108,7 +108,7 @@ fn running(name: &str) -> serde_json::Value {
     json!({"name": name, "metadata": {"@type": "type.googleapis.com/x"}, "done": false})
 }
 
-/// The end-to-end serverless contract: the five options dbt-core 2.0 sends, the placeholder query,
+/// The end-to-end serverless contract: the five options dbt 2.0 sends, the placeholder query,
 /// one `batches.create`, and polling until the batch reports `SUCCEEDED`.
 #[test]
 fn dbt_serverless_python_model_creates_one_batch_and_waits_for_it() {
@@ -232,13 +232,13 @@ fn dbt_cluster_python_model_submits_one_pyspark_job_and_waits_for_it() {
 
 /// The YAML document is Dataproc's `Batch` resource, so both protojson spellings of a field
 /// name survive, quoting decides string versus number, and a profile's `dataproc_batch`
-/// override arrives deep-merged with dbt-core 2.0's default.
+/// override arrives deep-merged with dbt 2.0's default.
 #[test]
 fn batch_yml_is_converted_to_the_json_document_dataproc_takes() {
     assert_eq!(
         batch_resource(DBT_BATCH_YML).unwrap()["runtime_config"]["properties"]["spark.executor.instances"],
         json!("2"),
-        "dbt-core 2.0 quotes the executor count because properties is a map of strings"
+        "dbt 2.0 quotes the executor count because properties is a map of strings"
     );
 
     let camel = "runtimeConfig:\n  version: \"1.1\"\npysparkBatch:\n  \
@@ -252,7 +252,7 @@ fn batch_yml_is_converted_to_the_json_document_dataproc_takes() {
         "protojson accepts both field-name spellings, so neither is rewritten here"
     );
 
-    // What a profile's `dataproc_batch` block looks like once dbt-core 2.0 has merged it into the
+    // What a profile's `dataproc_batch` block looks like once dbt 2.0 has merged it into the
     // default document: an added section, a replaced scalar, an unquoted number.
     let merged = "runtime_config:\n  version: \"2.2\"\n  properties:\n    \
                   spark.executor.instances: \"4\"\n    spark.dynamicAllocation.enabled: \

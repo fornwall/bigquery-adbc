@@ -256,7 +256,7 @@ pub(crate) fn bytes_value(key: &str, value: OptionValue) -> Result<Vec<u8>> {
 /// Decode an integer option, which a caller may spell as an integer or as a base-10 string.
 ///
 /// Some transports carry only strings (a connection string, a YAML profile, a driver manager
-/// without `SetOptionInt`); dbt-core 2.0 sends `adbc.bigquery.dataproc.pooling_timeout` as a
+/// without `SetOptionInt`); dbt 2.0 sends `adbc.bigquery.dataproc.pooling_timeout` as a
 /// string through `AdbcStatementSetOption`.
 pub(crate) fn integer_value(key: &str, value: OptionValue) -> Result<i64> {
     match value {

@@ -1,4 +1,4 @@
-//! Raw CSV media upload for dbt-core 2.0 seeds.
+//! Raw CSV media upload for dbt 2.0 seeds.
 //!
 //! The upload has no whole-request deadline; reconciliation, polling, and cancellation use the
 //! normal JSON deadline.

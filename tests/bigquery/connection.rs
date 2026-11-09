@@ -655,7 +655,7 @@ fn ingest_target_follows_the_statement_default_dataset() {
     assert_eq!(ingest.execute_update().unwrap(), Some(0));
 }
 
-/// Connections share no per-query state; dbt-core 2.0 runs one connection per worker thread.
+/// Connections share no per-query state; dbt 2.0 runs one connection per worker thread.
 #[test]
 #[ignore = "requires Google Cloud ADC and access to the integration project"]
 fn queries_concurrently_on_independent_connections() {

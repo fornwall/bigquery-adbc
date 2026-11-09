@@ -70,7 +70,7 @@ mod identifiers;
 mod schema_metadata;
 mod types;
 
-// dbt-core operations.
+// dbt operations.
 mod dbt;
 
 // Developer-only.

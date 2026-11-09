@@ -246,7 +246,7 @@ not guaranteed while the project is experimental.
 The active [Go driver](https://github.com/adbc-drivers/bigquery/tree/main/go) is the reference
 implementation. Document behavior in [REFERENCE.md](docs/REFERENCE.md), differences from Go in
 [GO-DRIVER-COMPARISON.md](docs/GO-DRIVER-COMPARISON.md), dbt-labs fork behavior in
-[DBT-CORE.md](docs/DBT-CORE.md), dependency issues in [UPSTREAM.md](docs/UPSTREAM.md), and open
+[DBT.md](docs/DBT.md), dependency issues in [UPSTREAM.md](docs/UPSTREAM.md), and open
 limitations in [LIMITATIONS.md](docs/LIMITATIONS.md).
 
 ## Distribution packaging

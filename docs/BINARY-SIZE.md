@@ -237,7 +237,7 @@ Removing YAML or REST HTTP/2 changes supported behavior.
 
 ### YAML and authentication dependencies
 
-`serde_norway` parses the one YAML option, the Dataproc batch dbt-core 2.0 sends, for 95,976
+`serde_norway` parses the one YAML option, the Dataproc batch dbt 2.0 sends, for 95,976
 bytes, measured by parsing that option with `serde_json` instead. `saphyr-parser` with a
 driver-side builder into `serde_json::Value` was 1,800 bytes larger, and 3,120 at
 `opt-level = "z"`, so `serde_norway` stays.

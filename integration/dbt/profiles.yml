@@ -14,7 +14,7 @@ bigquery_adbc_integration:
       threads: 4
       job_execution_timeout_seconds: 300
       job_retries: 1
-      # dbt-core 2.0 requires all three for a cluster submission. The cluster does not exist, so
+      # dbt 2.0 requires all three for a cluster submission. The cluster does not exist, so
       # exotic_python_model uploads for real and then fails at Dataproc submission.
       compute_region: "{{ env_var('DBT_BIGQUERY_COMPUTE_REGION', 'us-central1') }}"
       gcs_bucket: "{{ env_var('DBT_BIGQUERY_GCS_BUCKET', env_var('BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT') ~ '-adbc-scratch') }}"

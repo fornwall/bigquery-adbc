@@ -1,6 +1,6 @@
 //! The `bigquery.dataset.get_location` lookup behind dbt's `adapter.get_dataset_location`.
 //!
-//! It reads the dataset with `datasets.get`, so it runs no job. See `DBT-CORE.md`.
+//! It reads the dataset with `datasets.get`, so it runs no job. See `DBT.md`.
 
 use std::sync::Arc;
 

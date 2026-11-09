@@ -4,8 +4,8 @@ Issues in dependencies, services and test suites that affect this driver or need
 workaround, for contributors tracking upstream fixes and users who run into one. An entry stays
 until the driver, or the client environments it supports, adopt an upstream fix. Entries with no
 linked issue or PR are local findings. Differences from the Go driver are in
-[GO-DRIVER-COMPARISON.md](GO-DRIVER-COMPARISON.md). dbt-core 2.0 and the older Python dbt Core are
-described in [DBT-CORE.md](DBT-CORE.md).
+[GO-DRIVER-COMPARISON.md](GO-DRIVER-COMPARISON.md). dbt 2.0 and the older Python dbt Core are
+described in [DBT.md](DBT.md).
 
 The findings apply to these revisions:
 
@@ -205,10 +205,10 @@ It already depends on `time`, which could produce both and remove `jiff` and `ji
 library ([size](BINARY-SIZE.md#yaml-and-authentication-dependencies)). Integration tests do not
 exercise real AWS federation.
 
-## UP-77: dbt-core 2.0 re-nests dotted `persist_docs` paths before sending them
+## UP-77: dbt 2.0 re-nests dotted `persist_docs` paths before sending them
 
 [`update_columns_descriptions`](https://github.com/dbt-labs/dbt/blob/b601ffe469be8404e70b5e20f0ea0babc35ba6a8/crates/dbt-adapter/src/adapter/adapter_impl.rs#L2708)
-in dbt-core 2.0 re-nests dotted column paths to their top-level column, so nested descriptions and
+in dbt 2.0 re-nests dotted column paths to their top-level column, so nested descriptions and
 policy tags are never sent, without a warning. The driver applies
 dotted paths at any depth; `integration/dbt/run.py` fails once they arrive.
 
@@ -229,7 +229,7 @@ rejects the option. The relation parser ignores the returned schema name.
 ## UP-79: an unrecognized BigQuery table type panics the dbt process
 
 [`RelationType::from_adapter_type`](https://github.com/dbt-labs/dbt/blob/b601ffe469be8404e70b5e20f0ea0babc35ba6a8/crates/dbt-schemas/src/dbt_types.rs#L43)
-in dbt-core 2.0 panics on an unrecognized BigQuery table type, under an upstream `TODO` to
+in dbt 2.0 panics on an unrecognized BigQuery table type, under an upstream `TODO` to
 return an error. The driver reports any type outside the five that `GetTableTypes` advertises
 as `TABLE` (`src/connection/table_metadata.rs`).
 
@@ -261,11 +261,11 @@ three attempts with 200 ms doubling backoff on transport failures and transient 
 `INVALID_STATE` from this driver and the partition read keeps running. The driver cannot work
 around it.
 
-## UP-86: dbt-core 2.0 drops a seed's and a table copy's job ID
+## UP-86: dbt 2.0 drops a seed's and a table copy's job ID
 
-dbt-core 2.0's `load_dataframe` and `copy_table` discard the result batch whose `BIGQUERY:query_id`
+dbt 2.0's `load_dataframe` and `copy_table` discard the result batch whose `BIGQUERY:query_id`
 carries the job ID, so seed and `copy_partitions` nodes have no `job_id` in `run_results.json`.
-The driver already reports the ID ([DBT-CORE.md](DBT-CORE.md#result-metadata)).
+The driver already reports the ID ([DBT.md](DBT.md#result-metadata)).
 
 ## UP-87: dbapi `adbc_clone` drops autocommit and the backend
 
@@ -299,9 +299,9 @@ and appends that omit an `ARRAY<TIMESTAMP>` column succeed. Because the failure 
 about 130 s of retries, the driver refuses such an ingest with `NOT_IMPLEMENTED` before any request
 (`reject_repeated_timestamps` in `src/ingest/schema.rs`).
 
-## UP-91: dbt-core 2.0 never clears a removed `persist_docs` policy tag
+## UP-91: dbt 2.0 never clears a removed `persist_docs` policy tag
 
-`update_columns_descriptions` in dbt-core 2.0 sends policy tags only for columns whose YAML lists at
+`update_columns_descriptions` in dbt 2.0 sends policy tags only for columns whose YAML lists at
 least one tag name, and leaves every other column out of
 `adbc.bigquery.table.update_columns_policy_tags`. A column whose tags were removed from its YAML
 keeps them in BigQuery, where Python dbt Core's `update_columns` sends an empty list and clears them. The

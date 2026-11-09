@@ -12,7 +12,7 @@ use crate::support::{
     project, set_option,
 };
 
-/// The `src/error.rs` status classification, which dbt-core 2.0 branches on, for real refusals:
+/// The `src/error.rs` status classification, which dbt 2.0 branches on, for real refusals:
 /// before a job exists, for a name that does not resolve, and at runtime.
 #[test]
 #[ignore = "requires Google Cloud ADC and access to the integration project"]
@@ -29,7 +29,7 @@ fn reports_the_adbc_status_of_a_failing_query() {
             "BigQuery rejected the query: invalidQuery: Syntax error",
         ),
         (
-            // dbt-core 2.0 finds a missing relation by the `notFound:` spelling.
+            // dbt 2.0 finds a missing relation by the `notFound:` spelling.
             "a missing table",
             missing_table.as_str(),
             Status::NotFound,

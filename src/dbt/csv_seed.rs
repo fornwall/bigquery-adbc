@@ -1,4 +1,4 @@
-//! dbt-core 2.0's option-only CSV seed ingestion adapter.
+//! dbt 2.0's option-only CSV seed ingestion adapter.
 
 use adbc_core::error::Result;
 use arrow_schema::{DataType, Field};

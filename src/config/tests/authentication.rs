@@ -94,7 +94,7 @@ fn anonymous_authentication_still_rejects_quota_project_and_impersonation() {
                 config.impersonation.target_principal = Some(Arc::from("sa@example.com"));
             },
         ),
-        // Scopes do not turn impersonation on (dbt-core 2.0 sets them on every connection), but
+        // Scopes do not turn impersonation on (dbt 2.0 sets them on every connection), but
         // under `anonymous` they can shape nothing, so they are refused rather than dropped, like
         // `bigquery.auth.scopes`.
         (

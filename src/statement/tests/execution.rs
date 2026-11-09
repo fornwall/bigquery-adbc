@@ -369,7 +369,7 @@ fn an_explicit_destination_runs_every_bound_row_before_execute_returns() {
     }
 }
 
-/// dbt-core 2.0 sends a profile's `priority: batch` on every statement, and a profile need not
+/// dbt 2.0 sends a profile's `priority: batch` on every statement, and a profile need not
 /// set `location`. The job runs where BigQuery infers, and its rows are read from there.
 #[test]
 fn a_batch_query_without_a_location_reads_its_rows_where_bigquery_ran_it() {

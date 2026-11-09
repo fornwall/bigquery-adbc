@@ -1,6 +1,6 @@
 # dbt BigQuery driver benchmark
 
-`benchmark.py` compares dbt-core 2.0's opt-in Foundry BigQuery driver with this repository's driver
+`benchmark.py` compares dbt 2.0's opt-in Foundry BigQuery driver with this repository's driver
 on the same generated dbt project. It is separate from `run.py` and enforces no timing threshold.
 
 ```sh
@@ -56,7 +56,7 @@ environment variables as the dbt benchmark; `--pairs` changes the number of pair
 
 ## Historical default-driver result
 
-dbt-core `2.0.0-preview.212` ran the default 13-model, 26-test workload for three alternating
+dbt `2.0.0-preview.212` ran the default 13-model, 26-test workload for three alternating
 rounds with eight threads:
 
 | Driver | Median wall | Range | Median jobs/s | Median warehouse span | Median client envelope |

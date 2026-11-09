@@ -1,6 +1,6 @@
-# Using this driver with dbt-core 2.0
+# Using this driver with dbt 2.0
 
-[dbt-core 2.0](https://github.com/dbt-labs/dbt) is dbt Labs' Rust engine; the older Python engine
+[dbt 2.0](https://github.com/dbt-labs/dbt) is dbt Labs' Rust engine; the older Python engine
 does not use ADBC. This driver implements the option aliases and operations dbt expects from
 [`dbt-labs/bigquery-adbc`](https://github.com/dbt-labs/bigquery-adbc), called the fork here.
 Read the [migration review](#migration-review) before switching.

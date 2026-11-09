@@ -5,8 +5,8 @@ the active [Go BigQuery ADBC driver](https://github.com/adbc-drivers/bigquery/tr
 reference implementation, in Go's default `bigquery.query.job_creation_mode=required` (G87 and G88
 cover its opt-in mode). The dbt-labs fork of the Go driver,
 [`dbt-labs/bigquery-adbc`](https://github.com/dbt-labs/bigquery-adbc), which
-[dbt-core 2.0](DBT-CORE.md), dbt Labs' Rust engine, can load, usually behaves like Go; its own
-differences are in [DBT-CORE.md](DBT-CORE.md). "The fork" means `dbt-labs/bigquery-adbc`, and
+[dbt 2.0](DBT.md), dbt Labs' Rust engine, can load, usually behaves like Go; its own
+differences are in [DBT.md](DBT.md). "The fork" means `dbt-labs/bigquery-adbc`, and
 "driverbase" means [`driverbase-go`](https://github.com/adbc-drivers/driverbase-go), the library the
 Go driver builds on.
 
@@ -99,7 +99,7 @@ support Date64.
 `bigquery.bulk_ingest.compression` is refused at every scope, with a message that appends are sent
 uncompressed. Go accepts `none`, `lz4` and `zstd` but never applies them, so appends are
 uncompressed under both drivers. The one inert Go option accepted here is
-`bigquery.query.link_failed_job`, because dbt-core 2.0 sets it on every statement; failed jobs carry
+`bigquery.query.link_failed_job`, because dbt 2.0 sets it on every statement; failed jobs carry
 their console link regardless (G51).
 
 ### G30. A dry run on a bulk-ingest statement validates instead of writing
@@ -359,7 +359,7 @@ starts five minutes before submission to allow clock skew, retries an incomplete
 three scans, and stops at 100 pages or 30 seconds including credentials and the final job fetch.
 It registers references found through duplicate responses or listings for cancellation before
 fetching the job, so a failed fetch does not prevent cancellation. If recovery fails, the error
-names the job as possibly still running; Go's SDK returns an error at once. dbt-core 2.0 seed loads
+names the job as possibly still running; Go's SDK returns an error at once. dbt 2.0 seed loads
 and table copies run in the destination dataset's location, found by one cached `datasets.get`
 per dataset, where the dbt-labs fork lets BigQuery infer it. The database shares at most 32 cached
 locations across its connections, evicting the oldest inserted entry when full; revisiting an
@@ -394,7 +394,7 @@ including when its dry run retries
 
 ### G58. Arrow IPC supports a BigQuery-specific subset
 
-Storage Read, Storage Write and the dbt-core 2.0 CSV seed schema use an in-tree Arrow IPC reader
+Storage Read, Storage Write and the dbt 2.0 CSV seed schema use an in-tree Arrow IPC reader
 and writer (`src/arrow_ipc_bigquery`) for BigQuery's type and encoding subset, where Go uses Arrow
 Go's general implementation. A Storage Read schema outside the supported subset falls back to
 REST before any rows are read; malformed schemas or unsupported batch encodings are errors.
@@ -605,7 +605,7 @@ which Go omits.
 ### G65. Table-schema metadata describes the table, not its storage accounting
 
 `GetTableSchema` metadata holds up to 35 table-definition keys from `tables.get(view=BASIC)` in the
-dbt-labs fork's spellings, which dbt-core 2.0 reads ([DBT-CORE.md](DBT-CORE.md#metadata)); only
+dbt-labs fork's spellings, which dbt 2.0 reads ([DBT.md](DBT.md#metadata)); only
 `Type` is always present. The request selects only the schema and configuration fields;
 `GetStatistics` separately requests `STORAGE_STATS`. Go and the dbt-labs fork use the default
 metadata view, which also collects storage statistics. Go writes `BIGQUERY:<snake_case>` keys with
@@ -647,7 +647,7 @@ A table type is reported only if it is one of the five `GetTableTypes` publishes
 `EXTERNAL`, `MATERIALIZED_VIEW`, `SNAPSHOT`); any other or missing value is reported as `TABLE` and
 logged as a `debug` diagnostic, in `GetObjects` and in `GetTableSchema`'s `Type` metadata. Go
 passes the client library's value through. BigQuery returns only those five today, and an
-unannounced type would make dbt-core 2.0 panic (UP-79 in [UPSTREAM.md](UPSTREAM.md)).
+unannounced type would make dbt 2.0 panic (UP-79 in [UPSTREAM.md](UPSTREAM.md)).
 
 ### G74. Default metadata patterns cannot take an exact dataset lookup for a name containing `_`
 
@@ -681,7 +681,7 @@ are resent after 5xx responses other than 501, HTTP 408 and 429, quota reasons, 
 and timeouts, for at most five attempts. `tables.insert`, whose replay could turn an unseen success
 into a 409, is resent only after a 429 or quota rejection, which applied nothing, and the
 authorized-view access-list patch re-reads the list after a lost race or an ambiguous failure
-([authorized views](DBT-CORE.md#authorized-views)). Go's SDK retries metadata reads,
+([authorized views](DBT.md#authorized-views)). Go's SDK retries metadata reads,
 `tables.insert` and patches on HTTP 500, 502, 503 and 504, `backendError` and `rateLimitExceeded`
 until the context ends.
 
@@ -757,7 +757,7 @@ domain-scoped IDs. Local checks only keep each identifier a nonempty resource-na
 option value clears the option. Go stores these values unchecked. Qualified table options split
 at the final two dots so a domain-scoped project's dots remain in the project component.
 The dbt-labs fork also supports domain-scoped references; its stricter component counting and
-the corresponding regression coverage are described in [DBT-CORE.md](DBT-CORE.md#8-project-identifiers-are-validated-by-bigquery).
+the corresponding regression coverage are described in [DBT.md](DBT.md#8-project-identifiers-are-validated-by-bigquery).
 `GetInfo` omits the XDBC maximum catalog-name length rather than applying the modern project-ID
 limit to all project forms.
 
@@ -791,7 +791,7 @@ with `NOT_IMPLEMENTED` whatever the value.
 
 ### G44. The endpoint options accept the fork's spellings as well as the Go driver's
 
-`bigquery.endpoint` also accepts `adbc.bigquery.sql.api_endpoint`, which dbt-core 2.0 sends, and
+`bigquery.endpoint` also accepts `adbc.bigquery.sql.api_endpoint`, which dbt 2.0 sends, and
 `bigquery.storage_endpoint` the dbt-labs fork's `adbc.bigquery.sql.storage_read_api_endpoint`,
 alongside Go's `adbc.bigquery.sql.endpoint` and `adbc.bigquery.sql.storage_endpoint`; Go rejects
 both extra names. A bare `host:port` means HTTPS for every endpoint option here, while Go dials
@@ -883,7 +883,7 @@ For ADC, an explicitly configured quota project overrides `GOOGLE_CLOUD_QUOTA_PR
 Go and the dbt-labs fork. With no explicit value, the SDK's normal ADC quota selection remains.
 
 The dbt-labs fork passes the configured source to impersonation, unlike the Go driver; see
-[dbt authentication](DBT-CORE.md#database-options).
+[dbt authentication](DBT.md#database-options).
 
 ### G94. The custom user agent is sent with REST and Storage Read requests only
 

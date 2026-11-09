@@ -43,7 +43,7 @@ pub(crate) struct ImpersonationConfig {
 impl ImpersonationConfig {
     /// Whether any option requires service-account impersonation.
     ///
-    /// Scopes alone do not count: dbt-core 2.0 sets `adbc.bigquery.sql.impersonate.scopes` on
+    /// Scopes alone do not count: dbt 2.0 sets `adbc.bigquery.sql.impersonate.scopes` on
     /// every connection, including those with no impersonation target.
     pub(crate) fn is_configured(&self) -> bool {
         self.configured_option().is_some()
@@ -214,7 +214,7 @@ impl DatabaseConfig {
                     A::Anonymous.as_str(),
                 )));
             }
-            // Accepted alone everywhere else only because dbt-core 2.0 sets it on every
+            // Accepted alone everywhere else only because dbt 2.0 sets it on every
             // connection, and no dbt profile authenticates anonymously.
             if !self.impersonation.scopes.is_empty() {
                 return Err(invalid_argument(format!(

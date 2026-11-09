@@ -15,7 +15,7 @@ changes.
 
 - The patched dbt's binary is named `dbt-bigquery-adbc`, so it no longer takes the place of dbt
   Labs' `dbt`. Its `system update` installs the latest bigquery-adbc release, where it used to say
-  to update dbt-core with a package manager.
+  to update dbt with a package manager.
 
 ## [0.4.0] - 2026-11-07
 

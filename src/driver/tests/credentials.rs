@@ -244,7 +244,7 @@ fn impersonation_requires_a_target_and_valid_duration() {
         BigQueryDatabaseOption::AllowUntrustedEndpoint,
         "true",
     );
-    // Scopes alone are a modifier, not a request to impersonate: dbt-core 2.0 sets them on
+    // Scopes alone are a modifier, not a request to impersonate: dbt 2.0 sets them on
     // every connection, so they must not require a target.
     set_option(
         &mut database,
@@ -292,7 +292,7 @@ fn impersonation_requires_a_target_and_valid_duration() {
     }
 }
 
-/// A static access token is a secret: settable through the dbt-core 2.0 alias, never readable, and
+/// A static access token is a secret: settable through the dbt 2.0 alias, never readable, and
 /// used exactly as configured, never replaced by the ambient identity.
 #[test]
 fn temporary_access_token_is_write_only_and_opens_connections() {

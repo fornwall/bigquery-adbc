@@ -20,7 +20,7 @@
 //! Arrow IPC stream reader for BigQuery Storage Read.
 //!
 //! Record batches support BigQuery's documented Storage Read types and LZ4 frame buffer
-//! compression. Standalone schemas also accept the scalar physical types used by dbt-core 2.0
+//! compression. Standalone schemas also accept the scalar physical types used by dbt 2.0
 //! CSV seeds. Extend this subset only when required for BigQuery compatibility.
 
 use std::collections::HashMap;

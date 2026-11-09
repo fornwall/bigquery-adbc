@@ -1,11 +1,11 @@
 //! The Arrow metadata keys the driver attaches to results.
 //!
-//! These are public API; dbt-core 2.0 reads several of them for telemetry and response codes. The
+//! These are public API; dbt 2.0 reads several of them for telemetry and response codes. The
 //! field-level keys preserve the type parameters a table declares beyond its Arrow type; the
 //! schema-level keys carry the service-reported query identity and statistics.
 //!
 //! Statistics use the Go driver's lowercase, snake_case keys. Result schemas also carry its
-//! PascalCase aliases, which dbt-core 2.0 reads.
+//! PascalCase aliases, which dbt 2.0 reads.
 
 /// Arrow field metadata key preserving a BigQuery `STRING(L)` or `BYTES(L)` maximum length.
 ///
@@ -30,9 +30,9 @@ pub const BIGQUERY_FIELD_METADATA_SCALE: &str = "BIGQUERY:scale";
 /// Arrow schema metadata key carrying the ID of the BigQuery job or query that produced a result.
 ///
 /// Result readers report the job ID when the query created a job, and otherwise the `queryId` of a
-/// jobless `jobs.query` response. The empty result of a dbt-core 2.0 CSV seed load or table copy
+/// jobless `jobs.query` response. The empty result of a dbt 2.0 CSV seed load or table copy
 /// carries its job ID too, and a python model's carries its remote job: the Vertex AI notebook
-/// execution job's or Dataproc batch's resource name, or the Dataproc cluster job's ID. dbt-core
+/// execution job's or Dataproc batch's resource name, or the Dataproc cluster job's ID. dbt
 /// 2.0 reads this key for telemetry and `run_results.json`.
 pub const BIGQUERY_SCHEMA_METADATA_QUERY_ID: &str = "BIGQUERY:query_id";
 
@@ -40,7 +40,7 @@ pub const BIGQUERY_SCHEMA_METADATA_QUERY_ID: &str = "BIGQUERY:query_id";
 /// result, as BigQuery reported it: `SELECT`, `INSERT`, `MERGE`, `CREATE_TABLE_AS_SELECT`,
 /// `SCRIPT`, and so on.
 ///
-/// dbt-core 2.0 derives its response code and row count from this key's PascalCase alias.
+/// dbt 2.0 derives its response code and row count from this key's PascalCase alias.
 ///
 /// Read directly from `jobs.query`, including jobless results, and retained across result polls.
 /// A job resource supplies it when the query response omits it. The value is never inferred from
@@ -63,7 +63,7 @@ pub const BIGQUERY_SCHEMA_METADATA_QUERY_TOTAL_BYTES_PROCESSED: &str =
 /// Arrow schema metadata key carrying the bytes the job processed, as a decimal integer.
 ///
 /// A query job processes exactly what its query processes, so this repeats
-/// [`BIGQUERY_SCHEMA_METADATA_QUERY_TOTAL_BYTES_PROCESSED`]. dbt-core 2.0 reads the query-level
+/// [`BIGQUERY_SCHEMA_METADATA_QUERY_TOTAL_BYTES_PROCESSED`]. dbt 2.0 reads the query-level
 /// PascalCase alias first and falls back to this key's alias.
 pub const BIGQUERY_SCHEMA_METADATA_JOB_TOTAL_BYTES_PROCESSED: &str =
     "BIGQUERY:statistics:total_bytes_processed";
@@ -79,7 +79,7 @@ pub const BIGQUERY_SCHEMA_METADATA_SLOT_MILLIS: &str = "BIGQUERY:statistics:quer
 pub const BIGQUERY_SCHEMA_METADATA_NUM_DML_AFFECTED_ROWS: &str =
     "BIGQUERY:statistics:query:num_dml_affected_rows";
 
-/// Go driver aliases consumed by dbt-core 2.0.
+/// Go driver aliases consumed by dbt 2.0.
 pub(crate) mod legacy {
     pub(crate) const STATEMENT_TYPE: &str = "BIGQUERY:Statistics:Query:StatementType";
     pub(crate) const TOTAL_BYTES_BILLED: &str = "BIGQUERY:Statistics:Query:TotalBytesBilled";
@@ -94,7 +94,7 @@ pub(crate) mod legacy {
 ///
 /// Two runs of the same query return the same fields and the same non-job metadata, but each runs
 /// as its own job with its own ID and statistics. Comparing result schemas for equality means
-/// ignoring these keys, including the PascalCase aliases consumed by dbt-core 2.0.
+/// ignoring these keys, including the PascalCase aliases consumed by dbt 2.0.
 pub const BIGQUERY_SCHEMA_METADATA_JOB_KEYS: &[&str] = &[
     BIGQUERY_SCHEMA_METADATA_QUERY_ID,
     BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE,

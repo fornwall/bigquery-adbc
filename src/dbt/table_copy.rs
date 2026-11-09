@@ -1,8 +1,8 @@
-//! dbt-core 2.0's option-only BigQuery table copy operation.
+//! dbt 2.0's option-only BigQuery table copy operation.
 //!
 //! A copy job bills no bytes, keeps the source's partitioning, clustering, and column metadata,
 //! and can address one partition with a `table$20240101` decorator, which GoogleSQL cannot name.
-//! dbt's `bq_copy_partitions` macro relies on that. See `DBT-CORE.md`.
+//! dbt's `bq_copy_partitions` macro relies on that. See `DBT.md`.
 
 use adbc_core::error::Result;
 use serde::Serialize;
@@ -18,7 +18,7 @@ use crate::rest::jobs::{JobReference, JobRequest};
 use crate::rest::metadata::TableId;
 use crate::{BigQueryStatementOption, BigQueryWriteDisposition};
 
-/// A table copy configured on an ADBC statement by dbt-core 2.0.
+/// A table copy configured on an ADBC statement by dbt 2.0.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TableCopyOptions {
     pub(crate) source: Option<QualifiedTableName>,

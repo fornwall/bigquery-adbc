@@ -282,7 +282,7 @@ fn rejects_invalid_bigquery_string_constraints() {
     }
 }
 
-/// The Go driver's legacy field metadata dbt-core 2.0 parses: `Type` carries the REST spelling
+/// The Go driver's legacy field metadata dbt 2.0 parses: `Type` carries the REST spelling
 /// exactly as BigQuery reported it, `Repeated` marks arrays, `Description` carries comments.
 #[test]
 fn fields_carry_legacy_rest_metadata_for_dbt() {

@@ -1,15 +1,15 @@
-//! dbt-core 2.0's option-only Vertex AI notebook execution job.
+//! dbt 2.0's option-only Vertex AI notebook execution job.
 //!
 //! A dbt python model with `submission_method: bigframes` is compiled to a notebook in Cloud
 //! Storage and executed by Vertex AI. Any `adbc.bigquery.notebook_execute_job.*` option selects
 //! the operation. Two inputs arrive under Dataproc keys (`src/dbt/dataproc.rs`):
 //! `adbc.bigquery.create_batch.batch_id` is the display name and
 //! `adbc.bigquery.dataproc.pooling_timeout` bounds the wait. The `gsc` misspellings are part of
-//! the dbt-core 2.0 option contract.
+//! the dbt 2.0 option contract.
 //!
 //! The create returns a long-running operation, polled until `done`; the job is then polled until
 //! a terminal `JOB_STATE_*`, because the operation reports only that the create finished. One
-//! client-side deadline covers all of it. See `DBT-CORE.md`.
+//! client-side deadline covers all of it. See `DBT.md`.
 
 use std::collections::HashSet;
 use std::fmt::Write as _;

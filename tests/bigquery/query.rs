@@ -302,7 +302,7 @@ fn query_limits_change_what_bigquery_does() {
     );
 }
 
-/// dbt-core 2.0 derives its response code, row count, and cost telemetry from the job statistics on
+/// dbt 2.0 derives its response code, row count, and cost telemetry from the job statistics on
 /// the result schema, so every key has to arrive with a real BigQuery job behind it.
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
@@ -337,7 +337,7 @@ fn result_schemas_report_the_job_statistics() {
             .as_str()
     }
 
-    /// The value of `key`, parsed as the decimal integer dbt-core 2.0 expects.
+    /// The value of `key`, parsed as the decimal integer dbt 2.0 expects.
     fn integer(entries: &[(String, String)], key: &str) -> i64 {
         let value = string(entries, key);
         value
@@ -387,7 +387,7 @@ fn result_schemas_report_the_job_statistics() {
     assert!(integer(&select, "BIGQUERY:Statistics:Query:TotalBytesBilled") > 0);
     assert!(integer(&select, "BIGQUERY:Statistics:Query:SlotMillis") > 0);
 
-    // DML additionally reports the row count dbt-core 2.0 turns into `rows_affected`, and the
+    // DML additionally reports the row count dbt 2.0 turns into `rows_affected`, and the
     // statement type it gates that read on, both available directly from jobs.query.
     statement
         .set_sql_query(format!("UPDATE `{table}` SET value = value + 1 WHERE TRUE"))
@@ -423,7 +423,7 @@ fn result_schemas_report_the_job_statistics() {
     );
 }
 
-/// Results without rows report `StatementType`; without it, dbt-core 2.0's `code_and_rows` returns
+/// Results without rows report `StatementType`; without it, dbt 2.0's `code_and_rows` returns
 /// early and never reads `NumDMLAffectedRows`. jobs.query supplies the type, with the job resource
 /// as the fallback.
 #[test]
@@ -445,7 +445,7 @@ fn results_that_carry_no_rows_report_the_statement_type() {
         &format!("CREATE TABLE `{table}` AS SELECT * FROM UNNEST([1, 2, 3]) AS value"),
     );
 
-    // DML: the real statement type, and the row count dbt-core 2.0 only reads once it has it.
+    // DML: the real statement type, and the row count dbt 2.0 only reads once it has it.
     let merge = metadata(
         &mut connection,
         &format!(
@@ -661,7 +661,7 @@ fn query_result_type_metadata_is_valid_googlesql() {
     }
 }
 
-/// A multi-statement script, as dbt-core 2.0 sends, returns one result set from its last
+/// A multi-statement script, as dbt 2.0 sends, returns one result set from its last
 /// statement, with statement type `SCRIPT`. `python/tests/test_bigquery.py` covers the DB-API side.
 #[test]
 #[ignore = "requires Google Cloud ADC and access to the integration project"]

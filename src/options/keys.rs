@@ -158,7 +158,7 @@ string_enum! {
         /// A bare `host[:port]` is HTTPS; an emulator needs an explicit `http://`. Set as an option,
         /// the endpoint is trusted to receive the credentials on any host and scheme, unlike the
         /// host of a `bigquery://` URI. The `api_endpoint` alias is the retired `apache/arrow-adbc`
-        /// spelling, which dbt-core 2.0 still sends.
+        /// spelling, which dbt 2.0 still sends.
         Endpoint => (
             "bigquery.endpoint",
             [
@@ -220,7 +220,7 @@ string_enum! {
         /// layer, also the base credential's fallback when `bigquery.auth.scopes` is unset.
         ///
         /// Discrete external-account credentials use this fallback even with an impersonation
-        /// layer. Scopes alone do not turn impersonation on, because dbt-core 2.0 sets them on
+        /// layer. Scopes alone do not turn impersonation on, because dbt 2.0 sets them on
         /// every connection. A temporary access token is sent unchanged.
         ImpersonationScopes => (
             "bigquery.impersonate.scopes",
@@ -295,8 +295,8 @@ string_enum! {
 string_enum! {
     /// BigQuery-specific statement option keys.
     ///
-    /// The `adbc.bigquery.*` keys are vendor extensions dbt-core 2.0 drives rather than options
-    /// typed by hand; they are documented in the repository's `docs/DBT-CORE.md`.
+    /// The `adbc.bigquery.*` keys are vendor extensions dbt 2.0 drives rather than options
+    /// typed by hand; they are documented in the repository's `docs/DBT.md`.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum BigQueryStatementOption {
         /// A JSON object mapping each view to the datasets it is granted read access to, which
@@ -341,7 +341,7 @@ string_enum! {
         /// The region Dataproc and Vertex AI python-model jobs run in, which also selects the
         /// regional endpoint they are sent to.
         DataprocComputeRegion => ("adbc.bigquery.dataproc.compute_region", [], String),
-        /// Seconds to wait for a submitted python-model job, spelled the way dbt-core 2.0 spells
+        /// Seconds to wait for a submitted python-model job, spelled the way dbt 2.0 spells
         /// it. Selects no operation on its own.
         DataprocPoolingTimeout => ("adbc.bigquery.dataproc.pooling_timeout", [], Int),
         /// The project Dataproc python-model jobs are submitted to.
@@ -453,7 +453,7 @@ string_enum! {
         ),
         /// The Cloud Storage bucket a notebook execution job reads its notebook from.
         ///
-        /// Misspelled `gsc` in both dbt-core 2.0 and the dbt-labs fork; reproduced verbatim.
+        /// Misspelled `gsc` in both dbt 2.0 and the dbt-labs fork; reproduced verbatim.
         NotebookExecuteJobGscBucket => (
             "adbc.bigquery.notebook_execute_job.gsc_bucket",
             [],
@@ -461,7 +461,7 @@ string_enum! {
         ),
         /// The Cloud Storage object path a notebook execution job reads its notebook from.
         ///
-        /// Misspelled `gsc` in both dbt-core 2.0 and the dbt-labs fork; reproduced verbatim.
+        /// Misspelled `gsc` in both dbt 2.0 and the dbt-labs fork; reproduced verbatim.
         NotebookExecuteJobGscPath => ("adbc.bigquery.notebook_execute_job.gsc_path", [], String),
         /// The file name of the notebook a notebook execution job runs.
         NotebookExecuteJobModelFileName => (
@@ -486,7 +486,7 @@ string_enum! {
         /// The principal the notebook execution job runs as, overriding the one the configured
         /// credentials name.
         ///
-        /// Not sent by dbt-core 2.0. With plain Application Default Credentials nothing names a
+        /// Not sent by dbt 2.0. With plain Application Default Credentials nothing names a
         /// principal, so this is the only way to give the job one.
         NotebookExecuteJobServiceAccount => (
             "adbc.bigquery.notebook_execute_job.service_account",

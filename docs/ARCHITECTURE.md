@@ -83,7 +83,7 @@ describes the failure behavior for each mode.
 | `src/cancellation` | Tracking and cancelling the active operation, locally and remotely. |
 | `src/error` | Maps failures to ADBC statuses, SQLSTATEs and error details. |
 | `src/types` | BigQuery and Arrow type mappings, including decimals and temporal values. |
-| `src/dbt` | Option-only operations for dbt-core 2.0, such as table copies, Python models and CSV seeds. `dbt::statement` owns their options and mode transitions; operation modules stay private ([DBT-CORE.md](DBT-CORE.md)). |
+| `src/dbt` | Option-only operations for dbt 2.0, such as table copies, Python models and CSV seeds. `dbt::statement` owns their options and mode transitions; operation modules stay private ([DBT.md](DBT.md)). |
 | `src/diag.rs` | Opt-in diagnostics on standard error, for events with no ADBC caller to report to. |
 
 ## Design constraints

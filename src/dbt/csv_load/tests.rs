@@ -349,8 +349,8 @@ fn completion_reports_written_rows_and_unknown_counts() {
     );
 }
 
-/// The dbt-core 2.0 seed end to end: the load job's ID is reported the way a query result reports
-/// its job, which dbt-core 2.0 records as the statement's query ID; a dry run submits no job and
+/// The dbt 2.0 seed end to end: the load job's ID is reported the way a query result reports
+/// its job, which dbt 2.0 records as the statement's query ID; a dry run submits no job and
 /// reports none.
 #[test]
 fn a_dbt_seed_reports_its_load_job_as_the_query_id() {

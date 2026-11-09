@@ -27,7 +27,7 @@ pub(crate) use crate::project_config::project;
 /// An exact count checks that an unqualified table name resolved to this fixture.
 pub(crate) const SHAKESPEARE_ROWS: i64 = 164_656;
 pub(crate) const SCRATCH_DATASET: &str = "sq_scratch";
-/// Cloud Storage bucket for dbt-core 2.0 object-write tests. Each test deletes its own objects.
+/// Cloud Storage bucket for dbt 2.0 object-write tests. Each test deletes its own objects.
 pub(crate) fn scratch_bucket() -> &'static str {
     static BUCKET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     BUCKET.get_or_init(|| format!("{}-adbc-scratch", project()))

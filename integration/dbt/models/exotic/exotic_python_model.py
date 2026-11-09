@@ -1,6 +1,6 @@
-"""Python model covering the driver's dbt-core 2.0 python-model path.
+"""Python model covering the driver's dbt 2.0 python-model path.
 
-dbt-core 2.0 runs two fresh statements on one connection, each with the SQL `SELECT 1` that
+dbt 2.0 runs two fresh statements on one connection, each with the SQL `SELECT 1` that
 the driver's options must override:
 
 1. `adbc.bigquery.write_gcs.{bucket,object_name,content}` uploads the compiled model (this
@@ -23,7 +23,7 @@ def model(dbt, session):
         submission_method="cluster",
         tags=["python_model"],
     )
-    # The job never runs, but dbt-core 2.0 resolves the ref while compiling, so the uploaded
+    # The job never runs, but dbt 2.0 resolves the ref while compiling, so the uploaded
     # object carries the fully qualified relation.
     orders = dbt.ref("fct_orders")
     return orders.groupBy("customer_id").sum("order_total")

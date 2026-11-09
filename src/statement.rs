@@ -73,8 +73,8 @@ pub struct BigQueryStatement {
     /// Shared with the export layer, which reads it without taking the statement's state lock.
     progress: Arc<ExecutionProgress>,
     /// Stored and read back but inert: a failed job's error carries its console link regardless.
-    /// It cannot be refused, because dbt-core 2.0 sets it on every BigQuery statement it executes;
-    /// see `DBT-CORE.md`.
+    /// It cannot be refused, because dbt 2.0 sets it on every BigQuery statement it executes;
+    /// see `DBT.md`.
     link_failed_job: bool,
 }
 

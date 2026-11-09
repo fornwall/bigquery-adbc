@@ -1,5 +1,5 @@
 //! Driver fixtures with anonymous credentials and an unreachable or mock endpoint.
-//! Shared by the statement, connection, FFI, and dbt-core tests without Google Cloud credentials.
+//! Shared by the statement, connection, FFI, and dbt tests without Google Cloud credentials.
 
 use adbc_core::{Connection as _, Database as _, Driver as _, Statement as _};
 

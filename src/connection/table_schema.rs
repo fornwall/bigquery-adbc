@@ -1,4 +1,4 @@
-//! The table description `get_table_schema` reports: the dbt-core 2.0 schema metadata built from a
+//! The table description `get_table_schema` reports: the dbt 2.0 schema metadata built from a
 //! `tables.get` response, and the resolution of a table reference from its arguments.
 
 use std::collections::BTreeMap;
@@ -18,10 +18,10 @@ use crate::types::temporal::civil_from_days;
 /// Schema-level metadata mirroring the dbt-labs Go driver's `GetTableSchema` contract.
 ///
 /// Moves text from the consumed response, including potentially large view definitions.
-/// Missing values are omitted except `Type`, which dbt-core 2.0 requires.
+/// Missing values are omitted except `Type`, which dbt 2.0 requires.
 pub(super) fn table_schema_metadata(table: Table) -> Metadata {
     let mut metadata = Metadata::new();
-    // Always present, since dbt-core 2.0's get_relation fails without it; an empty type becomes
+    // Always present, since dbt 2.0's get_relation fails without it; an empty type becomes
     // TABLE, as in GetObjects.
     metadata.insert("Type", bigquery_table_type(&table.table_type));
     if !table.description.is_empty() {
@@ -248,7 +248,7 @@ fn sorted_json_object(map: &BTreeMap<String, String>) -> String {
 
 /// Formats Unix epoch milliseconds as RFC 3339 UTC, e.g. `2026-01-01T00:00:00Z`.
 ///
-/// dbt-core 2.0 parses `ExpirationTime` with an RFC 3339 parser, so the rendering must be exact.
+/// dbt 2.0 parses `ExpirationTime` with an RFC 3339 parser, so the rendering must be exact.
 pub(super) fn format_rfc3339_millis(epoch_ms: i64) -> String {
     let seconds = epoch_ms.div_euclid(1_000);
     let millis = epoch_ms.rem_euclid(1_000);

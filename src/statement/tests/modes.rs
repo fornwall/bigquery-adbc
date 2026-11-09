@@ -1,5 +1,5 @@
 //! The one-execution-mode-at-a-time rule: which options leave which mode, which combinations are
-//! rejected outright, and the placeholder queries dbt-core 2.0 finalizes an option-only statement
+//! rejected outright, and the placeholder queries dbt 2.0 finalizes an option-only statement
 //! with.
 
 use super::*;
@@ -41,7 +41,7 @@ fn setting_a_sql_query_clears_the_whole_ingest_target() {
     assert!(statement.ingest.target_db_schema.is_none());
 }
 
-/// `submit_python_job` finalizes its statements with a placeholder `SELECT 1`, since dbt-core
+/// `submit_python_job` finalizes its statements with a placeholder `SELECT 1`, since dbt
 /// 2.0 asserts a statement carries SQL or options. Only that exact statement is discarded; the
 /// dbt-labs fork dispatches on the options first and so silently drops any query.
 #[test]
@@ -339,7 +339,7 @@ fn a_table_metadata_update_cannot_be_combined_with_another_operation() {
 }
 
 /// `set_sql_query` stores a query without clearing the update, so the pair is refused. The
-/// comment-only placeholder dbt-core 2.0 finalizes an option-only statement with is not a query,
+/// comment-only placeholder dbt 2.0 finalizes an option-only statement with is not a query,
 /// and still runs the update.
 #[test]
 fn a_table_metadata_update_cannot_be_combined_with_a_sql_query() {

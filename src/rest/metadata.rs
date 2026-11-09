@@ -87,7 +87,7 @@ impl std::fmt::Display for TableId<'_> {
 pub(crate) enum TableView {
     /// The type and names of an exact object, which no listing supplied.
     Type,
-    /// The schema alone, which a dbt-core 2.0 column metadata update rewrites.
+    /// The schema alone, which a dbt 2.0 column metadata update rewrites.
     Schema,
     /// Constraints explicitly requested at ADBC table depth, without column schemas.
     Constraints,
@@ -96,7 +96,7 @@ pub(crate) enum TableView {
     Basic,
     /// The storage statistics `get_statistics` reports, and nothing else.
     StorageStats,
-    /// The schema and configuration dbt-core 2.0 reconstructs a relation from.
+    /// The schema and configuration dbt 2.0 reconstructs a relation from.
     Configuration,
 }
 
@@ -693,7 +693,7 @@ struct TableDescription<'a> {
 /// The `tables.get` fields the driver reads, and only those.
 ///
 /// `get_table_schema` and `get_objects` report the configuration and columns, `get_statistics`
-/// the storage counters, and the dbt-core 2.0 column metadata update the schema.
+/// the storage counters, and the dbt 2.0 column metadata update the schema.
 #[derive(Debug, Default)]
 pub(crate) struct Table {
     /// The dataset and table IDs BigQuery resolved the requested names to.

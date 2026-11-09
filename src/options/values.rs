@@ -110,7 +110,7 @@ string_enum! {
             ["adbc.bigquery.sql.auth_type.external_account"]
         ),
         /// A caller-supplied short-lived OAuth access token, used as-is and never refreshed.
-        /// Supports dbt-core 2.0 (Go driver) profiles.
+        /// Supports dbt 2.0 (Go driver) profiles.
         TemporaryAccessToken => (
             "temporary_access_token",
             ["adbc.bigquery.sql.auth_type.temporary_access_token"]

@@ -1,7 +1,7 @@
-//! dbt-core 2.0's option-only BigQuery authorized-view operation.
+//! dbt 2.0's option-only BigQuery authorized-view operation.
 //!
 //! A view that reads another dataset must be listed in that dataset's access control list. dbt's
-//! `grant_access_to` model config sets this option. See `DBT-CORE.md`.
+//! `grant_access_to` model config sets this option. See `DBT.md`.
 
 use adbc_core::error::Result;
 
@@ -32,7 +32,7 @@ pub(crate) struct SourceDataset {
     dataset_id: String,
 }
 
-/// Authorized views configured on an ADBC statement by dbt-core 2.0.
+/// Authorized views configured on an ADBC statement by dbt 2.0.
 ///
 /// The payload is parsed, validated, and resolved against the statement defaults when set, so a
 /// malformed one fails immediately. An empty string or an empty JSON object clears it.

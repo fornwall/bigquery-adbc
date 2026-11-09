@@ -57,7 +57,7 @@ fn canonical_job_metadata(schema: &Schema) -> Vec<(&str, &str)> {
     entries
 }
 
-/// dbt-core 2.0 reads `BIGQUERY:query_id` from the result schema for telemetry, and parses the
+/// dbt 2.0 reads `BIGQUERY:query_id` from the result schema for telemetry, and parses the
 /// legacy `Type` field metadata; a dropped, undrained reader must also clean up quietly.
 #[test]
 fn result_schema_reports_the_query_job_id_and_field_metadata() {
@@ -86,9 +86,9 @@ fn result_schema_reports_the_query_job_id_and_field_metadata() {
     assert_eq!(
         field.metadata().get("Type").map(String::as_str),
         Some("INTEGER"),
-        "the legacy REST spelling dbt-core 2.0 parses"
+        "the legacy REST spelling dbt 2.0 parses"
     );
-    // Dropped without draining, the way dbt-core 2.0 abandons fetch=false readers.
+    // Dropped without draining, the way dbt 2.0 abandons fetch=false readers.
     drop(reader);
     requests.join().unwrap();
 }
@@ -162,7 +162,7 @@ fn a_jobless_result_reports_its_query_id_and_statistics_without_follow_up_reques
     requests.served(1);
 }
 
-/// dbt-core 2.0 reads the job's statistics off the same schema, as decimal strings.
+/// dbt 2.0 reads the job's statistics off the same schema, as decimal strings.
 ///
 /// `statementType` is part of the response schema even though BigQuery generally omits it.
 /// Pin the mapping, and avoid a redundant job fetch if the service starts filling it in.
@@ -202,7 +202,7 @@ fn result_schema_reports_the_job_statistics() {
 }
 
 /// A DML statement returns no rows, so its job is fetched for the statement type, without which
-/// dbt-core 2.0 never reads the row count.
+/// dbt 2.0 never reads the row count.
 ///
 /// The `jobs.query` response is the one BigQuery sends for an `UPDATE`: the target
 /// table's schema, the affected-row count, the cost statistics, no `totalRows`, and no

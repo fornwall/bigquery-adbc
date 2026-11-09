@@ -49,7 +49,7 @@ AUTHORIZED_VIEW_COLUMN_DESCRIPTIONS = {
     "order_date": "Order day, documented through the view's column metadata update.",
     "order_count": "Orders per day, documented through the view's column metadata update.",
 }
-# Descriptions from models/known_issues/schema.yml. dbt-core 2.0 persists top-level
+# Descriptions from models/known_issues/schema.yml. dbt 2.0 persists top-level
 # descriptions but loses nested paths (UPSTREAM.md UP-77); assertions detect a change to either.
 NESTED_TOP_LEVEL_DESCRIPTIONS = {
     "id": "Required identifier.",
@@ -84,7 +84,7 @@ PYTHON_MODEL_MARKER = "uploaded through adbc.bigquery.write_gcs"
 # The driver's context for a rejected Dataproc submission (src/dbt/dataproc.rs). Failing with
 # it proves the driver accepted every python-model option.
 DATAPROC_SUBMISSION_ERROR = "failed to submit the BigQuery Dataproc job"
-# Substrings that would mean the driver rejected one of dbt-core 2.0's python-model options instead
+# Substrings that would mean the driver rejected one of dbt 2.0's python-model options instead
 # of reaching Dataproc, from option_rejection in src/error/options.rs.
 OPTION_REJECTION_MARKERS = (
     "unsupported BigQuery",
@@ -100,11 +100,11 @@ SHOW_MODELS = (
     "exotic_empty_result",
     "exotic_quoted_identifiers",
 )
-# dbt_project.yml's query-comment before its node.unique_id. With job-label: true, dbt-core 2.0
+# dbt_project.yml's query-comment before its node.unique_id. With job-label: true, dbt 2.0
 # sends the rendered comment as the query_comment job label, beside dbt_invocation_id.
 QUERY_COMMENT_PREFIX = "bigquery-adbc integration: "
 # profiles.yml's job_execution_timeout_seconds, and the model-level override on
-# exotic_copied_partitions, as the jobTimeoutMs dbt-core 2.0 sends through the driver.
+# exotic_copied_partitions, as the jobTimeoutMs dbt 2.0 sends through the driver.
 PROFILE_JOB_TIMEOUT_MS = 300_000
 COPIED_PARTITIONS_JOB_TIMEOUT_MS = 900_000
 INCREMENTAL_UNIQUE_ID = "model.bigquery_adbc_integration.incremental_order_totals"
@@ -114,7 +114,7 @@ COPIED_PARTITIONS_UNIQUE_ID = "model.bigquery_adbc_integration.exotic_copied_par
 # The partitions exotic_copied_partitions lists, as copy-job partition decorators.
 COPIED_PARTITIONS = ("20260110", "20260111")
 # dbt's bundled driver drops decimal parameters from CSV seed schemas; this driver loads each
-# column as declared (DBT-CORE.md), so the one parameterized declaration is the only permitted
+# column as declared (DBT.md), so the one parameterized declaration is the only permitted
 # schema difference. A plain `numeric` stays unparameterized under both drivers.
 EXPECTED_DECIMAL_PARAMETER_DIFFERENCES = {
     ("main", "exotic_wide_types", "precise_amount"): ((None, None), (20, 4)),
@@ -261,7 +261,7 @@ def captured_dbt_command(
 
 
 def _dbt_rows_number(rows: int) -> str:
-    """Render a row count the same way dbt-core 2.0's BigQuery response does."""
+    """Render a row count the same way dbt 2.0's BigQuery response does."""
 
     value = float(rows)
     for suffix in ("", "k", "m", "b", "t"):
@@ -416,7 +416,7 @@ def assert_nodes_ran(
         "snapshot": "success",
         "test": "pass",
         "unit_test": "pass",
-        # dbt-core 2.0's sources.json uses title case, unlike run_results.json.
+        # dbt 2.0's sources.json uses title case, unlike run_results.json.
         "source": "Pass",
     }
     observed = set()
@@ -539,13 +539,13 @@ def assert_canonical_incremental_adapter_response(
 
 
 def dbt_job_label(value: str) -> str:
-    """Sanitize a job label value as dbt-core 2.0 does: lowercase, `[^a-z0-9_-]` to `_`, 63 chars."""
+    """Sanitize a job label value as dbt 2.0 does: lowercase, `[^a-z0-9_-]` to `_`, 63 chars."""
 
     return re.sub(r"[^a-z0-9_-]", "_", value.lower())[:63]
 
 
 def expected_job_labels(*, invocation_id: str, unique_id: str) -> dict[str, str]:
-    """The job labels dbt-core 2.0 sends with every statement it runs for one node."""
+    """The job labels dbt 2.0 sends with every statement it runs for one node."""
 
     return {
         "dbt_invocation_id": invocation_id,
@@ -554,7 +554,7 @@ def expected_job_labels(*, invocation_id: str, unique_id: str) -> dict[str, str]
 
 
 def run_invocation_id(run_results_path: Path) -> str:
-    """The phase's invocation ID, which dbt-core 2.0 also sends as the dbt_invocation_id label."""
+    """The phase's invocation ID, which dbt 2.0 also sends as the dbt_invocation_id label."""
 
     artifact = read_artifact(run_results_path)
     invocation_id = (artifact.get("metadata") or {}).get("invocation_id")
@@ -604,7 +604,7 @@ def assert_partition_copy_jobs(
 ) -> None:
     """Assert that copy_partitions copied exactly the listed partitions with dbt's job options.
 
-    dbt-core 2.0 discards a copy job's ID (UPSTREAM.md UP-86), so the jobs are found by their
+    dbt 2.0 discards a copy job's ID (UPSTREAM.md UP-86), so the jobs are found by their
     destination. Each copies one partition of dbt's temporary table onto the same partition
     with WRITE_TRUNCATE.
     """
@@ -661,7 +661,7 @@ def assert_incremental_job_options(
     location: str,
     phase_started: datetime,
 ) -> None:
-    """Check the job labels and timeouts dbt-core 2.0 sent with the incremental phase's jobs.
+    """Check the job labels and timeouts dbt 2.0 sent with the incremental phase's jobs.
 
     The MERGE takes the profile's timeout; exotic_copied_partitions' copy jobs take the model's
     override. dbt's canonical driver sets neither on copy jobs, so only this driver is checked.
@@ -1257,7 +1257,7 @@ def assert_column_description(
 def assert_nested_persist_docs(client: bigquery.Client) -> None:
     """Check top-level descriptions and the known loss of nested descriptions.
 
-    dbt-core 2.0's do_nest_column_data_types drops nested paths before sending
+    dbt 2.0's do_nest_column_data_types drops nested paths before sending
     update_columns_descriptions (docs/UPSTREAM.md UP-77). If nested descriptions
     arrive, update the expectations and the corresponding KNOWN_ISSUES.md entry.
     """
@@ -1293,7 +1293,7 @@ where table_name = 'known_issues_contract_nested_types'
     }
     if landed:
         raise RuntimeError(
-            "dbt-core 2.0 delivered nested persist_docs descriptions, which UPSTREAM.md UP-77 "
+            "dbt 2.0 delivered nested persist_docs descriptions, which UPSTREAM.md UP-77 "
             f"says it cannot: {landed!r}. Upstream has fixed it; assert "
             "NESTED_FIELD_DESCRIPTIONS here and remove the KNOWN_ISSUES.md entry."
         )
@@ -1373,8 +1373,8 @@ def assert_python_model_upload(
         "the model's own marker": PYTHON_MODEL_MARKER,
         "the model function": "def model(dbt, session):",
         "the model body": 'orders.groupBy("customer_id").sum("order_total")',
-        "dbt-core 2.0's generated ref function": "def ref(*args, **kwargs):",
-        "dbt-core 2.0's generated dbt object": "class dbtObj:",
+        "dbt 2.0's generated ref function": "def ref(*args, **kwargs):",
+        "dbt 2.0's generated dbt object": "class dbtObj:",
         "the resolved relation identifier": f'identifier = "{alias}"',
         "the resolved relation dataset": f'schema = "{dataset}"',
         "the resolved relation project": f'database = "{project}"',
@@ -1464,7 +1464,7 @@ def delete_storage_object(
 def assert_python_model(*, target_dir: Path, log_dir: Path) -> None:
     """Build the python model and check both statements it runs through the driver.
 
-    dbt-core 2.0 uploads the compiled source with write_gcs, then submits it to Dataproc. The
+    dbt 2.0 uploads the compiled source with write_gcs, then submits it to Dataproc. The
     bucket is real and the cluster is not, so the upload must leave {schema}/{alias}.py and
     the submission must fail inside Dataproc.
     """
@@ -2333,7 +2333,7 @@ def parse_args() -> argparse.Namespace:
     mode.add_argument(
         "--upstream-adbc",
         action="store_true",
-        help="use dbt-core 2.0's canonical BigQuery ADBC driver",
+        help="use dbt 2.0's canonical BigQuery ADBC driver",
     )
     mode.add_argument(
         "--compare",
@@ -2408,7 +2408,7 @@ def main() -> int:
             raise RuntimeError("a release build cannot load dbt's canonical driver")
         os.environ["BIGQUERY_ADBC_USE_DBT_DRIVER"] = "1"
         os.environ["PATH"] = on_path(canonical_dbt, os.environ)
-        LOG.note("using dbt-core 2.0's canonical BigQuery ADBC driver")
+        LOG.note("using dbt 2.0's canonical BigQuery ADBC driver")
     else:
         staged_driver = built
         os.environ["PATH"] = on_path(install, os.environ)

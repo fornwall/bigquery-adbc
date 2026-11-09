@@ -199,7 +199,7 @@ fn copied_rows_reports_counts_unknown_counts_and_service_failures() {
         }"#,
     )
     .unwrap_err();
-    // dbt-core 2.0 classifies a missing relation by this prefix.
+    // dbt 2.0 classifies a missing relation by this prefix.
     assert_failure(&error, Status::NotFound, &["notFound:"]);
 }
 
@@ -330,7 +330,7 @@ fn a_partial_success_response_reconciles_the_exact_copy_without_resubmitting() {
     );
 }
 
-/// The dbt-core 2.0 contract end to end: three options, an empty SQL query, one copy job.
+/// The dbt 2.0 contract end to end: three options, an empty SQL query, one copy job.
 #[test]
 fn dbt_partition_copy_submits_one_job_and_reports_its_rows() {
     let (endpoint, captured) = capture_copy_with_echoed_reference();
@@ -351,7 +351,7 @@ fn dbt_partition_copy_submits_one_job_and_reports_its_rows() {
         BigQueryStatementOption::CopyTableWriteDisposition,
         "WRITE_TRUNCATE",
     );
-    // dbt-core 2.0 finalizes an option-only operation with an empty query, which must not discard
+    // dbt 2.0 finalizes an option-only operation with an empty query, which must not discard
     // the copy configured just before it.
     statement.set_sql_query("").unwrap();
 
@@ -400,7 +400,7 @@ fn dbt_partition_copy_submits_one_job_and_reports_its_rows() {
     );
     assert_eq!(
         request.body["configuration"]["labels"]["dbt_invocation_id"], "abc",
-        "dbt-core 2.0 sets job labels on every statement"
+        "dbt 2.0 sets job labels on every statement"
     );
     assert_eq!(
         request.body["jobReference"]["location"], "EU",
@@ -476,7 +476,7 @@ fn copy_options_round_trip_resolve_defaults_and_switch_operations_cleanly() {
     }
 }
 
-/// dbt-core 2.0 asks for an empty query but its query-comment machinery prepends the node
+/// dbt 2.0 asks for an empty query but its query-comment machinery prepends the node
 /// comment, so the driver is handed a comment-only statement. Like the fork's driver, which
 /// dispatches on the copy options before it ever looks at the query, that must run the copy.
 #[test]

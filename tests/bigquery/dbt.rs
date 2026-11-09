@@ -1,4 +1,4 @@
-//! The dbt-core 2.0 option-only operations: CSV seeds, table copies, table descriptions and
+//! The dbt 2.0 option-only operations: CSV seeds, table copies, table descriptions and
 //! python-model uploads.
 
 use adbc_core::error::Status;
@@ -50,7 +50,7 @@ fn connect_to_storage() -> BigQueryConnection {
     .unwrap()
 }
 
-/// A unique object name shaped like dbt-core 2.0's python model source, `{schema}/{alias}.py`.
+/// A unique object name shaped like dbt 2.0's python model source, `{schema}/{alias}.py`.
 fn scratch_object(prefix: &str) -> String {
     format!("{SCRATCH_DATASET}/{}.py", scratch_table(prefix))
 }
@@ -162,7 +162,7 @@ impl Drop for SeedFile {
     }
 }
 
-/// A statement configured the way dbt-core 2.0 seeds `csv` into `table`.
+/// A statement configured the way dbt 2.0 seeds `csv` into `table`.
 fn seed_statement(
     connection: &mut BigQueryConnection,
     table: &str,
@@ -351,7 +351,7 @@ fn seed_column_types_are_declared_exactly() {
     );
 }
 
-/// Runs one option-only table copy, the way dbt-core 2.0 configures it.
+/// Runs one option-only table copy, the way dbt 2.0 configures it.
 fn copy_table(
     connection: &mut BigQueryConnection,
     source: &str,
@@ -374,7 +374,7 @@ fn copy_table(
         BigQueryStatementOption::CopyTableWriteDisposition,
         write_disposition,
     );
-    // dbt-core 2.0 finalizes the operation with an empty query, never SQL.
+    // dbt 2.0 finalizes the operation with an empty query, never SQL.
     statement.set_sql_query("").unwrap();
     let copied = statement.execute_partitions()?;
     let job_id = &copied.schema.metadata()[BIGQUERY_SCHEMA_METADATA_QUERY_ID];
@@ -382,7 +382,7 @@ fn copy_table(
     Ok((copied.rows_affected >= 0).then_some(copied.rows_affected))
 }
 
-/// dbt-core 2.0's `copy_partitions` path: partition-decorated copies, which no SQL statement can
+/// dbt 2.0's `copy_partitions` path: partition-decorated copies, which no SQL statement can
 /// address, plus the whole-table copies its `copy` materialization asks for.
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
@@ -500,7 +500,7 @@ fn copies_partitions_and_tables_without_running_a_query() {
     assert!(error.message.contains(&missing), "{}", error.message);
 }
 
-/// dbt-core 2.0 sets a materialized view's description right after creating it. The view's
+/// dbt 2.0 sets a materialized view's description right after creating it. The view's
 /// automatic initial refresh changes its ETag a second or two after creation, while ETag reads
 /// briefly still return the old one, so an update guarded by `If-Match` failed in that window.
 #[test]
@@ -634,7 +634,7 @@ fn looks_up_dataset_locations_without_running_a_job() {
     );
 }
 
-/// dbt-core 2.0's Python-model upload against the Cloud Storage JSON API.
+/// dbt 2.0's Python-model upload against the Cloud Storage JSON API.
 ///
 /// Checks the stored source bytes and nested object key, plus the unknown affected-row count.
 /// Request construction is tested separately in `src/dbt/gcs/tests.rs`.
@@ -673,7 +673,7 @@ fn writes_a_dbt_python_model_source_to_cloud_storage() {
         BigQueryStatementOption::WriteGcsContent,
         CONTENT,
     );
-    // dbt-core 2.0 finalizes the statement with a real, executable query, which must not run.
+    // dbt 2.0 finalizes the statement with a real, executable query, which must not run.
     statement.set_sql_query("SELECT 1").unwrap();
 
     // An object write has no row count: `None` here, -1 over the C ABI. The dbt-labs fork says 0.
@@ -708,7 +708,7 @@ fn writes_a_dbt_python_model_source_to_cloud_storage() {
     );
 }
 
-/// A bucket the caller cannot write to keeps the status Cloud Storage reported, where dbt-core
+/// A bucket the caller cannot write to keeps the status Cloud Storage reported, where dbt
 /// 2.0's default driver flattens every python-model failure to UNKNOWN. The bucket never exists.
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch bucket"]

@@ -193,7 +193,7 @@ fn external_account_builder<'a>(
     if let Some(project) = settings.quota_project.as_deref() {
         builder = builder.with_quota_project_id(project);
     }
-    // `bigquery.auth.scopes` wins; `bigquery.impersonate.scopes` is the fallback dbt-core 2.0
+    // `bigquery.auth.scopes` wins; `bigquery.impersonate.scopes` is the fallback dbt 2.0
     // WIF profiles set.
     let scopes = if settings.scopes.is_empty() {
         &settings.impersonation.scopes

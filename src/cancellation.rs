@@ -261,7 +261,7 @@ impl Cancellation {
         let mut result = Ok(());
         for (operation, mut reference, mut provisional) in jobs {
             // On a host thread (the cdylib), the cancel RPC runs here and reports its outcome.
-            // Inside a Tokio host such as dbt-core 2.0 it goes to the driver's runtime,
+            // Inside a Tokio host such as dbt 2.0 it goes to the driver's runtime,
             // unreported: a current-thread runtime cannot block, and a worker should not block for
             // up to the cancel deadline. The claim above still delivers it exactly once.
             if tokio::runtime::Handle::try_current().is_ok() {

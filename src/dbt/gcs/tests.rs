@@ -17,7 +17,7 @@ fn connection_writing_objects_to(endpoint: String) -> crate::BigQueryConnection 
     )
 }
 
-/// The object write dbt-core 2.0 configures for a python model: the bucket, the object name, and
+/// The object write dbt 2.0 configures for a python model: the bucket, the object name, and
 /// the source when it is non-empty. dbt finalizes the statement with a real, executable query,
 /// which must not run.
 fn write_statement(
@@ -38,7 +38,7 @@ fn write_statement(
     statement
 }
 
-/// The dbt-core 2.0 contract end to end: three options, the `SELECT 1` placeholder, one multipart
+/// The dbt 2.0 contract end to end: three options, the `SELECT 1` placeholder, one multipart
 /// object insert, and no BigQuery query at all.
 #[test]
 fn dbt_write_gcs_uploads_the_model_source_in_one_multipart_insert() {

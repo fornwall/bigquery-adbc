@@ -269,7 +269,7 @@ fn the_uri_endpoint_authority_uses_the_option_grammar() {
     }
 }
 
-/// dbt-core 2.0 sets the impersonation scopes on every connection, impersonating or not, which
+/// dbt 2.0 sets the impersonation scopes on every connection, impersonating or not, which
 /// is why `ImpersonationConfig::is_configured` ignores them. A URI carrying the same profile
 /// must be accepted too, or the two option paths diverge.
 #[test]

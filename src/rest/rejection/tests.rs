@@ -108,7 +108,7 @@ fn a_not_found_rejection_keeps_the_spelling_dbt_matches() {
     assert_eq!(failure.status, Status::NotFound);
     assert!(
         failure.message.contains("notFound:"),
-        "dbt-core 2.0's not-found matcher needs the notFound: substring: {}",
+        "dbt 2.0's not-found matcher needs the notFound: substring: {}",
         failure.message
     );
 }

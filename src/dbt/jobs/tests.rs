@@ -322,7 +322,7 @@ fn csv_file(name: &str) -> PathBuf {
     path
 }
 
-/// One dbt-core 2.0 seed of `csv` into `destination`, on a fresh statement.
+/// One dbt 2.0 seed of `csv` into `destination`, on a fresh statement.
 fn seed(
     connection: &mut BigQueryConnection,
     csv: &Path,
@@ -352,7 +352,7 @@ fn seed(
     statement.execute_update()
 }
 
-/// One dbt-core 2.0 `copy_partitions` copy, on a fresh statement.
+/// One dbt 2.0 `copy_partitions` copy, on a fresh statement.
 fn copy(
     connection: &mut BigQueryConnection,
     source: &str,

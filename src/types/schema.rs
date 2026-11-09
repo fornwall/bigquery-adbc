@@ -256,7 +256,7 @@ fn field_metadata(
     let mut metadata = Metadata::new()
         .with(BIGQUERY_TYPE_METADATA_KEY, rich_type)
         // The Go driver's legacy spelling: the REST type name exactly as BigQuery reported it
-        // (`INTEGER`, `FLOAT`, `BOOLEAN`, `RECORD`, ...). dbt-core 2.0 parses `Type`, `Repeated`,
+        // (`INTEGER`, `FLOAT`, `BOOLEAN`, `RECORD`, ...). dbt 2.0 parses `Type`, `Repeated`,
         // and `Description` to reconstruct composite type strings and column comments.
         .with("Type", field.r#type.clone());
     if let Some(description) = field

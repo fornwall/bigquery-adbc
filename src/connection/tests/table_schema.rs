@@ -127,7 +127,7 @@ fn temporal_schemas_agree_across_table_description_and_execution() {
     assert!(requests[2].path().ends_with("/queries"));
 }
 
-/// The dbt-core 2.0 contract: a missing table is NOT_FOUND, never a generic error.
+/// The dbt 2.0 contract: a missing table is NOT_FOUND, never a generic error.
 #[test]
 fn get_table_schema_reports_not_found_for_a_missing_table() {
     let (endpoint, request) = capture_requests(vec![(
@@ -156,7 +156,7 @@ fn get_table_schema_reports_not_found_for_a_missing_table() {
 }
 
 /// Only BigQuery's `invalid` reason says the name cannot be a table ID. Any other 400 is a request
-/// the driver got wrong, which must not read as a missing table, least of all to dbt-core 2.0,
+/// the driver got wrong, which must not read as a missing table, least of all to dbt 2.0,
 /// which matches the `404 Not Found:` text.
 #[test]
 fn get_table_schema_keeps_other_bad_requests_as_errors() {
@@ -205,7 +205,7 @@ fn a_table_without_columns_has_an_empty_schema_and_a_broken_view_is_an_error() {
     requests.served(2);
 }
 
-/// Fields and the schema itself carry the metadata dbt-core 2.0 reconstructs table
+/// Fields and the schema itself carry the metadata dbt 2.0 reconstructs table
 /// configuration from, in the exact key spellings and value formats it parses.
 #[test]
 fn get_table_schema_populates_go_driver_metadata() {
@@ -403,7 +403,7 @@ fn range_partitioning_metadata_uses_the_go_driver_keys() {
     assert_eq!(
         metadata.get("Type").map(String::as_str),
         Some("TABLE"),
-        "an empty table type must fall back to TABLE; dbt-core 2.0's get_relation requires the key"
+        "an empty table type must fall back to TABLE; dbt 2.0's get_relation requires the key"
     );
 }
 

@@ -2,7 +2,7 @@ version: 2
 
 models:
   - name: known_issues_bigquery_sql
-    description: BigQuery SQL constructs that dbt-core 2.0 must accept.
+    description: BigQuery SQL constructs that dbt 2.0 must accept.
     columns:
       - name: first_array_value
         data_tests:
@@ -68,7 +68,7 @@ models:
         description: Nested text.
 
   - name: known_issues_complex_expression_target
-    description: Exact complex SQL-expression fixture regression from dbt-core issue 14625.
+    description: Exact complex SQL-expression fixture regression from dbt issue 14625.
     columns:
       - name: id
         data_type: int64
