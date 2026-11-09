@@ -328,8 +328,19 @@ dbt `2.0.9`, default 13-model, 26-test workload (50,000 base rows, eight threads
 
 Paired local/Foundry wall ratio `0.359` (64.1% lower). Every invocation ran 13 CTAS and 26 SELECT
 jobs, no cache hits, expected signature. Median summed service time: 18.42s Foundry, 16.18s local.
-The historical default-driver result is in
-[integration/dbt/PERFORMANCE.md](../integration/dbt/PERFORMANCE.md#historical-default-driver-result).
+
+Against dbt's default `bigquery` driver: dbt `2.0.0-preview.212`, the default 13-model, 26-test
+workload, eight threads, three alternating rounds; every sample ran the same 39 jobs, no cache hits
+and the same warehouse results:
+
+| Driver | Median wall | Range | Median jobs/s | Median warehouse span | Median client envelope |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Bundled `bigquery` | 24.07s | 23.31–26.26s | 1.62 | 20.50s | 3.57s |
+| This driver, as `bigquery_foundry` | 10.74s | 9.50–11.29s | 3.63 | 8.99s | 1.76s |
+
+Paired wall ratio `0.461` (53.9% lower); median summed service time 25.00s bundled, 23.91s local.
+The bundled driver's per-node timings show client polling latency after short jobs. With 16
+threads, this driver's median wall fell to 8.29s (22.8%, three rounds).
 
 The metadata change makes `GetTableSchema` request
 [`tables.get(view=BASIC)`](https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/tables/get#TableMetadataView)

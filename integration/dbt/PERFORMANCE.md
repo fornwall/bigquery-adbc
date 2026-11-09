@@ -48,19 +48,3 @@ partitioned, clustered table, a view and optionally a materialized view, warms t
 alternates 24 `BASIC`/`FULL` request pairs per relation (`--pairs`, at least 20), compares the
 projected responses and deletes the dataset. Output goes to
 `logs/performance/metadata-<timestamp>-<id>.json`.
-
-## Historical default-driver result
-
-dbt `2.0.0-preview.212`, default 13-model, 26-test workload, three alternating rounds, eight
-threads:
-
-| Driver | Median wall | Range | Median jobs/s | Median warehouse span | Median client envelope |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Bundled `bigquery` | 24.07s | 23.31–26.26s | 1.62 | 20.50s | 3.57s |
-| Local `bigquery_foundry` | 10.74s | 9.50–11.29s | 3.63 | 8.99s | 1.76s |
-
-Paired local/bundled wall ratio `0.461` (53.9% lower). Every sample ran the same 39 jobs (13
-`CREATE_TABLE_AS_SELECT`, 26 `SELECT`), no cache hits, same warehouse results. Median summed
-service time: 25.00s bundled, 23.91s local; the bundled driver's per-node timings show client
-polling latency after short jobs. With 16 threads, local median wall fell from 10.74s to 8.29s
-(22.8%, three rounds).
