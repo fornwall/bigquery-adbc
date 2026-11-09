@@ -61,9 +61,9 @@ Open limitations and missing test coverage. Behavior is documented in the
 
 ## Validation gaps
 
-- Federation and impersonation token exchanges, including refresh and failure handling, and JSON
-  impersonation principal inference have mock coverage only; no live workload or workforce
-  identity provider or driver-managed impersonation is tested.
+- Federation and impersonation token exchanges, including refresh and failure handling, have mock
+  coverage only, and JSON impersonation principal inference has unit coverage only; no live
+  workload or workforce identity provider or driver-managed impersonation is tested.
 - URI host and credential-document trust checks have unit coverage only. No test observes
   impersonation sending the source token to `iamcredentials.{universe_domain}`; that comes from
   reading the auth library.

@@ -64,7 +64,7 @@ Measuring a change:
 
 Figures are historical comparisons, not necessarily this checkout; to reproduce one, build both
 source versions on the same machine, and record CPU and toolchain with new measurements. Unless
-stated otherwise: Rust 1.99.1, locked release builds, Linux x86-64, AMD Ryzen 9 7950X3D pinned to
+stated otherwise, native comparisons used Rust 1.99.1, locked release builds, Linux x86-64, AMD Ryzen 9 7950X3D pinned to
 CPU 3, median of three alternating before/after runs of seven samples each. Affinity does not
 exclude other host activity. Native results exclude network and BigQuery work and establish no
 live dbt or upload speedup. Requested bytes include freed intermediates; ownership tests measure
@@ -221,7 +221,7 @@ The remaining allocations describe child slices. Check with
 
 ### Storage Write encoding
 
-`encode-sliced` rows of `ipc`, identical fixtures, nothing else running. Two successive changes:
+`encode-sliced` rows of `ipc`, identical fixtures. Two successive changes:
 copying and rebasing nonzero STRING/BYTES/LIST offsets in place after validation (replacing
 per-offset extension and checked subtraction), then validating against the smallest offset so the
 check vectorizes (the minimum must be at least the nonnegative first offset, so rebasing cannot
@@ -239,7 +239,7 @@ overflow; failures precede body materialization). Allocations were unchanged thr
 The second comparison re-measured its baseline (in parentheses): reductions were 23.6–30.2% for
 the first change and 31.6–44.2% for the second. 65,536-row ranges, first change: scalar
 79.652–80.199 / 59.434–59.619, nested 216.604–216.832 / 156.330–156.552, deep 984.940–988.182 /
-687.386–688.561 µs; second change, with visible jitter from other host work: scalar 60.103–60.967
+687.386–688.561 µs, with nothing else running; second change, with visible jitter from other host work: scalar 60.103–60.967
 / 40.986–53.750, nested 157.576–159.611 / 96.855–100.296, deep 693.673–706.400 / 391.180–404.297
 µs. Unsliced 1,024-row control medians: first change within 1.5% (scalar 0.573→0.576, nested
 1.111→1.113, deep 3.558→3.507 µs); second change scalar 0.584→0.565, nested 1.135→1.118, deep
@@ -266,7 +266,7 @@ Ownership regressions; run each with `cargo test --locked --lib <filter>`.
 
 | Bound | Filter |
 | --- | --- |
-| The dataset-location cache keeps the newest 32 insertions across a database's connections (an evicted dataset repeats `datasets.get`); 4,096 inserts leave 32, with evicted entries released. | `clients::tests::` |
+| The dataset-location cache keeps the newest 32 insertions across a database's connections; 64 inserts leave 32, with evicted entries released. | `clients::tests::` |
 | Result wrappers release their inner reader on EOF, error or observed cancellation, keeping the schema: a one-row INT64 slice of an 8,388,608-byte buffer has only the test's reference before `next()` returns (formerly two). Cancellation frees queued data at the caller's next poll. | `operation_readers_release_retained_buffers`, `cancellation::tests::` |
 | A two-row Int64 parameter slice's 8,388,608-byte buffer is released before the final parameter row; empty batches before the next source callback. | `bound_parameter_batches` |
 | Storage Write drops consumed batches; written or discarded IPC plans release buffers but keep scratch capacity. A 12-row mock ingest holds no reference to a two-row slice's 8 MiB buffer before the next source read, including EOF. | `the_first_ingest_batch_is_released_before_reading_more_input`, `written_and_discarded_plans_release_their_input_buffers` |

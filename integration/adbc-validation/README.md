@@ -16,7 +16,7 @@ use the Storage Write API.
 export BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT=my-test-project
 
 # Every test, isolated in its own dataset; failures are listed at the end.
-cargo test --locked --test clients suite_passes_against_bigquery -- --ignored
+cargo test --locked --test clients adbc_validation::suite_passes_against_bigquery -- --ignored
 
 # Without ADC or BigQuery: build, enumerate exactly 100 tests and check the coverage baseline.
 # CI runs this on every push.
@@ -77,5 +77,5 @@ built normally, so Rust code is not instrumented.
 
 ```sh
 ADBC_VALIDATION_SANITIZE=address,undefined \
-  cargo test --locked --test clients suite_passes_against_bigquery -- --ignored
+  cargo test --locked --test clients adbc_validation::suite_passes_against_bigquery -- --ignored
 ```

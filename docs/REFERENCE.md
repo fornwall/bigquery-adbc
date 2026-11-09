@@ -483,7 +483,8 @@ reads it. Pass partition descriptors from `AdbcStatementExecutePartitions` to
 `AdbcConnectionReadPartition` unchanged; malformed ones return `INVALID_ARGUMENT` before any request.
 
 Readers buffer at most 200 completed batches and 64 MiB of their allocations, and pending REST
-conversions at most 64 MiB of decoded input; one larger batch can always proceed. These are not
+conversions at most 64 MiB of decoded input. A larger batch takes the whole budget and waits until
+the reader's buffer is empty; a larger REST conversion can always proceed. These are not
 process memory limits: response pages, conversions in progress and batches returned to the
 application are outside them.
 

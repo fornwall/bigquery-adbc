@@ -98,7 +98,8 @@ only the RPC status message.
 ### G53. Lossless numeric widening accepts more Arrow input types
 
 Ingest and parameters widen `Int8`, `UInt8`, `UInt16` and `UInt32` to `INT64` and `Float16` to
-`FLOAT64`, which Go rejects; both reject `UInt64` (cast it to `Int64` or `Decimal128(20, 0)`). A
+`FLOAT64`, which Go rejects. Ingest, like Go, rejects `UInt64` (cast it to `Int64` or
+`Decimal128(20, 0)`); a `UInt64` parameter binds as `INT64` and fails only above `i64::MAX`. A
 `Float32` or `Float16` parameter binds as its exact value (`0.1f32` as `0.10000000149011612`), where
 Go sends the shortest decimal (`0.1`).
 
@@ -281,9 +282,9 @@ the fork lets BigQuery infer it.
 
 As in Go, cancellation, supersession, reader release or an early end stops local work and requests
 cancellation of an unfinished job; remote cancellation can be delayed by the ten-second completion
-wait (G46), and queries that finish during it cannot be stopped. A cancel during a pending
-submission lets it finish in the background, then cancels the job it names or G48 finds; unlike Go,
-a failed remote cancel is retried. A failed explicit cancel returns `UNKNOWN` within 30 seconds; a
+wait (G46), and queries that finish during it cannot be stopped. Unlike Go, a cancel during a
+pending submission lets it finish in the background, then cancels the job it names or G48 finds,
+and a failed remote cancel is retried. A failed explicit cancel returns `UNKNOWN` within 30 seconds; a
 `jobs.query` whose retries ended without a job reference cannot be cancelled, and its error says the
 statement may still have run.
 
@@ -489,7 +490,7 @@ reports the REST name (`INTEGER`, `BOOLEAN`, `RECORD`) and drops the repeated mo
 
 Metadata reads and blind patches retry transient failures up to five attempts; `tables.insert`
 retries only rejections that applied nothing, and the authorized-view patch re-reads the access list
-([authorized views](DBT.md#authorized-views)). Go's SDK retries reads, inserts and patches on 5xx,
+([authorized views](DBT.md#authorized-views)). Go's SDK retries reads, inserts and patches on HTTP 500, 502, 503 and 504,
 `backendError` and `rateLimitExceeded` until the context ends.
 
 ## Configuration and authentication
