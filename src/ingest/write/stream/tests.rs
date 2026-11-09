@@ -72,10 +72,10 @@ fn table_visibility_backoff_grows_and_saturates_like_its_reference_policy() {
     }
 }
 
-/// Creating the stream and landing the first payload share one budget; a budget each would double
-/// the documented three-minute ceiling that callers size statement timeouts against.
+/// Every attempt but the last may wait, which keeps the whole wait within the documented
+/// three-minute ceiling that callers size statement timeouts against.
 #[test]
-fn the_table_visibility_budget_spans_every_step_of_one_wait() {
+fn the_table_visibility_budget_waits_once_fewer_than_its_attempts() {
     let mut budget = VisibilityBudget::default();
     let mut waits = 0;
     while budget.has_attempt_left() {
