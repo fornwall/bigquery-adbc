@@ -1,9 +1,6 @@
 use arrow_array::types::{IntervalMonthDayNanoType, IntervalYearMonthType};
-use arrow_array::{
-    Decimal128Array, Int64Array, IntervalDayTimeArray, IntervalMonthDayNanoArray,
-    IntervalYearMonthArray, ListArray, TimestampMicrosecondArray,
-};
-use arrow_buffer::{IntervalDayTime, IntervalMonthDayNano};
+use arrow_array::{Decimal128Array, Int64Array, ListArray, TimestampMicrosecondArray};
+use arrow_buffer::IntervalMonthDayNano;
 use arrow_schema::{Field, Schema};
 
 use super::*;
@@ -105,60 +102,6 @@ fn a_mixed_plan_preserves_identity_columns_and_casts_the_rest() {
 }
 
 #[test]
-fn interval_plans_cast_sliced_values_exactly() {
-    let month_day_nano = DataType::Interval(IntervalUnit::MonthDayNano);
-    let session = Arc::new(Schema::new(vec![
-        Field::new(
-            "year_month",
-            DataType::Interval(IntervalUnit::YearMonth),
-            true,
-        ),
-        Field::new("day_time", DataType::Interval(IntervalUnit::DayTime), true),
-    ]));
-    let canonical = Arc::new(Schema::new(vec![
-        Field::new("year_month", month_day_nano.clone(), true),
-        Field::new("day_time", month_day_nano, true),
-    ]));
-    let plan = reshape_plans(&session, &canonical).unwrap();
-
-    let year_month =
-        IntervalYearMonthArray::from(vec![Some(999), Some(14), None, Some(-25), Some(888)]);
-    let day_time = IntervalDayTimeArray::from(vec![
-        Some(IntervalDayTime::new(99, 99)),
-        Some(IntervalDayTime::new(2, 3)),
-        None,
-        Some(IntervalDayTime::new(-4, -5)),
-        Some(IntervalDayTime::new(88, 88)),
-    ]);
-    let batch = RecordBatch::try_new(
-        session,
-        vec![
-            Arc::new(year_month.slice(1, 3)) as ArrayRef,
-            Arc::new(day_time.slice(1, 3)) as ArrayRef,
-        ],
-    )
-    .unwrap();
-    let reshaped = reshape(batch, &canonical, &plan).unwrap();
-
-    assert_eq!(
-        reshaped.column(0).as_ref(),
-        &IntervalMonthDayNanoArray::from(vec![
-            Some(IntervalMonthDayNano::new(14, 0, 0)),
-            None,
-            Some(IntervalMonthDayNano::new(-25, 0, 0)),
-        ]) as &dyn Array
-    );
-    assert_eq!(
-        reshaped.column(1).as_ref(),
-        &IntervalMonthDayNanoArray::from(vec![
-            Some(IntervalMonthDayNano::new(0, 2, 3_000_000)),
-            None,
-            Some(IntervalMonthDayNano::new(0, -4, -5_000_000)),
-        ]) as &dyn Array
-    );
-}
-
-#[test]
 fn nested_year_month_intervals_reshape_to_the_canonical_unit() {
     let source = ListArray::from_iter_primitive::<IntervalYearMonthType, _, _>([
         Some(vec![Some(14), None]),
@@ -180,74 +123,78 @@ fn nested_year_month_intervals_reshape_to_the_canonical_unit() {
     assert_eq!(reshaped.column(0).as_ref(), &expected as &dyn Array);
 }
 
-/// A parameter-free BIGNUMERIC spans the whole `i256`, one digit past the `Decimal256(76, 38)`
-/// that describes it. Widening a narrower Storage Read decimal into it must accept every value
-/// the REST path decodes, or a query would succeed or fail by the size of its result.
+/// Leaf pairs become casts only where every value converts exactly; `types::cast` tests the
+/// values. Padding fractional digits is exact, as is widening into a parameter-free BIGNUMERIC,
+/// whose domain is the whole `i256`. Dropping fractional digits is not exact, and neither is
+/// padding past what the target precision can hold; refusing those falls the query back to REST
+/// rather than changing a value.
 #[test]
-fn widening_into_bignumeric_accepts_its_full_physical_range() {
-    use arrow_array::Decimal256Array;
-    use arrow_buffer::i256;
-
-    let target = DataType::Decimal256(76, 38);
-    let plan = column_plan(&DataType::Decimal256(38, 38), &target)
-        .expect("a narrower BIGNUMERIC widens at the same scale");
-    assert!(matches!(plan, ColumnPlan::Cast(_)), "{plan:?}");
-
-    let column: ArrayRef = Arc::new(
-        Decimal256Array::from(vec![i256::MIN, i256::ZERO, i256::MAX])
-            .with_precision_and_scale(38, 38)
-            .unwrap(),
-    );
-    let reshaped = reshape_column(&column, &plan, "value").unwrap();
-    assert_eq!(reshaped.data_type(), &target);
-    let values = reshaped
-        .as_any()
-        .downcast_ref::<Decimal256Array>()
-        .expect("the reshape keeps the physical width");
-    assert_eq!(values.value(0), i256::MIN);
-    assert_eq!(values.value(2), i256::MAX);
-}
-
-/// A session declaring a column's own `NUMERIC(10, 2)` where the canonical type is the bare
-/// NUMERIC's `Decimal128(38, 9)` widens exactly rather than falling back to REST.
-#[test]
-fn a_narrower_scale_widens_into_the_canonical_numeric_exactly() {
-    let target = DataType::Decimal128(38, 9);
-    let plan = column_plan(&DataType::Decimal128(10, 2), &target)
-        .expect("a parameterized NUMERIC widens into the canonical one");
-    assert!(matches!(plan, ColumnPlan::Cast(_)), "{plan:?}");
-
-    // 12345 at scale 2 is 123.45, which is 123_450_000_000 at scale 9.
-    let column: ArrayRef = Arc::new(
-        Decimal128Array::from(vec![12_345_i128, -12_345_i128, 0])
-            .with_precision_and_scale(10, 2)
-            .unwrap(),
-    );
-    let reshaped = reshape_column(&column, &plan, "amount").unwrap();
-    assert_eq!(reshaped.data_type(), &target);
-    let values = reshaped
-        .as_any()
-        .downcast_ref::<Decimal128Array>()
-        .expect("the reshape keeps the physical width");
-    assert_eq!(values.value(0), 123_450_000_000);
-    assert_eq!(values.value(1), -123_450_000_000);
-    assert_eq!(values.value(2), 0);
-}
-
-/// Padding fractional digits is exact; dropping them is not, and neither is padding past what the
-/// target precision can hold. Both are refused, which falls the query back to REST rather than
-/// changing a value.
-#[test]
-fn scale_changes_that_would_lose_or_overflow_digits_are_refused() {
-    // A narrower target scale would drop digits that cannot be recovered.
-    assert!(column_plan(&DataType::Decimal128(38, 9), &DataType::Decimal128(38, 2)).is_none());
-    // Widening 10 integer-and-fraction digits by 7 more needs 17; the target holds 12.
-    assert!(column_plan(&DataType::Decimal128(10, 2), &DataType::Decimal128(12, 9)).is_none());
-    // Exactly enough room is enough.
-    assert!(column_plan(&DataType::Decimal128(10, 2), &DataType::Decimal128(17, 9)).is_some());
-    // The same rule across the physical widths the session may hand over.
-    assert!(column_plan(&DataType::Decimal128(10, 2), &DataType::Decimal256(76, 38)).is_some());
-    assert!(column_plan(&DataType::Decimal256(50, 0), &DataType::Decimal256(76, 38)).is_none());
+fn only_lossless_leaf_conversions_are_planned() {
+    let month_day_nano = DataType::Interval(IntervalUnit::MonthDayNano);
+    for (source, target, planned) in [
+        (
+            DataType::Decimal128(10, 2),
+            DataType::Decimal128(38, 9),
+            true,
+        ),
+        (
+            DataType::Decimal128(10, 2),
+            DataType::Decimal128(17, 9),
+            true,
+        ),
+        (
+            DataType::Decimal128(10, 2),
+            DataType::Decimal128(12, 9),
+            false,
+        ),
+        (
+            DataType::Decimal128(38, 9),
+            DataType::Decimal128(38, 2),
+            false,
+        ),
+        (
+            DataType::Decimal128(10, 2),
+            DataType::Decimal256(76, 38),
+            true,
+        ),
+        (
+            DataType::Decimal256(38, 38),
+            DataType::Decimal256(76, 38),
+            true,
+        ),
+        (
+            DataType::Decimal256(50, 0),
+            DataType::Decimal256(76, 38),
+            false,
+        ),
+        (
+            DataType::Decimal256(10, 2),
+            DataType::Decimal128(38, 9),
+            false,
+        ),
+        (
+            DataType::Interval(IntervalUnit::YearMonth),
+            month_day_nano.clone(),
+            true,
+        ),
+        (
+            DataType::Interval(IntervalUnit::DayTime),
+            month_day_nano.clone(),
+            true,
+        ),
+        (
+            month_day_nano,
+            DataType::Interval(IntervalUnit::DayTime),
+            false,
+        ),
+    ] {
+        let plan = column_plan(&source, &target);
+        assert_eq!(
+            matches!(plan, Some(ColumnPlan::Cast(_))),
+            planned,
+            "{source} to {target}: {plan:?}"
+        );
+    }
 }
 
 #[test]

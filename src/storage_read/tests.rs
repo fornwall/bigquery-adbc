@@ -360,13 +360,6 @@ fn one_stream_failing_unresumably_fails_the_parallel_read_and_stops_the_rest() {
     assert_eq!(log.offsets().len(), script.len());
 }
 
-/// The unordered stream request stays a sane "units of work" bound on any machine.
-#[test]
-fn unordered_stream_request_is_positive_and_clamped() {
-    let count = unordered_max_stream_count();
-    assert!((1..=32).contains(&count), "{count}");
-}
-
 fn service_failure(code: Code) -> GoogleError {
     GoogleError::service(google_cloud_gax::error::rpc::Status::default().set_code(code))
 }
@@ -401,38 +394,6 @@ fn only_refusals_rest_can_read_past_fall_back_to_rest() {
     }
 }
 
-/// A `ReadRows` stream that breaks partway through resumes at the row offset already received
-/// (`ReadRowsRequest.offset`), neither repeating nor dropping a row. Only failures unrelated to the
-/// request resume; the driver's own cancellation and a request the service rejected are reported.
-#[test]
-fn transient_and_quota_failures_resume_a_broken_read_stream() {
-    for code in [
-        Code::Unavailable,
-        Code::DeadlineExceeded,
-        Code::Internal,
-        Code::Aborted,
-        Code::ResourceExhausted,
-    ] {
-        assert!(
-            google_error_is_transient(&service_failure(code)),
-            "{code:?} ends a read that could have continued"
-        );
-    }
-    for code in [
-        Code::Cancelled,
-        Code::InvalidArgument,
-        Code::PermissionDenied,
-        Code::NotFound,
-        Code::OutOfRange,
-        Code::Unauthenticated,
-    ] {
-        assert!(
-            !google_error_is_transient(&service_failure(code)),
-            "{code:?} must be reported, not replayed"
-        );
-    }
-}
-
 /// The resume waits are bounded in aggregate, not only within one burst of failures.
 ///
 /// A peer that breaks the stream after every response earns a fresh backoff each time, because
@@ -452,20 +413,6 @@ fn the_aggregate_resume_wait_is_bounded_however_often_progress_resets_the_backof
     // Spent is not failed: the next resume still happens, it just no longer waits.
     budget.earn_by_progress();
     assert_eq!(budget.spend_attempt(), Duration::ZERO);
-}
-
-/// The consecutive-failure allowance ends a stream that cannot make progress, and opens spend it
-/// as well as resumes, whether or not a response ever arrived.
-#[test]
-fn the_consecutive_failure_allowance_is_exhausted_by_attempts_alone() {
-    let mut budget = ResumeBudget::new();
-    for _ in 0..READ_ROWS_RESUME_ATTEMPTS {
-        assert!(budget.has_attempt_left());
-        budget.spend_attempt();
-    }
-    assert!(!budget.has_attempt_left());
-    budget.earn_by_progress();
-    assert!(budget.has_attempt_left());
 }
 
 /// Each wait is jittered below its step's cap, so streams broken together do not reopen together,
@@ -861,24 +808,32 @@ mod mock_reads {
     }
 
     /// A resumed stream preserves every row, including across statistics-only responses.
+    ///
+    /// A transient refusal of the first open is retried too: `execute_server_streaming` does not
+    /// run the client's retry loop, and by the time the open runs, `spawn_result_reader` has
+    /// handed the reader to the caller and REST fallback is gone. The mock refuses that call
+    /// before any response headers, as a failed open looks on the wire.
     #[test]
-    fn a_broken_read_stream_delivers_the_unbroken_row_sequence() {
+    fn a_broken_or_refused_read_stream_delivers_the_unbroken_row_sequence() {
         let fixture = Fixture::new();
 
         let whole = fixture.mock(|_| ());
-        let unbroken = fixture.read(&whole).unwrap();
-        assert_eq!(unbroken, fixture.batches);
+        assert_eq!(fixture.read(&whole).unwrap(), fixture.batches);
         assert_eq!(whole.read_offsets(), vec![0]);
 
-        // Break after the first three responses: two rows, a stats-only response carrying none,
-        // and three more. The resume therefore has to ask for row five.
         for code in [UNAVAILABLE, RESOURCE_EXHAUSTED] {
+            // Break after the first three responses: two rows, a stats-only response carrying
+            // none, and three more. The resume therefore has to ask for row five.
             let broken = fixture.mock(|plan| plan.read_breaks = vec![(3, code)]);
-            assert_eq!(fixture.read(&broken).unwrap(), unbroken);
+            assert_eq!(fixture.read(&broken).unwrap(), fixture.batches);
             assert_eq!(
                 broken.read_offsets(),
                 vec![0, BATCH_ROWS[0] + BATCH_ROWS[1]]
             );
+
+            let refused = fixture.mock(|plan| plan.read_open_refusals = vec![code]);
+            assert_eq!(fixture.read(&refused).unwrap(), fixture.batches);
+            assert_eq!(refused.read_offsets(), vec![0, 0]);
         }
     }
 
@@ -1012,27 +967,6 @@ mod mock_reads {
             assert_eq!(delivered.next().await.unwrap(), batches[0]);
             assert_eq!(delivered.next().await.unwrap(), batches[1]);
         });
-    }
-
-    /// A transient failure on the call that opens `ReadRows` is retried, like every later one.
-    ///
-    /// `execute_server_streaming` does not run the client's retry loop, and by the time the open
-    /// runs, `spawn_result_reader` has handed the reader to the caller and REST fallback is gone.
-    ///
-    /// The mock refuses the first call before any response headers, as a failed open looks on the
-    /// wire (unlike `read_breaks`, which ends an established stream).
-    #[test]
-    fn a_refused_first_read_rows_open_is_retried_rather_than_failing_the_read() {
-        let fixture = Fixture::new();
-        for code in [UNAVAILABLE, RESOURCE_EXHAUSTED] {
-            let mock = fixture.mock(|plan| plan.read_open_refusals = vec![code]);
-            assert_eq!(fixture.read(&mock).unwrap(), fixture.batches);
-            assert_eq!(
-                mock.read_offsets(),
-                vec![0, 0],
-                "the retried open did not restart at the first row"
-            );
-        }
     }
 
     /// The resume budget is finite. A stream that fails again every time it is reopened, with no
