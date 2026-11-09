@@ -13,6 +13,25 @@ pub(crate) fn service_account_json(client_email: &str) -> JsonValue {
     })
 }
 
+/// An `authorized_user` document whose refresh token is exchanged at Google's default endpoint
+/// unless the caller sets `token_uri`.
+pub(crate) fn authorized_user_json() -> JsonValue {
+    json!({
+        "type": "authorized_user",
+        "client_id": "client-id",
+        "client_secret": "client-secret",
+        "refresh_token": "refresh-token",
+    })
+}
+
+/// An OAuth token endpoint's answer granting `token` for an hour.
+pub(crate) fn token_grant(token: &str) -> (u16, JsonValue) {
+    (
+        200,
+        json!({"access_token": token, "expires_in": 3600, "token_type": "Bearer"}),
+    )
+}
+
 /// A throwaway 2048-bit RSA key, belonging to no account.
 ///
 /// It has to be a real key: service-account credentials mint their bearer token by signing a

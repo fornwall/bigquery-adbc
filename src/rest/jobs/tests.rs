@@ -17,6 +17,7 @@ use crate::error::{DETAIL_JOB_ID, has_job_verdict};
 use crate::rest::request::RequestStart;
 use crate::runtime::{SharedRuntime, new_runtime};
 use crate::test_support::cancellation::{job_client, operation, operation_at};
+use crate::test_support::credentials::{authorized_user_json, token_grant};
 use crate::test_support::errors::{assert_failure, assert_message};
 use crate::test_support::http::{
     CapturedRequest, StoppableServer, capture_requests, capture_requests_gated,
@@ -809,23 +810,17 @@ fn a_recovered_location_remains_cancellable_when_the_job_fetch_fails() {
 fn cancellation_uses_refreshed_credentials_from_the_submission_client() {
     let (token_endpoint, tokens) = capture_requests(
         ["submission-token", "refreshed-token"]
-            .map(|token| {
-                ok(json!({
-                    "access_token": token, "expires_in": 3600, "token_type": "Bearer"
-                }))
-            })
+            .map(token_grant)
             .into(),
     );
     let (endpoint, requests) =
         capture_requests(vec![ok(job_in("refresh-job", "EU")), ok(json!({}))]);
     crate::test_support::block_on_paused_clock(async {
-        let credentials = google_cloud_auth::credentials::user_account::Builder::new(json!({
-            "type": "authorized_user", "client_id": "client-id",
-            "client_secret": "client-secret", "refresh_token": "refresh-token"
-        }))
-        .with_token_uri(format!("{token_endpoint}/token"))
-        .build()
-        .unwrap();
+        let credentials =
+            google_cloud_auth::credentials::user_account::Builder::new(authorized_user_json())
+                .with_token_uri(format!("{token_endpoint}/token"))
+                .build()
+                .unwrap();
         let client = JobClient::new(
             credentials,
             Some(&endpoint),

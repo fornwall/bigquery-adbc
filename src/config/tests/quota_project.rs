@@ -5,7 +5,7 @@ use http::Extensions;
 use serde_json::json;
 
 use super::*;
-use crate::test_support::credentials::service_account_json;
+use crate::test_support::credentials::{authorized_user_json, service_account_json, token_grant};
 use crate::test_support::http::{capture_requests, ok};
 
 const ADC_CHILD: &str = "BIGQUERY_ADBC_QUOTA_TEST_CHILD";
@@ -23,18 +23,16 @@ fn assert_adc_quota_projects() {
             for authentication_type in [None, Some("adbc.bigquery.sql.auth_type.auth_bigquery")] {
                 let mut responses = Vec::new();
                 if credential_type != "service_account" {
-                    responses.push(ok(json!({"access_token": "user-token", "expires_in": 3600, "token_type": "Bearer"})));
+                    responses.push(token_grant("user-token"));
                 }
                 if credential_type == "impersonated_service_account" {
                     responses.push(ok(json!({"accessToken": "target-token", "expireTime": "2099-01-01T00:00:00Z"})));
                 }
                 responses.push(table_resource());
                 let (endpoint, server) = capture_requests(responses);
-                let user = json!({
-                    "type": "authorized_user", "client_id": "client-id",
-                    "client_secret": "client-secret", "refresh_token": "refresh-token",
-                    "token_uri": format!("{endpoint}/token"), "quota_project_id": "file-quota",
-                });
+                let mut user = authorized_user_json();
+                user["token_uri"] = json!(format!("{endpoint}/token"));
+                user["quota_project_id"] = json!("file-quota");
                 let document = match credential_type {
                     "service_account" => {
                         service_account_json("quota-test@data-project.iam.gserviceaccount.com")
@@ -118,22 +116,15 @@ fn explicit_adc_quota_project_overrides_environment_on_requests() {
 /// Rewriting a header must leave SDK token refresh and cache validation intact.
 #[test]
 fn quota_override_preserves_refresh_cache_tags_and_universe() {
-    let (endpoint, server) = capture_requests(
-        ["first-token", "refreshed-token"]
-            .map(|token| {
-                ok(json!({"access_token": token, "expires_in": 3600, "token_type": "Bearer"}))
-            })
-            .into(),
-    );
+    let (endpoint, server) =
+        capture_requests(["first-token", "refreshed-token"].map(token_grant).into());
     crate::test_support::block_on_paused_clock(async {
-        let source = google_cloud_auth::credentials::user_account::Builder::new(json!({
-            "type": "authorized_user", "client_id": "client-id",
-            "client_secret": "client-secret", "refresh_token": "refresh-token",
-            "quota_project_id": "ambient-quota",
-        }))
-        .with_token_uri(format!("{endpoint}/token"))
-        .build()
-        .unwrap();
+        let mut document = authorized_user_json();
+        document["quota_project_id"] = json!("ambient-quota");
+        let source = google_cloud_auth::credentials::user_account::Builder::new(document)
+            .with_token_uri(format!("{endpoint}/token"))
+            .build()
+            .unwrap();
         let credentials =
             crate::config::credentials::override_quota_project(source, "profile-quota").unwrap();
         assert_eq!(

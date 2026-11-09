@@ -1,6 +1,7 @@
 //! The impersonation layer over the configured credential.
 
 use super::*;
+use crate::test_support::credentials::{authorized_user_json, token_grant};
 use crate::test_support::http::ok;
 
 /// The driver must use the selected source credential even when it fails. A refused OAuth
@@ -18,14 +19,9 @@ fn impersonation_uses_the_configured_source_and_preserves_its_failure() {
         );
         3
     ]);
-    let document = serde_json::json!({
-        "type": "authorized_user",
-        "client_id": "client-id",
-        "client_secret": "client-secret",
-        "refresh_token": "refresh-token",
-        "token_uri": format!("{endpoint}/token"),
-    })
-    .to_string();
+    let mut document = authorized_user_json();
+    document["token_uri"] = serde_json::json!(format!("{endpoint}/token"));
+    let document = document.to_string();
     let file = TemporaryFile::new("impersonation-source", &document);
     let mut file_settings = json_credentials(file.path());
     file_settings.authentication_type = BigQueryAuthenticationType::JsonCredentialFile;
@@ -84,18 +80,14 @@ fn impersonation_uses_the_configured_source_and_preserves_its_failure() {
 /// An impersonated-service-account document whose source user credential and IAM Credentials
 /// calls both go to the mock at `endpoint`, impersonating `target@example.com`.
 fn impersonated_document(endpoint: &str) -> serde_json::Value {
+    let mut source = authorized_user_json();
+    source["token_uri"] = serde_json::json!(format!("{endpoint}/token"));
     serde_json::json!({
         "type": "impersonated_service_account",
         "service_account_impersonation_url": format!(
             "{endpoint}/v1/projects/-/serviceAccounts/target@example.com:generateAccessToken"
         ),
-        "source_credentials": {
-            "type": "authorized_user",
-            "client_id": "client-id",
-            "client_secret": "client-secret",
-            "refresh_token": "refresh-token",
-            "token_uri": format!("{endpoint}/token"),
-        },
+        "source_credentials": source,
     })
 }
 
@@ -104,9 +96,7 @@ fn impersonated_document(endpoint: &str) -> serde_json::Value {
 #[test]
 fn impersonation_delegates_are_sent_as_iam_resource_names() {
     let (endpoint, server) = crate::test_support::http::capture_requests(vec![
-        ok(
-            serde_json::json!({"access_token": "source-token", "expires_in": 3600, "token_type": "Bearer"}),
-        ),
+        token_grant("source-token"),
         ok(
             serde_json::json!({"accessToken": "target-token", "expireTime": "2099-01-01T00:00:00Z"}),
         ),
@@ -154,9 +144,7 @@ fn impersonation_refreshes_with_default_and_explicit_lifetimes() {
         let (endpoint, server) =
             crate::test_support::http::capture_requests_responding(3, move |_request| {
                 let response = match index {
-                    0 => ok(json!({
-                        "access_token": "source-token", "expires_in": 3600, "token_type": "Bearer"
-                    })),
+                    0 => token_grant("source-token"),
                     _ => {
                         let expiry = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)

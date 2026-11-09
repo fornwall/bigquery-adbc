@@ -5,8 +5,8 @@ use google_cloud_auth::credentials::CacheableResource;
 use serde_json::{Value, json};
 
 use super::*;
-use crate::test_support::credentials::service_account_json;
-use crate::test_support::http::{capture_requests, ok};
+use crate::test_support::credentials::{authorized_user_json, service_account_json, token_grant};
+use crate::test_support::http::capture_requests;
 
 const DBT_SCOPES: &str = "https://www.googleapis.com/auth/bigquery,\
                         https://www.googleapis.com/auth/cloud-platform,\
@@ -30,15 +30,10 @@ fn user_refresh_requests_send_the_configured_scope_subset() {
             (DBT_SCOPES, "", Some(DBT_SCOPES)),
             (DBT_SCOPES, DRIVE_SCOPE, Some(DRIVE_SCOPE)),
         ] {
-            let (endpoint, server) = capture_requests(vec![ok(
-                json!({"access_token": "user-token", "expires_in": 3600, "token_type": "Bearer"}),
-            )]);
-            let document = json!({
-                "type": "authorized_user", "client_id": "client-id",
-                "client_secret": "client-secret", "refresh_token": "refresh-token",
-                "token_uri": endpoint,
-            })
-            .to_string();
+            let (endpoint, server) = capture_requests(vec![token_grant("user-token")]);
+            let mut document = authorized_user_json();
+            document["token_uri"] = json!(endpoint);
+            let document = document.to_string();
             let file = TemporaryFile::new("user-refresh-scopes", &document);
             let mut config = if authentication_type
                 == BigQueryAuthenticationType::UserAuthentication
