@@ -12,8 +12,8 @@ use crate::error::CredentialLayer;
 
 use crate::test_support::errors::{assert_failure, assert_message_omits};
 use crate::test_support::http::{
-    CapturedRequest, accept, capture_requests, capture_requests_responding,
-    capture_requests_until_stopped, loopback_listener, ok, read_captured_request, retire,
+    CapturedRequest, capture_requests, capture_requests_responding, capture_requests_until_stopped,
+    ok, redirect_once,
 };
 
 const AUDIENCE: &str = "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/provider";
@@ -344,39 +344,33 @@ fn an_unreachable_identity_provider_is_an_io_failure_without_exposing_the_url() 
     });
 }
 
+/// A connection closed before the response (`None`) is reqwest's `is_request` kind, not
+/// `is_connect`. A permanent verdict would end upstream's token cache refresh loop, so one dropped
+/// connection would fail every later query in the process.
 #[test]
 fn external_account_identity_provider_errors_classify_retryability() {
     let runtime = crate::runtime::new_runtime().unwrap();
     for (status, transient) in [
-        (408, true),
-        (429, true),
-        (500, true),
-        (503, true),
-        (400, false),
-        (403, false),
+        (Some(408), true),
+        (Some(429), true),
+        (Some(500), true),
+        (Some(503), true),
+        (Some(400), false),
+        (Some(403), false),
+        (None, true),
     ] {
-        let (endpoint, server) = capture_requests(vec![(status, json!({}))]);
+        let (endpoint, server) =
+            capture_requests_responding(1, move |_| status.map(|status| (status, json!({}))));
         runtime.block_on(async {
             let provider = identity_provider(&endpoint);
             let error = provider.subject_token().await.unwrap_err();
-            assert_eq!(error.is_transient(), transient, "status {status}");
-            assert!(error.to_string().contains(&status.to_string()));
+            assert_eq!(error.is_transient(), transient, "status {status:?}");
+            if let Some(status) = status {
+                assert!(error.to_string().contains(&status.to_string()));
+            }
         });
         server.served(1);
     }
-}
-
-/// A connection closed before the response is reqwest's `is_request` kind, not `is_connect`. A
-/// permanent verdict would end upstream's token cache refresh loop, so one dropped connection
-/// would fail every later query in the process.
-#[test]
-fn a_connection_dropped_before_the_identity_provider_answers_is_transient() {
-    let (endpoint, server) = capture_requests_responding(1, |_| None);
-    crate::runtime::new_runtime().unwrap().block_on(async {
-        let provider = identity_provider(&endpoint);
-        assert!(provider.subject_token().await.unwrap_err().is_transient());
-    });
-    server.served(1);
 }
 
 #[test]
@@ -432,29 +426,8 @@ fn external_account_rejects_oversized_identity_provider_response() {
 
 #[test]
 fn external_account_does_not_follow_identity_provider_redirects() {
-    use std::io::Write as _;
-
     let (redirect, target) = capture_requests_until_stopped(vec![ok(json!({}))]);
-    let listener = loopback_listener();
-    listener.set_nonblocking(true).unwrap();
-    let endpoint = format!("http://{}", listener.local_addr().unwrap());
-    let server = std::thread::spawn(move || {
-        // `capture_requests` cannot send a `Location` header. Skip connections reqwest's pool
-        // opens and closes unused, as it does.
-        let request = loop {
-            let mut stream = accept(&listener, None).unwrap();
-            if let Some(request) = read_captured_request(&mut stream) {
-                let _ = write!(
-                    stream,
-                    "HTTP/1.1 307 Temporary Redirect\r\nLocation: {redirect}/capture-secret\r\n\
-                     Content-Length: 0\r\nConnection: close\r\n\r\n"
-                );
-                break request;
-            }
-        };
-        retire(listener);
-        request
-    });
+    let (endpoint, server) = redirect_once(307, format!("{redirect}/capture-secret"));
     crate::runtime::new_runtime().unwrap().block_on(async {
         let error = mint_failure(&endpoint).await;
         assert!(crate::error::chain(&error).any(|cause| cause.to_string().contains("HTTP 307")));

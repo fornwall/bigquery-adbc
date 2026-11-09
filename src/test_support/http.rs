@@ -372,6 +372,32 @@ pub(crate) fn google_rejection(
     (code, json!({ "error": error }))
 }
 
+/// Answers one request with an HTTP `status` redirect to `location`, which [`write_response`]
+/// cannot send, yielding the request it answered.
+pub(crate) fn redirect_once(
+    status: u16,
+    location: String,
+) -> (String, thread::JoinHandle<CapturedRequest>) {
+    let (listener, endpoint) = mock_listener();
+    let handle = thread::spawn(move || {
+        // Unused connections from reqwest's pool carry no request.
+        let (mut stream, request) = loop {
+            let mut stream = accept(&listener, None).unwrap();
+            if let Some(request) = read_captured_request(&mut stream) {
+                break (stream, request);
+            }
+        };
+        retire(listener);
+        let _ = write!(
+            stream,
+            "HTTP/1.1 {status} Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\n\
+             Connection: close\r\n\r\n"
+        );
+        request
+    });
+    (endpoint, handle)
+}
+
 /// A [`loopback_listener`] in the non-blocking mode [`accept`] polls, with its endpoint.
 pub(crate) fn mock_listener() -> (TcpListener, String) {
     let listener = loopback_listener();

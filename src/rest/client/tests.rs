@@ -29,35 +29,14 @@ fn http2_client() -> super::RestClient {
 
 #[test]
 fn redirects_cannot_replay_requests_at_another_endpoint() {
-    use std::io::Write as _;
-
-    use crate::test_support::http::{
-        accept, capture_requests_until_stopped, mock_listener, read_captured_request, retire,
-    };
+    use crate::test_support::http::{capture_requests_until_stopped, redirect_once};
 
     let runtime = crate::runtime::new_runtime().unwrap();
     let client = http1_client();
     let credentials = anonymous();
     for status in [301, 302, 303, 307, 308] {
         let (target, redirected) = capture_requests_until_stopped(vec![ok(serde_json::json!({}))]);
-        let (listener, endpoint) = mock_listener();
-        let server = std::thread::spawn(move || {
-            // Unused connections from reqwest's pool carry no request.
-            let (mut stream, request) = loop {
-                let mut stream = accept(&listener, None).unwrap();
-                if let Some(request) = read_captured_request(&mut stream) {
-                    break (stream, request);
-                }
-            };
-            retire(listener);
-            write!(
-                stream,
-                "HTTP/1.1 {status} Redirect\r\nLocation: {target}/untrusted\r\n\
-                 Content-Length: 0\r\nConnection: close\r\n\r\n"
-            )
-            .unwrap();
-            request
-        });
+        let (endpoint, server) = redirect_once(status, format!("{target}/untrusted"));
         let result = runtime.block_on(send(
             None,
             &credentials,
