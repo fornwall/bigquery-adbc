@@ -119,7 +119,6 @@ The Rust suite needs the existing `sq_scratch` dataset and, for Cloud Storage ca
 ```sh
 cargo test --locked --all-features --test bigquery -- --ignored \
   --skip queries_with_discrete_user_oauth_credentials \
-  --skip user_oauth_refresh_scope_vs_scopes \
   --skip queries_with_service_account_key_file_and_json_string \
   --skip storage_read_permission_denied_falls_back_to_rest \
   --skip numeric_project_identifiers_work_for_queries_metadata_and_copies \
@@ -150,8 +149,7 @@ Other credential types:
 | Script | Requirements |
 | --- | --- |
 | `scripts/run-oauth-live-test.sh` | Authorized-user ADC. Checks the same identity through discrete OAuth, authorized-user JSON file/string, and a temporary access token. |
-| `scripts/run-oauth-live-test.sh --scopes --nocapture` | Authorized-user ADC granting `cloud-platform` and at least one other scope. Compares omitted `scope`, singular `scope` and plural `scopes` in JSON refresh requests to Google's OAuth endpoint; prints only returned scope names and creates no BigQuery resources. |
-| `cargo +nightly -Zscript scripts/check-oauth-scope-narrowing.rs` | The same ADC grant. Standalone Cargo script (embedded manifest pins `google-cloud-auth` to an upstream commit; runs outside this repository too) that compares direct refresh requests with the SDK token's scopes from Google's `tokeninfo` endpoint and verifies the SDK restricts the token to the requested subset. |
+| `cargo +nightly -Zscript scripts/check-oauth-scope-narrowing.rs` | Authorized-user ADC granting `cloud-platform` and at least one other scope. Standalone Cargo script (embedded manifest pins `google-cloud-auth` to an upstream commit; runs outside this repository too) that compares direct refresh requests with the SDK token's scopes from Google's `tokeninfo` endpoint and verifies the SDK restricts the token to the requested subset. |
 | `scripts/run-service-account-live-test.sh` | A service-account key at `BIGQUERY_ADBC_SERVICE_ACCOUNT_KEY_FILE` (default `~/.config/gcloud/bigquery-adbc-integration-key.json`) for an account with `roles/bigquery.jobUser`. Tests file and inline credentials; if the key is missing, prints how to create one for `BIGQUERY_ADBC_SERVICE_ACCOUNT`. |
 | `scripts/run-storage-read-permission-fallback-live-test.sh` | Permission to impersonate `BIGQUERY_ADBC_STORAGE_READ_DENIED_SERVICE_ACCOUNT`, an account that can run queries but lacks `bigquery.readsessions.create`. |
 
