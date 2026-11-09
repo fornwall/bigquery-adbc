@@ -441,68 +441,10 @@ fn get_table_schema_rejects_a_dot_segment_name() {
     }
 }
 
-/// A 404 from `tables.get` does not say whether the table or the dataset is missing, so one
-/// `datasets.get` settles it and nothing more goes out. Both metadata listings resolve an exact
-/// `(dataset, table)` pair this way.
+/// Only BigQuery's `invalid` reason says a name cannot be a table ID. Any other 400 is a request
+/// the driver got wrong, which must not read as a missing table.
 #[test]
-fn an_exact_lookup_falls_back_only_to_distinguish_which_object_is_missing() {
-    for depth in [Some(ObjectDepth::Tables), None] {
-        for (dataset_response, expected_schemas) in [
-            ((200, json!({})), 1_usize),
-            ((404, not_found_response()), 0_usize),
-        ] {
-            let (endpoint, requests) =
-                capture_requests(vec![(404, not_found_response()), dataset_response]);
-            let connection = anonymous_connection_at(&endpoint);
-
-            let batch = first_batch(discover_metadata(
-                &connection,
-                depth,
-                None,
-                Some("dataset"),
-                Some("missing"),
-            ));
-            let schemas = child_structs(batch.column(1));
-            assert_eq!(schemas.len(), expected_schemas);
-            if expected_schemas == 1 {
-                assert_eq!(child_structs(schemas.column(1)).len(), 0);
-            }
-
-            let requests = requests.served(2);
-            assert!(requests[0].path().contains("/tables/missing"));
-            assert!(requests[1].path().contains("/datasets/dataset"));
-            assert!(!requests[1].path().contains("/tables/"));
-        }
-    }
-}
-
-/// `tables.get` answers a name that cannot be a table ID with 400 `invalid` rather than 404
-/// (verified live: `a*b` and `a ?b#`). An exact filter naming one matches no table, as the same
-/// name with a wildcard appended does, so both listings report it like a missing table.
-#[test]
-fn an_exact_filter_that_is_not_a_table_id_matches_no_table() {
-    let invalid = error_body("invalid", "Invalid table ID \"a*b\".");
-    for depth in [Some(ObjectDepth::Tables), None] {
-        let (endpoint, requests) = capture_requests(vec![(400, invalid.clone()), (200, json!({}))]);
-        let connection = anonymous_connection_at(&endpoint);
-
-        let batch = first_batch(discover_metadata(
-            &connection,
-            depth,
-            None,
-            Some("dataset"),
-            Some("a*b"),
-        ));
-        let schemas = child_structs(batch.column(1));
-        assert_eq!(schemas.len(), 1);
-        assert_eq!(child_structs(schemas.column(1)).len(), 0);
-
-        let requests = requests.served(2);
-        assert!(requests[0].path().contains("/tables/a%2Ab"));
-        assert!(requests[1].path().contains("/datasets/dataset"));
-    }
-
-    // Any other 400 is a request the driver got wrong, which must not read as a missing table.
+fn an_exact_table_lookup_keeps_other_bad_requests_as_errors() {
     let malformed = error_body("invalidParameter", "Invalid field selection nonsense");
     let (endpoint, requests) = capture_requests(vec![(400, malformed)]);
     let connection = anonymous_connection_at(&endpoint);

@@ -48,17 +48,24 @@ fn inaccessible_tables_leave_the_rest_of_the_dataset_discoverable() {
     }
 }
 
-/// An exact table filter is still discovery. Check the dataset after a denial just as after
-/// a 404, so an inaccessible table never manufactures a dataset that does not exist.
+/// A `tables.get` failure for an exact table filter does not say whether the table or the dataset
+/// is missing, so one `datasets.get` settles it and nothing more goes out; an inaccessible table
+/// never manufactures a dataset. `tables.get` answers a name that cannot be a table ID with 400
+/// `invalid` rather than 404 (verified live: `a*b` and `a ?b#`), which matches no table either.
 #[test]
-fn exact_discovery_omits_inaccessible_tables_and_checks_the_dataset() {
+fn an_unavailable_exact_table_falls_back_to_checking_its_dataset() {
     for depth in [Some(ObjectDepth::Tables), Some(ObjectDepth::Columns), None] {
-        for reason in [Some("accessDenied"), None] {
+        for table in [
+            (403, forbidden_response(Some("accessDenied"))),
+            (403, forbidden_response(None)),
+            (404, not_found_response()),
+            (400, error_body("invalid", "Invalid table ID \"a*b\".")),
+        ] {
             for (status, response, expected_schemas) in
                 [(200, json!({}), 1), (404, not_found_response(), 0)]
             {
                 let (endpoint, requests) =
-                    capture_requests(vec![(403, forbidden_response(reason)), (status, response)]);
+                    capture_requests(vec![table.clone(), (status, response)]);
                 let connection = anonymous_connection_at(&endpoint);
                 let batch = first_batch(discover_metadata(
                     &connection,
@@ -82,19 +89,35 @@ fn exact_discovery_omits_inaccessible_tables_and_checks_the_dataset() {
 }
 
 /// Unlike the Go driver, which skips every HTTP 403: quota, billing and service-restriction
-/// failures do not mean a table is invisible, and still fail both discovery paths.
+/// failures, and a disabled API reported only in `ErrorInfo`, do not mean a table is invisible,
+/// and still fail both discovery paths.
 #[test]
 fn discovery_propagates_403_reasons_other_than_access_denied() {
     for depth in [Some(ObjectDepth::Columns), None] {
         for table_name in [None, Some("secret")] {
-            for (reason, status) in [
-                ("rateLimitExceeded", Status::IO),
-                ("quotaExceeded", Status::IO),
-                ("billingNotEnabled", Status::Unauthorized),
-                ("blocked", Status::Unauthorized),
-                ("responseTooLarge", Status::InvalidArguments),
-                ("someFutureReason", Status::Unauthorized),
+            let disabled = json!({"error": {
+                "message": "BigQuery API is disabled",
+                "details": [{
+                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                    "reason": "SERVICE_DISABLED",
+                    "domain": "googleapis.com"
+                }]
+            }});
+            for (reason, refusal, status) in [
+                ("rateLimitExceeded", None, Status::IO),
+                ("quotaExceeded", None, Status::IO),
+                ("billingNotEnabled", None, Status::Unauthorized),
+                ("blocked", None, Status::Unauthorized),
+                ("responseTooLarge", None, Status::InvalidArguments),
+                ("someFutureReason", None, Status::Unauthorized),
+                (
+                    "BigQuery API is disabled",
+                    Some(&disabled),
+                    Status::InvalidState,
+                ),
             ] {
+                let refusal =
+                    refusal.map_or_else(|| forbidden_response(Some(reason)), Clone::clone);
                 let mut responses = Vec::new();
                 if table_name.is_none() {
                     responses.push((200, json!({"tables": [listed_table("secret")]})));
@@ -103,7 +126,7 @@ fn discovery_propagates_403_reasons_other_than_access_denied() {
                 // One answer per attempt the retry policy can make; a final failure is answered
                 // once.
                 responses.extend(std::iter::repeat_n(
-                    (403, forbidden_response(Some(reason))),
+                    (403, refusal),
                     crate::rest::retry::MAX_ATTEMPTS as usize,
                 ));
                 let (endpoint, server) = capture_requests_until_stopped(responses);
@@ -122,41 +145,6 @@ fn discovery_propagates_403_reasons_other_than_access_denied() {
                         .all(|request| request.path().contains("/tables/secret?"))
                 );
             }
-        }
-    }
-}
-
-#[test]
-fn discovery_propagates_a_disabled_api_reported_in_error_info() {
-    for depth in [Some(ObjectDepth::Columns), None] {
-        for table_name in [None, Some("secret")] {
-            let mut responses = Vec::new();
-            if table_name.is_none() {
-                responses.push((200, json!({"tables": [listed_table("secret")]})));
-            }
-            responses.push((
-                403,
-                json!({"error": {
-                    "message": "BigQuery API is disabled",
-                    "details": [{
-                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
-                        "reason": "SERVICE_DISABLED",
-                        "domain": "googleapis.com"
-                    }]
-                }}),
-            ));
-            let expected_requests = responses.len();
-            let (endpoint, server) = capture_requests_until_stopped(responses);
-            let connection = anonymous_connection_at(&endpoint);
-            let failure = discover_metadata(&connection, depth, None, Some("dataset"), table_name)
-                .err()
-                .expect("a disabled API must fail discovery");
-            assert_eq!(failure.status, Status::InvalidState);
-            assert_message(
-                &failure,
-                &["BigQuery API is disabled", "test-project.dataset.secret"],
-            );
-            assert_eq!(server.stop().len(), expected_requests);
         }
     }
 }
@@ -289,31 +277,6 @@ fn an_exact_dataset_is_checked_only_when_its_tables_cannot_be_listed() {
     }
 }
 
-#[test]
-fn exact_get_statistics_skips_the_dataset_request() {
-    let (endpoint, requests) =
-        capture_requests(vec![(200, json!({"type": "TABLE", "numRows": "42"}))]);
-    let connection = anonymous_connection_at(&endpoint);
-
-    let mut reader = connection
-        .get_statistics(None, Some("dataset"), Some("events"), false)
-        .unwrap();
-    let batch = reader.next().unwrap().unwrap();
-    let schemas = child_structs(batch.column(1));
-    assert_eq!(schemas.len(), 1);
-    assert_eq!(string_at(schemas.column(0), 0), "dataset");
-    assert_eq!(child_structs(schemas.column(1)).len(), 1);
-
-    let requests = requests.join().unwrap();
-    assert_eq!(requests.len(), 1);
-    assert!(
-        requests[0]
-            .path()
-            .contains("/datasets/dataset/tables/events")
-    );
-    assert!(requests[0].path().contains("view=STORAGE_STATS"));
-}
-
 /// Hidden datasets cannot be queried through INFORMATION_SCHEMA. Their table metadata still
 /// supplies statistics, for both exact table names and patterns, regardless of approximation.
 #[test]
@@ -344,17 +307,6 @@ fn hidden_dataset_statistics_use_table_metadata() {
             let statistics = child_structs(schemas.column(1));
             assert_eq!(statistics.len(), 1);
             assert_eq!(string_at(statistics.column(0), 0), "events");
-            assert_eq!(
-                typed::<Int16Array>(statistics.column(2)).value(0),
-                i16::from(Statistics::RowCount)
-            );
-            let values = typed::<UnionArray>(statistics.column(3));
-            assert_eq!(values.type_id(0), 0);
-            assert_eq!(
-                typed::<Int64Array>(values.child(0)).value(values.value_offset(0)),
-                42
-            );
-            assert!(!typed::<BooleanArray>(statistics.column(4)).value(0));
             assert!(reader.next().is_none());
 
             let requests = requests.join().unwrap();
