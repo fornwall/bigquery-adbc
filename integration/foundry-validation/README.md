@@ -60,10 +60,8 @@ non-microsecond timestamps); DDL row counts are gated inside tests. Arrow inputs
 widens or converts stay covered.
 
 Both scratch datasets are in one project, so catalog tests validate explicit qualification and
-setting the current project back to itself, not switching projects; the Python
-[`test_current_catalog_and_schema_changes`](../../python/tests/test_bigquery.py) covers switching
-to `bigquery-public-data`. The statistics override accepts stale approximate counts
-([UP-38](../../docs/UPSTREAM.md#up-38-driver-foundry-assumes-approximate-statistics-are-immediately-current)).
+setting the current project back to itself, not switching projects, and the statistics override
+accepts stale approximate counts (UP-38); see [validation gaps](../../docs/LIMITATIONS.md#validation-gaps).
 
 ## Baselines
 

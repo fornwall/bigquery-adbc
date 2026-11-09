@@ -96,7 +96,7 @@ Open limitations and missing test coverage. Behavior is documented in the
 - The [Driver Foundry suite](../integration/foundry-validation/README.md)'s live
   `test_get_statistics` checks only `row_count >= 0` (UP-38). Its two scratch datasets share a
   project, so its catalog tests do not cover switching projects; the Python
-  `test_current_catalog_and_schema_changes` does.
+  [`test_current_catalog_and_schema_changes`](../python/tests/test_bigquery.py) does.
 
 ## Emulator coverage
 
