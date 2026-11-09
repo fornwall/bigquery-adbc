@@ -102,15 +102,7 @@ fn exhausted_retries_keep_the_last_attempts_status_and_details() {
         google_error_status(&GoogleError::timeout(GoogleError::io("connection reset"))),
         Status::Timeout
     );
-    assert_eq!(
-        google_error_status(&GoogleError::exhausted("no last attempt")),
-        Status::Unknown
-    );
-}
-
-/// Retry exhaustion with no Google error beneath it reports the exhaustion itself.
-#[test]
-fn an_exhausted_failure_with_no_last_attempt_reports_itself() {
+    // Retry exhaustion with no Google error beneath it reports the exhaustion itself.
     let failure = google_error(
         "read BigQuery rows",
         GoogleError::exhausted("no last attempt"),

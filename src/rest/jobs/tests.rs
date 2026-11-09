@@ -925,25 +925,43 @@ fn cancelled_queries_stop_rejected_retries_but_recover_ambiguous_submissions() {
 
 /// BigQuery answers a replayed request ID whose first submission created a job with 409
 /// `duplicate` naming that job; only a replay's 409 names the job to read, and only when the name
-/// parses.
+/// parses. A numeric project adopts the canonical project the 409 names.
 #[test]
 fn a_replayed_jobs_query_answered_409_names_the_job_its_first_attempt_created() {
     const DUPLICATE: &str = "Already Exists: Job billing:project:US.job_Ab-1_c";
-    let (answer, requests) = jobs_query(
-        "billing:project",
-        vec![
-            (503, error_body("backendError", "later")),
-            (409, error_body("duplicate", DUPLICATE)),
-        ],
-    );
-    assert_eq!(requests.len(), 2);
-    let QueryAnswer::Replayed(job) = answer.unwrap() else {
-        panic!("expected the replayed job");
-    };
-    assert_eq!(
-        job,
-        JobReference::new("billing:project", Some("US"), "job_Ab-1_c".to_owned())
-    );
+    for (project, path, named) in [
+        ("billing:project", "billing%3Aproject", "billing:project"),
+        ("123456789", "123456789", "canonical-project"),
+    ] {
+        let (answer, requests) = jobs_query(
+            project,
+            vec![
+                (503, error_body("backendError", "later")),
+                (
+                    409,
+                    error_body(
+                        "duplicate",
+                        &format!("Already Exists: Job {named}:US.job_Ab-1_c"),
+                    ),
+                ),
+            ],
+        );
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].raw_body, requests[1].raw_body);
+        for request in &requests {
+            assert_eq!(
+                request.path(),
+                format!("/bigquery/v2/projects/{path}/queries")
+            );
+        }
+        let QueryAnswer::Replayed(job) = answer.unwrap() else {
+            panic!("expected the replayed job");
+        };
+        assert_eq!(
+            job,
+            JobReference::new(named, Some("US"), "job_Ab-1_c".to_owned())
+        );
+    }
 
     for (responses, what) in [
         (
@@ -974,37 +992,6 @@ fn a_replayed_jobs_query_answered_409_names_the_job_its_first_attempt_created() 
         let failure = jobs_query("billing:project", responses).0.unwrap_err();
         assert_eq!(failure.status, Status::AlreadyExists, "{what}");
     }
-}
-
-#[test]
-fn a_replayed_numeric_project_query_adopts_its_canonical_project() {
-    let (answer, captured) = jobs_query(
-        "123456789",
-        vec![
-            (503, error_body("backendError", "later")),
-            (
-                409,
-                error_body(
-                    "duplicate",
-                    "Already Exists: Job canonical-project:US.job_Ab-1_c",
-                ),
-            ),
-        ],
-    );
-    let QueryAnswer::Replayed(job) = answer.unwrap() else {
-        panic!("expected the replayed job");
-    };
-    assert_eq!(
-        job,
-        JobReference::new("canonical-project", Some("US"), "job_Ab-1_c".to_owned())
-    );
-    assert_eq!(captured.len(), 2);
-    assert_eq!(captured[0].raw_body, captured[1].raw_body);
-    assert!(
-        captured
-            .iter()
-            .all(|request| request.path() == "/bigquery/v2/projects/123456789/queries")
-    );
 }
 
 /// A 403 `responseTooLarge` comes from a query that ran and kept its job, so it is replayed once

@@ -21,6 +21,8 @@ fn detail(key: &str, value: &str) -> (String, Vec<u8>) {
     (key.to_owned(), value.as_bytes().to_vec())
 }
 
+/// Each entry reads `{reason}: {message}`; dbt 2.0's not-found matcher needs the `notFound:`
+/// spelling.
 #[test]
 fn job_error_formats_every_entry() {
     let converted = failed(&[
@@ -30,13 +32,17 @@ fn job_error_formats_every_entry() {
             "Unrecognized name: colum; Did you mean column? at [1:8]",
         ),
         proto("", "", "secondary failure"),
+        proto("notFound", "", "Not found: Table proj:ds.missing"),
     ]);
     assert_eq!(converted.status, Status::InvalidArguments);
     assert_eq!(
         converted.message,
         "BigQuery query execution failed: invalidQuery: Unrecognized name: colum; \
-         Did you mean column? at [1:8] (field: query); secondary failure"
+         Did you mean column? at [1:8] (field: query); secondary failure; notFound: Not found: \
+         Table proj:ds.missing"
     );
+    let not_found = failed(&[proto("notFound", "", "Not found: Table proj:ds.missing")]);
+    assert_eq!(not_found.status, Status::NotFound);
 }
 
 #[test]
@@ -117,12 +123,6 @@ fn structured_fields_and_sqlstate_follow_what_the_service_sent() {
         assert_eq!(converted.details, Some(details), "{}", entry.reason);
         assert_eq!(converted.sqlstate, sqlstate, "{}", entry.reason);
     }
-    let converted = failed(&[]);
-    assert_eq!(
-        converted.details,
-        Some(vec![detail(DETAIL_JOB_VERDICT, "failed")])
-    );
-    assert_eq!(converted.sqlstate, [0; 5]);
 }
 
 /// An entry without a message keeps its `reason:` prefix, which dbt 2.0 matches on, and
@@ -177,6 +177,7 @@ fn a_failure_without_error_entries_keeps_what_identity_it_has() {
 
     let converted = failed(&[]);
     assert_eq!(converted.status, Status::Unknown);
+    assert_eq!(converted.sqlstate, [0; 5]);
     assert_eq!(
         converted.details,
         Some(vec![detail(DETAIL_JOB_VERDICT, "failed")])
@@ -256,13 +257,4 @@ fn job_links_require_a_complete_reference_and_escape_url_components() {
         with_job_link(error("failure", Status::IO), Some(&reference)).message,
         "failure (Query: https://console.cloud.google.com/bigquery?project=project%26other&j=bq:EU:job%231&page=queryresults)"
     );
-}
-
-/// dbt 2.0's not-found matcher needs the `notFound:` substring.
-#[test]
-fn job_error_keeps_the_not_found_spelling_dbt_matches() {
-    let not_found = "Not found: Table proj:ds.missing was not found";
-    let converted = failed(&[proto("notFound", "", not_found)]);
-    assert_eq!(converted.status, Status::NotFound);
-    assert_message(&converted, &["notFound:"]);
 }

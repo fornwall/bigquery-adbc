@@ -484,56 +484,17 @@ mod tests {
         );
     }
 
+    /// The cache stays bounded, evicts oldest first (a replacement keeps its place), and releases
+    /// what it evicts.
     #[test]
-    fn dataset_location_cache_releases_evicted_entries_and_stays_bounded() {
-        const DATASETS: usize = 2 * DATASET_LOCATION_CACHE_ENTRIES;
+    fn dataset_location_cache_evicts_in_insertion_order() {
         let state = ClientState::for_test();
-        let first_dataset = Arc::<str>::from("first");
-        let first_location = Arc::<str>::from("asia-northeast1");
-        let dataset_owner = Arc::downgrade(&first_dataset);
-        let location_owner = Arc::downgrade(&first_location);
-        state.remember_dataset_location((project("data-project"), first_dataset), first_location);
-
-        for index in 1..DATASETS {
-            state.remember_dataset_location(
-                (
-                    project("data-project"),
-                    Arc::from(format!("scratch_{index}")),
-                ),
-                Arc::from("US"),
-            );
-            let cache = state.dataset_locations.lock().unwrap();
-            assert_eq!(
-                cache.0.len(),
-                (index + 1).min(DATASET_LOCATION_CACHE_ENTRIES)
-            );
-        }
-
-        assert!(dataset_owner.upgrade().is_none());
-        assert!(location_owner.upgrade().is_none());
-        let oldest_retained = DATASETS - DATASET_LOCATION_CACHE_ENTRIES;
-        assert!(
-            state
-                .dataset_location(&(
-                    project("data-project"),
-                    Arc::from(format!("scratch_{}", oldest_retained - 1)),
-                ))
-                .is_none()
+        let evicted_location = Arc::<str>::from("asia-northeast1");
+        let evicted_owner = Arc::downgrade(&evicted_location);
+        state.remember_dataset_location(
+            (project("data-project"), Arc::from("evicted")),
+            evicted_location,
         );
-        assert_eq!(
-            state
-                .dataset_location(&(
-                    project("data-project"),
-                    Arc::from(format!("scratch_{oldest_retained}")),
-                ))
-                .as_deref(),
-            Some("US")
-        );
-    }
-
-    #[test]
-    fn dataset_location_replacement_and_invalidation_preserve_eviction_order() {
-        let state = ClientState::for_test();
         let datasets = (0..=DATASET_LOCATION_CACHE_ENTRIES)
             .map(|index| {
                 (
@@ -545,6 +506,7 @@ mod tests {
         for dataset in &datasets[..DATASET_LOCATION_CACHE_ENTRIES] {
             state.remember_dataset_location(dataset.clone(), Arc::from("US"));
         }
+        assert!(evicted_owner.upgrade().is_none());
         state.remember_dataset_location(datasets[0].clone(), Arc::from("EU"));
         assert_eq!(state.dataset_location(&datasets[0]).as_deref(), Some("EU"));
         assert_eq!(state.dataset_location(&datasets[1]).as_deref(), Some("US"));

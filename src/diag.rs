@@ -217,11 +217,9 @@ mod tests {
         for value in ["", "off", "trace", "warn ", "2"] {
             assert_eq!(parse(value), None, "{value}");
         }
-    }
-
-    #[test]
-    fn a_level_admits_itself_and_everything_more_severe() {
-        assert!(Level::Error < Level::Warn && Level::Warn < Level::Info);
-        assert!(Level::Info < Level::Debug);
+        // `enabled` admits a level and everything more severe.
+        assert!(
+            Level::Error < Level::Warn && Level::Warn < Level::Info && Level::Info < Level::Debug
+        );
     }
 }
