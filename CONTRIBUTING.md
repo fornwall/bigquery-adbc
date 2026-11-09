@@ -80,6 +80,9 @@ installed as `bigquery.toml`, it is also selected by a `bigquery://` URI with no
 
 ## Local checks
 
+[CI](.github/workflows/ci.yml) runs these checks (the Rust ones on Linux, macOS and Windows), wheel
+tests, Miri and fuzzing; [live tests](#live-tests) run only outside CI.
+
 Rust, with both feature sets (developer features can hide shipped-build issues); live tests stay
 ignored:
 

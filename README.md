@@ -126,13 +126,6 @@ with dbapi.connect("bigquery:///my-project", autocommit=True) as connection:
 `adbc.statement.bind_by_name=true` also selects named mode. See
 [bound parameters](docs/REFERENCE.md#bound-parameters).
 
-## Testing
-
-CI runs Rust unit and mock tests on Linux, macOS and Windows, Python unit and wheel tests, Miri on
-the FFI layer, and fuzzing of the IPC and REST decoders. Live suites (Rust, Python, ADBC C++
-validation, Driver Foundry, DuckDB and dbt) need a Google Cloud project and run outside CI; see
-[live tests](CONTRIBUTING.md#live-tests).
-
 ## Documentation
 
 | Guide | Contents |
