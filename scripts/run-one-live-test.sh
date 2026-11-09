@@ -1,21 +1,15 @@
 #!/usr/bin/env bash
-# Run one ignored test by bare or module-qualified name, from tests/bigquery/ or the Cargo test
-# target named by BIGQUERY_ADBC_TEST_TARGET.
-# Cargo also exits successfully for no matches, so require that one test ran.
-#
 # Usage: run-one-live-test.sh <test name> [cargo test arguments...]
+#
+# Runs one ignored test by bare or module-qualified name, from tests/bigquery/ or the Cargo test
+# target BIGQUERY_ADBC_TEST_TARGET names. Cargo also succeeds when nothing matches, so this
+# requires that the test ran.
 set -euo pipefail
 
 usage="usage: run-one-live-test.sh <test name> [cargo test arguments...]"
 case ${1:-} in
-    -h | --help)
-        echo "$usage"
-        exit 0
-        ;;
-    "")
-        echo "$usage" >&2
-        exit 2
-        ;;
+    -h | --help) echo "$usage" && exit 0 ;;
+    "") echo "$usage" >&2 && exit 2 ;;
 esac
 
 # shellcheck source-path=SCRIPTDIR source=lib/google-cloud-preflight.sh
@@ -25,11 +19,10 @@ require_bigquery_project
 test_name=$1
 shift
 test_target=${BIGQUERY_ADBC_TEST_TARGET:-bigquery}
-repository_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 log_file=$(mktemp "${TMPDIR:-/tmp}/bigquery-adbc-live-test.XXXXXX")
 trap 'rm -f -- "$log_file"' EXIT
+cd "$(dirname -- "$0")/.."
 
-cd "$repository_root"
 listing=$(cargo test --locked --test "$test_target" -- --list --ignored)
 if ! qualified_name=$(printf '%s\n' "$listing" | awk -v name="$test_name" '
     sub(/: test$/, "") && ($0 == name || substr($0, length($0) - length(name) - 1) == "::" name) {
@@ -40,8 +33,7 @@ if ! qualified_name=$(printf '%s\n' "$listing" | awk -v name="$test_name" '
         for (i = 1; i <= count; i++) print "  candidate: " found[i] > "/dev/stderr"
         exit 1
     }'); then
-    echo "$test_name does not name exactly one ignored live test." >&2
-    echo "Check that tests/$test_target/ declares it under that name and with #[ignore]." >&2
+    echo "$test_name does not name exactly one ignored test in tests/$test_target/." >&2
     exit 1
 fi
 
