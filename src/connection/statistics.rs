@@ -379,29 +379,24 @@ mod tests {
     }
 
     /// `numRows` excludes the rows still in a streaming buffer, so a table with one reports the
-    /// sum with BigQuery's estimate, typed float64 and flagged approximate as adbc.h requires.
+    /// sum with BigQuery's estimate. A materialized view's `numRows` is what its last refresh
+    /// stored, not what a query of it returns. Either is approximate, typed float64 as adbc.h
+    /// requires.
     #[test]
-    fn a_streaming_buffer_makes_the_row_count_approximate() {
-        let metadata = Table::decode(
-            br#"{"numRows": "42", "streamingBuffer": {"estimatedRows": "5", "estimatedBytes": "587"}}"#,
-        )
-        .unwrap();
-        let mut statistics = Vec::new();
-        table_statistics("records".to_owned(), &metadata, &mut statistics);
-        assert_eq!(statistics[0].key, i16::from(Statistics::RowCount));
-        assert_eq!(statistics[0].value, StatisticValue::Float64(47.0));
-        assert!(statistics[0].is_approximate);
-    }
-
-    /// A materialized view's `numRows` is what its last refresh stored, not what a query of it
-    /// returns, so its row count is approximate.
-    #[test]
-    fn a_materialized_view_row_count_is_approximate() {
-        let metadata = Table::decode(br#"{"type": "MATERIALIZED_VIEW", "numRows": "42"}"#).unwrap();
-        let mut statistics = Vec::new();
-        table_statistics("summary".to_owned(), &metadata, &mut statistics);
-        assert_eq!(statistics[0].key, i16::from(Statistics::RowCount));
-        assert_eq!(statistics[0].value, StatisticValue::Float64(42.0));
-        assert!(statistics[0].is_approximate);
+    fn buffered_and_materialized_row_counts_are_approximate() {
+        for (metadata, rows) in [
+            (
+                &br#"{"numRows": "42", "streamingBuffer": {"estimatedRows": "5", "estimatedBytes": "587"}}"#[..],
+                47.0,
+            ),
+            (br#"{"type": "MATERIALIZED_VIEW", "numRows": "42"}"#, 42.0),
+        ] {
+            let metadata = Table::decode(metadata).unwrap();
+            let mut statistics = Vec::new();
+            table_statistics("records".to_owned(), &metadata, &mut statistics);
+            assert_eq!(statistics[0].key, i16::from(Statistics::RowCount));
+            assert_eq!(statistics[0].value, StatisticValue::Float64(rows));
+            assert!(statistics[0].is_approximate);
+        }
     }
 }

@@ -1,5 +1,5 @@
 use adbc_core::schemas;
-use arrow_array::{Array, Int16Array, Int32Array};
+use arrow_array::{Array, Int16Array, Int32Array, RecordBatch, StructArray};
 
 use crate::rest::model::TableFieldSchema;
 use crate::test_support::arrow::{child_structs, list, string_at, typed};
@@ -22,6 +22,31 @@ fn dataset_schema(tables: Option<Vec<ObjectTable>>) -> ObjectDbSchema {
         name: "dataset".to_owned(),
         tables,
     }
+}
+
+/// The one `get_objects` batch for a `records` table with `columns` and `constraints`.
+fn records_batch(
+    columns: Option<Vec<ObjectColumn>>,
+    constraints: Option<Vec<ObjectConstraint>>,
+) -> RecordBatch {
+    let table = ObjectTable {
+        name: "records".to_owned(),
+        table_type: "TABLE",
+        columns,
+        constraints,
+    };
+    let catalogs = [project_catalog(Some(vec![dataset_schema(Some(vec![
+        table,
+    ]))]))];
+    let mut reader = objects_reader(&catalogs).unwrap();
+    let batch = reader.next().unwrap().unwrap();
+    assert!(reader.next().is_none());
+    batch
+}
+
+/// The table struct array of a [`records_batch`].
+fn tables(batch: &RecordBatch) -> StructArray {
+    child_structs(child_structs(batch.column(1)).column(1)).clone()
 }
 
 #[test]
@@ -55,22 +80,11 @@ fn builds_complete_get_objects_hierarchy() {
             column: "label".to_owned(),
         }]),
     }];
-    let catalogs = vec![project_catalog(Some(vec![dataset_schema(Some(vec![
-        ObjectTable {
-            name: "records".to_owned(),
-            table_type: "TABLE",
-            columns: Some(columns),
-            constraints: Some(constraints),
-        },
-    ]))]))];
-
-    let mut reader = objects_reader(&catalogs).unwrap();
-    assert_eq!(reader.schema(), schemas::GET_OBJECTS_SCHEMA.clone());
-    let batch = reader.next().unwrap().unwrap();
+    let batch = records_batch(Some(columns), Some(constraints));
+    assert_eq!(batch.schema(), schemas::GET_OBJECTS_SCHEMA.clone());
     assert_eq!(string_at(batch.column(0), 0), "project");
 
-    let schemas = child_structs(batch.column(1));
-    let tables = child_structs(schemas.column(1));
+    let tables = tables(&batch);
     let columns = child_structs(tables.column(2));
     assert_eq!(string_at(columns.column(0), 1), "label");
     assert_eq!(string_at(columns.column(4), 1), "STRING");
@@ -79,7 +93,6 @@ fn builds_complete_get_objects_hierarchy() {
     let constraints = child_structs(tables.column(3));
     let usage = child_structs(constraints.column(3));
     assert_eq!(string_at(usage.column(2), 0), "labels");
-    assert!(reader.next().is_none());
 }
 
 #[test]
@@ -92,17 +105,8 @@ fn column_nullability_distinguishes_repeated_from_nullable() {
             type_name: "INT64".to_owned(),
         })
         .collect();
-    let mut reader = objects_reader(&[project_catalog(Some(vec![dataset_schema(Some(vec![
-        ObjectTable {
-            name: "records".to_owned(),
-            table_type: "TABLE",
-            columns: Some(columns),
-            constraints: None,
-        },
-    ]))]))])
-    .unwrap();
-    let batch = reader.next().unwrap().unwrap();
-    let columns = child_structs(child_structs(child_structs(batch.column(1)).column(1)).column(2));
+    let batch = records_batch(Some(columns), None);
+    let columns = child_structs(tables(&batch).column(2)).clone();
     let nullable = typed::<Int16Array>(columns.column(8));
     for (row, expected) in [true, true, false, false].into_iter().enumerate() {
         assert_eq!(nullable.value(row), i16::from(expected));
@@ -123,26 +127,19 @@ fn an_unnamed_foreign_key_component_is_null_rather_than_empty() {
         table: "labels".to_owned(),
         column: "label".to_owned(),
     };
-    let mut reader = objects_reader(&[project_catalog(Some(vec![dataset_schema(Some(vec![
-        ObjectTable {
-            name: "records".to_owned(),
-            table_type: "TABLE",
-            columns: None,
-            constraints: Some(vec![ObjectConstraint {
-                name: None,
-                constraint_type: "FOREIGN KEY",
-                column_names: vec!["label".to_owned(), "label".to_owned()],
-                column_usage: Some(vec![
-                    usage(Some("project"), Some("dataset")),
-                    usage(None, None),
-                ]),
-            }]),
-        },
-    ]))]))])
-    .unwrap();
-    let batch = reader.next().unwrap().unwrap();
-    let constraints =
-        child_structs(child_structs(child_structs(batch.column(1)).column(1)).column(3));
+    let batch = records_batch(
+        None,
+        Some(vec![ObjectConstraint {
+            name: None,
+            constraint_type: "FOREIGN KEY",
+            column_names: vec!["label".to_owned(), "label".to_owned()],
+            column_usage: Some(vec![
+                usage(Some("project"), Some("dataset")),
+                usage(None, None),
+            ]),
+        }]),
+    );
+    let constraints = child_structs(tables(&batch).column(3)).clone();
     let usages = child_structs(constraints.column(3));
     assert_eq!(string_at(usages.column(0), 0), "project");
     assert_eq!(string_at(usages.column(1), 0), "dataset");
@@ -164,29 +161,23 @@ fn numeric_parameters_are_reported_only_where_bigquery_has_them() {
         ordinal_position: 1,
         type_name: r#type.to_owned(),
     };
-    let mut reader = objects_reader(&[project_catalog(Some(vec![dataset_schema(Some(vec![
-        ObjectTable {
-            name: "records".to_owned(),
-            table_type: "TABLE",
-            columns: Some(vec![
-                column("bare", "NUMERIC", 0, 0),
-                column("parameterized", "NUMERIC", 38, 9),
-                column("integral", "BIGNUMERIC", 10, 0),
-                ObjectColumn {
-                    field: TableFieldSchema {
-                        max_length: 64,
-                        ..field("bounded_string", "STRING")
-                    },
-                    ordinal_position: 4,
-                    type_name: "STRING".to_owned(),
+    let batch = records_batch(
+        Some(vec![
+            column("bare", "NUMERIC", 0, 0),
+            column("parameterized", "NUMERIC", 38, 9),
+            column("integral", "BIGNUMERIC", 10, 0),
+            ObjectColumn {
+                field: TableFieldSchema {
+                    max_length: 64,
+                    ..field("bounded_string", "STRING")
                 },
-            ]),
-            constraints: None,
-        },
-    ]))]))])
-    .unwrap();
-    let batch = reader.next().unwrap().unwrap();
-    let columns = child_structs(child_structs(child_structs(batch.column(1)).column(1)).column(2));
+                ordinal_position: 4,
+                type_name: "STRING".to_owned(),
+            },
+        ]),
+        None,
+    );
+    let columns = child_structs(tables(&batch).column(2)).clone();
     let column_sizes = typed::<Int32Array>(columns.column(5));
     let decimal_digits = typed::<Int16Array>(columns.column(6));
     let reported = |index: usize| {
@@ -221,21 +212,15 @@ fn only_a_declared_bytes_length_is_an_octet_length() {
         ordinal_position: 1,
         type_name: r#type.to_owned(),
     };
-    let mut reader = objects_reader(&[project_catalog(Some(vec![dataset_schema(Some(vec![
-        ObjectTable {
-            name: "records".to_owned(),
-            table_type: "TABLE",
-            columns: Some(vec![
-                column("bounded_bytes", "BYTES", 16),
-                column("bytes", "BYTES", 0),
-                column("bounded_string", "STRING", 16),
-            ]),
-            constraints: None,
-        },
-    ]))]))])
-    .unwrap();
-    let batch = reader.next().unwrap().unwrap();
-    let columns = child_structs(child_structs(child_structs(batch.column(1)).column(1)).column(2));
+    let batch = records_batch(
+        Some(vec![
+            column("bounded_bytes", "BYTES", 16),
+            column("bytes", "BYTES", 0),
+            column("bounded_string", "STRING", 16),
+        ]),
+        None,
+    );
+    let columns = child_structs(tables(&batch).column(2)).clone();
     let octet_lengths = typed::<Int32Array>(columns.column(12));
     assert_eq!(
         octet_lengths.iter().collect::<Vec<_>>(),

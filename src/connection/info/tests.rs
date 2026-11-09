@@ -81,29 +81,6 @@ fn info_returns_all_known_codes_with_standard_schema() {
     assert!(reader.next().is_none());
 }
 
-/// An XDBC code the driver does not answer is omitted, as adbc.h requires of unrecognized codes.
-///
-/// 513 (SQL_SEARCH_STRING_ESCAPE) escapes catalog search patterns, which ADBC defines as
-/// unescapable. 537 (SQL_STORED_PROCEDURES_SUPPORTED) asks about the JDBC `{call ...}` syntax,
-/// which GoogleSQL's `CALL` is not. 554 (SQL_MAX_CATALOG_NAME_LENGTH) has no uniform documented
-/// limit for modern and legacy domain-scoped projects.
-#[test]
-fn info_omits_the_xdbc_codes_the_driver_cannot_answer() {
-    let requested = HashSet::from([
-        InfoCode::Other(503),
-        InfoCode::Other(504),
-        InfoCode::Other(513),
-        InfoCode::Other(537),
-        InfoCode::Other(554),
-    ]);
-    let batch = info_reader(Some(&requested))
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap();
-    assert_eq!(typed::<UInt32Array>(batch.column(0)).values(), &[504]);
-}
-
 /// Guards the hand-maintained [`VENDOR_VERSION`] against a bumped Cargo pin.
 #[test]
 fn vendor_version_matches_the_pinned_client_library() {
@@ -134,12 +111,22 @@ fn vendor_version_matches_the_pinned_client_library() {
     );
 }
 
+/// A requested code the driver does not answer is omitted, as adbc.h requires of unrecognized
+/// codes, including the XDBC ones it leaves out: 513 (SQL_SEARCH_STRING_ESCAPE) escapes catalog
+/// search patterns, which ADBC defines as unescapable; 537 (SQL_STORED_PROCEDURES_SUPPORTED) asks
+/// about the JDBC `{call ...}` syntax, which GoogleSQL's `CALL` is not; 554
+/// (SQL_MAX_CATALOG_NAME_LENGTH) has no uniform limit for modern and legacy domain-scoped projects.
 #[test]
 fn info_filters_and_ignores_unknown_codes() {
     let requested = HashSet::from([
         InfoCode::DriverName,
         InfoCode::Other(10_042),
         InfoCode::VendorSql,
+        InfoCode::Other(503),
+        InfoCode::Other(504),
+        InfoCode::Other(513),
+        InfoCode::Other(537),
+        InfoCode::Other(554),
     ]);
     let batch = info_reader(Some(&requested))
         .unwrap()
@@ -151,7 +138,8 @@ fn info_filters_and_ignores_unknown_codes() {
         names.values(),
         &[
             constants::ADBC_INFO_VENDOR_SQL,
-            constants::ADBC_INFO_DRIVER_NAME
+            constants::ADBC_INFO_DRIVER_NAME,
+            504
         ]
     );
 }
