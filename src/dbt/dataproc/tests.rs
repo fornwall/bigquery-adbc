@@ -43,64 +43,40 @@ fn dataproc_connection(endpoint: &str) -> crate::connection::BigQueryConnection 
     )
 }
 
-/// A statement carrying `options` and the `SELECT 1` placeholder dbt 2.0 finalizes every
-/// python-model statement with, which must not discard the submission.
-fn submission_statement(
+/// Exactly what dbt 2.0 sets for `submission_method: serverless` (a batch) or `cluster`, with
+/// `pooling_timeout` sent only when the caller bounds the wait, and the `SELECT 1` placeholder dbt
+/// 2.0 finalizes every python-model statement with, which must not discard the submission.
+fn submit(
     connection: &mut crate::connection::BigQueryConnection,
-    options: &[(BigQueryStatementOption, &str)],
+    submission: Submission,
+    pooling_timeout: Option<&str>,
 ) -> BigQueryStatement {
+    use BigQueryStatementOption as Key;
     let mut statement = connection.new_statement().unwrap();
-    for (option, value) in options {
-        set_option(&mut statement, *option, *value);
+    let options: &[(Key, &str)] = match submission {
+        Submission::Batch => &[
+            (Key::CreateBatchParent, PARENT),
+            (Key::CreateBatchBatchYml, DBT_BATCH_YML),
+        ],
+        Submission::ClusterJob => &[
+            (Key::DataprocProject, "exec-project"),
+            (Key::DataprocSubmitJobClusterName, "dbt-cluster"),
+            (
+                Key::DataprocSubmitJobGcsPath,
+                "gs://dbt-python/analytics/model.py",
+            ),
+        ],
+    };
+    set_option(&mut statement, Key::DataprocComputeRegion, "us-central1");
+    for (option, value) in options
+        .iter()
+        .copied()
+        .chain(pooling_timeout.map(|seconds| (Key::DataprocPoolingTimeout, seconds)))
+    {
+        set_option(&mut statement, option, value);
     }
     statement.set_sql_query("SELECT 1").unwrap();
     statement
-}
-
-/// Exactly what dbt 2.0 sets for `submission_method: serverless`, with `pooling_timeout` sent
-/// only when the caller bounds the wait.
-fn batch_statement(
-    connection: &mut crate::connection::BigQueryConnection,
-    pooling_timeout: Option<&str>,
-) -> BigQueryStatement {
-    let mut options = vec![
-        (
-            BigQueryStatementOption::DataprocComputeRegion,
-            "us-central1",
-        ),
-        (BigQueryStatementOption::CreateBatchParent, PARENT),
-        (BigQueryStatementOption::CreateBatchBatchYml, DBT_BATCH_YML),
-    ];
-    options.extend(
-        pooling_timeout.map(|seconds| (BigQueryStatementOption::DataprocPoolingTimeout, seconds)),
-    );
-    submission_statement(connection, &options)
-}
-
-/// The same for `submission_method: cluster`.
-fn cluster_statement(
-    connection: &mut crate::connection::BigQueryConnection,
-    pooling_timeout: Option<&str>,
-) -> BigQueryStatement {
-    let mut options = vec![
-        (
-            BigQueryStatementOption::DataprocComputeRegion,
-            "us-central1",
-        ),
-        (BigQueryStatementOption::DataprocProject, "exec-project"),
-        (
-            BigQueryStatementOption::DataprocSubmitJobClusterName,
-            "dbt-cluster",
-        ),
-        (
-            BigQueryStatementOption::DataprocSubmitJobGcsPath,
-            "gs://dbt-python/analytics/model.py",
-        ),
-    ];
-    options.extend(
-        pooling_timeout.map(|seconds| (BigQueryStatementOption::DataprocPoolingTimeout, seconds)),
-    );
-    submission_statement(connection, &options)
 }
 
 /// The `Operation` Dataproc returns while a submission is still running.
@@ -125,7 +101,7 @@ fn dbt_serverless_python_model_creates_one_batch_and_waits_for_it() {
         })),
     ]);
     let mut connection = dataproc_connection(&endpoint);
-    let mut statement = batch_statement(&mut connection, Some("86400"));
+    let mut statement = submit(&mut connection, Submission::Batch, Some("86400"));
     set_option(
         &mut statement,
         BigQueryStatementOption::CreateBatchBatchId,
@@ -191,7 +167,7 @@ fn dbt_cluster_python_model_submits_one_pyspark_job_and_waits_for_it() {
         })),
     ]);
     let mut connection = dataproc_connection(&endpoint);
-    let mut statement = cluster_statement(&mut connection, Some("86400"));
+    let mut statement = submit(&mut connection, Submission::ClusterJob, Some("86400"));
 
     let partitioned = statement.execute_partitions().unwrap();
     assert_eq!(partitioned.rows_affected, -1);
@@ -393,7 +369,7 @@ fn an_expired_pooling_timeout_cancels_the_batch_without_another_poll() {
         let (endpoint, server) =
             capture_requests_until_stopped(vec![ok(running(OPERATION)), cancel, ok(json!({}))]);
         let mut connection = dataproc_connection(&endpoint);
-        let mut statement = batch_statement(&mut connection, Some("1"));
+        let mut statement = submit(&mut connection, Submission::Batch, Some("1"));
 
         let error = statement.execute_update().unwrap_err();
         assert_failure(
@@ -428,7 +404,7 @@ fn a_gateway_timeout_while_polling_is_retried_rather_than_failing_the_batch() {
         })),
     ]);
     let mut connection = dataproc_connection(&endpoint);
-    let mut statement = batch_statement(&mut connection, None);
+    let mut statement = submit(&mut connection, Submission::Batch, None);
 
     assert_eq!(
         statement.execute_update().unwrap(),
@@ -457,25 +433,22 @@ fn a_gateway_timeout_while_polling_is_retried_rather_than_failing_the_batch() {
 #[test]
 fn a_fatal_poll_answer_says_the_submission_may_still_be_running() {
     let denied = json!({"error": {"code": 403, "message": "Permission denied on the operation"}});
-    for (cluster, operation, what, poll, status) in [
+    for (submission, operation, poll, status) in [
         (
-            false,
+            Submission::Batch,
             OPERATION,
-            "Dataproc batch",
             (403, denied.clone()),
             Status::Unauthorized,
         ),
         (
-            true,
+            Submission::ClusterJob,
             JOB_OPERATION,
-            "Dataproc job",
             (403, denied),
             Status::Unauthorized,
         ),
         (
-            false,
+            Submission::Batch,
             OPERATION,
-            "Dataproc batch",
             ok(json!([])),
             Status::InvalidData,
         ),
@@ -484,17 +457,14 @@ fn a_fatal_poll_answer_says_the_submission_may_still_be_running() {
         let (endpoint, server) =
             capture_requests_until_stopped(vec![ok(running(operation)), poll, ok(json!({}))]);
         let mut connection = dataproc_connection(&endpoint);
-        let mut statement = if cluster {
-            cluster_statement(&mut connection, None)
-        } else {
-            batch_statement(&mut connection, None)
-        };
-
-        let error = statement.execute_update().unwrap_err();
+        let error = submit(&mut connection, submission, None)
+            .execute_update()
+            .unwrap_err();
         assert_eq!(error.status, status, "{}", error.message);
         assert!(
             error.message.ends_with(&format!(
-                "; the BigQuery {what} {operation} may still be running"
+                "; the BigQuery {} {operation} may still be running",
+                submission.what()
             )),
             "{}",
             error.message
@@ -511,7 +481,7 @@ fn a_refused_submission_names_where_it_was_sent() {
     let (endpoint, captured) = capture_requests(vec![(403, denied.clone()), (403, denied)]);
     let mut connection = dataproc_connection(&endpoint);
 
-    let job = cluster_statement(&mut connection, None)
+    let job = submit(&mut connection, Submission::ClusterJob, None)
         .execute_update()
         .unwrap_err();
     assert_failure(
@@ -523,7 +493,7 @@ fn a_refused_submission_names_where_it_was_sent() {
         ],
     );
 
-    let mut batch = batch_statement(&mut connection, None);
+    let mut batch = submit(&mut connection, Submission::Batch, None);
     set_option(
         &mut batch,
         BigQueryStatementOption::CreateBatchBatchId,
@@ -565,10 +535,10 @@ fn a_transiently_failed_submission_is_resent_under_its_request_id() {
     ]);
     let mut connection = dataproc_connection(&endpoint);
 
-    cluster_statement(&mut connection, None)
+    submit(&mut connection, Submission::ClusterJob, None)
         .execute_update()
         .unwrap();
-    batch_statement(&mut connection, None)
+    submit(&mut connection, Submission::Batch, None)
         .execute_update()
         .unwrap();
 
@@ -605,7 +575,7 @@ fn a_deadline_during_failed_submissions_says_the_job_may_have_started() {
     let (endpoint, server) = capture_requests_until_stopped(vec![unavailable; 5]);
     let mut connection = dataproc_connection(&endpoint);
 
-    let error = batch_statement(&mut connection, Some("1"))
+    let error = submit(&mut connection, Submission::Batch, Some("1"))
         .execute_update()
         .unwrap_err();
     assert_message(&error, &["; the BigQuery Dataproc batch may have started"]);
@@ -624,7 +594,7 @@ fn an_unreadable_submission_answer_is_resent_under_its_request_id() {
     ]);
     let mut connection = dataproc_connection(&endpoint);
 
-    batch_statement(&mut connection, None)
+    submit(&mut connection, Submission::Batch, None)
         .execute_update()
         .unwrap();
 
@@ -642,7 +612,11 @@ fn a_pooling_timeout_beyond_the_clock_waits_without_a_deadline() {
         "response": {"state": "SUCCEEDED"},
     }))]);
     let mut connection = dataproc_connection(&endpoint);
-    let mut statement = batch_statement(&mut connection, Some("9223372036854775807"));
+    let mut statement = submit(
+        &mut connection,
+        Submission::Batch,
+        Some("9223372036854775807"),
+    );
 
     assert_eq!(statement.execute_update().unwrap(), None);
     assert_eq!(captured.join().unwrap().len(), 1);
@@ -669,7 +643,7 @@ fn cancelling_a_submission_interrupts_the_poll_and_cancels_the_job() {
         },
     );
     let mut connection = dataproc_connection(&endpoint);
-    let mut statement = cluster_statement(&mut connection, None);
+    let mut statement = submit(&mut connection, Submission::ClusterJob, None);
     let handle = statement.get_cancel_handle();
     let canceller = thread::spawn(move || {
         // The submission is in flight, and its answer still names the job to cancel.
@@ -806,7 +780,7 @@ fn resource_options_that_would_redirect_the_request_are_refused() {
     // the configured identity can be handed to a host the option chose. Nothing listens on the
     // port, so a request that did escape would fail differently.
     let mut connection = dataproc_connection("http://127.0.0.1:1");
-    let mut statement = batch_statement(&mut connection, None);
+    let mut statement = submit(&mut connection, Submission::Batch, None);
     set_option(&mut statement, key, "attacker.example\\");
     let error = statement.execute_update().unwrap_err();
     assert_failure(&error, Status::InvalidArguments, &[key.as_str()]);
