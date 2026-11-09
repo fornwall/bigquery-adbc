@@ -139,10 +139,9 @@ scripts/run-one-live-test.sh bulk_ingests_after_rapid_table_recreation
 scripts/run-one-live-test.sh regional_recovery_survives_lost_submission_responses
 ```
 
-The [UP-26 reproducer](docs/UPSTREAM.md#up-26-storage-write-can-retain-a-stale-table-lookup-after-recreation)
-is a service race. The regional recovery test drops real submission responses through a loopback
-proxy, then checks 409 and cross-region `jobs.list` recovery, identical retries, exactly-once
-mutations and remote cancellation; it cancels jobs and deletes resources on failure too.
+The regional recovery test drops real submission responses through a loopback proxy, then checks
+409 and cross-region `jobs.list` recovery, identical retries, exactly-once mutations and remote
+cancellation; it cancels jobs and deletes resources on failure too.
 
 Other credential types:
 
@@ -195,10 +194,9 @@ scripts/run-one-live-test.sh executes_scalar_query_and_dry_run_schema
 ```
 
 Test helpers then use anonymous authentication and override every service endpoint, including
-cleanup; applications use the driver's endpoint options instead. C++, Foundry, DuckDB and dbt
-runners, plus credential, IAM and Cloud Storage tests, still require Google Cloud. Other tests keep
-their assertions and may fail on [emulator gaps](docs/LIMITATIONS.md#emulator-coverage). Emulators
-do not validate IAM, quotas or billing.
+cleanup; applications use the driver's endpoint options instead. Tests keep their assertions;
+[emulator gaps](docs/LIMITATIONS.md#emulator-coverage) lists the suites and tests that still need
+Google Cloud. Emulators do not validate IAM, quotas or billing.
 
 ## Changes and review
 

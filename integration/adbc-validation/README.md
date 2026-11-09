@@ -59,15 +59,10 @@ than one fails) and reconfigures when the manifest changes; the driver and vendo
   matching its negative `asdf%` filter cannot fail it (UP-29,
   [apache/arrow-adbc#4916](https://github.com/apache/arrow-adbc/pull/4916)).
 
-A Rust live test covers rapid table recreation without that workaround. It ingests immediately
-after each acknowledged SQL drop, reusing one table name for 16 temporal schemas, and checks row
-IDs, generations, nulls and values after every ingest. It neither retries nor paces, so it can fail
-on the service race tracked in UP-26; the ordinary
-[Rust live-suite command](../../CONTRIBUTING.md#live-tests) excludes it:
-
-```sh
-scripts/run-one-live-test.sh bulk_ingests_after_rapid_table_recreation --nocapture
-```
+The Rust live test `bulk_ingests_after_rapid_table_recreation` covers rapid recreation without that
+workaround: it reuses one table name for 16 temporal schemas, ingesting right after each drop with
+no retries or pacing, so it can fail on the UP-26 service race and the
+[Rust live-suite command](../../CONTRIBUTING.md#live-tests) runs it separately.
 
 ## Sanitizers
 
