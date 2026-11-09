@@ -30,11 +30,13 @@ fn inaccessible_tables_leave_the_rest_of_the_dataset_discoverable() {
             let (endpoint, requests) = capture_requests(responses);
             let connection = anonymous_connection_at(&endpoint);
 
-            let batch = discover_metadata(&connection, depth, None, Some("_hidden"), None)
-                .unwrap()
-                .next()
-                .unwrap()
-                .unwrap();
+            let batch = first_batch(discover_metadata(
+                &connection,
+                depth,
+                None,
+                Some("_hidden"),
+                None,
+            ));
             let schemas = child_structs(batch.column(1));
             assert_eq!(schemas.len(), 1);
             assert_eq!(string_at(schemas.column(0), 0), "_hidden");
@@ -58,12 +60,13 @@ fn exact_discovery_omits_inaccessible_tables_and_checks_the_dataset() {
                 let (endpoint, requests) =
                     capture_requests(vec![(403, forbidden_response(reason)), (status, response)]);
                 let connection = anonymous_connection_at(&endpoint);
-                let batch =
-                    discover_metadata(&connection, depth, None, Some("dataset"), Some("secret"))
-                        .unwrap()
-                        .next()
-                        .unwrap()
-                        .unwrap();
+                let batch = first_batch(discover_metadata(
+                    &connection,
+                    depth,
+                    None,
+                    Some("dataset"),
+                    Some("secret"),
+                ));
                 let schemas = child_structs(batch.column(1));
                 assert_eq!(schemas.len(), expected_schemas);
                 if expected_schemas != 0 {
@@ -227,11 +230,7 @@ fn a_dataset_whose_tables_cannot_be_listed_drops_out_of_the_enumeration() {
             );
             let connection = anonymous_connection_at(&endpoint);
 
-            let batch = discover_metadata(&connection, depth, None, Some("%"), None)
-                .unwrap()
-                .next()
-                .unwrap()
-                .unwrap();
+            let batch = first_batch(discover_metadata(&connection, depth, None, Some("%"), None));
             let schemas = child_structs(batch.column(1));
             assert_eq!(schemas.len(), 1, "{depth:?}");
             assert_eq!(string_at(schemas.column(0), 0), "visible");
@@ -266,11 +265,13 @@ fn an_exact_dataset_is_checked_only_when_its_tables_cannot_be_listed() {
             let (endpoint, server) =
                 capture_requests_until_stopped(vec![listing, (200, json!({}))]);
             let connection = anonymous_connection_at(&endpoint);
-            let batch = discover_metadata(&connection, depth, None, Some("dataset"), None)
-                .unwrap()
-                .next()
-                .unwrap()
-                .unwrap();
+            let batch = first_batch(discover_metadata(
+                &connection,
+                depth,
+                None,
+                Some("dataset"),
+                None,
+            ));
             assert_eq!(child_structs(batch.column(1)).len(), 0, "{depth:?}");
             let requests = server.stop();
             assert_eq!(requests.len(), expected_requests, "{depth:?}");
@@ -385,12 +386,7 @@ fn views_and_external_tables_report_no_statistics() {
         (200, json!({"type": "TABLE", "numRows": "42"})),
     ]);
     let connection = anonymous_connection_at(&endpoint);
-    let batch = connection
-        .get_statistics(None, Some("dataset"), None, false)
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap();
+    let batch = first_batch(connection.get_statistics(None, Some("dataset"), None, false));
     let statistics = child_structs(child_structs(batch.column(1)).column(1));
     assert_eq!(statistics.len(), 1);
     assert_eq!(string_at(statistics.column(0), 0), "stored");
@@ -403,12 +399,8 @@ fn views_and_external_tables_report_no_statistics() {
             json!({"type": table_type, "numRows": "0", "numTotalLogicalBytes": "0"}),
         )]);
         let connection = anonymous_connection_at(&endpoint);
-        let batch = connection
-            .get_statistics(None, Some("dataset"), Some("events"), false)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap();
+        let batch =
+            first_batch(connection.get_statistics(None, Some("dataset"), Some("events"), false));
         let schemas = child_structs(batch.column(1));
         assert_eq!(schemas.len(), 1, "{table_type}");
         assert_eq!(child_structs(schemas.column(1)).len(), 0, "{table_type}");

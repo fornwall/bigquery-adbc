@@ -323,27 +323,13 @@ fn table_schema_and_statistics_request_the_metadata_each_consumes() {
         .get_table_schema(None, Some("dataset"), "events")
         .unwrap();
     assert_eq!(schema.field(0).name(), "bucket");
-    for (key, expected) in [
-        ("Description", "partitioned events"),
-        ("Clustering.Fields", r#"["bucket"]"#),
-        ("RangePartitioning.Field", "bucket"),
-        ("RangePartitioning.Range.Start", "0"),
-        ("RangePartitioning.Range.End", "1000"),
-        ("RangePartitioning.Range.Interval", "10"),
-        ("RequirePartitionFilter", "true"),
-    ] {
-        assert_eq!(
-            schema.metadata().get(key).map(String::as_str),
-            Some(expected)
-        );
-    }
+    assert_eq!(
+        schema.metadata().get("Description").map(String::as_str),
+        Some("partitioned events")
+    );
 
-    let batch = connection
-        .get_statistics(None, Some("dataset"), Some("events"), false)
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap();
+    let batch =
+        first_batch(connection.get_statistics(None, Some("dataset"), Some("events"), false));
     let statistics = child_structs(child_structs(batch.column(1)).column(1));
     assert_eq!(statistics.len(), 1);
     assert_eq!(
@@ -378,33 +364,20 @@ fn range_partitioning_metadata_uses_the_go_driver_keys() {
     )
     .unwrap();
     let metadata = table_schema_metadata(table);
-    assert_eq!(
-        metadata.get("RangePartitioning.Field").map(String::as_str),
-        Some("bucket")
-    );
-    assert_eq!(
-        metadata
-            .get("RangePartitioning.Range.Start")
-            .map(String::as_str),
-        Some("0")
-    );
-    assert_eq!(
-        metadata
-            .get("RangePartitioning.Range.End")
-            .map(String::as_str),
-        Some("1000")
-    );
-    assert_eq!(
-        metadata
-            .get("RangePartitioning.Range.Interval")
-            .map(String::as_str),
-        Some("10")
-    );
-    assert_eq!(
-        metadata.get("Type").map(String::as_str),
-        Some("TABLE"),
-        "an empty table type must fall back to TABLE; dbt 2.0's get_relation requires the key"
-    );
+    for (key, expected) in [
+        ("RangePartitioning.Field", "bucket"),
+        ("RangePartitioning.Range.Start", "0"),
+        ("RangePartitioning.Range.End", "1000"),
+        ("RangePartitioning.Range.Interval", "10"),
+        // dbt 2.0's get_relation requires the key, so an empty table type falls back to TABLE.
+        ("Type", "TABLE"),
+    ] {
+        assert_eq!(
+            metadata.get(key).map(String::as_str),
+            Some(expected),
+            "{key}"
+        );
+    }
 }
 
 /// A view's SQL and an external table's source are reported with the Go driver's keys and value

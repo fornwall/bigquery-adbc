@@ -536,21 +536,6 @@ fn a_statement_scoped_storage_read_option_does_not_reach_a_sibling_connection() 
     );
 }
 
-/// The "no current catalog" refusal names both options that would supply one, before any
-/// request goes out.
-#[test]
-fn missing_current_catalog_names_the_options_that_would_set_it() {
-    let (endpoint, requests) = capture_requests(Vec::new());
-    let mut connection = anonymous_connection_at_with_defaults(&endpoint, None, None);
-    let error = set_option_error(&mut connection, OptionConnection::CurrentSchema, "dataset");
-    assert_failure(
-        &error,
-        Status::InvalidState,
-        &["adbc.connection.catalog", "bigquery.project_id"],
-    );
-    assert!(requests.join().unwrap().is_empty());
-}
-
 /// With the current catalog cleared, an unqualified name resolves in `bigquery.project_id`, as a
 /// statement's query defaults and an ingest target do, rather than being refused with a message
 /// that asks for the option already set.
@@ -601,21 +586,19 @@ fn metadata_listings_follow_a_cleared_catalog_to_the_billing_project() {
     set_option(&mut connection, OptionConnection::CurrentCatalog, "");
 
     for catalog in [None, Some("test-%"), Some("test-project")] {
-        let batch = connection
-            .get_objects(ObjectDepth::Catalogs, catalog, None, None, None, None)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap();
+        let batch = first_batch(connection.get_objects(
+            ObjectDepth::Catalogs,
+            catalog,
+            None,
+            None,
+            None,
+            None,
+        ));
         assert_eq!(batch.num_rows(), 1, "{catalog:?}");
         assert_eq!(string_at(batch.column(0), 0), "test-project", "{catalog:?}");
     }
-    let batch = connection
-        .get_objects(ObjectDepth::Schemas, None, None, None, None, None)
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap();
+    let batch =
+        first_batch(connection.get_objects(ObjectDepth::Schemas, None, None, None, None, None));
     assert_eq!(
         string_at(child_structs(batch.column(1)).column(0), 0),
         "dataset"

@@ -88,12 +88,23 @@ fn assert_sql(requests: CapturedServer, expected: &[&str]) {
 }
 
 /// A released connection ends its session rather than leaving its open transaction's locks to
-/// BigQuery's session timeout.
+/// BigQuery's session timeout. dbt 2.0 links the driver as an rlib inside its own Tokio runtime,
+/// so a release can land on a worker thread where `block_on` panics; the cleanup still runs.
 #[test]
 fn releasing_a_connection_rolls_back_and_aborts_its_open_transaction() {
-    let (connection, requests) = connection_with_open_transaction();
-    drop(connection);
-    assert_transaction_cleanup(requests, "ROLLBACK TRANSACTION");
+    for in_tokio_host in [false, true] {
+        let (connection, requests) = connection_with_open_transaction();
+        if in_tokio_host {
+            let host = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            host.block_on(async move { drop(connection) });
+        } else {
+            drop(connection);
+        }
+        assert_transaction_cleanup(requests, "ROLLBACK TRANSACTION");
+    }
 }
 
 /// A committed transaction leaves its session for the next one, so release still ends it, with
@@ -122,21 +133,6 @@ fn releasing_an_autocommit_connection_issues_no_cleanup() {
     let (endpoint, requests) = capture_requests(Vec::new());
     drop(test_connection_at(&endpoint));
     assert!(requests.join().unwrap().is_empty());
-}
-
-/// dbt 2.0 consumes the driver as an rlib inside its own Tokio runtime, so a release can
-/// land on a worker thread where `block_on` panics. The cleanup still has to reach BigQuery.
-#[test]
-fn releasing_a_connection_inside_a_tokio_host_still_ends_its_session() {
-    let (connection, requests) = connection_with_open_transaction();
-    let host = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    host.block_on(async move {
-        drop(connection);
-    });
-    assert_transaction_cleanup(requests, "ROLLBACK TRANSACTION");
 }
 
 /// BigQuery's answer to `COMMIT` or `ROLLBACK` once the session's transaction is gone: the
@@ -458,48 +454,38 @@ fn first_statement_refused(
     (failure, sql.collect())
 }
 
-/// Once a statement's earlier row ran in the transaction, the session ending took that row with
-/// it: the refusal of the next row reports the lost transaction instead of running again.
+/// Work that already ran in the transaction ended with the session, so a refusal after it is
+/// reported rather than run again: a statement's later row, and a script the session's end
+/// stopped partway, which BigQuery reports as `invalidQuery` after its earlier statements ran.
 #[test]
-fn a_later_row_refused_in_an_ended_session_is_not_run_again() {
-    let (failure, sql) = first_statement_refused(
-        "INSERT dataset.table VALUES (?)",
-        Some(vec![43, 44]),
-        session_expired(),
-    );
-    assert_message(&failure, &["has expired and is no longer available"]);
-    assert_eq!(
-        sql[4..],
-        [
-            "BEGIN TRANSACTION",
-            "INSERT dataset.table VALUES (?)",
-            "INSERT dataset.table VALUES (?)",
-            "ROLLBACK TRANSACTION",
-            "CALL BQ.ABORT_SESSION('mock-session')",
-        ]
-    );
-}
-
-/// A script the session's end stopped partway fails with the same message, reported as
-/// `invalidQuery`, after its earlier statements ran and perhaps committed: it never runs again.
-#[test]
-fn a_script_stopped_by_its_session_ending_is_not_run_again() {
-    let stopped = error_body(
-        "invalidQuery",
-        "Session mock-session has expired and is no longer available. at [2:1]",
-    );
+fn work_refused_after_earlier_work_in_an_ended_session_is_not_run_again() {
     let script = "INSERT dataset.table VALUES (43); COMMIT TRANSACTION";
-    let (failure, sql) = first_statement_refused(script, None, stopped);
-    assert_message(&failure, &["has expired and is no longer available"]);
-    assert_eq!(
-        sql[4..],
-        [
-            "BEGIN TRANSACTION",
+    let row = "INSERT dataset.table VALUES (?)";
+    for (sql, parameters, refusal, ran) in [
+        (row, Some(vec![43, 44]), session_expired(), &[row, row][..]),
+        (
             script,
-            "ROLLBACK TRANSACTION",
-            "CALL BQ.ABORT_SESSION('mock-session')",
+            None,
+            error_body(
+                "invalidQuery",
+                "Session mock-session has expired and is no longer available. at [2:1]",
+            ),
+            &[script][..],
+        ),
+    ] {
+        let (failure, requests) = first_statement_refused(sql, parameters, refusal);
+        assert_message(&failure, &["has expired and is no longer available"]);
+        let expected = [
+            &["BEGIN TRANSACTION"][..],
+            ran,
+            &[
+                "ROLLBACK TRANSACTION",
+                "CALL BQ.ABORT_SESSION('mock-session')",
+            ],
         ]
-    );
+        .concat();
+        assert_eq!(requests[4..], expected, "{sql}");
+    }
 }
 
 /// Re-enabling autocommit commits the open transaction; when that finds the transaction gone,
@@ -669,14 +655,16 @@ fn a_cancel_during_commit_waits_for_its_outcome() {
 /// statement instead of being ended.
 #[test]
 fn a_refused_begin_keeps_the_session_for_the_next_statement() {
-    let (mut connection, requests) = connection_with_open_transaction_then(vec![
-        (200, complete()),
-        (400, error_body("invalidQuery", "mock refusal")),
-        (200, complete()),
-        (200, complete()),
-        (200, complete()),
-        (200, complete()),
-    ]);
+    let (mut connection, requests) = connection_with_open_transaction_then(
+        [
+            vec![
+                (200, complete()),
+                (400, error_body("invalidQuery", "mock refusal")),
+            ],
+            vec![(200, complete()); 4],
+        ]
+        .concat(),
+    );
     connection.commit().unwrap();
     let sql = "INSERT dataset.table VALUES (43)";
     assert_message(
@@ -775,41 +763,22 @@ fn enabling_autocommit_over_a_commit_without_a_verdict_says_the_outcome_is_unkno
 /// caller is told the outcome is unknown, and the next statement begins in a fresh session.
 #[test]
 fn a_commit_without_a_verdict_ends_the_session_and_says_the_outcome_is_unknown() {
-    let then = [
+    let responses = [
+        vec![
+            (200, session_created("mock-session")),
+            (200, complete()),
+            (200, complete()),
+        ],
         commit_without_a_verdict(),
         vec![(200, complete())],
         a_fresh_session(),
     ];
-    let (mut connection, requests) = connection_with_open_transaction_then(then.concat());
-
-    let failure = connection.commit().unwrap_err();
-    assert_failure(
-        &failure,
-        Status::IO,
-        &[
-            "did not say whether the transaction was committed",
-            "next statement starts a new transaction",
-        ],
+    let (endpoint, requests) = capture_statements(responses.concat());
+    assert_a_commit_without_a_verdict_ends_the_session(
+        test_connection_at(&endpoint),
+        requests,
+        crate::rest::retry::MAX_ATTEMPTS as usize,
     );
-    execute(&mut connection, "INSERT dataset.table VALUES (43)").unwrap();
-    drop(connection);
-
-    let commits = vec!["COMMIT TRANSACTION"; crate::rest::retry::MAX_ATTEMPTS as usize];
-    let mut expected = vec![
-        "SELECT 1",
-        "BEGIN TRANSACTION",
-        "INSERT dataset.table VALUES (42)",
-    ];
-    expected.extend(commits);
-    expected.extend([
-        "CALL BQ.ABORT_SESSION('mock-session')",
-        "SELECT 1",
-        "BEGIN TRANSACTION",
-        "INSERT dataset.table VALUES (43)",
-        "ROLLBACK TRANSACTION",
-        "CALL BQ.ABORT_SESSION('fresh-session')",
-    ]);
-    assert_sql(requests, &expected);
 }
 
 /// BigQuery does not deduplicate `BEGIN`, `COMMIT` or `ROLLBACK` by `jobs.query` request ID, so
@@ -938,6 +907,7 @@ fn assert_a_commit_without_a_verdict_ends_the_session(
         &[
             "did not say whether the transaction was committed",
             "The session was ended",
+            "next statement starts a new transaction",
         ],
     );
     execute(&mut connection, "INSERT dataset.table VALUES (43)").unwrap();
@@ -1033,12 +1003,9 @@ fn a_begin_without_a_verdict_ends_the_session_rather_than_wedging_it() {
 /// rollback, and the next statement joins it without a `BEGIN`.
 #[test]
 fn a_commit_bigquery_refused_keeps_the_transaction() {
-    let (mut connection, requests) = connection_with_open_transaction_then(vec![
-        (400, error_body("invalidQuery", "mock refusal")),
-        (200, complete()),
-        (200, complete()),
-        (200, complete()),
-    ]);
+    let mut then = vec![(200, complete()); 4];
+    then[0] = (400, error_body("invalidQuery", "mock refusal"));
+    let (mut connection, requests) = connection_with_open_transaction_then(then);
     let failure = connection.commit().unwrap_err();
     assert_message(&failure, &["mock refusal"]);
     assert_message_omits(&failure, &["session was ended"]);
@@ -1201,17 +1168,9 @@ fn a_default_dataset_whose_location_is_unknown_leaves_the_session_location_to_bi
 /// statement must begin a new one in the same session rather than autocommit there unseen.
 #[test]
 fn a_commit_statement_in_the_callers_sql_makes_the_next_statement_begin_again() {
-    let (mut connection, requests) = connection_with_open_transaction_then(vec![
-        ok(json!({
-            "jobComplete": true,
-            "jobReference": {"projectId":"fixture-project","jobId":"commit-job"},
-            "statementType": "COMMIT_TRANSACTION"
-        })),
-        (200, complete()),
-        (200, complete()),
-        (200, complete()),
-        (200, complete()),
-    ]);
+    let mut then = vec![(200, complete()); 5];
+    then[0].1["statementType"] = json!("COMMIT_TRANSACTION");
+    let (mut connection, requests) = connection_with_open_transaction_then(then);
     execute(&mut connection, "COMMIT TRANSACTION").unwrap();
     execute(&mut connection, "INSERT dataset.table VALUES (43)").unwrap();
     drop(connection);

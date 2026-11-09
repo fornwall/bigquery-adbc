@@ -117,12 +117,7 @@ fn a_described_table_type_supersedes_its_listing_type() {
                 None,
                 table_types.clone(),
             ),
-            None => connection
-                .get_statistics(None, Some("dataset"), None, false)
-                .unwrap()
-                .next()
-                .unwrap()
-                .unwrap(),
+            None => first_batch(connection.get_statistics(None, Some("dataset"), None, false)),
         };
         let tables = child_structs(child_structs(batch.column(1)).column(1));
         if depth.is_some() && table_types.is_none() {
@@ -451,7 +446,7 @@ fn get_table_schema_rejects_a_dot_segment_name() {
 /// `(dataset, table)` pair this way.
 #[test]
 fn an_exact_lookup_falls_back_only_to_distinguish_which_object_is_missing() {
-    for listing in [objects_listing as ExactListing, statistics_listing] {
+    for depth in [Some(ObjectDepth::Tables), None] {
         for (dataset_response, expected_schemas) in [
             ((200, json!({})), 1_usize),
             ((404, not_found_response()), 0_usize),
@@ -460,7 +455,13 @@ fn an_exact_lookup_falls_back_only_to_distinguish_which_object_is_missing() {
                 capture_requests(vec![(404, not_found_response()), dataset_response]);
             let connection = anonymous_connection_at(&endpoint);
 
-            let batch = listing(&connection, "missing").next().unwrap().unwrap();
+            let batch = first_batch(discover_metadata(
+                &connection,
+                depth,
+                None,
+                Some("dataset"),
+                Some("missing"),
+            ));
             let schemas = child_structs(batch.column(1));
             assert_eq!(schemas.len(), expected_schemas);
             if expected_schemas == 1 {
@@ -481,11 +482,17 @@ fn an_exact_lookup_falls_back_only_to_distinguish_which_object_is_missing() {
 #[test]
 fn an_exact_filter_that_is_not_a_table_id_matches_no_table() {
     let invalid = error_body("invalid", "Invalid table ID \"a*b\".");
-    for listing in [objects_listing as ExactListing, statistics_listing] {
+    for depth in [Some(ObjectDepth::Tables), None] {
         let (endpoint, requests) = capture_requests(vec![(400, invalid.clone()), (200, json!({}))]);
         let connection = anonymous_connection_at(&endpoint);
 
-        let batch = listing(&connection, "a*b").next().unwrap().unwrap();
+        let batch = first_batch(discover_metadata(
+            &connection,
+            depth,
+            None,
+            Some("dataset"),
+            Some("a*b"),
+        ));
         let schemas = child_structs(batch.column(1));
         assert_eq!(schemas.len(), 1);
         assert_eq!(child_structs(schemas.column(1)).len(), 0);
@@ -520,7 +527,7 @@ fn an_exact_filter_that_is_not_a_table_id_matches_no_table() {
 /// looked up.
 #[test]
 fn an_exact_filter_with_a_table_decorator_matches_no_table() {
-    for listing in [objects_listing as ExactListing, statistics_listing] {
+    for depth in [Some(ObjectDepth::Tables), None] {
         for name in [
             "events$20260101",
             "events$2026",
@@ -537,7 +544,13 @@ fn an_exact_filter_with_a_table_decorator_matches_no_table() {
                 });
             let connection = anonymous_connection_at(&endpoint);
 
-            let batch = listing(&connection, name).next().unwrap().unwrap();
+            let batch = first_batch(discover_metadata(
+                &connection,
+                depth,
+                None,
+                Some("dataset"),
+                Some(name),
+            ));
             let schemas = child_structs(batch.column(1));
             assert_eq!(schemas.len(), 1, "{name}");
             assert_eq!(child_structs(schemas.column(1)).len(), 0, "{name}");
@@ -574,35 +587,6 @@ fn an_exact_dataset_filter_that_is_not_a_dataset_id_matches_no_dataset() {
         let requests = requests.served(1);
         assert!(requests[0].path().contains("/datasets/a%20b/tables"));
     }
-}
-
-/// The two metadata listings that resolve an exact `(dataset, table)` pair, as one signature.
-type ExactListing =
-    fn(&crate::BigQueryConnection, &str) -> Box<dyn RecordBatchReader + Send + 'static>;
-
-fn objects_listing(
-    connection: &crate::BigQueryConnection,
-    table_name: &str,
-) -> Box<dyn RecordBatchReader + Send + 'static> {
-    connection
-        .get_objects(
-            ObjectDepth::Tables,
-            None,
-            Some("dataset"),
-            Some(table_name),
-            None,
-            None,
-        )
-        .unwrap()
-}
-
-fn statistics_listing(
-    connection: &crate::BigQueryConnection,
-    table_name: &str,
-) -> Box<dyn RecordBatchReader + Send + 'static> {
-    connection
-        .get_statistics(None, Some("dataset"), Some(table_name), false)
-        .unwrap()
 }
 
 /// The filter combinations that must never reach a `tables.list`, and the one that must.
@@ -1046,12 +1030,14 @@ fn catalog_discovery_does_not_probe_the_current_project() {
     let (endpoint, requests) = capture_requests(Vec::new());
     let connection = anonymous_connection_at(&endpoint);
     for filter in [None, Some("test-project"), Some("test-%")] {
-        let batch = connection
-            .get_objects(ObjectDepth::Catalogs, filter, None, None, None, None)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap();
+        let batch = first_batch(connection.get_objects(
+            ObjectDepth::Catalogs,
+            filter,
+            None,
+            None,
+            None,
+            None,
+        ));
         assert_eq!(string_at(batch.column(0), 0), "test-project");
     }
     assert!(!connection.context.state.initialized_clients().metadata);

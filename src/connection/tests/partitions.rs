@@ -25,22 +25,7 @@ fn partition_job_ids_cannot_change_the_request_path() {
 /// must leave an already-returned partition stream readable.
 #[test]
 fn concurrent_partition_readers_both_complete() {
-    let (endpoint, requests) = capture_requests(vec![
-        (200, partition_job("partition-one")),
-        (200, partition_rows(1)),
-        (200, partition_job("partition-one")),
-        (200, partition_job("partition-two")),
-        (200, partition_rows(2)),
-        (200, partition_job("partition-two")),
-    ]);
-    let connection = anonymous_connection_at(&endpoint);
-
-    let mut first = connection
-        .read_partition(partition_descriptor("partition-one"))
-        .unwrap();
-    let mut second = connection
-        .read_partition(partition_descriptor("partition-two"))
-        .unwrap();
+    let (connection, requests, mut first, mut second) = two_partition_readers();
     // A metadata call on the same connection begins an operation of its own.
     drop(connection.get_table_types().unwrap());
 
@@ -56,22 +41,7 @@ fn concurrent_partition_readers_both_complete() {
 /// once, it ends all of them rather than only the most recent.
 #[test]
 fn cancelling_a_connection_ends_every_partition_reader() {
-    let (endpoint, requests) = capture_requests(vec![
-        (200, partition_job("partition-one")),
-        (200, partition_rows(1)),
-        (200, partition_job("partition-one")),
-        (200, partition_job("partition-two")),
-        (200, partition_rows(2)),
-        (200, partition_job("partition-two")),
-    ]);
-    let connection = anonymous_connection_at(&endpoint);
-
-    let mut first = connection
-        .read_partition(partition_descriptor("partition-one"))
-        .unwrap();
-    let mut second = connection
-        .read_partition(partition_descriptor("partition-two"))
-        .unwrap();
+    let (connection, requests, mut first, mut second) = two_partition_readers();
     let requests = requests.join().unwrap();
     connection.get_cancel_handle().try_cancel().unwrap();
 
@@ -120,6 +90,28 @@ fn parallel_failing_partition_reads_do_not_deadlock() {
     }
 }
 
+type Reader = Box<dyn RecordBatchReader + Send>;
+
+/// A connection reading two partitions at once, each a one-row job.
+fn two_partition_readers() -> (crate::BigQueryConnection, CapturedServer, Reader, Reader) {
+    let (endpoint, requests) = capture_requests(vec![
+        (200, partition_job("partition-one")),
+        (200, partition_rows(1)),
+        (200, partition_job("partition-one")),
+        (200, partition_job("partition-two")),
+        (200, partition_rows(2)),
+        (200, partition_job("partition-two")),
+    ]);
+    let connection = anonymous_connection_at(&endpoint);
+    let first = connection
+        .read_partition(partition_descriptor("partition-one"))
+        .unwrap();
+    let second = connection
+        .read_partition(partition_descriptor("partition-two"))
+        .unwrap();
+    (connection, requests, first, second)
+}
+
 fn partition_job(job_id: &str) -> serde_json::Value {
     json!({
         "jobReference": {"projectId": "test-project", "jobId": job_id},
@@ -150,12 +142,6 @@ fn partition_descriptor(job_id: &str) -> Vec<u8> {
     descriptor
 }
 
-fn partition_value(reader: &mut Box<dyn RecordBatchReader + Send>) -> i64 {
-    let batch = reader.next().unwrap().unwrap();
-    batch
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap()
-        .value(0)
+fn partition_value(reader: &mut Reader) -> i64 {
+    typed::<Int64Array>(reader.next().unwrap().unwrap().column(0)).value(0)
 }

@@ -72,19 +72,14 @@ fn literal_table_and_column_filters_preserve_depth_and_metadata_options() {
                     BigQueryConnectionOption::GetObjectsSkipTableMetadata,
                     skip,
                 );
-                let batch = connection
-                    .get_objects(
-                        depth,
-                        Some("test-project"),
-                        Some("a_b"),
-                        Some("events_2026"),
-                        Some(vec!["TABLE"]),
-                        column_filter,
-                    )
-                    .unwrap()
-                    .next()
-                    .unwrap()
-                    .unwrap();
+                let batch = first_batch(connection.get_objects(
+                    depth,
+                    Some("test-project"),
+                    Some("a_b"),
+                    Some("events_2026"),
+                    Some(vec!["TABLE"]),
+                    column_filter,
+                ));
                 let schemas = child_structs(batch.column(1));
                 assert_eq!(schemas.len(), 1);
                 assert_eq!(string_at(schemas.column(0), 0), "a_b");
@@ -136,12 +131,14 @@ fn literal_catalog_filters_do_not_expand_wildcards() {
         (Some("TEST-PROJECT"), 0),
         (Some(""), 0),
     ] {
-        let batch = connection
-            .get_objects(ObjectDepth::Catalogs, filter, None, None, None, None)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap();
+        let batch = first_batch(connection.get_objects(
+            ObjectDepth::Catalogs,
+            filter,
+            None,
+            None,
+            None,
+            None,
+        ));
         assert_eq!(batch.num_rows(), rows, "{filter:?}");
     }
     let requests = requests.join().unwrap();
@@ -235,12 +232,8 @@ fn disabling_object_wildcards_does_not_change_statistics_filters() {
     ]);
     let mut connection = anonymous_connection_at(&endpoint);
     set_option(&mut connection, OPTION, "true");
-    let batch = connection
-        .get_statistics(Some("test-%"), Some("a_b"), Some("t_%"), false)
-        .unwrap()
-        .next()
-        .unwrap()
-        .unwrap();
+    let batch =
+        first_batch(connection.get_statistics(Some("test-%"), Some("a_b"), Some("t_%"), false));
     let schemas = child_structs(batch.column(1));
     assert_eq!(schemas.len(), 1);
     assert_eq!(string_at(schemas.column(0), 0), "axb");

@@ -309,11 +309,13 @@ fn a_table_that_vanishes_mid_fan_out_leaves_the_rest_of_the_dataset_listed() {
             let (endpoint, requests) = capture_requests(responses);
             let connection = anonymous_connection_at(&endpoint);
 
-            let batch = discover_metadata(&connection, depth, None, Some("dataset"), None)
-                .unwrap()
-                .next()
-                .unwrap()
-                .unwrap();
+            let batch = first_batch(discover_metadata(
+                &connection,
+                depth,
+                None,
+                Some("dataset"),
+                None,
+            ));
             let schemas = child_structs(batch.column(1));
             assert_eq!(schemas.len(), 1, "the dataset itself must still be listed");
             assert_eq!(string_at(schemas.column(0), 0), "dataset");
