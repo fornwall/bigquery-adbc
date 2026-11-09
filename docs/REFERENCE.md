@@ -565,10 +565,10 @@ Columns and values:
   values in required columns.
 - An appended field adopts what the target column declares, and every value is checked against it.
   A decimal takes the column's type, precision and scale; a value with a fractional digit the column
-  would round away, or too many integer digits, returns `INVALID_DATA` naming its row. A string or
-  bytes field without `BIGQUERY:max_length` takes the column's length, and a declared one must fit
-  the column's; unrelated Arrow extension annotations do not change this. A field of Arrow type
-  `Null`, which pandas and Polars infer for an all-null column, takes the column's type unless the
+  would round away, or too many integer digits, returns `INVALID_DATA` naming its row in the bound
+  stream. A string or bytes field without `BIGQUERY:max_length` takes the column's length, and a
+  declared one must fit the column's; unrelated Arrow extension annotations do not change this. A
+  field of Arrow type `Null`, which pandas and Polars infer for an all-null column, takes the column's type unless the
   column is `REQUIRED`.
 - Column names must start with an ASCII letter or underscore and contain only ASCII letters, digits
   and underscores. Storage Write cannot write flexible column names (such as `first name`), so an

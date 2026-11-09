@@ -21,6 +21,11 @@ changes.
   Its `system update` installs the latest bigquery-adbc release instead of saying to update dbt with
   a package manager.
 
+### Fixed
+
+- A row that bulk ingest refuses in a later batch is named by its position in the whole bound
+  stream, as BigQuery's own row errors are, rather than by its position within that batch.
+
 ## [0.4.0] - 2026-11-07
 
 ### Added
