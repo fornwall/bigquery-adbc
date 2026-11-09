@@ -499,10 +499,13 @@ pub(crate) fn int64_column(batches: &[RecordBatch]) -> Vec<i64> {
     batches
         .iter()
         .flat_map(|batch| {
-            typed::<Int64Array>(batch.column(0).as_ref())
-                .values()
-                .iter()
-                .copied()
+            let column = typed::<Int64Array>(batch.column(0).as_ref());
+            assert_eq!(
+                column.null_count(),
+                0,
+                "unexpected NULL in the first column"
+            );
+            column.values().iter().copied()
         })
         .collect()
 }

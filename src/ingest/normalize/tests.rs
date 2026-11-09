@@ -116,6 +116,17 @@ fn bignumeric_ingest_uses_its_physical_domain_only_for_its_canonical_shape() {
     let normalized = normalize_batch(batch, schema).unwrap();
     let values = normalized.column(0).as_primitive::<Decimal256Type>();
     assert_eq!(values.values(), &[i256::MIN, one_e38, i256::MAX]);
+
+    // Any other Decimal256 keeps its declared precision, though its physical integer fits.
+    let outside_precision = i256::from_string(&format!("1{}", "0".repeat(75))).unwrap();
+    let column = Arc::new(
+        Decimal256Array::from(vec![outside_precision])
+            .with_precision_and_scale(75, 38)
+            .unwrap(),
+    ) as ArrayRef;
+    let (batch, schema) = single_column_batch("ordinary", column);
+    let error = normalize_batch(batch, schema).unwrap_err();
+    assert_failure(&error, Status::InvalidData, &["declared precision"]);
 }
 
 /// BigQuery arrays cannot contain NULL, and an ingest array is described to the service only

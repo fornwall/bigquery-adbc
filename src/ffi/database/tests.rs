@@ -54,6 +54,10 @@ fn pre_init_aliases_share_the_last_value_and_can_correct_a_failed_init() {
         ("adbc.bigquery.sql.auth_type", "bigquery.auth_type"),
     ] {
         let mut database: AdbcDatabase = allocated();
+        assert_eq!(
+            set(&mut database, "uri", "bigquery:///a-project").0,
+            ADBC_STATUS_OK
+        );
         assert_eq!(set(&mut database, first, "no-such-auth").0, ADBC_STATUS_OK);
         assert_eq!(init(&mut database), ADBC_STATUS_INVALID_ARGUMENT);
         assert_eq!(set(&mut database, second, "anonymous").0, ADBC_STATUS_OK);
@@ -63,6 +67,11 @@ fn pre_init_aliases_share_the_last_value_and_can_correct_a_failed_init() {
             "correcting {first} through {second} must replace the invalid value"
         );
         assert_eq!(get(&mut database, first).unwrap(), "anonymous");
+        // The failed Init kept the other buffered options for the retry.
+        assert_eq!(
+            get(&mut database, "adbc.bigquery.sql.project_id").unwrap(),
+            "a-project"
+        );
         release(&mut database);
 
         let mut database: AdbcDatabase = allocated();

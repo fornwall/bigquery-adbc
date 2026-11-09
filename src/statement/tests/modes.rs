@@ -151,8 +151,6 @@ fn dbt_placeholders_keep_a_dataset_location_lookup_and_real_sql_replaces_it() {
     assert!(statement.sql.is_none());
 }
 
-/// Mode switching is symmetric: a python-model operation replaces every other option-only
-/// operation and every one of them replaces it.
 #[test]
 fn the_shared_batch_id_and_pooling_timeout_select_no_operation() {
     let mut statement = test_statement();

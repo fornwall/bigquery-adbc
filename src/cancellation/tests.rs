@@ -383,7 +383,10 @@ fn late_registration_returns_cancelled_before_remote_cancellation_answers() {
     assert_eq!(failure.status, Status::Cancelled);
 
     release.send(()).unwrap();
-    requests.served(1);
+    assert_eq!(
+        requests.served(1)[0].path(),
+        "/bigquery/v2/projects/billing-project/jobs/late-query-job/cancel"
+    );
 }
 
 /// A caller cancelled before its submission sends no job, so a provisional identity registered

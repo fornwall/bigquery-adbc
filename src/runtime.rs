@@ -215,8 +215,7 @@ mod tests {
         new_runtime_with_result_conversion_concurrency, orphaned_runtime, worker_threads,
     };
 
-    /// The worker count follows the host and stays inside the clamp on any machine, including a
-    /// single-core one.
+    /// The worker count stays inside the clamp on any machine, including a single-core one.
     #[test]
     fn runtime_worker_count_is_clamped_to_the_host() {
         let workers = worker_threads();
