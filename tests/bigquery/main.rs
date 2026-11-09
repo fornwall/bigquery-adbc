@@ -20,7 +20,6 @@ mod dbt;
 mod errors;
 mod ingest;
 mod metadata;
-mod oauth_scopes;
 mod parameters;
 #[path = "../support/project.rs"]
 mod project_config;
