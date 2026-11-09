@@ -107,11 +107,10 @@ impl Lookup {
                 OPTION.as_str()
             )));
         }
-        let dataset_id = dataset_id.to_owned();
         Ok(Self {
+            dataset_id: dataset_id.to_owned(),
             payload,
             project_id,
-            dataset_id,
         })
     }
 }

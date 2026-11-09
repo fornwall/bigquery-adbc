@@ -73,15 +73,11 @@ pub(crate) use dbt_statement_option;
 /// so combining it with another operation is rejected at execution instead; see `DBT.md`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DbtMode {
-    /// The dbt 2.0 CSV seed load.
     CsvSeed,
-    /// The authorized-view payload.
     DatasetAuthorization,
-    /// The dataset location lookup.
     DatasetLocation,
-    /// A BigQuery table copy job.
     TableCopy,
-    /// Any of the three dbt 2.0 python-model operations.
+    /// Any python-model operation.
     PythonModel,
 }
 
@@ -454,14 +450,9 @@ impl DbtStatementState {
         Ok(OptionOnlyOutcome::rows(Some(rows_affected)))
     }
 
-    /// Refuses a bulk ingest while a table metadata update is also configured.
-    pub(crate) fn reject_ingest_conflict(&self) -> Result<()> {
-        self.reject_pending_table_mutation("adbc.ingest.*")
-    }
-
     /// Rejects the `family` operation while a table metadata update is also configured: no setter
     /// clears one for the other, and running one would silently drop the other.
-    fn reject_pending_table_mutation(&self, family: &str) -> Result<()> {
+    pub(crate) fn reject_pending_table_mutation(&self, family: &str) -> Result<()> {
         if self.table_mutation.is_active() {
             return Err(invalid_state(format!(
                 "the {family} options cannot be combined with {} on one BigQuery statement",

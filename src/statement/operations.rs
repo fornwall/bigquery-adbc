@@ -106,7 +106,7 @@ impl OptionOnlyOutcome {
 
 impl BigQueryStatement {
     fn execute_ingest(&mut self) -> Result<i64> {
-        self.dbt.reject_ingest_conflict()?;
+        self.dbt.reject_pending_table_mutation("adbc.ingest.*")?;
         // Storage Write has no session, and BigQuery rejects the table DDL inside a transaction.
         // A dry run is refused too: it could only report this same failure.
         self.transaction.require_autocommit("bulk ingest")?;
