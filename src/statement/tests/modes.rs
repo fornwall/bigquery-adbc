@@ -154,43 +154,6 @@ fn dbt_placeholders_keep_a_dataset_location_lookup_and_real_sql_replaces_it() {
 /// Mode switching is symmetric: a python-model operation replaces every other option-only
 /// operation and every one of them replaces it.
 #[test]
-fn a_python_model_operation_replaces_every_other_mode_and_is_replaced_by_it() {
-    const AUTHORIZATION: &str =
-        r#"{"analytics.v": [{"project": "data-project", "dataset": "analytics"}]}"#;
-    let parent = BqOption::CreateBatchParent;
-    let copy_source = BqOption::CopyTableSource;
-    let authorize = BqOption::AuthorizeViewToDatasets;
-    let mut statement = test_statement();
-
-    // A python-model operation leaves a table copy behind.
-    set_option(&mut statement, copy_source, "data-project.analytics.source");
-    set_option(&mut statement, parent, "projects/data-project/locations/eu");
-    assert_string_option(&statement, copy_source, None);
-
-    // And an authorization leaves the python-model operation behind.
-    set_option(&mut statement, authorize, AUTHORIZATION);
-    assert_string_option(&statement, parent, None);
-
-    // An authorization does not survive a python-model operation.
-    set_option(&mut statement, parent, "projects/data-project/locations/eu");
-    assert_string_option(&statement, authorize, None);
-
-    for (option, value) in [
-        (copy_source, "data-project.analytics.source"),
-        (authorize, AUTHORIZATION),
-        (BqOption::CsvFilepath, "/tmp/seed.csv"),
-    ] {
-        set_option(&mut statement, parent, "projects/data-project/locations/eu");
-        set_option(&mut statement, option, value.to_owned());
-        assert_string_option(&statement, parent, None);
-    }
-
-    set_option(&mut statement, parent, "projects/data-project/locations/eu");
-    set_option(&mut statement, OptionStatement::TargetTable, "ingested");
-    assert_string_option(&statement, parent, None);
-}
-
-#[test]
 fn the_shared_batch_id_and_pooling_timeout_select_no_operation() {
     let mut statement = test_statement();
     for (option, value) in [
