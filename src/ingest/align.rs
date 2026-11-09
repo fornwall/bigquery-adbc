@@ -7,10 +7,8 @@
 
 use std::sync::Arc;
 
-use adbc_core::error::Result;
+use adbc_core::error::{Result, Status};
 use arrow_schema::{DataType, Field, Fields, Schema};
-
-use adbc_core::error::Status;
 
 use crate::error::{error, invalid_argument};
 use crate::rest::model::{TableFieldSchema, TableSchema};
@@ -75,9 +73,9 @@ fn align_field(field: &Field, column: &TableFieldSchema) -> Result<Field> {
                 column.name
             )))
         }
-        DataType::Null => align_field(&column_field(field, column)?, column),
+        DataType::Null => align_field(&convert_field(column)?.with_name(field.name()), column),
         DataType::List(item) if repeated => match item.data_type() {
-            DataType::Null => align_field(&column_field(field, column)?, column),
+            DataType::Null => align_field(&convert_field(column)?.with_name(field.name()), column),
             DataType::Struct(children) if is_record(column) => {
                 let item = item
                     .as_ref()
@@ -101,12 +99,6 @@ fn align_field(field: &Field, column: &TableFieldSchema) -> Result<Field> {
 
 fn is_record(column: &TableFieldSchema) -> bool {
     BigQueryType::from_rest(&column.r#type) == Some(BigQueryType::Struct)
-}
-
-/// Use the destination column's type under the bound field's name. The caller then applies
-/// constraints, such as decimal precision and scale, that the read type leaves in metadata.
-fn column_field(field: &Field, column: &TableFieldSchema) -> Result<Field> {
-    Ok(convert_field(column)?.with_name(field.name()))
 }
 
 /// Apply the column's decimal shape or maximum length to a scalar or list item.
@@ -139,7 +131,8 @@ fn with_column_decimal(values: &Field, column: &TableFieldSchema) -> Result<Fiel
                 Status::InvalidData,
             )
         })?;
-    let mut metadata = values.metadata().clone();
+    let mut values = values.clone().with_data_type(data_type);
+    let metadata = values.metadata_mut();
     metadata.insert(
         BIGQUERY_TYPE_METADATA_KEY.to_owned(),
         family.name().to_owned(),
@@ -154,10 +147,7 @@ fn with_column_decimal(values: &Field, column: &TableFieldSchema) -> Result<Fiel
             metadata.insert(key.to_owned(), value.to_string());
         }
     }
-    Ok(values
-        .clone()
-        .with_data_type(data_type)
-        .with_metadata(metadata))
+    Ok(values)
 }
 
 /// Inherit the column's maximum length for plain strings and bytes with no declared limit.
@@ -185,12 +175,12 @@ fn with_column_length(values: &Field, field: &Field, column: &TableFieldSchema) 
     {
         return values.clone();
     }
-    let mut metadata = values.metadata().clone();
-    metadata.insert(
+    let mut values = values.clone();
+    values.metadata_mut().insert(
         BIGQUERY_FIELD_METADATA_MAX_LENGTH.to_owned(),
         column.max_length.to_string(),
     );
-    values.clone().with_metadata(metadata)
+    values
 }
 
 #[cfg(test)]
