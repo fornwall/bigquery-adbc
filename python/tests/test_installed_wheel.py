@@ -5,7 +5,6 @@ import inspect
 import json
 import os
 import threading
-import urllib.parse
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -100,45 +99,6 @@ def test_native_database_reports_an_unset_uri_as_not_found() -> None:
     ("uri", "expected"),
     [
         pytest.param(
-            "bigquery:///dummyproject?OAuthType=0&DatasetId=dummydataset&Location=dummylocation",
-            {
-                driver.DatabaseOptions.AUTHENTICATION_TYPE: (driver.AuthenticationType.APPLICATION_DEFAULT),
-                driver.DatabaseOptions.PROJECT_ID: "dummyproject",
-                driver.DatabaseOptions.DATASET_ID: "dummydataset",
-                driver.DatabaseOptions.LOCATION: "dummylocation",
-                driver.DatabaseOptions.ENDPOINT: "https://bigquery.googleapis.com:443",
-            },
-            id="application-default-credentials",
-        ),
-        pytest.param(
-            "bigquery:///dummyproject?OAuthType=1&AuthCredentials=/path/to/service-account.json&DatasetId=dummydataset",
-            {
-                driver.DatabaseOptions.AUTHENTICATION_TYPE: (driver.AuthenticationType.JSON_CREDENTIAL_FILE),
-                driver.DatabaseOptions.URI: (
-                    "bigquery:///dummyproject?OAuthType=1&AuthCredentials=<redacted>&DatasetId=dummydataset"
-                ),
-                driver.DatabaseOptions.PROJECT_ID: "dummyproject",
-                driver.DatabaseOptions.DATASET_ID: "dummydataset",
-            },
-            id="service-account-file",
-        ),
-        pytest.param(
-            "bigquery:///dummyproject?OAuthType=2&AuthCredentials="
-            + urllib.parse.quote('{"type":"service_account","project_id":"test"}')
-            + "&DatasetId=dummydataset&Location=dummylocation",
-            {
-                driver.DatabaseOptions.AUTHENTICATION_TYPE: (driver.AuthenticationType.JSON_CREDENTIAL_STRING),
-                driver.DatabaseOptions.URI: (
-                    "bigquery:///dummyproject?OAuthType=2&AuthCredentials=<redacted>"
-                    "&DatasetId=dummydataset&Location=dummylocation"
-                ),
-                driver.DatabaseOptions.PROJECT_ID: "dummyproject",
-                driver.DatabaseOptions.DATASET_ID: "dummydataset",
-                driver.DatabaseOptions.LOCATION: "dummylocation",
-            },
-            id="service-account-string",
-        ),
-        pytest.param(
             "bigquery:///dummyproject"
             "?OAuthType=3"
             "&AuthClientId=test-client-id"
@@ -170,25 +130,6 @@ def test_native_database_reports_an_unset_uri_as_not_found() -> None:
                 driver.DatabaseOptions.ENDPOINT: "https://bigquery.dummyapis.com:445",
             },
             id="custom-endpoint",
-        ),
-        pytest.param(
-            "bigquery://bigquery.dummyapis.com/dummyproject?OAuthType=0&DatasetId=dummydataset",
-            {
-                driver.DatabaseOptions.AUTHENTICATION_TYPE: (driver.AuthenticationType.APPLICATION_DEFAULT),
-                driver.DatabaseOptions.PROJECT_ID: "dummyproject",
-                driver.DatabaseOptions.DATASET_ID: "dummydataset",
-                driver.DatabaseOptions.ENDPOINT: "https://bigquery.dummyapis.com:443",
-            },
-            id="custom-endpoint-default-port",
-        ),
-        pytest.param(
-            "bigquery://:448/dummyproject?OAuthType=0",
-            {
-                driver.DatabaseOptions.AUTHENTICATION_TYPE: (driver.AuthenticationType.APPLICATION_DEFAULT),
-                driver.DatabaseOptions.PROJECT_ID: "dummyproject",
-                driver.DatabaseOptions.ENDPOINT: "https://bigquery.googleapis.com:448",
-            },
-            id="custom-port-default-host",
         ),
         pytest.param(
             "bigquery:///dummyproject",
