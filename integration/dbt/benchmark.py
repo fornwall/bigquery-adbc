@@ -81,7 +81,7 @@ def stage_local_driver(cache_home: Path, library: Path | None = None) -> tuple[P
     log("\n==> Build and stage the local driver (not timed)")
     if library is None:
         log(f"  $ {' '.join(local_driver.BUILD_COMMAND)}")
-        destination, digest, _version = local_driver.stage(cache_home)
+        destination, digest = local_driver.stage(cache_home)
     else:
         destination = local_driver.cache_path(cache_home)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -140,14 +140,8 @@ from unnest(generate_array(1, {row_count})) as event_id
 """
     )
 
-    schema_models = [
-        (
-            "  - name: base_events\n"
-            "    columns:\n"
-            "      - name: event_id\n"
-            "        data_tests: [not_null, unique]\n"
-        )
-    ]
+    # Each model's unique key, which gets not_null and unique data tests.
+    keys = {"base_events": "event_id"}
     for index in range(1, model_count + 1):
         name = f"metric_{index:03d}"
         (models / f"{name}.sql").write_text(
@@ -163,34 +157,23 @@ from {{{{ ref('base_events') }}}}
 group by group_id, event_date
 """
         )
-        schema_models.append(
-            f"  - name: {name}\n"
-            "    columns:\n"
-            "      - name: metric_key\n"
-            "        data_tests: [not_null, unique]\n"
-        )
+        keys[name] = "metric_key"
 
     (models / "schema.yml").write_text(
-        "version: 2\n\nmodels:\n" + "".join(schema_models)
+        "version: 2\n\nmodels:\n"
+        + "".join(
+            f"  - name: {model}\n    columns:\n      - name: {key}\n        data_tests: [not_null, unique]\n"
+            for model, key in keys.items()
+        )
     )
 
 
-def dbt_arguments(
-    command_name: str, *arguments: str, target_dir: Path, log_dir: Path
-) -> list[str]:
+def dbt_arguments(*arguments: str, target_dir: Path, log_dir: Path) -> list[str]:
     return [
         "dbt",
-        command_name,
         *arguments,
-        "--project-dir",
-        str(GENERATED_DIR),
-        "--profiles-dir",
-        str(GENERATED_DIR),
-        "--target-path",
-        str(target_dir),
-        "--log-path",
-        str(log_dir),
-        "--no-version-check",
+        *("--project-dir", str(GENERATED_DIR), "--profiles-dir", str(GENERATED_DIR)),
+        *("--target-path", str(target_dir), "--log-path", str(log_dir), "--no-version-check"),
     ]
 
 
@@ -207,17 +190,14 @@ def mode_environment(
     threads: int,
     run_id: str,
 ) -> dict[str, str]:
-    env = os.environ.copy()
-    env.update(
-        {
-            "BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT": project,
-            "DBT_BIGQUERY_LOCATION": location,
-            "DBT_BIGQUERY_SCHEMA": dataset,
-            "DBT_PERF_THREADS": str(threads),
-            "DBT_PERF_RUN_ID": run_id,
-            "XDG_CACHE_HOME": str(performance_cache(mode).resolve()),
-        }
-    )
+    env = os.environ | {
+        "BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT": project,
+        "DBT_BIGQUERY_LOCATION": location,
+        "DBT_BIGQUERY_SCHEMA": dataset,
+        "DBT_PERF_THREADS": str(threads),
+        "DBT_PERF_RUN_ID": run_id,
+        "XDG_CACHE_HOME": str(performance_cache(mode).resolve()),
+    }
     if mode in ("foundry", "local"):
         env["DBT_ADBC_BIGQUERY_USE_FOUNDRY"] = "1"
     else:
@@ -226,9 +206,7 @@ def mode_environment(
 
 
 def resolved_driver(mode: str, log_path: Path, cache_home: Path) -> DriverArtifact:
-    resolutions = set(
-        re.findall(r"BigQuery driver resolved: (\S+) (\S+)", log_path.read_text())
-    )
+    resolutions = set(re.findall(r"BigQuery driver resolved: (\S+) (\S+)", log_path.read_text()))
     if len(resolutions) != 1:
         raise RuntimeError(f"expected one {mode} driver resolution, found {resolutions}")
     name, version = resolutions.pop()
@@ -242,9 +220,7 @@ def resolved_driver(mode: str, log_path: Path, cache_home: Path) -> DriverArtifa
     return DriverArtifact(name, version, str(path), local_driver.sha256(path))
 
 
-def assert_driver_unchanged(
-    mode: str, log_path: Path, artifact: DriverArtifact
-) -> None:
+def assert_driver_unchanged(mode: str, log_path: Path, artifact: DriverArtifact) -> None:
     actual = resolved_driver(mode, log_path, performance_cache(mode))
     if actual != artifact:
         raise RuntimeError(f"dbt changed the {mode} driver during the benchmark")
@@ -277,12 +253,7 @@ def collect_job_metrics(
     finished: datetime,
 ) -> JobMetrics:
     sql = f"""
-        select
-          start_time,
-          end_time,
-          total_slot_ms,
-          statement_type,
-          cache_hit
+        select start_time, end_time, total_slot_ms, statement_type, cache_hit
         from `region-{location}`.INFORMATION_SCHEMA.JOBS_BY_PROJECT
         where project_id = @project
           and creation_time between @started and @finished
@@ -298,12 +269,8 @@ def collect_job_metrics(
         query_parameters=[
             bigquery.ScalarQueryParameter("project", "STRING", project),
             bigquery.ScalarQueryParameter("dataset", "STRING", dataset),
-            bigquery.ScalarQueryParameter(
-                "query_comment", "STRING", f"/* bigquery-adbc performance {run_id} */"
-            ),
-            bigquery.ScalarQueryParameter(
-                "started", "TIMESTAMP", started - timedelta(seconds=2)
-            ),
+            bigquery.ScalarQueryParameter("query_comment", "STRING", f"/* bigquery-adbc performance {run_id} */"),
+            bigquery.ScalarQueryParameter("started", "TIMESTAMP", started - timedelta(seconds=2)),
             # Unpadded: the signature query runs right after dbt returns and must not be counted.
             bigquery.ScalarQueryParameter("finished", "TIMESTAMP", finished),
         ]
@@ -317,10 +284,7 @@ def collect_job_metrics(
     for attempt in range(_JOB_METRIC_POLLS):
         rows = list(client.query(sql, job_config=config, location=location).result())
         statement_types = Counter(row.statement_type or "UNKNOWN" for row in rows)
-        incomplete = sum(
-            row.start_time is None or row.end_time is None or row.total_slot_ms is None
-            for row in rows
-        )
+        incomplete = sum(row.start_time is None or row.end_time is None or row.total_slot_ms is None for row in rows)
         if statement_types == expected_statements and not incomplete:
             break
         if attempt < _JOB_METRIC_POLLS - 1:
@@ -404,9 +368,7 @@ def run_sample(
     log_dir = RESULTS_DIR / run_id / f"round-{round_index}-{mode}"
     target_dir = log_dir / "target"
     log_dir.mkdir(parents=True, exist_ok=True)
-    arguments = dbt_arguments(
-        "build", "--full-refresh", target_dir=target_dir, log_dir=log_dir
-    )
+    arguments = dbt_arguments("build", "--full-refresh", target_dir=target_dir, log_dir=log_dir)
     log(f"\n==> Round {round_index + 1}: {mode} driver ({dataset})")
     try:
         if existing:
@@ -415,8 +377,10 @@ def run_sample(
             log("  -> create existing relations (not timed)")
             command(
                 dbt_arguments(
-                    "run", "--full-refresh",
-                    target_dir=preparation_dir / "target", log_dir=preparation_dir,
+                    "run",
+                    "--full-refresh",
+                    target_dir=preparation_dir / "target",
+                    log_dir=preparation_dir,
                 ),
                 cwd=GENERATED_DIR,
                 env=env | {"DBT_PERF_RUN_ID": f"{sample_run_id}-prepare"},
@@ -462,10 +426,7 @@ def run_sample(
             "weighted_sum": base_sum * model_count * (model_count + 1) // 2,
         }
         if signature != expected_signature:
-            raise RuntimeError(
-                f"unexpected warehouse result for {mode}: "
-                f"{signature!r} != {expected_signature!r}"
-            )
+            raise RuntimeError(f"unexpected warehouse result for {mode}: {signature!r} != {expected_signature!r}")
         sample = Sample(
             round=round_index + 1,
             mode=mode,
@@ -493,13 +454,8 @@ def run_sample(
 
 def summarize(samples: list[Sample]) -> None:
     log("\n==> Effective dbt performance")
-    log(
-        "driver    median wall   range             jobs/s   warehouse span   client envelope"
-    )
-    by_mode = {
-        mode: [sample for sample in samples if sample.mode == mode]
-        for mode in ("foundry", "upstream", "local")
-    }
+    log("driver    median wall   range             jobs/s   warehouse span   client envelope")
+    by_mode = {mode: [sample for sample in samples if sample.mode == mode] for mode in ("foundry", "upstream", "local")}
     for mode, mode_samples in by_mode.items():
         if not mode_samples:
             continue
@@ -526,13 +482,8 @@ def summarize(samples: list[Sample]) -> None:
             ratio = statistics.median(paired)
             direction = "lower" if ratio < 1 else "higher"
             percent = abs(1 - ratio) * 100
-            log(
-                f"\n  local/{reference} paired median: {ratio:.3f} "
-                f"({percent:.1f}% {direction} wall time)"
-            )
-    log(
-        "  Lower wall time and higher jobs/s are better; no performance threshold is enforced."
-    )
+            log(f"\n  local/{reference} paired median: {ratio:.3f} ({percent:.1f}% {direction} wall time)")
+    log("  Lower wall time and higher jobs/s are better; no performance threshold is enforced.")
 
 
 def parse_args() -> argparse.Namespace:
@@ -542,16 +493,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rows", type=int, default=50_000)
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument(
-        "--mode", choices=("both", "foundry", "upstream", "local"), default="both",
+        "--mode",
+        choices=("both", "foundry", "upstream", "local"),
+        default="both",
         help="both compares the downloaded opt-in Foundry driver with the local driver",
     )
     parser.add_argument("--keep-datasets", action="store_true")
     parser.add_argument(
-        "--existing", action="store_true",
+        "--existing",
+        action="store_true",
         help="create the relations with dbt run before each timed build",
     )
     parser.add_argument(
-        "--local-library", type=Path,
+        "--local-library",
+        type=Path,
         help="stage an existing release shared library instead of building the local driver",
     )
     return parser.parse_args()
@@ -568,29 +523,23 @@ def main() -> int:
         args.local_library = args.local_library.resolve(strict=True)
         if args.mode not in ("both", "local"):
             raise RuntimeError("--local-library requires --mode both or --mode local")
-    if (
-        shutil.which("cargo") is None
-        and args.mode in ("both", "local")
-        and args.local_library is None
-    ):
+    if shutil.which("cargo") is None and args.mode in ("both", "local") and args.local_library is None:
         raise RuntimeError("cargo is not on PATH")
-    dbt_version = subprocess.run(
-        ["dbt", "--version"], check=True, text=True, capture_output=True
-    ).stdout.strip()
+    dbt_version = subprocess.run(["dbt", "--version"], check=True, text=True, capture_output=True).stdout.strip()
     if not dbt_version.startswith("dbt 2."):
         raise RuntimeError(f"dbt 2.x is required; found {dbt_version}")
+
+    def git(*arguments: str) -> str:
+        return subprocess.run(
+            ["git", *arguments], cwd=local_driver.REPO_DIR, check=True, text=True, capture_output=True
+        ).stdout
+
     environment = {
         "platform": platform.platform(),
         "python": platform.python_version(),
         "dbt_path": shutil.which("dbt"),
-        "git_revision": subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=local_driver.REPO_DIR,
-            check=True, text=True, capture_output=True,
-        ).stdout.strip(),
-        "git_status": subprocess.run(
-            ["git", "status", "--short"], cwd=local_driver.REPO_DIR,
-            check=True, text=True, capture_output=True,
-        ).stdout.splitlines(),
+        "git_revision": git("rev-parse", "HEAD").strip(),
+        "git_status": git("status", "--short").splitlines(),
     }
 
     location = os.environ.get("DBT_BIGQUERY_LOCATION", "US")
@@ -615,9 +564,8 @@ def main() -> int:
     if "local" in modes:
         local_artifact = stage_local_driver(performance_cache("local"), args.local_library)
 
-    artifacts = {}
-    for mode in modes:
-        artifacts[mode] = warm_driver(
+    artifacts = {
+        mode: warm_driver(
             mode,
             mode_environment(
                 mode,
@@ -628,12 +576,11 @@ def main() -> int:
                 run_id=run_id,
             ),
         )
+        for mode in modes
+    }
     if local_artifact is not None and artifacts["local"].sha256 != local_artifact[1]:
         raise RuntimeError("dbt replaced the staged local driver during warmup")
-    if (
-        "foundry" in artifacts and "local" in artifacts
-        and artifacts["foundry"].sha256 == artifacts["local"].sha256
-    ):
+    if "foundry" in artifacts and "local" in artifacts and artifacts["foundry"].sha256 == artifacts["local"].sha256:
         raise RuntimeError("Foundry and local caches contain the same driver binary")
 
     client = bigquery.Client(project=project, location=location)
@@ -643,14 +590,13 @@ def main() -> int:
         if len(order) == 2 and round_index % 2 == 1:
             order.reverse()
         for mode in order:
-            dataset = f"{dataset_prefix}_r{round_index + 1}_{mode}"
             sample = run_sample(
                 client=client,
                 mode=mode,
                 round_index=round_index,
                 project=project,
                 location=location,
-                dataset=dataset,
+                dataset=f"{dataset_prefix}_r{round_index + 1}_{mode}",
                 threads=args.threads,
                 model_count=args.models,
                 row_count=args.rows,
@@ -664,9 +610,7 @@ def main() -> int:
     if local_artifact is not None:
         path, digest = local_artifact
         if local_driver.sha256(path) != digest:
-            raise RuntimeError(
-                "dbt replaced the staged local driver during the benchmark"
-            )
+            raise RuntimeError("dbt replaced the staged local driver during the benchmark")
 
     output = RESULTS_DIR / run_id / "results.json"
     output.parent.mkdir(parents=True, exist_ok=True)

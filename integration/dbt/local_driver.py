@@ -33,17 +33,9 @@ def version() -> str:
 
 def cache_directory(cache_home: Path) -> Path:
     machine = platform.machine().lower()
-    platforms = {
-        ("linux", "x86_64"): "x86_64-manylinux_2_17-linux-gnu",
-        ("linux", "aarch64"): "aarch64-manylinux_2_17-linux-gnu",
-    }
-    try:
-        cache_platform = platforms[(sys.platform, machine)]
-    except KeyError as error:
-        raise RuntimeError(
-            f"unsupported local-driver platform: {sys.platform} {machine}"
-        ) from error
-    return cache_home / "com.getdbt" / "adbc" / cache_platform
+    if sys.platform != "linux" or machine not in ("x86_64", "aarch64"):
+        raise RuntimeError(f"unsupported local-driver platform: {sys.platform} {machine}")
+    return cache_home / "com.getdbt" / "adbc" / f"{machine}-manylinux_2_17-linux-gnu"
 
 
 def cache_path(cache_home: Path) -> Path:
@@ -74,25 +66,19 @@ def built_driver_library(cargo_messages: str) -> Path:
             and "cdylib" in message["target"]["crate_types"]
         ):
             libraries.extend(
-                Path(filename)
-                for filename in message["filenames"]
-                if filename.endswith((".so", ".dylib", ".dll"))
+                Path(filename) for filename in message["filenames"] if filename.endswith((".so", ".dylib", ".dll"))
             )
     if len(libraries) != 1:
-        raise RuntimeError(
-            f"cargo must report exactly one BigQuery driver library, found {libraries}"
-        )
+        raise RuntimeError(f"cargo must report exactly one BigQuery driver library, found {libraries}")
     return libraries[0]
 
 
-def stage(cache_home: Path) -> tuple[Path, str, str]:
+def stage(cache_home: Path) -> tuple[Path, str]:
     if shutil.which("cargo") is None:
         raise RuntimeError("cargo is not on PATH")
-    messages = subprocess.run(
-        BUILD_COMMAND, cwd=REPO_DIR, check=True, text=True, stdout=subprocess.PIPE
-    ).stdout
+    messages = subprocess.run(BUILD_COMMAND, cwd=REPO_DIR, check=True, text=True, stdout=subprocess.PIPE).stdout
     source = built_driver_library(messages)
     destination = cache_path(cache_home)
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
-    return destination, sha256(destination), version()
+    return destination, sha256(destination)
