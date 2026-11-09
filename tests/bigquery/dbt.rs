@@ -240,29 +240,25 @@ fn loads_dbt_csv_seeds_atomically_with_bigquery_csv_semantics() {
         seed.execute_update().unwrap_err().status,
         Status::AlreadyExists
     );
-    set_option(
-        &mut seed,
-        BigQueryStatementOption::WriteDisposition,
-        BigQueryWriteDisposition::WriteTruncate,
-    );
-    assert_eq!(seed.execute_update().unwrap(), Some(2));
-}
 
-#[test]
-#[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
-fn loads_dbt_csv_seeds_with_quoted_newlines() {
-    let table = scratch_table("csv_seed_newlines");
-    let _drop_table = DropTable::table(&table);
-    let mut connection = connect_with_dataset_at("US");
-    let csv = TempFile::new(
-        &format!("{table}.csv"),
+    // A truncating reload, of a CRLF seed whose quoted fields hold newlines and quotes.
+    let quoted = TempFile::new(
+        &format!("{table}_newlines.csv"),
         b"id,amount,civil,payload,label\r\n\
           1,1.00,2026-01-02 03:04:05,SGk=,\"first\nline, with \"\"quotes\"\"\"\r\n\
           2,2.00,2026-01-02 03:04:05,SGk=,\"second\r\nline\"\r\n\
           3,3.00,2026-01-02 03:04:05,SGk=,plain\r\n",
     );
-
-    let mut seed = seed_statement(&mut connection, &table, &csv, None);
+    set_option(
+        &mut seed,
+        BigQueryStatementOption::WriteDisposition,
+        BigQueryWriteDisposition::WriteTruncate,
+    );
+    set_option(
+        &mut seed,
+        BigQueryStatementOption::CsvFilepath,
+        quoted.0.to_string_lossy().into_owned(),
+    );
     assert_eq!(seed.execute_update().unwrap(), Some(3));
 
     let mut verify = prepare_query(
