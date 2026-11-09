@@ -21,7 +21,6 @@ are stable; other documents and code comments cite them.
 | [Metadata](#metadata) | Filter matching, null fields, statistics and schema metadata; other projects are discoverable. |
 | [Configuration and authentication](#configuration-and-authentication) | Option scopes, validation, credential handling, URI replacement; no Legacy-SQL-only options. |
 | [C interface and object lifecycle](#c-interface-and-object-lifecycle) | Init entrypoints only; input and handle-state checks. |
-| [Artifact size](#artifact-size) | How to compare release builds. |
 
 ## Bulk ingestion
 
@@ -689,19 +688,3 @@ or lose null rows.
 For this driver's stream with no pending error, `AdbcErrorFromArrayStream` returns an empty
 `AdbcError` with status `OK`, as adbc.h describes and the C++ drivers do; Go returns NULL, which
 adbc.h reserves for an unsupported call.
-
-## Artifact size
-
-Build both libraries stripped on the same target and record each revision and toolchain. From the Go
-driver's `go/` directory on Linux:
-
-```sh
-git rev-parse HEAD
-go version
-go build -tags driverlib -buildmode=c-shared -ldflags="-s -w" -o libadbc_driver_bigquery.so ./pkg
-stat -c '%s' libadbc_driver_bigquery.so
-size -A libadbc_driver_bigquery.so
-```
-
-Measure this driver with the [binary-size report](BINARY-SIZE.md#usage). Compare file bytes and
-section sizes separately; a smaller `.text` does not necessarily mean a smaller library.

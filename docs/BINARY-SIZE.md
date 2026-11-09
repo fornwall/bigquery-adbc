@@ -42,6 +42,17 @@ stat -c '%s' target/size-review/driver-stripped.so
 llvm-size -A target/size-review/driver-stripped.so
 ```
 
+To compare with the [Go driver](GO-DRIVER-COMPARISON.md), build it stripped for the same Linux
+target from its `go/` directory, recording its revision and Go version:
+
+```sh
+git rev-parse HEAD
+go version
+go build -tags driverlib -buildmode=c-shared -ldflags="-s -w" -o libadbc_driver_bigquery.so ./pkg
+stat -c '%s' libadbc_driver_bigquery.so
+size -A libadbc_driver_bigquery.so
+```
+
 ## Baseline
 
 | Metric | Value |
