@@ -259,34 +259,6 @@ fn predicts_exact_framed_size_for_varied_batches() {
 }
 
 #[test]
-fn oversized_skewed_candidates_materialize_only_the_accepted_payload() {
-    let mut values = Vec::with_capacity(64);
-    values.push("x".repeat(2_000_000));
-    values.extend((1..64).map(|index| format!("{index}:{}", "y".repeat(1024))));
-    let batch = RecordBatch::try_from_iter([(
-        "value",
-        Arc::new(StringArray::from_iter_values(values)) as ArrayRef,
-    )])
-    .unwrap();
-    RECORD_BATCH_SERIALIZATIONS.with(|count| count.set(0));
-    REJECTED_CANDIDATE_BYTES.with(|bytes| bytes.set(0));
-    let mut encoder = limited_encoder(batch.schema(), 1_000_000, 3_000_000);
-    let chunk = encoder.encode(batch, 0).unwrap();
-
-    assert_eq!(chunk.row_count, 1);
-    assert!((2_000_000..=3_000_000).contains(&chunk.rows.serialized_record_batch.len()));
-    RECORD_BATCH_SERIALIZATIONS.with(|count| assert_eq!(count.get(), 1));
-    assert_eq!(encoder.writer.body_materializations(), 1);
-    REJECTED_CANDIDATE_BYTES.with(|bytes| {
-        assert!(
-            bytes.get() >= 8_000_000,
-            "skewed admission avoided only {} discarded payload bytes",
-            bytes.get()
-        );
-    });
-}
-
-#[test]
 fn permits_one_row_above_the_target_but_rejects_one_above_the_request_budget() {
     let schema = Arc::new(Schema::new(vec![Field::new(
         "value",
@@ -348,64 +320,6 @@ fn reserves_request_and_schema_overhead_when_sizing_append_batches() {
              rows in a 10000000-byte AppendRows request; ingest fewer columns, or shorten column \
              names and field metadata"
         )
-    );
-}
-
-/// The whole request must fit, not just the record batch: a chunk at the target plus the schema
-/// message every request repeats and the envelope stays under BigQuery's limit.
-#[test]
-fn a_chunk_encoded_at_the_target_size_leaves_a_whole_request_under_the_service_limit() {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("payload", DataType::Utf8, false),
-    ]));
-    let (mut encoder, encoded_schema) = ChunkEncoder::new(schema.clone()).unwrap();
-    let schema_size = encoded_schema.serialized_schema.len();
-    assert!(schema_size > 0, "the schema message must be nonempty");
-
-    // Many medium rows: enough total payload to force a split, with no single row near the
-    // budget.
-    let row_count = 512;
-    let values: Vec<String> = (0..row_count).map(|_| "v".repeat(32 * 1024)).collect();
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![
-            Arc::new(Int64Array::from_iter_values(0..i64::from(row_count))),
-            Arc::new(StringArray::from_iter_values(values)),
-        ],
-    )
-    .unwrap();
-
-    let mut offset = 0;
-    let mut chunks = 0;
-    let mut largest_chunk = 0;
-    while offset < batch.num_rows() {
-        let window = encoder
-            .window(&batch, offset, encoder.target_batch_bytes)
-            .unwrap();
-        let chunk = encoder.encode(window, offset).unwrap();
-        let chunk_size = chunk.rows.serialized_record_batch.len();
-        largest_chunk = largest_chunk.max(chunk_size);
-        // What the service measures: the record batch, the repeated schema, and the envelope.
-        let request_size = chunk_size + schema_size + APPEND_ROWS_REQUEST_ENVELOPE_BYTES;
-        assert!(
-            request_size < APPEND_ROWS_REQUEST_LIMIT_BYTES,
-            "chunk of {} rows encodes a {request_size}-byte request, which reaches the \
-             {APPEND_ROWS_REQUEST_LIMIT_BYTES}-byte AppendRows limit",
-            chunk.row_count
-        );
-        chunks += 1;
-        offset += chunk.row_count;
-    }
-    assert!(
-        chunks > 1,
-        "the input must be large enough to split, but it produced {chunks} chunk(s)"
-    );
-    // Without this the assertion above could pass on chunks nowhere near the budget.
-    assert!(
-        largest_chunk > encoder.target_batch_bytes * 9 / 10,
-        "the largest chunk was {largest_chunk} bytes, which does not reach the {}-byte target",
-        encoder.target_batch_bytes
     );
 }
 

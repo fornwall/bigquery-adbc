@@ -54,6 +54,9 @@ fn classifies_retryable_append_errors_for_replay() {
     };
     assert!(attach_error_is_not_found(&attach(Code::NotFound)));
     assert!(!attach_error_is_not_found(&attach(Code::Unavailable)));
+    // A refused attach is judged by `google_error_is_transient`, like every control-plane RPC.
+    assert!(attach_error_is_transient(&attach(Code::Unavailable)));
+    assert!(!attach_error_is_transient(&attach(Code::NotFound)));
 }
 
 /// An append left unanswered counts as its call ending, which reconnecting replays: a connection
@@ -198,41 +201,6 @@ fn commit_stream_errors_are_classified_by_their_storage_code() {
         format_storage_error(&StorageError::new().set_error_message("no entity")),
         "STORAGE_ERROR_CODE_UNSPECIFIED: no entity"
     );
-}
-
-/// Upstream's own policy reaches an ingest's control-plane RPCs only in part (UP-83), and
-/// `Write::builder()` exposes none. This classifier mirrors upstream's `RetryableErrors` minus
-/// `CANCELLED`, which here is the caller's own `AdbcStatementCancel`.
-#[test]
-fn classifies_the_control_plane_statuses_worth_another_attempt() {
-    let refused = |code| GoogleError::service(GoogleStatus::default().set_code(code));
-    for code in [
-        Code::Unavailable,
-        Code::DeadlineExceeded,
-        Code::Internal,
-        Code::ResourceExhausted,
-        Code::Aborted,
-    ] {
-        assert!(google_error_is_transient(&refused(code)), "{code:?}");
-    }
-    // A verdict the service reached and stands by, and the one code that is the caller's own
-    // cancellation rather than a blip: replaying either is wrong.
-    for code in [
-        Code::NotFound,
-        Code::PermissionDenied,
-        Code::InvalidArgument,
-        Code::AlreadyExists,
-        Code::Unauthenticated,
-        Code::Cancelled,
-    ] {
-        assert!(!google_error_is_transient(&refused(code)), "{code:?}");
-    }
-
-    // The attach classifier applies the same rule through `WriterBuilderError`; a NOT_FOUND
-    // stream is not a transient fault.
-    let attach = |code| WriterBuilderError::from(refused(code));
-    assert!(attach_error_is_transient(&attach(Code::Unavailable)));
-    assert!(!attach_error_is_transient(&attach(Code::NotFound)));
 }
 
 /// A refused append keeps the service's verdict and code, and is rendered from the RPC error

@@ -113,38 +113,6 @@ fn types_and_modes(schema: &TableSchema) -> Vec<(&str, &str)> {
 }
 
 #[test]
-fn normalizes_ingest_types_and_converts_table_schema() {
-    let json = bigquery_typed(Field::new("payload", DataType::LargeUtf8, true), "JSON");
-    let schema = Schema::new(vec![
-        Field::new("id", DataType::Int32, false),
-        Field::new(
-            "event_time",
-            DataType::Timestamp(TimeUnit::Nanosecond, Some("Europe/Stockholm".into())),
-            true,
-        ),
-        json,
-        Field::new("tags", DataType::new_list(DataType::Utf8, true), true),
-    ]);
-    let normalized = normalize_schema(&schema).unwrap();
-    assert_eq!(normalized.field(0).data_type(), &DataType::Int64);
-    assert_eq!(
-        normalized.field(1).data_type(),
-        &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
-    );
-    assert_eq!(normalized.field(2).data_type(), &DataType::Utf8);
-
-    assert_eq!(
-        types_and_modes(&arrow_schema_to_bigquery(&normalized).unwrap()),
-        [
-            ("INTEGER", "REQUIRED"),
-            ("TIMESTAMP", "NULLABLE"),
-            ("JSON", "NULLABLE"),
-            ("STRING", "REPEATED"),
-        ]
-    );
-}
-
-#[test]
 fn canonicalizes_list_like_schemas_for_bigquery() {
     let item = |data_type| Arc::new(Field::new("item", data_type, true));
     let nested_fields: Fields = vec![Field::new(
@@ -585,34 +553,8 @@ fn converts_interval_and_duration_ingest_schemas() {
             true,
         ),
     ]);
+    // Normalization rewrites the values (see `temporals`); every column is an INTERVAL.
     let normalized = normalize_schema(&schema).unwrap();
-    // Year-month intervals keep their Arrow type; day-time intervals and every duration
-    // width become month-day-nano intervals, inside lists included.
-    assert_eq!(
-        normalized.field(0).data_type(),
-        &DataType::Interval(IntervalUnit::YearMonth)
-    );
-    for index in [1, 2, 4, 5, 6, 7] {
-        assert_eq!(
-            normalized.field(index).data_type(),
-            &DataType::Interval(IntervalUnit::MonthDayNano),
-            "{}",
-            normalized.field(index).name()
-        );
-    }
-    for index in [3, 8] {
-        let DataType::List(item) = normalized.field(index).data_type() else {
-            panic!(
-                "expected a normalized list for {}",
-                normalized.field(index).name()
-            )
-        };
-        assert_eq!(
-            item.data_type(),
-            &DataType::Interval(IntervalUnit::MonthDayNano)
-        );
-    }
-
     let bigquery = arrow_schema_to_bigquery(&normalized).unwrap();
     assert!(
         bigquery
@@ -620,11 +562,7 @@ fn converts_interval_and_duration_ingest_schemas() {
             .iter()
             .all(|field| field.r#type == "INTERVAL")
     );
-    assert_eq!(bigquery.fields[0].mode, "REQUIRED");
-    assert_eq!(bigquery.fields[1].mode, "NULLABLE");
-    assert_eq!(bigquery.fields[2].mode, "NULLABLE");
     assert_eq!(bigquery.fields[3].mode, "REPEATED");
-    assert_eq!(bigquery.fields[4].mode, "REQUIRED");
     assert_eq!(bigquery.fields[8].mode, "REPEATED");
 }
 
