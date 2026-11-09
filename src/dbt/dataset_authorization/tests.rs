@@ -1,8 +1,8 @@
 use std::sync::{Arc, Barrier};
 use std::thread;
 
+use adbc_core::Statement as _;
 use adbc_core::error::Status;
-use adbc_core::{Optionable as _, Statement as _};
 use serde_json::json;
 
 use crate::test_support::driver::{test_statement, test_statement_at};
@@ -11,7 +11,7 @@ use crate::test_support::http::{
 };
 use crate::{BigQueryStatement, BigQueryStatementOption};
 
-use super::parse_view_authorizations;
+use super::{ViewAuthorizations, parse_view_authorizations};
 use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
 use crate::test_support::options::{
     assert_string_option, option_string, set_option, set_option_error,
@@ -22,6 +22,15 @@ const OPTION: BigQueryStatementOption = BigQueryStatementOption::AuthorizeViewTo
 /// The payload dbt 2.0 sends for one view: exactly one view mapped to exactly one dataset.
 fn payload(view: &str, project: &str, dataset: &str) -> String {
     json!({view: [{"project": project, "dataset": dataset}]}).to_string()
+}
+
+/// Parses `value` with the `data-project` default project and `dataset`, if any.
+fn parse(
+    value: &str,
+    dataset: Option<&str>,
+) -> adbc_core::error::Result<Option<ViewAuthorizations>> {
+    let project = crate::identifiers::ProjectIdentifier::try_new("data-project").unwrap();
+    parse_view_authorizations(value, Some(&project), dataset)
 }
 
 /// Configures the one view every request scenario below authorizes on `data-project.raw`.
@@ -155,21 +164,13 @@ fn a_view_with_no_source_datasets_is_dropped_rather_than_silently_doing_nothing(
 
     // The name is parsed before the entry is dropped, so a view a bare name cannot resolve is
     // still reported.
-    assert_eq!(
-        parse_view_authorizations(
-            &json!({"solo_view": []}).to_string(),
-            Some(&crate::identifiers::ProjectIdentifier::try_new("data-project").unwrap()),
-            None,
-        )
-        .unwrap_err()
-        .status,
-        Status::InvalidArguments
-    );
+    let error = parse(&json!({"solo_view": []}).to_string(), None).unwrap_err();
+    assert_eq!(error.status, Status::InvalidArguments);
 }
 
 #[test]
 fn view_names_resolve_one_two_and_three_part_spellings() {
-    let views = parse_view_authorizations(
+    let views = parse(
         &json!({
             "solo_view": [{"project": "data-project", "dataset": "raw"}],
             "other_dataset.paired_view": [{"project": "data-project", "dataset": "raw"}],
@@ -178,7 +179,6 @@ fn view_names_resolve_one_two_and_three_part_spellings() {
             ],
         })
         .to_string(),
-        Some(&crate::identifiers::ProjectIdentifier::try_new("data-project").unwrap()),
         Some("analytics"),
     )
     .unwrap()
@@ -197,16 +197,8 @@ fn view_names_resolve_one_two_and_three_part_spellings() {
     );
 
     // A one-part name needs both defaults, a two-part name only the project.
-    assert_eq!(
-        parse_view_authorizations(
-            &payload("solo_view", "data-project", "raw"),
-            Some(&crate::identifiers::ProjectIdentifier::try_new("data-project").unwrap()),
-            None,
-        )
-        .unwrap_err()
-        .status,
-        Status::InvalidArguments
-    );
+    let error = parse(&payload("solo_view", "data-project", "raw"), None).unwrap_err();
+    assert_eq!(error.status, Status::InvalidArguments);
 }
 
 /// The complete dbt 2.0 contract: the option, its dummy `none` query behind a query comment,
@@ -458,28 +450,6 @@ fn a_lost_etag_race_is_patched_again_under_the_fresh_etag() {
     );
 }
 
-/// Every race lost is another writer's success, so a grant outlasts eight dbt threads racing for
-/// one dataset.
-#[test]
-fn a_grant_outlasts_every_other_thread_of_a_dbt_run() {
-    let mut responses = Vec::new();
-    for round in 0..7 {
-        responses.push(ok(json!({"etag": format!("etag-{round}"), "access": []})));
-        responses.push(precondition_failed());
-    }
-    responses.push(ok(json!({"etag": "last-etag", "access": []})));
-    responses.push(ok(json!({})));
-    let (endpoint, captured) = capture_requests(responses);
-    let mut statement = test_statement_at(&endpoint);
-    authorize_granted_view(&mut statement);
-
-    assert_eq!(statement.execute_update().unwrap(), Some(0));
-    assert_eq!(
-        captured.join().unwrap().last().unwrap().header("If-Match"),
-        Some("last-etag")
-    );
-}
-
 /// A patch that may have applied unseen (a 503 or a lost answer) is not replayed: the re-read
 /// shows the view listed, so nothing more is sent.
 #[test]
@@ -666,116 +636,4 @@ fn cancelling_an_authorization_interrupts_the_request() {
     assert_eq!(error.status, Status::Cancelled);
     canceller.join().unwrap();
     captured.join().unwrap();
-}
-
-/// dbt 2.0 sends `sql = "none"` behind its query comment, so only that exact placeholder is
-/// discarded. Any other query wins, leaving the authorization behind rather than being silently
-/// ignored.
-#[test]
-fn only_the_dbt_placeholder_query_keeps_an_authorization() {
-    let mut statement = test_statement();
-    let configured = payload("data-project.analytics.granted_view", "data-project", "raw");
-    for query in [
-        "none",
-        "NONE",
-        "none;",
-        "/* bigquery-adbc: model.project.granted_view */\nnone",
-        "none\n/* bigquery-adbc: model.project.granted_view */",
-        "-- a line comment\nnone",
-        "/* one */ none -- and another",
-        "",
-        "/* only a comment */",
-    ] {
-        set_option(&mut statement, OPTION, configured.clone());
-        statement.set_sql_query(query).unwrap();
-        assert!(
-            statement.get_option_string(OPTION.into()).is_ok(),
-            "dbt 2.0's placeholder must not discard the authorization: {query:?}"
-        );
-    }
-
-    for query in ["select 1", "none of your business", "/* c */ select none"] {
-        set_option(&mut statement, OPTION, configured.clone());
-        statement.set_sql_query(query).unwrap();
-        assert!(
-            statement.get_option_string(OPTION.into()).is_err(),
-            "a real statement leaves the authorization behind: {query:?}"
-        );
-    }
-
-    // The placeholder is dropped rather than stored, so clearing the option afterwards
-    // reports a missing query instead of sending `none` to BigQuery.
-    set_option(&mut statement, OPTION, configured);
-    statement.set_sql_query("none").unwrap();
-    set_option(&mut statement, OPTION, "");
-    let error = statement.execute_update().unwrap_err();
-    assert_failure(&error, Status::InvalidState, &["without a SQL query"]);
-}
-
-#[test]
-fn every_other_operation_replaces_an_authorization_and_is_replaced_by_it() {
-    let configured = payload("data-project.analytics.granted_view", "data-project", "raw");
-    for operation in ["a bulk ingest target", "a CSV seed", "a table copy"] {
-        let mut statement = test_statement();
-        set_option(&mut statement, OPTION, configured.clone());
-        match operation {
-            "a bulk ingest target" => statement
-                .set_option(
-                    adbc_core::options::OptionStatement::TargetTable,
-                    "ingested".into(),
-                )
-                .unwrap(),
-            "a CSV seed" => statement
-                .set_option(
-                    BigQueryStatementOption::CsvFilepath.into(),
-                    "/tmp/seed.csv".into(),
-                )
-                .unwrap(),
-            _ => statement
-                .set_option(
-                    BigQueryStatementOption::CopyTableSource.into(),
-                    "data-project.analytics.source".into(),
-                )
-                .unwrap(),
-        }
-        assert!(
-            statement.get_option_string(OPTION.into()).is_err(),
-            "{operation} must replace an authorization"
-        );
-
-        set_option(&mut statement, OPTION, configured.clone());
-        for replaced in [
-            BigQueryStatementOption::CopyTableSource,
-            BigQueryStatementOption::CsvFilepath,
-        ] {
-            assert!(
-                statement.get_option_string(replaced.into()).is_err(),
-                "an authorization must replace {operation}"
-            );
-        }
-    }
-}
-
-#[test]
-fn an_authorization_combined_with_a_table_metadata_update_is_rejected() {
-    for (update, value) in [
-        (
-            BigQueryStatementOption::UpdateColumnsDescription,
-            r#"{"id":"Required identifier."}"#,
-        ),
-        (
-            BigQueryStatementOption::UpdateDescription,
-            "A documented relation.",
-        ),
-    ] {
-        let mut statement = test_statement();
-        authorize_granted_view(&mut statement);
-        set_option(&mut statement, update, value);
-        let error = statement.execute_update().unwrap_err();
-        assert_failure(
-            &error,
-            Status::InvalidState,
-            &[OPTION.as_str(), update.as_str()],
-        );
-    }
 }

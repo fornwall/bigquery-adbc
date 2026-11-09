@@ -51,33 +51,30 @@ fn locations(reader: impl RecordBatchReader) -> Vec<String> {
     locations
 }
 
+/// An existing dataset is one `location` row, a missing one none. `execute_update` reports an
+/// unknown count, as a query does.
 #[test]
-fn an_existing_dataset_returns_one_location_row() {
-    let (endpoint, captured) = capture_requests(vec![ok(json!({"location": "us-west1"}))]);
+fn a_lookup_returns_one_row_for_an_existing_dataset_and_none_for_a_missing_one() {
+    let (endpoint, captured) = capture_requests(vec![
+        ok(json!({"location": "us-west1"})),
+        (404, missing_dataset()),
+        ok(json!({"location": "EU"})),
+    ]);
     let mut statement = lookup_at(&endpoint);
 
     let (reader, rows_affected) = statement.execute_with_rows_affected().unwrap();
-
-    assert_eq!(rows_affected, 1);
-    assert_eq!(locations(reader), ["us-west1"]);
-    let requests = captured.join().unwrap();
-    assert_eq!(requests.len(), 1);
     assert_eq!(
-        requests[0].line,
+        (rows_affected, locations(reader)),
+        (1, vec!["us-west1".to_owned()])
+    );
+    let (reader, rows_affected) = statement.execute_with_rows_affected().unwrap();
+    assert_eq!((rows_affected, locations(reader)), (0, Vec::new()));
+    assert_eq!(statement.execute_update().unwrap(), None);
+
+    assert_eq!(
+        captured.served(3)[0].line,
         "GET /bigquery/v2/projects/data-project/datasets/analytics?fields=location HTTP/1.1"
     );
-}
-
-#[test]
-fn a_missing_dataset_returns_no_rows() {
-    let (endpoint, captured) = capture_requests(vec![(404, missing_dataset())]);
-    let mut statement = lookup_at(&endpoint);
-
-    let (reader, rows_affected) = statement.execute_with_rows_affected().unwrap();
-
-    assert_eq!(rows_affected, 0);
-    assert!(locations(reader).is_empty());
-    captured.join().unwrap();
 }
 
 /// A missing project is a 404 with the same reason as a missing dataset, but it is a configuration
@@ -106,7 +103,6 @@ fn other_rejections_are_errors() {
         let mut statement = lookup_at(&endpoint);
 
         let error = statement.execute_with_rows_affected().err().unwrap();
-
         assert_failure(
             &error,
             status,
@@ -192,12 +188,10 @@ fn a_dataset_id_outside_bigquerys_naming_rules_is_looked_up() {
     );
 
     let (reader, rows_affected) = statement.execute_with_rows_affected().unwrap();
-
     assert_eq!(rows_affected, 0);
     assert!(locations(reader).is_empty());
-    let requests = captured.join().unwrap();
     assert_eq!(
-        requests[0].path(),
+        captured.served(1)[0].path(),
         "/bigquery/v2/projects/data-project/datasets/not%2Fa-dataset?fields=location"
     );
 }
@@ -218,32 +212,25 @@ fn the_payload_reads_back_as_set_and_clearing_it_leaves_no_query() {
     assert_failure(&error, Status::InvalidState, &["without a SQL query"]);
 }
 
+/// The lookup is the only option-only operation with rows to describe, which it does without a
+/// request, and those rows have no job for a partition to read back.
 #[test]
-fn execute_update_reads_the_location_and_reports_an_unknown_count_as_a_query_does() {
-    let (endpoint, captured) = capture_requests(vec![ok(json!({"location": "EU"}))]);
-    let mut statement = lookup_at(&endpoint);
-
-    assert_eq!(statement.execute_update().unwrap(), None);
-    assert_eq!(captured.join().unwrap().len(), 1);
-}
-
-#[test]
-fn execute_schema_describes_the_result_without_a_request() {
+fn only_the_lookup_has_a_result_schema_and_it_cannot_be_partitioned() {
     let mut statement = test_statement();
     set_option(&mut statement, OPTION, PAYLOAD);
-
     let schema = statement.execute_schema().unwrap();
-
     assert_eq!(schema.fields().len(), 1);
     assert_eq!(schema.field(0).name(), "location");
     assert_eq!(schema.field(0).data_type(), &arrow_schema::DataType::Utf8);
-}
 
-/// The lookup is the only option-only operation with rows to describe.
-#[test]
-fn other_operations_have_no_result_schema() {
+    let error = statement.execute_partitions().unwrap_err();
+    assert_failure(
+        &error,
+        Status::InvalidState,
+        &["creates no job to partition", OPTION.as_str()],
+    );
+
     for (option, value) in [
-        (BigQueryStatementOption::WriteGcsBucket, "dbt-python"),
         (
             BigQueryStatementOption::AuthorizeViewToDatasets,
             r#"{"data-project.analytics.model":[{"project":"data-project","dataset":"raw"}]}"#,
@@ -262,50 +249,4 @@ fn other_operations_have_no_result_schema() {
             option.as_str()
         );
     }
-}
-
-#[test]
-fn execute_partitions_is_refused_before_any_request() {
-    let mut statement = test_statement();
-    set_option(&mut statement, OPTION, PAYLOAD);
-
-    let error = statement.execute_partitions().unwrap_err();
-
-    assert_failure(
-        &error,
-        Status::InvalidState,
-        &["creates no job to partition", OPTION.as_str()],
-    );
-}
-
-#[test]
-fn a_pending_table_description_update_is_refused() {
-    let mut statement = test_statement();
-    set_option(&mut statement, OPTION, PAYLOAD);
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::UpdateDescription,
-        "a description",
-    );
-
-    let error = statement.execute_with_rows_affected().err().unwrap();
-
-    assert_failure(
-        &error,
-        Status::InvalidState,
-        &["cannot be combined", OPTION.as_str()],
-    );
-}
-
-#[test]
-fn the_lookup_replaces_and_is_replaced_by_other_operations() {
-    let copy_source = BigQueryStatementOption::CopyTableSource;
-    let mut statement = test_statement();
-
-    set_option(&mut statement, copy_source, "data-project.analytics.source");
-    set_option(&mut statement, OPTION, PAYLOAD);
-    assert_string_option(&statement, copy_source, None);
-
-    set_option(&mut statement, copy_source, "data-project.analytics.source");
-    assert_string_option(&statement, OPTION, None);
 }

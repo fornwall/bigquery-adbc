@@ -755,3 +755,6 @@ fn next_token(query: &str) -> Option<(&str, &str)> {
         .map_or(rest.len(), |(index, _)| index);
     Some(rest.split_at(end))
 }
+
+#[cfg(test)]
+mod tests;
