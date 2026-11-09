@@ -36,10 +36,7 @@ impl QueryRequestFixture {
             None,
             self.0.sql.clone(),
             None,
-            &super::StatementQueryOptions {
-                labels: self.0.labels.clone(),
-                ..Default::default()
-            },
+            &self.0.options,
             super::plan::QueryJobCreation::Optional,
         )
         .expect("the benchmark query plans")

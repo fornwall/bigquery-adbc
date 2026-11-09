@@ -114,7 +114,7 @@ fn reissue_keeps_route_and_query_but_refreshes_identity() {
         let reissued = original.clone().reissue();
         assert_eq!(reissued.inserts_job(), original.inserts_job());
         assert_eq!(reissued.sql, original.sql);
-        assert_eq!(reissued.reservation, original.reservation);
+        assert_eq!(reissued.options, original.options);
         assert_ne!(reissued.identity(), original.identity());
     }
 }

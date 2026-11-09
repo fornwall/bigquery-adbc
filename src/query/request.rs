@@ -28,11 +28,11 @@ impl QueryPlan {
                 self.location.as_deref(),
                 job_id.to_owned(),
             ),
-            self.dry_run,
+            self.options.dry_run,
             &QueryJobConfiguration::new(self),
             "BigQuery query job request",
         )?;
-        let request = match &self.destination_table {
+        let request = match &self.options.destination_table {
             Some(destination) => request.writing(destination.id()),
             None => request,
         };
@@ -40,7 +40,8 @@ impl QueryPlan {
             // The job most likely runs with the table it writes, else with the default dataset
             // its unqualified names read.
             request.locatable_in(
-                self.destination_table
+                self.options
+                    .destination_table
                     .iter()
                     .map(QualifiedTableName::dataset_key)
                     .chain(self.default_dataset.iter().map(QueryDefaultDataset::key)),
@@ -52,7 +53,7 @@ impl QueryPlan {
 
     /// Whether this plan submits a job without a location, letting BigQuery infer it.
     pub(super) fn infers_job_location(&self) -> bool {
-        self.inserts_job() && self.location.is_none() && !self.dry_run
+        self.inserts_job() && self.location.is_none() && !self.options.dry_run
     }
 
     #[cfg(test)]
@@ -126,9 +127,9 @@ impl<'a> JobsQueryRequest<'a> {
             max_results: result_mode.max_results(),
             location: plan.location.as_deref(),
             job: JobOptions::new(
-                plan.job_timeout_ms,
-                plan.labels.as_deref(),
-                plan.reservation.as_deref(),
+                plan.options.job_timeout_ms,
+                plan.options.labels.as_deref(),
+                plan.options.reservation.as_deref(),
             ),
         }
     }
@@ -154,11 +155,11 @@ impl<'a> QueryJobConfiguration<'a> {
     fn new(plan: &'a QueryPlan) -> Self {
         Self {
             query: QueryJob::new(plan),
-            dry_run: plan.dry_run,
+            dry_run: plan.options.dry_run,
             job: JobOptions::new(
-                plan.job_timeout_ms,
-                plan.labels.as_deref(),
-                plan.reservation.as_deref(),
+                plan.options.job_timeout_ms,
+                plan.options.labels.as_deref(),
+                plan.options.reservation.as_deref(),
             ),
         }
     }
@@ -183,13 +184,19 @@ impl<'a> QueryJob<'a> {
     fn new(plan: &'a QueryPlan) -> Self {
         Self {
             query: QueryFields::new(plan),
-            destination_table: plan.destination_table.as_ref().map(QualifiedTableName::id),
-            create_disposition: (plan.create_disposition != BigQueryCreateDisposition::default())
-                .then_some(plan.create_disposition.as_str()),
-            write_disposition: (plan.write_disposition != BigQueryWriteDisposition::default())
-                .then_some(plan.write_disposition.as_str()),
-            priority: (plan.priority != BigQueryQueryPriority::default())
-                .then_some(plan.priority.as_str()),
+            destination_table: plan
+                .options
+                .destination_table
+                .as_ref()
+                .map(QualifiedTableName::id),
+            create_disposition: (plan.options.create_disposition
+                != BigQueryCreateDisposition::default())
+            .then_some(plan.options.create_disposition.as_str()),
+            write_disposition: (plan.options.write_disposition
+                != BigQueryWriteDisposition::default())
+            .then_some(plan.options.write_disposition.as_str()),
+            priority: (plan.options.priority != BigQueryQueryPriority::default())
+                .then_some(plan.options.priority.as_str()),
         }
     }
 }
@@ -234,9 +241,9 @@ impl<'a> QueryFields<'a> {
             connection_properties: connection_properties(plan.session_id.as_deref()),
             parameter_mode,
             query_parameters,
-            maximum_bytes_billed: nonzero_i64(plan.maximum_bytes_billed),
-            create_session: plan.create_session.then_some(true),
-            use_query_cache: plan.disable_query_cache.then_some(false),
+            maximum_bytes_billed: nonzero_i64(plan.options.maximum_bytes_billed),
+            create_session: plan.options.create_session.then_some(true),
+            use_query_cache: plan.options.disable_query_cache.then_some(false),
         }
     }
 }

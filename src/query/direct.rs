@@ -130,7 +130,7 @@ fn complete_in_session(
 ) -> Result<CompletedQuery> {
     let runtime = &context.execution.runtime;
     let client = client_for(runtime, &context.execution.state, &plan)?;
-    let job_timeout_ms = plan.job_timeout_ms;
+    let job_timeout_ms = plan.options.job_timeout_ms;
     runtime.block_on(async {
         let complete = complete_query_with_progress(
             runtime,
@@ -218,7 +218,7 @@ pub(super) async fn complete_query_with_progress(
     }
     // Describing parameters can run beside an earlier execution; even retries must leave its
     // progress untouched. Dry runs report estimates, not executed work.
-    let progress = progress.filter(|_| !plan.dry_run);
+    let progress = progress.filter(|_| !plan.options.dry_run);
     if let Some(progress) = progress {
         progress.begin_job();
     }

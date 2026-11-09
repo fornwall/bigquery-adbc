@@ -191,7 +191,7 @@ async fn execute_jobs_insert(
     let mut response = JobResponse::decode(&body, "the BigQuery jobs.insert response")?;
     // A dry run's synchronous response may carry only a project and location in `jobReference`,
     // with no job ID: it names no durable job, so it is neither confirmed nor published.
-    let canonical = (!plan.dry_run)
+    let canonical = (!plan.options.dry_run)
         .then(|| {
             request.reference().confirm(
                 response.job_reference.as_ref(),
@@ -225,13 +225,13 @@ async fn execute_jobs_insert(
     // job; otherwise the poll and a later jobs.get fill the metadata. Keep the statement type and
     // session ID regardless: getQueryResults returns neither, and the transaction bookkeeping and
     // a session this insert created need both.
-    if plan.dry_run || response.is_done() {
+    if plan.options.dry_run || response.is_done() {
         metadata.absorb_job(&mut response);
     } else {
         metadata.absorb_running_job(&response);
     }
     metadata.job_reference.clone_from(&canonical);
-    if plan.dry_run {
+    if plan.options.dry_run {
         if !response.is_done() {
             return Err(AttemptFailure::Request(error(
                 "a BigQuery dry-run jobs.insert response is missing a completed status",

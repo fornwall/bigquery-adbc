@@ -4,7 +4,6 @@
 //! identity. HTTP retries resend a plan byte-for-byte; a whole-query reissue builds a new plan
 //! with a new identity. BigQuery may ignore a request ID for a read-only query.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::rest::model::QueryParameter;
@@ -17,7 +16,7 @@ use crate::rest::jobs::next_identity;
 use crate::rest::metadata::DatasetId;
 use crate::{BigQueryCreateDisposition, BigQueryQueryPriority, BigQueryWriteDisposition};
 
-use super::{QualifiedTableName, QueryDefaults, StatementQueryOptions};
+use super::{QueryDefaults, StatementQueryOptions};
 
 /// Whether `jobs.query` may avoid creating a durable job.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -105,17 +104,9 @@ pub(super) struct QueryPlan {
     pub(super) location: Option<Arc<str>>,
     pub(super) session_id: Option<Arc<str>>,
     pub(super) parameters: Option<QueryParameters>,
-    pub(super) destination_table: Option<QualifiedTableName>,
-    pub(super) create_disposition: BigQueryCreateDisposition,
-    pub(super) write_disposition: BigQueryWriteDisposition,
-    pub(super) maximum_bytes_billed: i64,
-    pub(super) job_timeout_ms: i64,
-    pub(super) reservation: Option<Arc<str>>,
-    pub(super) labels: Option<Arc<BTreeMap<String, String>>>,
-    pub(super) priority: BigQueryQueryPriority,
-    pub(super) create_session: bool,
-    pub(super) disable_query_cache: bool,
-    pub(super) dry_run: bool,
+    /// The statement's options; its default project and dataset are already resolved into
+    /// `default_dataset`.
+    pub(super) options: StatementQueryOptions,
     pub(super) job_creation: QueryJobCreation,
     identity: QueryIdentity,
 }
@@ -164,17 +155,7 @@ impl QueryPlan {
             location: location.map(Arc::from),
             session_id: session_id.map(Arc::from),
             parameters,
-            destination_table: options.destination_table.clone(),
-            create_disposition: options.create_disposition,
-            write_disposition: options.write_disposition,
-            maximum_bytes_billed: options.maximum_bytes_billed,
-            job_timeout_ms: options.job_timeout_ms,
-            reservation: options.reservation.clone(),
-            labels: options.labels.clone(),
-            priority: options.priority,
-            create_session: options.create_session,
-            disable_query_cache: options.disable_query_cache,
-            dry_run: options.dry_run,
+            options: options.clone(),
             job_creation,
             identity,
         })
