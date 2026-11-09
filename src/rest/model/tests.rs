@@ -92,42 +92,19 @@ fn null_reads_as_the_default_of_every_field() {
     assert!(status.error_result.is_none() && status.errors.is_empty() && status.state.is_empty());
 }
 
-/// `tables.patch` replaces the whole schema, so a column property the driver never inspects has
-/// to survive the read-modify-write `persist_docs` performs.
+/// `tables.patch` replaces the whole schema, so a column or schema property the driver never
+/// inspects, including one BigQuery adds later, has to survive the read-modify-write
+/// `persist_docs` performs.
 #[test]
 fn unexamined_column_properties_survive_a_schema_round_trip() {
-    let body = r#"{"fields":[{"name":"c","type":"STRING","collation":"und:ci","roundingMode":"ROUND_HALF_EVEN","defaultValueExpression":"'x'","timestampPrecision":"12","dataPolicies":[{"name":"p"}],"dataPolicyList":{"dataPolicies":[]},"dataGovernanceTagsInfo":{"tags":[]},"foreignTypeDefinition":"d","generatedColumn":{"expression":"1"}}],"foreignTypeInfo":{"typeSystem":"HIVE"}}"#;
-    let schema: TableSchema = serde_json::from_str(body).unwrap();
-    // Field order is the struct's, not the response's, so the documents are compared as values.
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&serde_json::to_string(&schema).unwrap())
-            .unwrap(),
-        serde_json::from_str::<serde_json::Value>(body).unwrap()
-    );
-}
-
-/// An unknown field is neither refused nor dropped, because the whole-schema `tables.patch` that
-/// `persist_docs` performs would otherwise delete it.
-#[test]
-fn a_field_bigquery_adds_survives_the_schema_round_trip() {
-    let body = r#"{"fields":[{"name":"c","type":"STRING","somethingNew":{"a":1}}],"newTop":1}"#;
+    let body = r#"{"fields":[{"name":"c","type":"STRING","collation":"und:ci","roundingMode":"ROUND_HALF_EVEN","defaultValueExpression":"'x'","timestampPrecision":"12","dataPolicies":[{"name":"p"}],"dataPolicyList":{"dataPolicies":[]},"dataGovernanceTagsInfo":{"tags":[]},"foreignTypeDefinition":"d","generatedColumn":{"expression":"1"},"somethingNew":{"a":1}}],"foreignTypeInfo":{"typeSystem":"HIVE"},"newTop":1}"#;
     let mut schema: TableSchema = serde_json::from_str(body).unwrap();
-    assert_eq!(schema.fields[0].name, "c");
-
     // What `persist_docs` does between the get and the patch.
     schema.fields[0].description = Some("Documented.".to_owned());
-    let patched =
-        serde_json::from_str::<serde_json::Value>(&serde_json::to_string(&schema).unwrap())
-            .unwrap();
-    assert_eq!(
-        patched["fields"][0]["somethingNew"],
-        serde_json::json!({"a": 1})
-    );
-    assert_eq!(patched["newTop"], serde_json::json!(1));
-    assert_eq!(
-        patched["fields"][0]["description"],
-        serde_json::json!("Documented.")
-    );
+    let mut expected = serde_json::from_str::<serde_json::Value>(body).unwrap();
+    expected["fields"][0]["description"] = serde_json::json!("Documented.");
+    // Field order is the struct's, not the response's, so the documents are compared as values.
+    assert_eq!(serde_json::to_value(&schema).unwrap(), expected);
 }
 
 /// A key repeated in one object is a malformed document, not a last-writer-wins merge.
