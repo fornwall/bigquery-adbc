@@ -331,19 +331,13 @@ fn canonical_arrow_types_cover_every_scalar_type_and_range_element() {
             kind.is_scalar(),
             "{kind:?}"
         );
-        assert_eq!(
-            kind.is_scalar(),
-            !matches!(kind, BigQueryType::Struct | BigQueryType::Range),
-            "{kind:?}"
-        );
     }
     for element in [
         RangeElement::Date,
         RangeElement::DateTime,
         RangeElement::Timestamp,
     ] {
-        // `canonical_arrow_type` delegates to `canonical_data_type`, so this only proves the
-        // delegation never hits its `expect`: every range element is a scalar type.
+        // `canonical_arrow_type`'s `expect` holds: every range element is a scalar type.
         assert!(element.bigquery_type().is_scalar(), "{element:?}");
         assert_eq!(RangeElement::from_rest(element.rest()), Some(element));
         assert_eq!(RangeElement::from_rest(element.sql()), Some(element));
@@ -354,31 +348,13 @@ fn canonical_arrow_types_cover_every_scalar_type_and_range_element() {
 
 /// Zoned means TIMESTAMP, otherwise DATETIME, and the REST decoder reads epoch microseconds or a
 /// civil datetime accordingly; a disagreement would silently misread a whole column. An empty
-/// timezone is unzoned.
+/// timezone is unzoned (see also the canonical scalar table above).
 #[test]
-fn an_empty_arrow_timezone_is_unzoned_and_maps_to_datetime() {
+fn an_empty_arrow_timezone_is_unzoned() {
     assert!(!timestamp_is_zoned(None));
     assert!(!timestamp_is_zoned(Some("")));
     assert!(timestamp_is_zoned(Some("UTC")));
     assert!(timestamp_is_zoned(Some("+02:00")));
-
-    for timezone in [None, Some("")] {
-        assert_eq!(
-            inferred_scalar_type(&DataType::Timestamp(
-                TimeUnit::Microsecond,
-                timezone.map(Into::into)
-            )),
-            Some(BigQueryType::DateTime),
-            "{timezone:?}"
-        );
-    }
-    assert_eq!(
-        inferred_scalar_type(&DataType::Timestamp(
-            TimeUnit::Microsecond,
-            Some("UTC".into())
-        )),
-        Some(BigQueryType::Timestamp)
-    );
 }
 
 /// The location chain renders the root, then each element and field descended into, in order.

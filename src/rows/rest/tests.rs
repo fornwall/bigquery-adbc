@@ -9,20 +9,36 @@ fn decode(json: &str) -> RestRow {
     decode_row(json).unwrap()
 }
 
+/// Unknown envelope fields are skipped without disturbing positions.
 #[test]
-fn decodes_scalar_primitives_and_nulls() {
-    let row = decode(r#"{"f":[{"v":"text"},{"v":true},{"v":-7},{"v":9},{"v":1.25},{"v":null}]}"#);
-    assert_eq!(
-        row,
-        RestRow::new(vec![
-            RestValue::string("text"),
-            RestValue::Boolean(true),
-            RestValue::Integer(-7),
-            RestValue::Unsigned(9),
-            RestValue::Float(1.25),
-            RestValue::Null,
-        ])
-    );
+fn decodes_scalars_nulls_and_empty_composites() {
+    for (json, cells) in [
+        (
+            r#"{"f":[{"v":"text"},{"v":true},{"v":-7},{"v":9},{"v":1.25},{"v":null}]}"#,
+            vec![
+                RestValue::string("text"),
+                RestValue::Boolean(true),
+                RestValue::Integer(-7),
+                RestValue::Unsigned(9),
+                RestValue::Float(1.25),
+                RestValue::Null,
+            ],
+        ),
+        (r#"{"f":[]}"#, Vec::new()),
+        (
+            r#"{"f":[{"v":[]},{"v":{"f":[]}}]}"#,
+            vec![
+                RestValue::Repeated(Vec::new()),
+                RestValue::Record(Vec::new()),
+            ],
+        ),
+        (
+            r#"{"before":{"large":[1,2]},"f":[{"ignored":"x","v":"ok"}],"after":7}"#,
+            vec![RestValue::string("ok")],
+        ),
+    ] {
+        assert_eq!(decode(json), RestRow::new(cells), "{json}");
+    }
 }
 
 #[test]
@@ -95,37 +111,6 @@ fn a_page_decodes_rows_of_every_width_after_any_other_width() {
 }
 
 #[test]
-fn rejects_a_rows_field_that_is_not_an_array() {
-    let message = serde_json::from_str::<RestRows>("7")
-        .unwrap_err()
-        .to_string();
-    assert!(
-        message.contains("`rows` field is not a JSON array"),
-        "{message}"
-    );
-}
-
-#[test]
-fn accepts_empty_rows_records_and_arrays() {
-    assert_eq!(decode(r#"{"f":[]}"#), RestRow::new(Vec::new()));
-    assert_eq!(
-        decode(r#"{"f":[{"v":[]},{"v":{"f":[]}}]}"#),
-        RestRow::new(vec![
-            RestValue::Repeated(Vec::new()),
-            RestValue::Record(Vec::new()),
-        ])
-    );
-}
-
-#[test]
-fn ignores_unknown_envelope_fields_without_disturbing_positions() {
-    assert_eq!(
-        decode(r#"{"before":{"large":[1,2]},"f":[{"ignored":"x","v":"ok"}],"after":7}"#),
-        RestRow::new(vec![RestValue::string("ok")])
-    );
-}
-
-#[test]
 fn rejects_missing_duplicate_and_malformed_envelopes() {
     for (json, expected) in [
         (r#"{}"#, "row is missing field `f`"),
@@ -154,6 +139,10 @@ fn decoder_errors_never_echo_cell_contents() {
         .unwrap_err()
         .to_string();
     assert!(!message.contains(secret), "value was echoed: {message}");
+    assert!(
+        message.contains("`rows` field is not a JSON array"),
+        "{message}"
+    );
 }
 
 #[test]
