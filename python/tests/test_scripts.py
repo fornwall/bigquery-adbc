@@ -1,18 +1,24 @@
 from __future__ import annotations
 
 import hashlib
+import http.server
 import json
 import os
 import shutil
 import signal
 import subprocess
 import sys
+import tarfile
+import threading
 import time
+from collections.abc import Iterator
+from functools import partial
 from pathlib import Path
 
 import pytest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+DBT_INSTALLER = REPOSITORY_ROOT / "tools/dbt-build/install.sh"
 posix = pytest.mark.skipif(sys.platform == "win32" or shutil.which("bash") is None, reason="requires POSIX Bash")
 
 
@@ -480,3 +486,159 @@ def test_binary_size_report_distinguishes_artifact_from_reporting_context(
         report["context", "git_commit"]
         == subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPOSITORY_ROOT, text=True).strip()
     )
+
+
+@pytest.fixture
+def dbt_release(tmp_path: Path) -> Iterator[tuple[str, Path]]:
+    """Serve release archives and GitHub's latest-tag redirect through real curl requests."""
+    release = tmp_path / "releases/download/v1.2.3"
+    release.mkdir(parents=True)
+    tag = tmp_path / "releases/tag/v1.2.3"
+    tag.parent.mkdir()
+    tag.touch()
+    checksums = []
+    for target in ("linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-aarch64"):
+        name = f"dbt-bigquery-adbc-1.2.3-{target}"
+        package = tmp_path / name
+        package.mkdir()
+        binary = package / "dbt-bigquery-adbc"
+        binary.write_text("#!/bin/sh\necho 'dbt (modified with bigquery-adbc 1.2.3) test-commit'\n")
+        binary.chmod(0o755)
+        sidecar = package / "lib/bigquery-adbc/driver.so"
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_bytes(b"test driver")
+        archive = release / f"{name}.tar.gz"
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(package, arcname=name)
+        checksums.append(f"{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n")
+    (release / "dbt-SHA256SUMS").write_text("".join(checksums))
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def do_HEAD(self):
+            if self.path == "/releases/latest":
+                self.send_response(302)
+                self.send_header("Location", "/releases/tag/v1.2.3")
+                self.end_headers()
+            else:
+                super().do_HEAD()
+
+        def log_message(self, *_args):
+            pass
+
+    with http.server.ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(tmp_path))) as server:
+        worker = threading.Thread(target=server.serve_forever)
+        worker.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_port}/releases", release
+        finally:
+            server.shutdown()
+            worker.join()
+
+
+def run_dbt_installer(tmp_path: Path, releases_url: str, *args: str) -> subprocess.CompletedProcess[str]:
+    # Isolate shell startup changes and the default prefix from the developer's installation.
+    return subprocess.run(
+        ["sh", "-s", "--", *args],
+        input=DBT_INSTALLER.read_text(),
+        env={
+            **os.environ,
+            "HOME": str(tmp_path),
+            "SHELL": "/bin/bash",
+            "BIGQUERY_ADBC_RELEASES_URL": releases_url,
+        },
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+
+@posix
+@pytest.mark.parametrize(
+    "target",
+    ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "aarch64-apple-darwin"],
+)
+def test_dbt_installer_updates_beside_stock_dbt(tmp_path: Path, dbt_release: tuple[str, Path], target: str) -> None:
+    prefix = tmp_path / ".local"
+    binary = prefix / "bin/dbt-bigquery-adbc"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\necho 'dbt (modified with bigquery-adbc 1.2.2) old-commit'\n")
+    binary.chmod(0o755)
+    stock = prefix / "bin/dbt"
+    stock.write_bytes(b"stock dbt")
+    stock_driver = prefix / "lib/dbt/driver.so"
+    stock_driver.parent.mkdir(parents=True)
+    stock_driver.write_bytes(b"stock driver")
+    shell_config = tmp_path / ".bashrc"
+    shell_config.write_text(f'export PATH="$PATH:{prefix}/bin"\nalias dbtf={stock}\n')
+    original_config = shell_config.read_bytes()
+
+    refused = run_dbt_installer(tmp_path, dbt_release[0], "--target", target)
+    assert refused.returncode != 0
+    assert "use the --update flag" in refused.stdout
+    assert "1.2.2" in binary.read_text()
+    installed = run_dbt_installer(tmp_path, dbt_release[0], "--update", "--target", target)
+    assert installed.returncode == 0, installed.stdout + installed.stderr
+    assert "1.2.3" in binary.read_text()
+    assert os.access(binary, os.X_OK)
+    assert (prefix / "lib/bigquery-adbc/driver.so").read_bytes() == b"test driver"
+    assert stock.read_bytes() == b"stock dbt"
+    assert stock_driver.read_bytes() == b"stock driver"
+    assert shell_config.read_bytes() == original_config
+    repeated = run_dbt_installer(tmp_path, dbt_release[0], "--update", "--target", target)
+    assert repeated.returncode == 0, repeated.stdout + repeated.stderr
+    assert "already installed" in repeated.stdout
+    assert shell_config.read_bytes() == original_config
+
+
+@posix
+@pytest.mark.parametrize("location", ["--prefix", "--to"])
+@pytest.mark.parametrize("valid_checksum", [True, False])
+def test_dbt_installer_verifies_download_before_installing(
+    tmp_path: Path, dbt_release: tuple[str, Path], location: str, valid_checksum: bool
+) -> None:
+    if not valid_checksum:
+        (dbt_release[1] / "dbt-SHA256SUMS").write_text("corrupt checksums\n")
+    destination = tmp_path / "custom install"
+    binary = destination / ("bin/dbt-bigquery-adbc" if location == "--prefix" else "dbt-bigquery-adbc")
+    result = run_dbt_installer(
+        tmp_path,
+        dbt_release[0],
+        "--update",
+        "--version",
+        "v1.2.3",
+        "--target",
+        "linux-x86_64",
+        location,
+        str(destination),
+    )
+    if valid_checksum:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert binary.is_file()
+        assert (destination / "lib/bigquery-adbc/driver.so").exists() == (location == "--prefix")
+    else:
+        assert result.returncode != 0
+        assert "does not match dbt-SHA256SUMS" in result.stdout
+        assert not binary.exists()
+        assert not (tmp_path / ".bashrc").exists()
+
+
+@posix
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--udpate"],
+        ["--prefix"],
+        ["--prefix", ""],
+        ["--prefix", "--update"],
+        ["--version"],
+        ["--target"],
+        ["--to"],
+        ["--package"],
+    ],
+)
+def test_dbt_installer_rejects_invalid_arguments_before_network_access(tmp_path: Path, args: list[str]) -> None:
+    result = run_dbt_installer(tmp_path, "http://127.0.0.1:1/must-not-fetch", *args)
+    assert result.returncode != 0
+    assert "Unknown option" in result.stdout or "requires a value" in result.stdout
+    assert not (tmp_path / ".local").exists()

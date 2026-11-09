@@ -1,6 +1,7 @@
 #!/bin/sh
 # Installs dbt-bigquery-adbc, the dbt that tools/dbt-build builds, from bigquery-adbc's GitHub
 # releases. `dbt-bigquery-adbc system update` runs the latest release's copy of this script.
+# Usage: curl -fsSL https://raw.githubusercontent.com/fornwall/bigquery-adbc/main/tools/dbt-build/install.sh | sh -s -- --update
 #
 # Adapted from dbt's installer, crates/dbt-common/assets/install.sh at dbt-labs/dbt commit
 # 327f5269737bfec2440f10e07702f8280dfec1e9, Copyright 2026 dbt Labs, Inc., licensed under the
@@ -77,7 +78,7 @@ help() {
     echo "Options:"
     echo "  --update, -u       Update to the latest or specified version"
     echo "  --version VER      Install version VER (default: latest)"
-    echo "  --target TARGET    Install for target platform TARGET, such as macos-aarch64"
+    echo "  --target TARGET    Override platform detection (e.g. aarch64-apple-darwin or macos-aarch64)"
     echo "  --prefix PREFIX    Install under PREFIX: $BINARY in PREFIX/bin, its driver in PREFIX/lib/bigquery-adbc"
     echo "                     (default: \$HOME/.local)"
     echo "  --to DEST          Install $BINARY into DEST, without its drivers"
@@ -95,27 +96,21 @@ while [ $# -gt 0 ]; do
         help
         exit 0
         ;;
-    --version)
-        version=$2
+    --version | --package | -p | --target | --prefix | --to)
+        [ "$#" -ge 2 ] && [ -n "$2" ] || err_and_exit "$1 requires a value"
+        case "$2" in
+            --*) err_and_exit "$1 requires a value" ;;
+        esac
+        case "$1" in
+            --version) version=$2 ;;
+            --package | -p) package=$2 ;;
+            --target) target=$2 ;;
+            --prefix) prefix=$2 ;;
+            --to) dest=$2 ;;
+        esac
         shift
         ;;
-    --package | -p)
-        package=$2
-        shift
-        ;;
-    --target)
-        target=$2
-        shift
-        ;;
-    --prefix)
-        prefix=$2
-        shift
-        ;;
-    --to)
-        dest=$2
-        shift
-        ;;
-    *) ;;
+    *) err_and_exit "Unknown option: $1" "Run with --help for usage" ;;
 
     esac
     shift
@@ -230,8 +225,10 @@ detect_target_platform() {
     elif [ "$operating_system" = "darwin" ]; then
         if [ "$cpu_arch_target" = "arm64" ]; then
             target="macos-aarch64"
-        else
+        elif [ "$cpu_arch_target" = "x86_64" ]; then
             target="macos-x86_64"
+        else
+            err_and_exit "Unsupported CPU Architecture: $cpu_arch_target"
         fi
     else
         err_and_exit "Unsupported OS: $operating_system"
@@ -536,6 +533,14 @@ main() {
     target_version="$TARGET_VERSION"
 
     target_platform="${target:-$(detect_target_platform)}"
+    # Accept dbt's Rust target triples as well as the release archive's platform names.
+    case "$target_platform" in
+        x86_64-unknown-linux-gnu | linux-x86_64) target_platform=linux-x86_64 ;;
+        aarch64-unknown-linux-gnu | linux-aarch64) target_platform=linux-aarch64 ;;
+        x86_64-apple-darwin | macos-x86_64) target_platform=macos-x86_64 ;;
+        aarch64-apple-darwin | macos-aarch64) target_platform=macos-aarch64 ;;
+        *) err_and_exit "Unsupported target: $target_platform" ;;
+    esac
     log_grey "Target: $target_platform"
 
     check_version_exists "$target_version" "$target_platform"

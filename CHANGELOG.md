@@ -5,6 +5,11 @@ changes.
 
 ## [Unreleased]
 
+### Changed
+
+- The dbt installer accepts dbt's Rust target triples with `--target`, and rejects unknown
+  options and missing values before installing.
+
 ## [0.5.0] - 2026-11-09
 
 ### Added
