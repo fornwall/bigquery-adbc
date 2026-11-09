@@ -16,7 +16,7 @@ dbt's own version is unchanged everywhere else, including `dbt_version` in Jinja
 On Linux and macOS, install the latest release into `~/.local/bin`:
 
 ```sh
-curl -fsSL https://github.com/fornwall/bigquery-adbc/releases/latest/download/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/fornwall/bigquery-adbc/main/tools/dbt-build/install.sh | sh -s -- --update
 ```
 
 [`install.sh`](install.sh) is dbt's installer adapted to these releases, with the same options such
@@ -26,6 +26,7 @@ file. The binary is not notarized, so macOS refuses a browser-downloaded copy un
 `xattr -dr com.apple.quarantine <directory>`; a `curl` download avoids that.
 `dbt-bigquery-adbc system update` reruns the latest release's `install.sh`. Neither supports
 Windows; download its `.zip` from the release instead.
+See [the dbt user guide](../../docs/DBT.md) for trying it with an existing project.
 
 ## Builds
 

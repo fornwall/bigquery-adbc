@@ -69,6 +69,18 @@ The URI can select a dataset and location: `bigquery:///my-project?DatasetId=my_
 See [connection URIs](docs/REFERENCE.md#connection-uris),
 [database options](docs/REFERENCE.md#database-options) and the [Python guide](python/README.md).
 
+## dbt 2
+
+Try the driver with `dbt-bigquery-adbc`, a patched dbt 2 that uses your existing project and
+profiles. On Linux or macOS, install or update it alongside your normal `dbt`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/fornwall/bigquery-adbc/main/tools/dbt-build/install.sh | sh -s -- --update
+```
+
+This installs the latest release into `~/.local/bin`. Run `dbt-bigquery-adbc build` from your dbt
+project. See [DBT.md](docs/DBT.md) for usage, compatibility notes and developer instructions.
+
 ## C and C++
 
 [GitHub releases](https://github.com/fornwall/bigquery-adbc/releases) provide native archives for
