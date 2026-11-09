@@ -2,10 +2,14 @@ use super::*;
 use adbc_core::error::Status;
 
 #[test]
-fn catches_a_panic_as_an_internal_error() {
+fn catches_a_panic_as_an_internal_error_and_passes_results_through() {
     let error = catch(|| -> Result<()> { panic!("kaboom") }).unwrap_err();
     assert_eq!(error.status, Status::Internal);
     assert!(error.message.contains("kaboom"), "{}", error.message);
+    assert_eq!(catch(|| Ok(7)).unwrap(), 7);
+    let failure =
+        catch(|| -> Result<()> { Err(Error::with_message_and_status("nope", Status::NotFound)) });
+    assert_eq!(failure.unwrap_err().status, Status::NotFound);
 }
 
 /// Both panic payload shapes `panic!` produces are rendered; anything else says so rather
@@ -26,14 +30,6 @@ fn sanitized_cstring_replaces_interior_nuls_instead_of_truncating() {
     );
     assert_eq!(sanitized_cstring("clean").to_bytes(), b"clean");
     assert_eq!(sanitized_cstring("").to_bytes(), b"");
-}
-
-#[test]
-fn passes_through_ordinary_results() {
-    assert_eq!(catch(|| Ok(7)).unwrap(), 7);
-    let failure =
-        catch(|| -> Result<()> { Err(Error::with_message_and_status("nope", Status::NotFound)) });
-    assert_eq!(failure.unwrap_err().status, Status::NotFound);
 }
 
 /// `write_string` into `buffer`, advertising `length` bytes of it, returning the size reported.

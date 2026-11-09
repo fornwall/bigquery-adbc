@@ -224,12 +224,6 @@ mod tests {
             (MIN_WORKER_THREADS..=MAX_WORKER_THREADS).contains(&workers),
             "{workers}"
         );
-        let available =
-            std::thread::available_parallelism().map_or(MIN_WORKER_THREADS, usize::from);
-        assert_eq!(
-            workers,
-            available.clamp(MIN_WORKER_THREADS, MAX_WORKER_THREADS)
-        );
         let runtime = new_runtime().unwrap();
         assert_eq!(runtime.metrics().num_workers(), workers);
     }

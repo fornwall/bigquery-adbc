@@ -16,13 +16,13 @@ pub(crate) struct ProjectIdentifier(Arc<str>);
 impl ProjectIdentifier {
     /// Validates a project identifier for a caller that has no use for the rejection reason;
     /// [`Self::try_new_from`] is the one that reports it.
-    pub(crate) fn try_new(value: impl Into<Arc<str>>) -> std::result::Result<Self, ()> {
+    pub(crate) fn try_new(value: impl Into<Arc<str>>) -> Option<Self> {
         let value = value.into();
         let valid = !value.is_empty()
             && !value.contains(['/', '\\'])
             && !value.bytes().any(|byte| byte.is_ascii_control())
             && !is_dot_segment(&value);
-        if valid { Ok(Self(value)) } else { Err(()) }
+        valid.then_some(Self(value))
     }
 
     /// Validates a project identifier, naming where a rejected value came from.
@@ -30,7 +30,7 @@ impl ProjectIdentifier {
     /// The value is never echoed, so `source` (the option key, URI component, or call argument)
     /// identifies the input.
     pub(crate) fn try_new_from(source: &str, value: impl Into<Arc<str>>) -> Result<Self> {
-        Self::try_new(value).map_err(|()| {
+        Self::try_new(value).ok_or_else(|| {
             invalid_argument(format!(
                 "BigQuery project identifier from {source} must be nonempty, cannot contain \
                  slashes, backslashes or ASCII control characters, and cannot be \".\" or \"..\""

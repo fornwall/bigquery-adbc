@@ -48,7 +48,7 @@ fn project_identifiers_reject_only_structurally_unsafe_values() {
         "abc\tde",
         "abc\u{7f}de",
     ] {
-        assert!(ProjectIdentifier::try_new(value).is_err(), "{value:?}");
+        assert!(ProjectIdentifier::try_new(value).is_none(), "{value:?}");
     }
 }
 

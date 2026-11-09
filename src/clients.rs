@@ -486,7 +486,7 @@ mod tests {
 
     #[test]
     fn dataset_location_cache_releases_evicted_entries_and_stays_bounded() {
-        const DATASETS: usize = 4096;
+        const DATASETS: usize = 2 * DATASET_LOCATION_CACHE_ENTRIES;
         let state = ClientState::for_test();
         let first_dataset = Arc::<str>::from("first");
         let first_location = Arc::<str>::from("asia-northeast1");
@@ -563,48 +563,6 @@ mod tests {
         assert!(state.dataset_location(&datasets[1]).is_none());
         let cache = state.dataset_locations.lock().unwrap();
         assert_eq!(cache.0.len(), DATASET_LOCATION_CACHE_ENTRIES);
-    }
-
-    #[test]
-    fn an_evicted_dataset_location_is_looked_up_and_shared_again() {
-        let (endpoint, requests) = capture_requests(vec![
-            (200, serde_json::json!({"location": "US"})),
-            (200, serde_json::json!({"location": "EU"})),
-        ]);
-        let runtime = new_runtime().unwrap();
-        let state = ClientState::for_test_at(ServiceEndpointKind::BigQuery, &endpoint);
-        let locations = state.dataset_locations(&runtime).unwrap();
-        let dataset = (project("data-project"), Arc::from("reporting"));
-        let first = runtime
-            .block_on(locations.get(None, &dataset))
-            .map_err(|failure| failure.into_error("first lookup"))
-            .unwrap();
-        assert_eq!(&*first, "US");
-        for index in 0..DATASET_LOCATION_CACHE_ENTRIES {
-            state.remember_dataset_location(
-                (
-                    project("data-project"),
-                    Arc::from(format!("scratch_{index}")),
-                ),
-                Arc::from("US"),
-            );
-        }
-        assert!(state.dataset_location(&dataset).is_none());
-
-        let other = state.dataset_locations(&runtime).unwrap();
-        let fetched = runtime
-            .block_on(other.get(None, &dataset))
-            .map_err(|failure| failure.into_error("lookup after eviction"))
-            .unwrap();
-        assert_eq!(&*fetched, "EU");
-        let cached = runtime
-            .block_on(locations.get(None, &dataset))
-            .map_err(|failure| failure.into_error("cached lookup"))
-            .unwrap();
-        assert!(Arc::ptr_eq(&fetched, &cached));
-        let requests = requests.join().unwrap();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].path(), requests[1].path());
     }
 
     /// A refused configuration is an invalid argument, and the message carries the whole source

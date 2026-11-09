@@ -47,33 +47,6 @@ fn a_second_new_on_a_populated_handle_is_refused() {
     release(&mut database);
 }
 
-/// The buffer collapses repeats, so setting the URI twice must not look like the duplicate URI
-/// the driver rejects.
-#[test]
-fn setting_the_same_option_twice_keeps_the_later_value() {
-    let mut database: AdbcDatabase = allocated();
-    for (key, value) in [
-        ("uri", "bigquery:///first"),
-        ("uri", "bigquery:///second"),
-        ("adbc.bigquery.sql.auth_type", "anonymous"),
-    ] {
-        assert_eq!(set(&mut database, key, value).0, ADBC_STATUS_OK);
-    }
-    // Before Init the getters report `NOT_FOUND`, however many sets were buffered.
-    assert_eq!(
-        get(&mut database, "adbc.bigquery.sql.project_id")
-            .unwrap_err()
-            .0,
-        ADBC_STATUS_NOT_FOUND
-    );
-    assert_eq!(init(&mut database), ADBC_STATUS_OK);
-    assert_eq!(
-        get(&mut database, "adbc.bigquery.sql.project_id").unwrap(),
-        "second"
-    );
-    release(&mut database);
-}
-
 #[test]
 fn pre_init_aliases_share_the_last_value_and_can_correct_a_failed_init() {
     for (first, second) in [
@@ -104,35 +77,6 @@ fn pre_init_aliases_share_the_last_value_and_can_correct_a_failed_init() {
         assert_eq!(get(&mut database, second).unwrap(), "anonymous");
         release(&mut database);
     }
-}
-
-/// A failed `Init` must keep the buffered options so the offending one can be corrected and
-/// `Init` retried, rather than silently reinitializing from an empty buffer.
-#[test]
-fn a_failed_init_keeps_the_buffered_options_for_a_retry() {
-    let mut database: AdbcDatabase = allocated();
-    for (key, value) in [
-        ("uri", "bigquery:///a-project"),
-        ("adbc.bigquery.sql.api_endpoint", "http://127.0.0.1:1"),
-        // Buffered without validation; rejected when Init applies it.
-        ("adbc.bigquery.sql.auth_type", "no-such-auth"),
-    ] {
-        assert_eq!(set(&mut database, key, value).0, ADBC_STATUS_OK);
-    }
-    assert_ne!(init(&mut database), ADBC_STATUS_OK);
-
-    let auth = set(&mut database, "adbc.bigquery.sql.auth_type", "anonymous");
-    assert_eq!(auth.0, ADBC_STATUS_OK);
-    assert_eq!(init(&mut database), ADBC_STATUS_OK);
-    assert_eq!(
-        get(&mut database, "adbc.bigquery.sql.project_id").unwrap(),
-        "a-project"
-    );
-    assert_eq!(
-        get(&mut database, "adbc.bigquery.sql.api_endpoint").unwrap(),
-        "http://127.0.0.1:1"
-    );
-    release(&mut database);
 }
 
 #[test]

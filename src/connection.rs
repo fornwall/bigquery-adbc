@@ -141,7 +141,7 @@ impl BigQueryConnection {
             }
             // Structurally unsafe names cannot identify a catalog. BigQuery validates other
             // spellings, including numeric and domain-scoped projects.
-            let Ok(project_id) = ProjectIdentifier::try_new(literal) else {
+            let Some(project_id) = ProjectIdentifier::try_new(literal) else {
                 return Ok(None);
             };
             return match self.probe_project(operation, &project_id) {

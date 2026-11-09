@@ -191,7 +191,7 @@ fn matches_project(requested: &str, returned: &str) -> bool {
     requested == returned
         || (is_number(requested)
             && !is_number(returned)
-            && ProjectIdentifier::try_new(returned).is_ok())
+            && ProjectIdentifier::try_new(returned).is_some())
 }
 
 fn invalid_data(message: String) -> adbc_core::error::Error {
