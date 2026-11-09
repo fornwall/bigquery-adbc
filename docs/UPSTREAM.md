@@ -145,7 +145,7 @@ the table schema before writing (`src/ingest/schema.rs`), which misses a concurr
 
 The Storage clients' [host resolver](https://github.com/googleapis/google-cloud-rust/blob/5a2297f47973775e925ce49d37971b03ce358fba/src/gax-internal/src/host.rs)
 accepts any custom endpoint, including plain HTTP, and sends credentials to it, so
-`DatabaseConfig::validate_endpoints` (`src/config/endpoints.rs`) restricts authenticated Storage
+`DatabaseConfig::validate_endpoints` (`src/config.rs`) restricts authenticated Storage
 and auxiliary overrides to HTTPS `googleapis.com` hosts unless
 `bigquery.allow_untrusted_endpoint=true`; a REST endpoint set as an option is trusted separately
 for Go/dbt compatibility. [Impersonation](https://github.com/googleapis/google-cloud-rust/blob/5a2297f47973775e925ce49d37971b03ce358fba/src/auth/src/credentials/impersonated.rs)
