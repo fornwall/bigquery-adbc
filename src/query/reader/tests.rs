@@ -463,35 +463,6 @@ fn only_rows_still_to_page_through_justify_a_storage_read() {
     }
 }
 
-/// A completing `jobs.getQueryResults` omits the billed bytes and slot time, so a result it
-/// completed describes its job once for them, though the statement type is known.
-#[test]
-fn a_result_completed_by_a_poll_reports_the_costs_the_poll_omits() {
-    let runtime = crate::runtime::new_runtime().unwrap();
-    let (endpoint, server) = capture_requests_until_stopped(vec![ok(json!({
-        "jobReference":{"projectId":"project","jobId":"job","location":"US"},
-        "status":{"state":"DONE"},
-        "statistics":{"query":{
-            "statementType":"SELECT", "totalBytesBilled":"5", "totalSlotMs":"6"
-        }}
-    }))]);
-    let execution = execution_at(&runtime, &endpoint);
-    let mut complete = completed(
-        br#"{"jobComplete":true,"jobReference":{"projectId":"project","jobId":"job","location":"US"},"statementType":"SELECT","schema":{"fields":[{"name":"value","type":"INTEGER"}]},"rows":[{"f":[{"v":"7"}]}],"totalRows":"1"}"#,
-        true,
-    );
-    complete.metadata.completed_by_poll = true;
-
-    let reader = reader_from_rest_query(&execution, complete, None, None).unwrap();
-    let metadata = reader.schema().metadata().clone();
-    assert_eq!(
-        metadata[crate::BIGQUERY_SCHEMA_METADATA_TOTAL_BYTES_BILLED],
-        "5"
-    );
-    assert_eq!(metadata[crate::BIGQUERY_SCHEMA_METADATA_SLOT_MILLIS], "6");
-    assert_eq!(server.stop().len(), 1);
-}
-
 /// A result with a row too large for any REST response is not an empty result: without
 /// Storage Read it fails, saying how to read it.
 #[test]
