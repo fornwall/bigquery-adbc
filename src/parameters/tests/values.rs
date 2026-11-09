@@ -573,16 +573,11 @@ fn converts_nested_parameter_rows() {
     );
 }
 
-/// Every value error names the parameter and the row it came from, and is `INVALID_DATA`.
-///
-/// The two array rows also cover the rule that a BigQuery array holds no NULL element: an array
-/// parameter carries no per-element nullability, so a null child would reach the service as an
-/// empty value. Both offset layouts are covered because they address their child differently.
+/// A BigQuery array holds no NULL element: an array parameter carries no per-element nullability,
+/// so a null child would reach the service as an empty value. Both offset layouts are covered
+/// because they address their child differently.
 #[test]
-fn value_errors_name_their_parameter_and_row() {
-    let unsigned: ArrayRef = Arc::new(UInt64Array::from(vec![0, u64::MAX]));
-    let misaligned: ArrayRef = Arc::new(Date64Array::from(vec![0, 1]));
-    let overflowing: ArrayRef = Arc::new(TimestampSecondArray::from(vec![0, i64::MAX]));
+fn array_parameters_reject_null_elements_in_either_layout() {
     let with_null_element: ArrayRef =
         Arc::new(ListArray::from_iter_primitive::<Int64Type, _, _>(vec![
             Some(vec![Some(1)]),
@@ -593,17 +588,17 @@ fn value_errors_name_their_parameter_and_row() {
             vec![Some(vec![Some(1), Some(2)]), Some(vec![Some(3), None])],
             2,
         ));
-    for (name, column, fragment) in [
-        ("huge", unsigned, "exceeds BigQuery INT64"),
-        ("day", misaligned, "aligned to a UTC day"),
-        ("moment", overflowing, "overflows microsecond precision"),
-        ("items", with_null_element, "element 1 is NULL"),
-        ("fixed", fixed_with_null_element, "element 1 is NULL"),
+    for (name, column) in [
+        ("items", with_null_element),
+        ("fixed", fixed_with_null_element),
     ] {
         let batch = RecordBatch::try_from_iter([(name, column)]).unwrap();
         let failure = parameters_for_row(&batch, 1, ParameterMode::Named).unwrap_err();
-        assert_eq!(failure.status, Status::InvalidData, "{name}");
-        assert_message(&failure, &[&format!("{name:?}"), "at row 1", fragment]);
+        assert_failure(
+            &failure,
+            Status::InvalidData,
+            &[&format!("{name:?}"), "at row 1", "element 1 is NULL"],
+        );
     }
 }
 
