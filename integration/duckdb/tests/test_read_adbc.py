@@ -17,35 +17,23 @@ LARGE_ROW_COUNT = 300_000
 
 
 def _scan(
-    duck: duckdb.DuckDBPyConnection,
-    profile: str,
-    query: str,
-    *,
-    columns: list[str] | None = None,
+    duck: duckdb.DuckDBPyConnection, profile: str, query: str, *, columns: list[str] | None = None
 ) -> duckdb.DuckDBPyRelation:
     """Return an unexecuted `read_adbc()` relation; binding ran `AdbcStatementExecuteSchema`."""
-
     return duck.sql(sql.read_adbc(profile, query, columns=columns))
 
 
 def _types(relation: duckdb.DuckDBPyRelation) -> list[str]:
-    """Return one DuckDB relation's column types as their SQL spellings."""
-
     return [str(kind) for kind in relation.types]
 
 
 def _one_row(relation: duckdb.DuckDBPyRelation) -> tuple[Any, ...]:
-    rows = relation.fetchall()
-    assert len(rows) == 1, rows
-    return rows[0]
+    [row] = relation.fetchall()
+    return row
 
 
 @pytest.fixture
-def sample_table(
-    bigquery: Session, name: Callable[[str], str], project: str, dataset: str
-) -> str:
-    """Create one small table in the run's dataset and return its name."""
-
+def sample_table(bigquery: Session, name: Callable[[str], str], project: str, dataset: str) -> str:
     table = name("sample")
     bigquery.execute(
         f"CREATE TABLE {sql.qualified(project, dataset, table)} AS "
@@ -298,17 +286,8 @@ def test_large_result_consumed_partially(
 ) -> None:
     """`LIMIT 1` closes the statement and connection mid-result without hanging."""
 
-    (value,) = _one_row(
-        duck.sql(
-            sql.read_adbc(
-                profile,
-                "SELECT x FROM UNNEST(GENERATE_ARRAY(1, "
-                f"{LARGE_ROW_COUNT})) AS x ORDER BY x",
-            )
-            + " LIMIT 1"
-        )
-    )
-    assert value == 1
+    query = f"SELECT x FROM UNNEST(GENERATE_ARRAY(1, {LARGE_ROW_COUNT})) AS x ORDER BY x"
+    assert _one_row(duck.sql(sql.read_adbc(profile, query) + " LIMIT 1")) == (1,)
 
 
 def test_two_scans_joined(duck: duckdb.DuckDBPyConnection, profile: str) -> None:

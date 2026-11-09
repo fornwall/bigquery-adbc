@@ -327,26 +327,25 @@ def test_multi_batch_insert(
 )
 def test_buffering_settings_drive_a_multi_chunk_insert(
     setting: str,
-    attached: duckdb.DuckDBPyConnection,
+    duck: duckdb.DuckDBPyConnection,
+    profile: str,
     bigquery: Session,
     name: Callable[[str], str],
     project: str,
     dataset: str,
 ) -> None:
+    """Set before ATTACH, so the setting applies whether the extension reads it then or per insert."""
     rows = DUCKDB_CHUNK_ROWS * 3
     table = name("buffered")
     target = sql.attached(ATTACHED_CATALOG, dataset, table)
-    attached.execute(f"CREATE TABLE {target} (i BIGINT)")
-    attached.execute(setting)
+    duck.execute(setting)
+    duck.execute(sql.attach(profile, ATTACHED_CATALOG))
+    duck.execute(f"CREATE TABLE {target} (i BIGINT)")
 
-    inserted = attached.execute(
-        f"INSERT INTO {target} SELECT i FROM range({rows}) AS t(i)"
-    ).fetchall()
-
-    assert inserted == [(rows,)]
-    assert bigquery.query(
-        f"SELECT COUNT(*), SUM(i) FROM {sql.qualified(project, dataset, table)}"
-    ) == [(rows, rows * (rows - 1) // 2)]
+    assert duck.execute(f"INSERT INTO {target} SELECT i FROM range({rows}) AS t(i)").fetchall() == [(rows,)]
+    assert bigquery.query(f"SELECT COUNT(*), SUM(i) FROM {sql.qualified(project, dataset, table)}") == [
+        (rows, rows * (rows - 1) // 2)
+    ]
 
 
 def test_ctas_creates_the_table_and_fills_it(
@@ -479,42 +478,6 @@ def test_write_into_a_dataset_other_than_the_profile_default(
     assert bigquery.query(
         f"SELECT i FROM {sql.qualified(project, secondary_dataset, table)}"
     ) == [(1,)]
-
-
-def test_reading_and_writing_in_one_statement_needs_an_opt_in(
-    attached: duckdb.DuckDBPyConnection,
-    bigquery: Session,
-    name: Callable[[str], str],
-    project: str,
-    dataset: str,
-) -> None:
-    """The extension refuses mixed ADBC reads and writes by default because of isolation risks."""
-
-    source = name("source")
-    bigquery.execute(
-        f"CREATE TABLE {sql.qualified(project, dataset, source)} AS "
-        "SELECT 1 AS i UNION ALL SELECT 2"
-    )
-    table = name("sink")
-    target = _create_outside_attachment(
-        bigquery, attached, project, dataset, table, "i INT64"
-    )
-    scan = sql.read_adbc(
-        bigquery.profile, f"SELECT i FROM {sql.qualified(project, dataset, source)}"
-    )
-
-    with pytest.raises(
-        duckdb.NotImplementedException,
-        match="mixes ADBC reads and writes",
-    ):
-        attached.execute(f"INSERT INTO {target} {scan}")
-
-    attached.execute("SET adbc_mix_reads_writes = true")
-    assert attached.execute(f"INSERT INTO {target} {scan}").fetchall() == [(2,)]
-
-    assert bigquery.query(
-        f"SELECT i FROM {sql.qualified(project, dataset, table)} ORDER BY i"
-    ) == [(1,), (2,)]
 
 
 def test_rollback_does_not_undo_a_remote_write(
@@ -689,7 +652,7 @@ def test_write_statements_the_extension_does_not_implement(
         attached.execute(f"DELETE FROM {target}")
     with pytest.raises(duckdb.BinderException, match="Can only update base table"):
         attached.execute(f"UPDATE {target} SET i = 3")
-    with pytest.raises(duckdb.NotImplementedException, match="DropEntry not yet supported"):
+    with pytest.raises(duckdb.NotImplementedException, match="DropEntry not yet supported with the ADBC extension"):
         attached.execute(f"DROP TABLE {target}")
 
     session.execute(f"DELETE FROM {sql.qualified(project, dataset, table)} WHERE i = 1")

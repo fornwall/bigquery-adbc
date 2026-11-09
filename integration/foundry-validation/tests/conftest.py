@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
 import os
 from pathlib import Path
 
@@ -45,14 +44,10 @@ _FILTERING_OPTIONS = (
 )
 
 
-@dataclasses.dataclass
-class _CoverageState:
-    enabled: bool
-    passed: set[str] = dataclasses.field(default_factory=set)
-    skipped: set[str] = dataclasses.field(default_factory=set)
-
-
-_coverage_state: _CoverageState | None = None
+# Set by pytest_collection_modifyitems when a full run must match the baselines.
+_guard_enabled = False
+_passed: set[str] = set()
+_skipped: set[str] = set()
 
 
 def _requested(name: str) -> bool:
@@ -60,47 +55,26 @@ def _requested(name: str) -> bool:
 
 
 def _selects_less_than_the_suite(config: pytest.Config, argument: str) -> bool:
-    """Return whether one selected path covers only part of the suite.
-
-    A narrower directory, file, or `::` nodeid disables the coverage guards.
-    Selecting the suite directory or any ancestor keeps them enabled.
-    """
-
+    """A `::` nodeid or a path below the suite root selects part of it; the root or an ancestor does not."""
     path_argument, nodeid_separator, _ = argument.partition("::")
     if nodeid_separator:
         return True
-    path = Path(path_argument)
-    if not path.is_absolute():
-        path = Path(config.invocation_params.dir) / path
-    resolved = path.resolve()
+    resolved = (Path(config.invocation_params.dir) / path_argument).resolve()
     return resolved != _SUITE_ROOT and resolved not in _SUITE_ROOT.parents
 
 
 def _is_unfiltered(config: pytest.Config) -> bool:
-    """Return whether pytest will attempt at least the complete Foundry suite.
-
-    pytest fills config.args from testpaths when no path is given, and an
-    explicit path may still select the complete suite.
-    """
-
-    if any(
-        _selects_less_than_the_suite(config, argument) for argument in config.args
-    ):
-        return False
-    return not any(getattr(config.option, name, None) for name in _FILTERING_OPTIONS)
+    """Whether pytest attempts the complete suite; config.args holds testpaths when no path is given."""
+    return not any(_selects_less_than_the_suite(config, argument) for argument in config.args) and not any(
+        getattr(config.option, name, None) for name in _FILTERING_OPTIONS
+    )
 
 
 def _read_baseline(path: Path) -> set[str]:
     if not path.exists():
-        regenerate = (
-            _REGENERATE_COLLECTION
-            if path == _COLLECTION_BASELINE
-            else _REGENERATE_SKIPS
-        )
+        regenerate = _REGENERATE_COLLECTION if path == _COLLECTION_BASELINE else _REGENERATE_SKIPS
         raise pytest.UsageError(
-            f"Foundry coverage baseline is missing: {path.name}; "
-            f"set {regenerate}=1 "
-            "on a reviewed full run to create it"
+            f"Foundry coverage baseline is missing: {path.name}; set {regenerate}=1 on a reviewed full run to create it"
         )
     return {line for line in path.read_text().splitlines() if line}
 
@@ -110,9 +84,7 @@ def _write_baseline(path: Path, nodeids: set[str]) -> None:
 
 
 def _format_drift(kind: str, added: set[str], removed: set[str]) -> str:
-    lines = [
-        f"Foundry {kind} baseline drifted; review the changes before regenerating:"
-    ]
+    lines = [f"Foundry {kind} baseline drifted; review the changes before regenerating:"]
     lines.extend(f"  + {nodeid}" for nodeid in sorted(added))
     lines.extend(f"  - {nodeid}" for nodeid in sorted(removed))
     return "\n".join(lines)
@@ -123,48 +95,31 @@ def _clarify_known_skip_reasons(items: list[pytest.Item]) -> set[str]:
 
     Returns the nodeid fragments that matched, so a full run can fail on a stale entry.
     """
-
     clarified: set[str] = set()
     for item in items:
-        match = next(
-            (
-                (fragment, reason)
-                for fragment, reason in _KNOWN_SKIP_REASONS.items()
-                if fragment in item.nodeid
-            ),
-            None,
-        )
-        if match is None:
-            continue
-        fragment, reason = match
-        for marker in item.iter_markers(name="skip"):
-            if marker.kwargs.get("reason") == "not implemented":
-                marker.kwargs["reason"] = reason
-                clarified.add(fragment)
+        for fragment, reason in _KNOWN_SKIP_REASONS.items():
+            if fragment not in item.nodeid:
+                continue
+            for marker in item.iter_markers(name="skip"):
+                if marker.kwargs.get("reason") == "not implemented":
+                    marker.kwargs["reason"] = reason
+                    clarified.add(fragment)
+            break
     return clarified
 
 
 def pytest_collection_modifyitems(
     session: pytest.Session, config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    global _coverage_state
+    global _guard_enabled
 
-    adbc_drivers_validation.tests.conftest.pytest_collection_modifyitems(
-        session, config, items
-    )
+    adbc_drivers_validation.tests.conftest.pytest_collection_modifyitems(session, config, items)
     clarified = _clarify_known_skip_reasons(items)
 
     if not _is_unfiltered(config):
-        requested = [
-            name
-            for name in (_REGENERATE_COLLECTION, _REGENERATE_SKIPS)
-            if _requested(name)
-        ]
+        requested = [name for name in (_REGENERATE_COLLECTION, _REGENERATE_SKIPS) if _requested(name)]
         if requested:
-            raise pytest.UsageError(
-                f"{', '.join(requested)} requires an unfiltered Foundry run"
-            )
-        _coverage_state = _CoverageState(enabled=False)
+            raise pytest.UsageError(f"{', '.join(requested)} requires an unfiltered Foundry run")
         return
 
     if not items:
@@ -190,50 +145,44 @@ def pytest_collection_modifyitems(
         )
 
     if config.option.collectonly and _requested(_REGENERATE_SKIPS):
-        raise pytest.UsageError(
-            f"{_REGENERATE_SKIPS}=1 requires executing the full suite"
-        )
+        raise pytest.UsageError(f"{_REGENERATE_SKIPS}=1 requires executing the full suite")
 
     if _requested(_REGENERATE_COLLECTION):
         _write_baseline(_COLLECTION_BASELINE, collected)
-    _coverage_state = _CoverageState(enabled=not config.option.collectonly)
+    _guard_enabled = not config.option.collectonly
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    if _coverage_state is None or not _coverage_state.enabled:
+    if not _guard_enabled:
         return
     if report.skipped:
-        _coverage_state.skipped.add(report.nodeid)
-    elif report.when == "call" and report.passed and not hasattr(
-        report, "wasxfail"
-    ):
-        _coverage_state.passed.add(report.nodeid)
+        _skipped.add(report.nodeid)
+    elif report.when == "call" and report.passed and not hasattr(report, "wasxfail"):
+        _passed.add(report.nodeid)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
-    if _coverage_state is None or not _coverage_state.enabled:
+    if not _guard_enabled:
         return
 
     errors: list[str] = []
-    if not _coverage_state.passed:
+    if not _passed:
         errors.append("full Foundry run had no actual passing tests")
 
     if exitstatus in {pytest.ExitCode.OK, pytest.ExitCode.TESTS_FAILED}:
         if _requested(_REGENERATE_SKIPS):
-            if exitstatus == pytest.ExitCode.OK and _coverage_state.passed:
-                _write_baseline(_SKIP_BASELINE, _coverage_state.skipped)
+            if exitstatus == pytest.ExitCode.OK and _passed:
+                _write_baseline(_SKIP_BASELINE, _skipped)
             else:
-                errors.append(
-                    f"refusing to regenerate {_SKIP_BASELINE.name} because the suite failed"
-                )
+                errors.append(f"refusing to regenerate {_SKIP_BASELINE.name} because the suite failed")
         else:
             try:
                 expected = _read_baseline(_SKIP_BASELINE)
             except pytest.UsageError as error:
                 errors.append(str(error))
             else:
-                added = _coverage_state.skipped - expected
-                removed = expected - _coverage_state.skipped
+                added = _skipped - expected
+                removed = expected - _skipped
                 if added or removed:
                     errors.append(_format_drift("skip", added, removed))
 

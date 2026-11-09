@@ -17,41 +17,23 @@ from sql import Session
 
 from tests.conftest import ATTACHED_CATALOG
 
-# `duckdb_settings()` reports every value as a string, alongside the type
-# DuckDB parses it as.
-SETTING_DEFAULTS = {
-    "adbc_connection_pool_size": ("50", "BIGINT"),
-    "adbc_insert_buffer_size": ("1000", "BIGINT"),
-    "adbc_materialize_insert_rows": ("false", "BOOLEAN"),
-    "adbc_mix_reads_writes": ("false", "BOOLEAN"),
+# `duckdb_settings()` reports every value as a string, alongside the type DuckDB parses it as,
+# and one non-default value per setting for the SET/RESET round trip.
+SETTINGS = {
+    "adbc_connection_pool_size": ("50", "BIGINT", "4"),
+    "adbc_insert_buffer_size": ("1000", "BIGINT", "16"),
+    "adbc_materialize_insert_rows": ("false", "BOOLEAN", "true"),
+    "adbc_mix_reads_writes": ("false", "BOOLEAN", "true"),
 }
-
-# One non-default value per setting, for the SET/RESET round trip.
-SETTING_OVERRIDES = {
-    "adbc_connection_pool_size": "4",
-    "adbc_insert_buffer_size": "16",
-    "adbc_materialize_insert_rows": "true",
-    "adbc_mix_reads_writes": "true",
-}
-
-# Spans several of the extension's 2048-row input chunks.
-MULTI_CHUNK_ROWS = 5000
-MULTI_CHUNK_SUM = MULTI_CHUNK_ROWS * (MULTI_CHUNK_ROWS - 1) // 2
 
 
 def _setting(connection: duckdb.DuckDBPyConnection, name: str) -> str:
-    rows = connection.execute(
-        "SELECT value FROM duckdb_settings() WHERE name = ?", [name]
-    ).fetchall()
-    assert len(rows) == 1, f"{name} is not a known setting: {rows!r}"
-    return rows[0][0]
+    [(value,)] = connection.execute("SELECT value FROM duckdb_settings() WHERE name = ?", [name]).fetchall()
+    return value
 
 
-def _counted_table(
-    bigquery: Session, project: str, dataset: str, table: str, rows: int
-) -> None:
-    """Create i = 1..rows before ATTACH caches table metadata."""
-
+def _counted_table(bigquery: Session, project: str, dataset: str, table: str, rows: int) -> None:
+    """Create i = 1..rows; call before ATTACH caches table metadata."""
     bigquery.execute(
         f"CREATE TABLE {sql.qualified(project, dataset, table)} AS "
         f"SELECT n AS i FROM UNNEST(GENERATE_ARRAY(1, {rows})) AS n"
@@ -60,24 +42,22 @@ def _counted_table(
 
 def test_settings_report_their_documented_defaults(duck: duckdb.DuckDBPyConnection) -> None:
     rows = duck.execute(
-        "SELECT name, value, input_type FROM duckdb_settings() "
-        "WHERE name IN ('adbc_connection_pool_size', 'adbc_insert_buffer_size', "
-        "'adbc_materialize_insert_rows', 'adbc_mix_reads_writes')"
+        "SELECT name, value, input_type FROM duckdb_settings() WHERE list_contains(?, name)", [list(SETTINGS)]
     ).fetchall()
-    assert {name: (value, kind) for name, value, kind in rows} == SETTING_DEFAULTS
+    assert {name: (value, kind) for name, value, kind in rows} == {
+        name: (value, kind) for name, (value, kind, _) in SETTINGS.items()
+    }
 
 
-def test_each_setting_takes_a_value_and_returns_to_its_default(
-    duck: duckdb.DuckDBPyConnection,
-) -> None:
-    for name, expected in SETTING_OVERRIDES.items():
-        duck.execute(f"SET {name} = {expected}")
-        assert _setting(duck, name) == expected
+def test_each_setting_takes_a_value_and_returns_to_its_default(duck: duckdb.DuckDBPyConnection) -> None:
+    for name, (default, _, override) in SETTINGS.items():
+        duck.execute(f"SET {name} = {override}")
+        assert _setting(duck, name) == override
         duck.execute(f"RESET {name}")
-        assert _setting(duck, name) == SETTING_DEFAULTS[name][0]
+        assert _setting(duck, name) == default
 
 
-def test_a_pool_of_one_serves_repeated_scans(
+def test_an_attachment_survives_repeated_scans_a_pool_resize_and_a_cache_clear(
     duck: duckdb.DuckDBPyConnection,
     profile: str,
     bigquery: Session,
@@ -85,8 +65,10 @@ def test_a_pool_of_one_serves_repeated_scans(
     project: str,
     dataset: str,
 ) -> None:
-    """The pool is lazy and never evicts, so repeated scans reuse one connection."""
+    """The pool is lazy and never evicts, so repeated scans reuse one connection.
 
+    ATTACH fixes pool capacity, which SQL cannot inspect, so a later SET can only be checked by
+    scans still working."""
     table = name("scan")
     _counted_table(bigquery, project, dataset, table, 5)
 
@@ -95,6 +77,13 @@ def test_a_pool_of_one_serves_repeated_scans(
     scan = f"SELECT COUNT(*), SUM(i) FROM {sql.attached(ATTACHED_CATALOG, dataset, table)}"
     for _ in range(3):
         assert duck.execute(scan).fetchall() == [(5, 15)]
+
+    duck.execute("SET adbc_connection_pool_size = 16")
+    assert _setting(duck, "adbc_connection_pool_size") == "16"
+    assert duck.execute(scan).fetchall() == [(5, 15)]
+
+    assert duck.execute("CALL adbc_clear_cache()").fetchall() == [(True,)]
+    assert duck.execute(scan).fetchall() == [(5, 15)]
 
 
 def test_a_pool_of_one_serves_several_scans_in_one_statement(
@@ -265,56 +254,6 @@ def test_mixing_a_read_and_a_write_needs_the_setting(
     ) == [(4, 10)]
 
 
-def test_an_insert_buffer_of_one_chunk_still_inserts_every_row(
-    duck: duckdb.DuckDBPyConnection,
-    profile: str,
-    bigquery: Session,
-    name: Callable[[str], str],
-    project: str,
-    dataset: str,
-) -> None:
-    """One-chunk buffering forces multiple flushes; the default 1000 chunks would flush once."""
-
-    table = name("buffered")
-    bigquery.execute(f"CREATE TABLE {sql.qualified(project, dataset, table)} (i BIGINT)")
-
-    duck.execute("SET adbc_insert_buffer_size = 1")
-    duck.execute(sql.attach(profile, ATTACHED_CATALOG))
-    assert duck.execute(
-        f"INSERT INTO {sql.attached(ATTACHED_CATALOG, dataset, table)} "
-        f"SELECT i FROM range({MULTI_CHUNK_ROWS}) t(i)"
-    ).fetchall() == [(MULTI_CHUNK_ROWS,)]
-
-    assert bigquery.query(
-        f"SELECT COUNT(*), SUM(i) FROM {sql.qualified(project, dataset, table)}"
-    ) == [(MULTI_CHUNK_ROWS, MULTI_CHUNK_SUM)]
-
-
-def test_materializing_the_input_still_inserts_every_row(
-    duck: duckdb.DuckDBPyConnection,
-    profile: str,
-    bigquery: Session,
-    name: Callable[[str], str],
-    project: str,
-    dataset: str,
-) -> None:
-    """Every row is collected before the driver sees one."""
-
-    table = name("materialized")
-    bigquery.execute(f"CREATE TABLE {sql.qualified(project, dataset, table)} (i BIGINT)")
-
-    duck.execute("SET adbc_materialize_insert_rows = true")
-    duck.execute(sql.attach(profile, ATTACHED_CATALOG))
-    assert duck.execute(
-        f"INSERT INTO {sql.attached(ATTACHED_CATALOG, dataset, table)} "
-        f"SELECT i FROM range({MULTI_CHUNK_ROWS}) t(i)"
-    ).fetchall() == [(MULTI_CHUNK_ROWS,)]
-
-    assert bigquery.query(
-        f"SELECT COUNT(*), SUM(i) FROM {sql.qualified(project, dataset, table)}"
-    ) == [(MULTI_CHUNK_ROWS, MULTI_CHUNK_SUM)]
-
-
 def test_settings_do_not_leak_between_duckdb_connections() -> None:
     """extension.connect creates separate databases; cursors share their connection's settings."""
 
@@ -323,56 +262,11 @@ def test_settings_do_not_leak_between_duckdb_connections() -> None:
         assert _setting(first, "adbc_connection_pool_size") == "3"
         assert _setting(second, "adbc_connection_pool_size") == "50"
 
-        cursor = second.cursor()
-        try:
+        with closing(second.cursor()) as cursor:
             assert _setting(cursor, "adbc_connection_pool_size") == "50"
-        finally:
-            cursor.close()
-
-
-def test_changing_the_pool_size_after_attach_leaves_the_attachment_working(
-    duck: duckdb.DuckDBPyConnection,
-    profile: str,
-    bigquery: Session,
-    name: Callable[[str], str],
-    project: str,
-    dataset: str,
-) -> None:
-    """ATTACH fixes pool capacity, which SQL cannot inspect; check that scans still work."""
-
-    table = name("after")
-    _counted_table(bigquery, project, dataset, table, 5)
-
-    duck.execute("SET adbc_connection_pool_size = 1")
-    duck.execute(sql.attach(profile, ATTACHED_CATALOG))
-    scan = f"SELECT COUNT(*), SUM(i) FROM {sql.attached(ATTACHED_CATALOG, dataset, table)}"
-    assert duck.execute(scan).fetchall() == [(5, 15)]
-
-    duck.execute("SET adbc_connection_pool_size = 16")
-    assert _setting(duck, "adbc_connection_pool_size") == "16"
-    assert duck.execute(scan).fetchall() == [(5, 15)]
 
 
 def test_clearing_the_cache_with_nothing_attached_is_safe(
     duck: duckdb.DuckDBPyConnection,
 ) -> None:
     assert duck.execute("CALL adbc_clear_cache()").fetchall() == [(True,)]
-
-
-def test_clearing_the_cache_keeps_an_attachment_usable(
-    duck: duckdb.DuckDBPyConnection,
-    profile: str,
-    bigquery: Session,
-    name: Callable[[str], str],
-    project: str,
-    dataset: str,
-) -> None:
-    table = name("cached")
-    _counted_table(bigquery, project, dataset, table, 5)
-
-    duck.execute(sql.attach(profile, ATTACHED_CATALOG))
-    scan = f"SELECT COUNT(*), SUM(i) FROM {sql.attached(ATTACHED_CATALOG, dataset, table)}"
-    assert duck.execute(scan).fetchall() == [(5, 15)]
-
-    assert duck.execute("CALL adbc_clear_cache()").fetchall() == [(True,)]
-    assert duck.execute(scan).fetchall() == [(5, 15)]
