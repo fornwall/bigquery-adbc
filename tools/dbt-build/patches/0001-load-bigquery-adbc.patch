@@ -2,29 +2,38 @@ Load BigQuery from bigquery-adbc instead of dbt's CDN
 
 A release build compiles in the URL, version and SHA-256 of its release's library, and dbt's own
 downloader fetches and verifies it into dbt's cache under the name bigquery_adbc. Any other build
-uses the library in lib/dbt/ beside the binary, which dbt already prefers.
+loads the library in lib/bigquery-adbc/ beside the binary. Neither reads stock dbt's lib/dbt/ for
+BigQuery, so an install sharing a prefix with stock dbt cannot pick up dbt's driver, or replace it.
+
+BIGQUERY_ADBC_USE_DBT_DRIVER=1 resolves BigQuery exactly as stock dbt does, including its Foundry
+opt-in. The two drivers are cached under different names, so runs can switch back and forth.
 
 diff --git a/crates/dbt-adbc/src/driver.rs b/crates/dbt-adbc/src/driver.rs
-index da8f25889..104deaa8c 100644
+index da8f258..0ae4d6d 100644
 --- a/crates/dbt-adbc/src/driver.rs
 +++ b/crates/dbt-adbc/src/driver.rs
-@@ -437,6 +437,15 @@ impl AdbcDriver {
-             {
-                 Bundled
-             }
-+            // A build without a bigquery-adbc release to download only has the library installed
-+            // beside it. Its absence is an error rather than a silent switch to dbt's own driver,
-+            // which the integration suite alone asks for, to compare the two.
-+            (CdnCache | SystemThenCdnCache, BigQuery)
-+                if option_env!("BIGQUERY_ADBC_DRIVER_URL").is_none()
-+                    && !crate::env_var::env_var_bool_or_warn("BIGQUERY_ADBC_USE_DBT_DRIVER") =>
-+            {
-+                Bundled
-+            }
-             // CDN strategy for drivers published to the dbt Labs CDN.
-             (
-                 load_strategy @ (CdnCache | SystemThenCdnCache),
-@@ -519,6 +528,7 @@ Second error:\n\
+@@ -430,6 +430,20 @@ impl AdbcDriver {
+     ) -> Result<ManagedAdbcDriver> {
+         use Backend::*;
+         use LoadStrategy::*;
++        // bigquery-adbc never resolves BigQuery through stock dbt's lib/dbt/, which may hold dbt's
++        // own driver. A release build downloads its own; any other build loads the library in its
++        // own lib/bigquery-adbc/, failing rather than switching silently to dbt's driver.
++        // BIGQUERY_ADBC_USE_DBT_DRIVER restores stock dbt's resolution.
++        if backend == BigQuery
++            && matches!(load_strategy, CdnCache | SystemThenCdnCache)
++            && !install::use_dbt_bigquery_driver()
++        {
++            return if option_env!("BIGQUERY_ADBC_DRIVER_URL").is_some() {
++                Self::try_load_driver_through_cdn_cache(backend, adbc_version)
++            } else {
++                Self::try_load_installed_bigquery_adbc(backend, adbc_version)
++            };
++        }
+         let final_strategy = match (load_strategy, backend) {
+             // Drivers installed with dbt take precedence.
+             (CdnCache | SystemThenCdnCache, _)
+@@ -519,6 +533,7 @@ Second error:\n\
              Bridge => Self::prepare_for_bridge_driver(backend, adbc_version),
              Bundled => {
                  let name = backend.adbc_library_name().unwrap();
@@ -32,46 +41,87 @@ index da8f25889..104deaa8c 100644
                  // don't search system paths, only the provided
                  // additional paths (e.g. sibling lib/dbt/ directory)
                  let load_flags = 0;
+@@ -527,6 +542,32 @@ Second error:\n\
+         }
+     }
+ 
++    /// Loads the library a non-release bigquery-adbc build installs in `lib/bigquery-adbc/`, beside
++    /// the executable or one level up, as `<prefix>/bin/` and `<prefix>/lib/` place them.
++    fn try_load_installed_bigquery_adbc(
++        backend: Backend,
++        adbc_version: AdbcVersion,
++    ) -> Result<ManagedAdbcDriver> {
++        const LIB_HEIGHT_MAX: usize = 1;
++        let subpath: PathBuf = ["lib", "bigquery-adbc"].iter().collect();
++        let name = backend.adbc_library_name().unwrap();
++        let Some(dir) = find_upward_dir_from_exe(&subpath, LIB_HEIGHT_MAX) else {
++            return Err(Error::with_message_and_status(
++                "This dbt build loads its BigQuery driver from lib/bigquery-adbc/ beside the \
++                 binary, which is missing. Set BIGQUERY_ADBC_USE_DBT_DRIVER=1 to use dbt's driver.",
++                Status::NotFound,
++            ));
++        };
++        let path = dir.join(libloading::library_filename(name));
++        tracing::debug!("{backend} driver resolved: installed {}", path.display());
++        ManagedAdbcDriver::load_dynamic_from_filename(
++            backend,
++            &path,
++            backend.adbc_driver_entrypoint(),
++            adbc_version,
++        )
++    }
++
+     /// Load the driver using the [LoadStrategy::System] or [LoadStrategy::Bundled] strategies.
+     fn try_load_driver_from_name(
+         backend: Backend,
 diff --git a/crates/dbt-adbc/src/install.rs b/crates/dbt-adbc/src/install.rs
-index 5c965f4ed..4133ba01f 100644
+index 5c965f4..353e568 100644
 --- a/crates/dbt-adbc/src/install.rs
 +++ b/crates/dbt-adbc/src/install.rs
-@@ -17,6 +17,9 @@ use sha2::digest::Output;
+@@ -17,6 +17,16 @@ use sha2::digest::Output;
  use sha2::{Digest, Sha256};
  use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
  
 +/// Names bigquery-adbc in driver paths, apart from dbt's own `bigquery` and `bigquery_foundry`.
 +const BIGQUERY_ADBC_NAME: &str = "bigquery_adbc";
 +
++/// Whether `BIGQUERY_ADBC_USE_DBT_DRIVER` asks for dbt's own BigQuery driver, resolved exactly as
++/// stock dbt resolves it. Read once per process: dbt caches loaded drivers by backend alone.
++pub fn use_dbt_bigquery_driver() -> bool {
++    static ENABLED: OnceLock<bool> = OnceLock::new();
++    *ENABLED.get_or_init(|| env_var::env_var_bool_or_warn("BIGQUERY_ADBC_USE_DBT_DRIVER"))
++}
++
  static INSTALLABLE_DRIVERS: &[Backend; 12] = &[
      Backend::Snowflake,
      Backend::BigQuery,
-@@ -254,6 +257,11 @@ pub fn cdn_host() -> &'static str {
+@@ -254,6 +264,10 @@ pub fn cdn_host() -> &'static str {
  }
  
  pub fn format_driver_url(backend_name: &str, triplet: DriverTriplet) -> String {
-+    if let (BIGQUERY_ADBC_NAME, Some(url)) =
-+        (backend_name, option_env!("BIGQUERY_ADBC_DRIVER_URL"))
++    if let (BIGQUERY_ADBC_NAME, Some(url)) = (backend_name, option_env!("BIGQUERY_ADBC_DRIVER_URL"))
 +    {
 +        return url.to_string();
 +    }
      let host = cdn_host();
  
      // %-encode most non-alphanumeric characters in the version string
-@@ -386,7 +394,11 @@ pub fn backend_name_and_version(backend: Backend) -> (&'static str, &'static str
+@@ -386,7 +400,13 @@ pub fn backend_name_and_version(backend: Backend) -> (&'static str, &'static str
      // Logged because the channel is otherwise invisible: both drivers report
      // the same `Backend`, so this is the only place that says which one a run
      // actually resolved.
 -    let (name, version) = if let Some((name, version)) = foundry_driver(backend) {
-+    let (name, version) = if let (Backend::BigQuery, Some(version)) =
-+        (backend, option_env!("BIGQUERY_ADBC_DRIVER_VERSION"))
-+    {
++    let (name, version) = if let (Backend::BigQuery, Some(version), false) = (
++        backend,
++        option_env!("BIGQUERY_ADBC_DRIVER_VERSION"),
++        use_dbt_bigquery_driver(),
++    ) {
 +        (BIGQUERY_ADBC_NAME, version)
 +    } else if let Some((name, version)) = foundry_driver(backend) {
          (name, version)
      } else {
          canonical_name_and_version(backend)
-@@ -462,6 +474,12 @@ pub fn find_expected_checksums(
+@@ -462,6 +482,12 @@ pub fn find_expected_checksums(
      backend_name: &str,
      triplet: DriverTriplet,
  ) -> Option<(&'static str, &'static str)> {

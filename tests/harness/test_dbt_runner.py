@@ -21,6 +21,7 @@ from run import (
     READ_PATH_EVENTS,
     assert_adapter_response_contract,
     assert_canonical_incremental_adapter_response,
+    assert_dbt_driver_resolution,
     assert_local_driver_resolution,
     assert_nodes_ran,
     assert_python_model_submission,
@@ -29,7 +30,6 @@ from run import (
     dbt_command,
     driver_warnings,
     failing_dbt_command,
-    install_canonical_dbt,
     install_dbt,
 )
 
@@ -125,10 +125,10 @@ class BuiltDbtTest(unittest.TestCase):
 
     def archive(self, *, library: bool, executable: str = DBT_EXECUTABLE) -> Path:
         package = self.root / "package" / "dbt-bigquery-adbc-1.2.3-linux-x86_64"
-        (package / "lib" / "dbt").mkdir(parents=True)
+        (package / "lib" / "bigquery-adbc").mkdir(parents=True)
         (package / executable).write_text("dbt")
         if library:
-            (package / "lib" / "dbt" / LIBRARY_NAME).write_text("driver")
+            (package / "lib" / "bigquery-adbc" / LIBRARY_NAME).write_text("driver")
         archive = self.root / "dbt.tar.gz"
         with tarfile.open(archive, "w:gz") as output:
             output.add(package, arcname=package.name)
@@ -152,7 +152,15 @@ class BuiltDbtTest(unittest.TestCase):
         install = self.install(library=True)
         driver = built_driver(install, self.cache, "1.2.3-1-gabc")
         self.assertFalse(driver.downloaded)
-        self.assertEqual(driver.library, install / "lib" / "dbt" / LIBRARY_NAME)
+        library = (install / "lib" / "bigquery-adbc" / LIBRARY_NAME).resolve()
+        self.assertEqual(driver.library, library)
+        self.assertEqual(driver.resolution, f"BigQuery driver resolved: installed {library}")
+
+    def test_stock_dbts_lib_dbt_is_not_this_builds_library(self) -> None:
+        install = self.install(library=False)
+        (install / "lib" / "dbt").mkdir()
+        (install / "lib" / "dbt" / LIBRARY_NAME).write_text("dbt's driver")
+        self.assertTrue(built_driver(install, self.cache, "1.2.3").downloaded)
 
     def test_release_archive_downloads_into_the_cache(self) -> None:
         driver = built_driver(self.install(library=False), self.cache, "1.2.3")
@@ -161,10 +169,21 @@ class BuiltDbtTest(unittest.TestCase):
         self.assertEqual(driver.library.name, "libadbc_driver_bigquery_adbc-1.2.3.so")
         self.assertEqual(driver.resolution, "BigQuery driver resolved: bigquery_adbc 1.2.3")
 
-    def test_canonical_dbt_is_kept_away_from_the_library(self) -> None:
-        install = self.install(library=True)
-        canonical = install_canonical_dbt(install, self.root / "canonical")
-        self.assertEqual([path.name for path in canonical.iterdir()], [DBT_EXECUTABLE])
+    def test_dbt_driver_resolution_accepts_only_dbts_own_drivers(self) -> None:
+        for line, accepted in (
+            ("BigQuery driver resolved: bigquery 0.21.0.dev+dbt0.21.23", True),
+            ("BigQuery driver resolved: bigquery_foundry 0.21.0.dev+dbt0.1.11", True),
+            ("BigQuery driver resolved: bigquery_adbc 1.2.3", False),
+            ("BigQuery driver resolved: installed /x/lib/bigquery-adbc/lib.so", False),
+            ("BigQuery driver resolved: installed adbc_driver_bigquery", False),
+        ):
+            with self.subTest(line=line):
+                (self.root / "dbt.log").write_text(f"00:44:54.436238 [debug]: {line}\n")
+                if accepted:
+                    assert_dbt_driver_resolution(self.root)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "its own BigQuery driver"):
+                        assert_dbt_driver_resolution(self.root)
 
     def test_an_archive_that_names_the_binary_dbt_still_installs(self) -> None:
         install = install_dbt(self.archive(library=False, executable="dbt"), self.root / "old")

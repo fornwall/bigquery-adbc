@@ -36,14 +36,32 @@ update supports Windows; download its `.zip` from the release instead.
 | Made from | A `vX.Y.Z` tag | Any other commit |
 | Published as | Assets of that GitHub release | Artifacts of the workflow run on `main` |
 | Driver version | `0.4.0` | `0.3.0-2-g5f7f5be`, with `-dirty` for a modified checkout |
-| Driver | Downloaded on first use | `lib/dbt/` in the archive |
+| Driver | Downloaded on first use | `lib/bigquery-adbc/` in the archive |
 
 A release build needs only the `dbt-bigquery-adbc` binary. The first BigQuery connection downloads
 the driver from the same GitHub release into dbt's cache, and verifies it against a SHA-256 compiled
 into the binary, so the download cannot be swapped. Non-release builds have no stable public URL to
-download from, so keep `lib/dbt/` next to the binary; a symlink to the binary works, but a copy
-without the library fails rather than falling back to dbt's driver. `DBT_ADBC_BIGQUERY_USE_FOUNDRY`
-has no effect here.
+download from, so keep `lib/bigquery-adbc/` next to the binary, or under the same prefix as
+`install.sh` places it; a symlink to the binary works, but a copy without the library fails rather
+than falling back to dbt's driver.
+
+Neither build reads stock dbt's `lib/dbt/` for BigQuery, so it can share a prefix such as
+`~/.local` with a stock dbt install without loading, or replacing, that install's driver. Other
+adapters load exactly as in stock dbt.
+
+### Switching to dbt's driver
+
+`BIGQUERY_ADBC_USE_DBT_DRIVER=1` makes a run resolve BigQuery exactly as stock dbt does, including
+its `lib/dbt/` and `DBT_ADBC_BIGQUERY_USE_FOUNDRY`, which otherwise has no effect here:
+
+```sh
+dbt-bigquery-adbc build                                 # this driver
+BIGQUERY_ADBC_USE_DBT_DRIVER=1 dbt-bigquery-adbc build  # dbt's driver
+```
+
+dbt caches the two under different names in `~/.cache/com.getdbt/adbc/`, so after each has been
+downloaded once, runs switch back and forth without downloading again. `dbt.log` reports
+`BigQuery driver resolved:` followed by the driver used. The variable is read once per process.
 
 ## Building
 

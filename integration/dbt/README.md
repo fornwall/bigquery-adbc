@@ -43,10 +43,11 @@ uv run --directory integration/dbt --locked run.py --dbt-archive PATH  # an exis
 ```
 
 Each run builds dbt unless given `--dbt-archive`, then unpacks the archive and runs what it ships.
-A non-release archive loads its own `lib/dbt/` library. A release archive has none, so the run
-exercises the release download: it removes any cached copy, requires dbt to fetch and report the
-driver, and skips the checks that need dbt's canonical driver, which that build cannot load.
-`--upstream-adbc` and `--compare` therefore need a non-release archive.
+A non-release archive loads its own `lib/bigquery-adbc/` library. A release archive has none, so
+the run exercises the release download: it removes any cached copy and requires dbt to fetch and
+report the driver. `--upstream-adbc` runs the same binary with
+[`BIGQUERY_ADBC_USE_DBT_DRIVER=1`](../../tools/dbt-build/README.md#switching-to-dbts-driver) and
+requires dbt to report resolving its own driver, for either kind of archive.
 
 `--compare` requires identical `dbt show` values, `catalog.json` metadata, relations, schemas,
 descriptions, labels, partitioning, clustering, constraints, view definitions and row multisets. The

@@ -33,6 +33,12 @@ DBT_EXECUTABLE = "dbt-bigquery-adbc"
 # The driver version in `dbt --version`, which tools/dbt-build/build.sh checks in full.
 DBT_IDENTIFIER = re.compile(r"dbt \(modified with bigquery-adbc (?P<driver>\S+)\) \S+ \S+")
 LIBRARY_NAME = "libadbc_driver_bigquery.so"
+# Selects dbt's own BigQuery driver in a tools/dbt-build binary, resolved as stock dbt resolves it.
+USE_DBT_DRIVER = "BIGQUERY_ADBC_USE_DBT_DRIVER"
+# What dbt logs on resolving its canonical or Foundry driver; never bigquery_adbc or `installed`.
+DBT_DRIVER_RESOLUTION = re.compile(
+    r"BigQuery driver resolved: bigquery(?:_foundry)? \S+$", re.MULTILINE
+)
 # The authorized view reads from a second dataset, removed by drop_integration_schema.
 AUTHORIZED_SOURCE_SUFFIX = "_authorized_source"
 # Only adbc.bigquery.table.update_description writes this text; no DDL in the project sets it.
@@ -723,14 +729,6 @@ def install_dbt(archive: Path, directory: Path) -> Path:
     return install
 
 
-def install_canonical_dbt(install: Path, directory: Path) -> Path:
-    """Copy dbt away from its library, which it would otherwise prefer to dbt's own driver."""
-    shutil.rmtree(directory, ignore_errors=True)
-    directory.mkdir(parents=True)
-    shutil.copy2(install / DBT_EXECUTABLE, directory / DBT_EXECUTABLE)
-    return directory
-
-
 def on_path(directory: Path, env: Mapping[str, str]) -> str:
     return f"{directory}{os.pathsep}{env['PATH']}"
 
@@ -746,10 +744,10 @@ class BuiltDriver:
 
 def built_driver(install: Path, cache_home: Path, driver_version: str) -> BuiltDriver:
     """Non-release builds load the library in the archive; release builds download theirs."""
-    library = install / "lib" / "dbt" / LIBRARY_NAME
+    library = (install / "lib" / "bigquery-adbc" / LIBRARY_NAME).resolve()
     if library.is_file():
         return BuiltDriver(
-            library, "BigQuery driver resolved: installed adbc_driver_bigquery", downloaded=False
+            library, f"BigQuery driver resolved: installed {library}", downloaded=False
         )
     return BuiltDriver(
         local_driver.release_cache_path(cache_home, driver_version),
@@ -765,6 +763,13 @@ def assert_local_driver_resolution(log_dir: Path, driver: BuiltDriver) -> None:
         raise RuntimeError(f"dbt did not leave its driver at {driver.library}")
     source = "downloaded" if driver.downloaded else "loaded"
     LOG.note(f"dbt {source} the driver at {driver.library}")
+
+
+def assert_dbt_driver_resolution(log_dir: Path) -> None:
+    """Fail unless dbt reports resolving its own BigQuery driver, as USE_DBT_DRIVER asks."""
+    if DBT_DRIVER_RESOLUTION.search((log_dir / "dbt.log").read_text()) is None:
+        raise RuntimeError(f"dbt did not report resolving its own BigQuery driver ({USE_DBT_DRIVER})")
+    LOG.note("dbt resolved its own BigQuery driver")
 
 
 @dataclass(frozen=True)
@@ -1128,7 +1133,6 @@ def assert_run_operation_parity(
     *,
     cache_home: Path,
     staged_driver: BuiltDriver,
-    canonical_dbt: Path,
     target_dir: Path,
     log_dir: Path,
 ) -> None:
@@ -1151,10 +1155,10 @@ def assert_run_operation_parity(
         env = os.environ.copy()
         env["DBT_BIGQUERY_SCHEMA"] = dataset
         if mode == "upstream":
-            env["BIGQUERY_ADBC_USE_DBT_DRIVER"] = "1"
-            env["PATH"] = on_path(canonical_dbt, env)
+            env[USE_DBT_DRIVER] = "1"
             env["XDG_CACHE_HOME"] = str((PROJECT_DIR / ".cache" / "upstream").resolve())
         else:
+            env.pop(USE_DBT_DRIVER, None)
             env["XDG_CACHE_HOME"] = str(cache_home)
 
         mode_target = (target_dir / "run-operation" / mode).resolve()
@@ -1183,6 +1187,8 @@ def assert_run_operation_parity(
 
         if mode == "local":
             assert_local_driver_resolution(mode_log, staged_driver)
+        else:
+            assert_dbt_driver_resolution(mode_log)
         outputs[mode] = tuple(normalized_outputs)
         states[mode] = run_operation_state(client, project, dataset)
         assert_expected_run_operation_state(states[mode])
@@ -2399,19 +2405,14 @@ def main() -> int:
     LOG.note(f"project={project} dataset={schema} location={location}")
 
     built = built_driver(install, cache_home, identifier["driver"])
-    canonical_dbt = None
-    if not built.downloaded:
-        canonical_dbt = install_canonical_dbt(install, PROJECT_DIR / ".cache" / "dbt" / "canonical")
     staged_driver: BuiltDriver | None = None
+    os.environ["PATH"] = on_path(install, os.environ)
     if args.upstream_adbc:
-        if canonical_dbt is None:
-            raise RuntimeError("a release build cannot load dbt's canonical driver")
-        os.environ["BIGQUERY_ADBC_USE_DBT_DRIVER"] = "1"
-        os.environ["PATH"] = on_path(canonical_dbt, os.environ)
+        os.environ[USE_DBT_DRIVER] = "1"
         LOG.note("using dbt 2.0's canonical BigQuery ADBC driver")
     else:
+        os.environ.pop(USE_DBT_DRIVER, None)
         staged_driver = built
-        os.environ["PATH"] = on_path(install, os.environ)
         if built.downloaded:
             # Only this file: the cache directory can be the caller's. It reappearing is what
             # proves the download, so it must not survive from an earlier run.
@@ -2461,6 +2462,8 @@ def main() -> int:
         if staged_driver is not None:
             assert_local_driver_resolution(log_dir, staged_driver)
             expected_hash = local_driver.sha256(staged_driver.library)
+        else:
+            assert_dbt_driver_resolution(log_dir)
         run_phase(
             "Start from an empty integration dataset",
             "run-operation",
@@ -2669,15 +2672,13 @@ def main() -> int:
             ),
         )
 
-        # A release build cannot load dbt's canonical driver, so a non-release run covers this.
-        if staged_driver is not None and canonical_dbt is not None:
+        if staged_driver is not None:
             LOG.section(
                 "Compare dbt run-operation --sql across canonical and local drivers"
             )
             assert_run_operation_parity(
                 cache_home=cache_home,
                 staged_driver=staged_driver,
-                canonical_dbt=canonical_dbt,
                 target_dir=target_dir,
                 log_dir=log_dir,
             )

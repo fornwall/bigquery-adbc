@@ -78,7 +78,7 @@ help() {
     echo "  --update, -u       Update to the latest or specified version"
     echo "  --version VER      Install version VER (default: latest)"
     echo "  --target TARGET    Install for target platform TARGET, such as macos-aarch64"
-    echo "  --prefix PREFIX    Install under PREFIX: $BINARY in PREFIX/bin, drivers in PREFIX/lib/dbt"
+    echo "  --prefix PREFIX    Install under PREFIX: $BINARY in PREFIX/bin, its driver in PREFIX/lib/bigquery-adbc"
     echo "                     (default: \$HOME/.local)"
     echo "  --to DEST          Install $BINARY into DEST, without its drivers"
     echo "  --help, -h         Show this help text"
@@ -155,7 +155,7 @@ check_dependencies() {
         esac
         prefix="${prefix%/}"
         dest="$prefix/bin"
-        lib_dir="$prefix/lib/dbt"
+        lib_dir="$prefix/lib/bigquery-adbc"
     fi
 }
 
@@ -465,8 +465,8 @@ install_package() {
         binary="$td/$name/dbt"
     fi
     [ -f "$binary" ] || err_and_exit "Binary $BINARY missing from archive"
-    if [ -n "${lib_dir:-}" ] && [ -d "$td/$name/lib/dbt" ]; then
-        install_sidecar_packages "$td/$name/lib/dbt" "$lib_dir"
+    if [ -n "${lib_dir:-}" ] && [ -d "$td/$name/lib/bigquery-adbc" ]; then
+        install_sidecar_packages "$td/$name/lib/bigquery-adbc" "$lib_dir"
     fi
     tmp_bin="$dest/.${BINARY}.tmp.$$"
     install -m 755 "$binary" "$tmp_bin" || err_and_exit "Failed to stage $BINARY"

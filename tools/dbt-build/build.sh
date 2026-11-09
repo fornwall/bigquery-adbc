@@ -74,7 +74,7 @@ cp "$root"/python/LICENSE "$root"/python/NOTICE "$root"/python/licenses/* \
 
 # The variables are compile-time switches, so a value inherited from the caller would change the
 # build. A release build downloads its library, so it hashes the published bytes; anything else
-# carries its library in lib/dbt/, where dbt looks for installed drivers.
+# carries its library in lib/bigquery-adbc/, apart from the lib/dbt/ of stock dbt installs.
 unset BIGQUERY_ADBC_DRIVER_URL BIGQUERY_ADBC_DRIVER_VERSION BIGQUERY_ADBC_DRIVER_SHA256
 if [ -n "$driver_url" ]; then
   curl --proto '=https,http' --fail --silent --show-error --location "$driver_url" \
@@ -99,12 +99,12 @@ else
         --output-dir "$work/driver" | tail -n 1
     )
   fi
-  mkdir -p "$stage/lib/dbt"
+  mkdir -p "$stage/lib/bigquery-adbc"
   if [ -n "$exe" ]; then
-    windows_tar -x -f "$(cygpath -m "$driver_archive")" -C "$(cygpath -m "$stage/lib/dbt")" \
+    windows_tar -x -f "$(cygpath -m "$driver_archive")" -C "$(cygpath -m "$stage/lib/bigquery-adbc")" \
       --strip-components=1 "$(basename "$driver_archive" .zip)/$library"
   else
-    tar -xzf "$driver_archive" -C "$stage/lib/dbt" --strip-components=1 \
+    tar -xzf "$driver_archive" -C "$stage/lib/bigquery-adbc" --strip-components=1 \
       "$(basename "$driver_archive" .tar.gz)/$library"
   fi
 fi

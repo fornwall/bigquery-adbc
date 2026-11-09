@@ -11,8 +11,13 @@ changes.
 - Each release carries `install.sh`, which installs the patched dbt on Linux and macOS:
   `curl -fsSL https://github.com/fornwall/bigquery-adbc/releases/latest/download/install.sh | sh`.
 
+- `BIGQUERY_ADBC_USE_DBT_DRIVER=1` makes a patched dbt run use dbt's own BigQuery driver, resolved
+  as stock dbt resolves it. Both drivers stay cached, so runs can switch back and forth.
+
 ### Changed
 
+- The patched dbt never loads BigQuery from stock dbt's `lib/dbt/`, so it can share an install
+  prefix with stock dbt. Non-release builds carry the driver in `lib/bigquery-adbc/`.
 - The patched dbt's binary is named `dbt-bigquery-adbc`, so it no longer takes the place of dbt
   Labs' `dbt`. Its `system update` installs the latest bigquery-adbc release, where it used to say
   to update dbt with a package manager.

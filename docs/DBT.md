@@ -26,8 +26,10 @@ for semantics, [GO-DRIVER-COMPARISON.md](GO-DRIVER-COMPARISON.md) for difference
 
 The simplest way to use this driver is the patched dbt from
 [`tools/dbt-build`](../tools/dbt-build/README.md), named `dbt-bigquery-adbc`. Each GitHub release
-attaches one, which downloads this driver on first use, and an `install.sh` that installs it. The
-rest of this section adds the driver to a stock dbt.
+attaches one, which downloads this driver on first use, and an `install.sh` that installs it.
+`BIGQUERY_ADBC_USE_DBT_DRIVER=1` makes one run use dbt's own driver instead
+([switching drivers](../tools/dbt-build/README.md#switching-to-dbts-driver)). The rest of this
+section adds the driver to a stock dbt.
 
 dbt loads the library `adbc_driver_bigquery` through the ADBC driver manager with the default
 `AdbcDriverInit` entry point and ADBC 1.1.0. Release builds download drivers from the dbt Labs CDN

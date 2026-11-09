@@ -81,10 +81,7 @@ failure behavior of each ingest mode.
 - CI checks that each [patched dbt](../tools/dbt-build/README.md) loads this driver, and on a tag
   that it downloads and verifies the release's asset, but never runs it against BigQuery. The dbt
   integration suite, which does, runs only on Linux.
-- The patched dbt's `install.sh` and `system update` are tested only on Linux. A
-  `dbt-bigquery-adbc` loads a BigQuery driver that another dbt installation put in `lib/dbt/` beside
-  its directory, such as `~/.local/lib/dbt/`, instead of downloading its own; dbt Labs' releases put
-  none there today.
+- The patched dbt's `install.sh` and `system update` are tested only on Linux.
 - The dbt integration suite runs manually against BigQuery with ADC. CI tests its assertion
   helpers, but does not run dbt or the warehouse fixtures. Other dbt profile authentication
   methods are not covered end to end by this suite.
