@@ -1,5 +1,6 @@
 use super::*;
 use crate::test_support::errors::assert_message_omits;
+use serde_json::json;
 
 fn job_error(reason: &str) -> ErrorProto {
     ErrorProto {
@@ -119,20 +120,10 @@ fn job_response_projects_schema_parameters_statistics_and_destination() {
 }
 
 #[test]
-fn malformed_int64_does_not_echo_value() {
-    let secret = "credential-looking-secret";
-    let failure = QueryResponse::decode(
-        format!(r#"{{"totalBytesProcessed":"{secret}"}}"#).as_bytes(),
-        "query response",
-    )
-    .unwrap_err();
-    assert_message_omits(&failure, &[secret]);
-}
-
-#[test]
 fn malformed_response_fields_do_not_echo_values() {
     let secret = "private-response-value";
     for body in [
+        format!(r#"{{"totalBytesProcessed":"{secret}"}}"#),
         format!(r#"{{"jobComplete":"{secret}"}}"#),
         format!(r#"{{"jobReference":"{secret}"}}"#),
         format!(r#"{{"rows":[{{"f":"{secret}"}}]}}"#),
@@ -200,61 +191,40 @@ fn the_authoritative_first_error_alone_decides_whether_a_job_is_rerun() {
     ]));
 }
 
-/// `take_terminal_errors` puts `errorResult` first, whatever else `status.errors` holds.
+/// Only `errorResult` marks a job failed (`errors` may hold warnings alone), and it is put first,
+/// whatever else `status.errors` holds, with its repeat there dropped.
 #[test]
-fn a_padded_secondary_entry_does_not_suppress_a_reissuable_job_failure() {
-    let mut failed = JobResponse::decode(
-        br#"{"status":{"state":"DONE","errorResult":{"reason":"backendError","message":"primary"},"errors":[{"message":"Job execution was cancelled"},{"reason":"stopped","message":"other statement"}]}}"#,
-        "padded failure response",
-    )
-    .unwrap();
-    let errors = failed.take_terminal_errors().unwrap();
-    assert_eq!(errors[0].reason, "backendError");
-    assert_eq!(errors.len(), 3);
-    assert!(retryable_job_errors(&errors));
-}
-
-#[test]
-fn job_warnings_are_not_failures_but_error_result_is() {
-    let mut warning = JobResponse::decode(
-        br#"{"status":{"state":"DONE","errors":[{"reason":"warning","message":"warning"}]}}"#,
-        "warning response",
-    )
-    .unwrap();
-    assert!(warning.take_terminal_errors().is_none());
-
-    let mut failed = JobResponse::decode(
-        br#"{"status":{"state":"DONE","errorResult":{"reason":"invalidQuery","message":"bad"}}}"#,
-        "failure response",
-    )
-    .unwrap();
-    assert_eq!(failed.take_terminal_errors().unwrap().len(), 1);
-}
-
-#[test]
-fn terminal_primary_is_preserved_ahead_of_unrelated_warnings() {
-    let mut failed = JobResponse::decode(
-        br#"{"status":{"state":"DONE","errorResult":{"reason":"backendError","message":"primary"},"errors":[{"reason":"warning","message":"secondary"}]}}"#,
-        "failure response",
-    )
-    .unwrap();
-    let errors = failed.take_terminal_errors().unwrap();
-    assert_eq!(errors.len(), 2);
-    assert_eq!(errors[0].reason, "backendError");
-    assert_eq!(errors[1].reason, "warning");
-}
-
-#[test]
-fn repeated_terminal_primary_moves_ahead_of_secondary_entries() {
-    let mut failed = JobResponse::decode(
-        br#"{"status":{"state":"DONE","errorResult":{"reason":"stopped","message":"Job execution was cancelled: Job timed out"},"errors":[{"message":"secondary failure"},{"reason":"stopped","message":"Job execution was cancelled: Job timed out"}]}}"#,
-        "failure response",
-    )
-    .unwrap();
-    let errors = failed.take_terminal_errors().unwrap();
-    assert_eq!(errors.len(), 2);
-    assert_eq!(errors[0].reason, "stopped");
-    assert_eq!(errors[1].message, "secondary failure");
+fn terminal_errors_lead_with_the_error_result() {
+    let timed_out = json!({"reason": "stopped", "message": "Job timed out"});
+    for (status, expected) in [
+        (json!({"errors": [{"reason": "warning"}]}), None),
+        (
+            json!({"errorResult": {"reason": "invalidQuery"}}),
+            Some(vec!["invalidQuery"]),
+        ),
+        (
+            json!({
+                "errorResult": {"reason": "backendError"},
+                "errors": [{"message": "Job execution was cancelled"}, {"reason": "warning"}]
+            }),
+            Some(vec!["backendError", "", "warning"]),
+        ),
+        (
+            json!({
+                "errorResult": timed_out,
+                "errors": [{"message": "secondary failure"}, timed_out]
+            }),
+            Some(vec!["stopped", ""]),
+        ),
+    ] {
+        let body = serde_json::to_vec(&json!({"status": status})).unwrap();
+        let mut response = JobResponse::decode(&body, "job response").unwrap();
+        let errors = response.take_terminal_errors();
+        let reasons = errors
+            .as_ref()
+            .map(|errors| errors.iter().map(|error| error.reason.as_str()).collect());
+        assert_eq!(reasons, expected, "{status}");
+    }
 }
 
 #[test]
