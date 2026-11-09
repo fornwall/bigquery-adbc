@@ -1,13 +1,10 @@
 //! Explicit quota-project precedence at the authenticated HTTP request boundary.
 
-use adbc_core::options::OptionDatabase;
-use adbc_core::{Connection as _, Database as _, Driver as _, Optionable as _};
 use google_cloud_auth::credentials::CacheableResource;
 use http::Extensions;
 use serde_json::json;
 
 use super::*;
-use crate::BigQueryDriver;
 use crate::test_support::credentials::service_account_json;
 use crate::test_support::http::{capture_requests, ok};
 
@@ -31,7 +28,7 @@ fn assert_adc_quota_projects() {
                 if credential_type == "impersonated_service_account" {
                     responses.push(ok(json!({"accessToken": "target-token", "expireTime": "2099-01-01T00:00:00Z"})));
                 }
-                responses.push(ok(json!({"type": "TABLE", "schema": {"fields": [{"name": "id", "type": "INTEGER"}]}})));
+                responses.push(table_resource());
                 let (endpoint, server) = capture_requests(responses);
                 let user = json!({
                     "type": "authorized_user", "client_id": "client-id",
@@ -54,32 +51,18 @@ fn assert_adc_quota_projects() {
                 // Only this isolated child uses the fixture ADC file, so each connection can
                 // exercise SDK discovery with a different credential type and mock endpoint.
                 std::fs::write(&path, document.to_string()).unwrap();
-                let mut driver = BigQueryDriver::try_new().unwrap();
-                let mut database = driver.new_database().unwrap();
-                for (key, value) in [
+                let mut options = vec![
                     ("adbc.bigquery.sql.project_id", "data-project"),
                     ("adbc.bigquery.sql.api_endpoint", endpoint.as_str()),
                     ("bigquery.allow_untrusted_endpoint", "true"),
-                ] {
-                    database
-                        .set_option(OptionDatabase::Other(key.to_owned()), value.into())
-                        .unwrap();
-                }
-                for (key, value) in [
-                    ("adbc.bigquery.sql.auth_type", authentication_type),
-                    ("adbc.bigquery.sql.auth.quota_project", configured),
-                ] {
-                    if let Some(value) = value {
-                        database
-                            .set_option(OptionDatabase::Other(key.to_owned()), value.into())
-                            .unwrap();
-                    }
-                }
-                database
-                    .new_connection()
-                    .unwrap()
-                    .get_table_schema(Some("data-project"), Some("dataset"), "table")
-                    .unwrap();
+                ];
+                options.extend(
+                    authentication_type.map(|value| ("adbc.bigquery.sql.auth_type", value)),
+                );
+                options.extend(
+                    configured.map(|value| ("adbc.bigquery.sql.auth.quota_project", value)),
+                );
+                read_table_schema(&options);
                 let requests = server.join().unwrap();
                 let request = requests.last().unwrap();
                 let expected = configured
@@ -142,15 +125,7 @@ fn quota_override_preserves_refresh_cache_tags_and_universe() {
             })
             .into(),
     );
-    crate::runtime::install_crypto_provider();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .start_paused(true)
-        .build()
-        .unwrap();
-    runtime.block_on(async {
-        let (hold, held) = std::sync::mpsc::channel::<()>();
-        let inhibitor = tokio::task::spawn_blocking(move || held.recv());
+    crate::test_support::block_on_paused_clock(async {
         let source = google_cloud_auth::credentials::user_account::Builder::new(json!({
             "type": "authorized_user", "client_id": "client-id",
             "client_secret": "client-secret", "refresh_token": "refresh-token",
@@ -189,8 +164,6 @@ fn quota_override_preserves_refresh_cache_tags_and_universe() {
         assert_ne!(entity_tag, refreshed);
         assert_eq!(data["x-goog-user-project"], "profile-quota");
         assert_eq!(data[http::header::AUTHORIZATION], "Bearer refreshed-token");
-        drop(hold);
-        let _ = inhibitor.await;
     });
     server.served(2);
 }

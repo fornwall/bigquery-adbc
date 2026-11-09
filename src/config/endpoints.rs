@@ -153,15 +153,13 @@ fn split_endpoint_scheme(endpoint: &str) -> Option<(&'static str, &str)> {
         })
 }
 
-/// The host of an authority, without its port and IPv6 brackets. An authority the grammar rejects
-/// (already refused by [`normalize_endpoint`]) yields itself, which cannot pass the trust rule.
-fn authority_host(authority: &str) -> &str {
-    parse_endpoint_authority(authority).map_or(authority, |(host, _)| host)
-}
-
-/// Split a normalized endpoint into its scheme and host, without the port.
+/// Split a normalized endpoint into its scheme and host, without the port and IPv6 brackets. An
+/// authority the grammar rejects (already refused by [`normalize_endpoint`]) yields itself as the
+/// host, which cannot pass the trust rule.
 pub(crate) fn endpoint_scheme_and_host(endpoint: &str) -> Option<(&'static str, &str)> {
-    split_endpoint_scheme(endpoint).map(|(scheme, authority)| (scheme, authority_host(authority)))
+    let (scheme, authority) = split_endpoint_scheme(endpoint)?;
+    let host = parse_endpoint_authority(authority).map_or(authority, |(host, _)| host);
+    Some((scheme, host))
 }
 
 /// Parses a URL a credential is sent to (an OAuth token endpoint or an identity-provider token

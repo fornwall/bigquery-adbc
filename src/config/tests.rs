@@ -6,6 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use adbc_core::error::Status;
+use adbc_core::options::OptionDatabase;
+use adbc_core::{Connection as _, Database as _, Driver as _, Optionable as _};
 
 use super::{
     BigQueryAuthenticationType, BigQueryCredentialsType, ClientConfiguration, DatabaseConfig,
@@ -102,4 +104,29 @@ fn temporary_access_token(token: &str) -> DatabaseConfig {
         config.authentication_type = BigQueryAuthenticationType::TemporaryAccessToken;
         config.access_token = Some(Secret::from(token));
     })
+}
+
+/// The `tables.get` answer [`read_table_schema`] reads.
+fn table_resource() -> (u16, serde_json::Value) {
+    crate::test_support::http::ok(serde_json::json!({
+        "type": "TABLE", "schema": {"fields": [{"name": "id", "type": "INTEGER"}]}
+    }))
+}
+
+/// Reads the schema of `data-project.dataset.table` through a database configured by raw option
+/// keys, as a dbt profile configures one.
+fn read_table_schema(options: &[(&str, &str)]) {
+    let mut driver = crate::BigQueryDriver::try_new().unwrap();
+    let mut database = driver.new_database().unwrap();
+    for &(key, value) in options {
+        database
+            .set_option(OptionDatabase::Other(key.to_owned()), value.into())
+            .unwrap();
+    }
+    let schema = database
+        .new_connection()
+        .unwrap()
+        .get_table_schema(Some("data-project"), Some("dataset"), "table")
+        .unwrap();
+    assert_eq!(schema.fields().len(), 1);
 }

@@ -394,6 +394,7 @@ impl JobClient {
     /// An anonymous client on `endpoint` whose retries wait a millisecond.
     #[cfg(test)]
     pub(crate) fn for_test(endpoint: &str) -> Self {
+        crate::runtime::install_crypto_provider();
         Self::new(
             google_cloud_auth::credentials::anonymous::Builder::new().build(),
             Some(endpoint),

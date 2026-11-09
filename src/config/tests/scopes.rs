@@ -1,13 +1,10 @@
 //! The scopes sent by credentials configured through the driver and dbt's option aliases.
 
-use adbc_core::options::OptionDatabase;
-use adbc_core::{Connection as _, Database as _, Driver as _, Optionable as _};
 use base64::Engine as _;
 use google_cloud_auth::credentials::CacheableResource;
 use serde_json::{Value, json};
 
 use super::*;
-use crate::BigQueryDriver;
 use crate::test_support::credentials::service_account_json;
 use crate::test_support::http::{capture_requests, ok};
 
@@ -79,9 +76,6 @@ fn user_refresh_requests_send_the_configured_scope_subset() {
                 requests[0].body.get("scope").and_then(Value::as_str),
                 expected.map(|scopes| scopes.replace(',', " ")).as_deref(),
             );
-            if expected.is_none() {
-                assert!(requests[0].body.get("scope").is_none());
-            }
             assert!(requests[0].body.get("scopes").is_none());
         }
     }
@@ -115,35 +109,19 @@ fn assert_database_scopes(authentication_type: &str, credential: Option<&str>) {
         (DBT_SCOPES, "", DBT_SCOPES),
         (DBT_SCOPES, DRIVE_SCOPE, DRIVE_SCOPE),
     ] {
-        let (endpoint, server) = capture_requests(vec![ok(
-            json!({"type": "TABLE", "schema": {"fields": [{"name":"id", "type":"INTEGER"}]}}),
-        )]);
-        let mut driver = BigQueryDriver::try_new().unwrap();
-        let mut database = driver.new_database().unwrap();
-        for (key, value) in [
+        let (endpoint, server) = capture_requests(vec![table_resource()]);
+        let mut options = vec![
             ("adbc.bigquery.sql.auth_type", authentication_type),
             ("adbc.bigquery.sql.project_id", "data-project"),
             ("adbc.bigquery.sql.api_endpoint", endpoint.as_str()),
             ("bigquery.allow_untrusted_endpoint", "true"),
             ("adbc.bigquery.sql.impersonate.scopes", dbt_scopes),
             ("bigquery.auth.scopes", explicit_scopes),
-        ] {
-            database
-                .set_option(OptionDatabase::Other(key.to_owned()), value.into())
-                .unwrap();
-        }
-        if let Some(credential) = credential {
-            database
-                .set_option(
-                    OptionDatabase::Other("adbc.bigquery.sql.auth_credentials".to_owned()),
-                    credential.into(),
-                )
-                .unwrap();
-        }
-        let connection = database.new_connection().unwrap();
-        connection
-            .get_table_schema(Some("data-project"), Some("dataset"), "table")
-            .unwrap();
+        ];
+        options.extend(
+            credential.map(|credential| ("adbc.bigquery.sql.auth_credentials", credential)),
+        );
+        read_table_schema(&options);
         let requests = server.served(1);
         assert_jwt_scopes(requests[0].header("authorization").unwrap(), expected);
     }

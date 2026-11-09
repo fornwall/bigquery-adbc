@@ -607,21 +607,13 @@ fn a_location_search_bounds_repeated_pagination_tokens() {
 
 #[test]
 fn a_location_search_deadline_includes_credentials_and_all_pages() {
-    crate::runtime::install_crypto_provider();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .start_paused(true)
-        .build()
-        .unwrap();
     let (endpoint, captured) = capture_requests(vec![ok(json!({"nextPageToken": "next"}))]);
     let mut client = JobClient::for_test(&endpoint);
     let (minting, mut minted) = tokio::sync::mpsc::unbounded_channel();
     client.credentials = slow_credentials(minting, Duration::from_secs(20));
-    runtime.block_on(async {
-        // Prevent automatic clock advancement during socket I/O; each request takes twenty
-        // seconds to mint credentials, so the second page must hit the shared deadline.
-        let (hold, held) = mpsc::channel::<()>();
-        let inhibitor = tokio::task::spawn_blocking(move || held.recv());
+    crate::test_support::block_on_paused_clock(async {
+        // Each request takes twenty seconds to mint credentials, so the second page must hit the
+        // shared deadline.
         let submission = unlocated_submission(client);
         let mut search = pin!(submission.locate_by_listing());
         let start = tokio::time::Instant::now();
@@ -643,8 +635,6 @@ fn a_location_search_deadline_includes_credentials_and_all_pages() {
             tokio::time::Instant::now() - start,
             super::JOB_SEARCH_TIMEOUT
         );
-        drop(hold);
-        let _ = inhibitor.await;
     });
     captured.served(1);
 }
@@ -828,15 +818,7 @@ fn cancellation_uses_refreshed_credentials_from_the_submission_client() {
     );
     let (endpoint, requests) =
         capture_requests(vec![ok(job_in("refresh-job", "EU")), ok(json!({}))]);
-    crate::runtime::install_crypto_provider();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .start_paused(true)
-        .build()
-        .unwrap();
-    runtime.block_on(async {
-        let (hold, held) = mpsc::channel::<()>();
-        let inhibitor = tokio::task::spawn_blocking(move || held.recv());
+    crate::test_support::block_on_paused_clock(async {
         let credentials = google_cloud_auth::credentials::user_account::Builder::new(json!({
             "type": "authorized_user", "client_id": "client-id",
             "client_secret": "client-secret", "refresh_token": "refresh-token"
@@ -858,8 +840,6 @@ fn cancellation_uses_refreshed_credentials_from_the_submission_client() {
             .cancel(request.reference(), "query")
             .await
             .unwrap();
-        drop(hold);
-        let _ = inhibitor.await;
     });
     let requests = requests.join().unwrap();
     assert_eq!(

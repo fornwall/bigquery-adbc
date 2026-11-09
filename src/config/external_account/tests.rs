@@ -479,15 +479,7 @@ fn external_account_refreshes_subject_and_google_tokens_without_rebuilding_crede
         ok(json!({"access_token":"refreshed-subject"})),
         (200, refreshed),
     ]);
-    crate::runtime::install_crypto_provider();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .start_paused(true)
-        .build()
-        .unwrap();
-    runtime.block_on(async {
-        let (hold, held) = std::sync::mpsc::channel::<()>();
-        let inhibitor = tokio::task::spawn_blocking(move || held.recv());
+    crate::test_support::block_on_paused_clock(async {
         let credentials = credentials(&settings(&endpoint), &endpoint);
         let CacheableResource::New { entity_tag, data } =
             credentials.headers(Extensions::new()).await.unwrap()
@@ -511,8 +503,6 @@ fn external_account_refreshes_subject_and_google_tokens_without_rebuilding_crede
             data[http::header::AUTHORIZATION],
             "Bearer refreshed-google-token"
         );
-        drop(hold);
-        let _ = inhibitor.await;
     });
     let requests = server.join().unwrap();
     assert_eq!(requests[0].raw_body, requests[2].raw_body);

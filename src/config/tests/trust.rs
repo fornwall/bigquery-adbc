@@ -1,14 +1,11 @@
 //! Which endpoints may receive a credential.
 
-use adbc_core::options::OptionDatabase;
-use adbc_core::{Connection as _, Database as _, Driver as _, Optionable as _};
 use serde_json::json;
 
 use super::*;
-use crate::BigQueryDriver;
 use crate::test_support::credentials::service_account_json;
 use crate::test_support::errors::{assert_failure, assert_message, assert_message_omits};
-use crate::test_support::http::{capture_requests, ok};
+use crate::test_support::http::capture_requests;
 
 /// Configuring a BigQuery REST endpoint authorizes only that service to receive credentials.
 ///
@@ -350,26 +347,13 @@ fn custom_rest_endpoint_options_send_credentials_without_an_extra_opt_in() {
                 service_account.as_str(),
             ),
         ] {
-            let (endpoint, server) = capture_requests(vec![ok(
-                json!({"type":"TABLE", "schema":{"fields":[{"name":"id", "type":"INTEGER"}]}}),
-            )]);
-            let mut driver = BigQueryDriver::try_new().unwrap();
-            let mut database = driver.new_database().unwrap();
-            for (key, value) in [
+            let (endpoint, server) = capture_requests(vec![table_resource()]);
+            read_table_schema(&[
                 ("adbc.bigquery.sql.auth_type", authentication_type),
                 (credential_option, credential),
                 ("adbc.bigquery.sql.project_id", "data-project"),
                 (endpoint_option, endpoint.as_str()),
-            ] {
-                database
-                    .set_option(OptionDatabase::Other(key.to_owned()), value.into())
-                    .unwrap();
-            }
-            let connection = database.new_connection().unwrap();
-            let schema = connection
-                .get_table_schema(Some("data-project"), Some("dataset"), "table")
-                .unwrap();
-            assert_eq!(schema.fields().len(), 1);
+            ]);
             let requests = server.served(1);
             assert_eq!(
                 requests[0].path().split('?').next(),

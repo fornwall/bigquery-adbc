@@ -88,31 +88,6 @@ fn service_errors_render_every_entry_the_way_a_failed_job_does() {
     assert_message_omits(&failure, &["google-internal", "do-not-echo"]);
 }
 
-/// A 404 from a metadata patch carries the `notFound:` spelling a job error carries.
-#[test]
-fn a_not_found_rejection_keeps_the_spelling_dbt_matches() {
-    let body = br#"{
-        "error": {
-            "code": 404,
-            "message": "Not found: Table proj:ds.missing",
-            "errors": [
-                {"reason": "notFound", "message": "Not found: Table proj:ds.missing"}
-            ]
-        }
-    }"#;
-    let failure = service_error(
-        "failed to update the description of BigQuery table proj.ds.missing",
-        reqwest::StatusCode::NOT_FOUND,
-        body,
-    );
-    assert_eq!(failure.status, Status::NotFound);
-    assert!(
-        failure.message.contains("notFound:"),
-        "dbt 2.0's not-found matcher needs the notFound: substring: {}",
-        failure.message
-    );
-}
-
 /// The transport's own verdict outranks the first entry's `reason`, which maps to `Unknown`
 /// for anything the driver has not seen before.
 #[test]
@@ -275,7 +250,8 @@ fn a_precondition_failure_reports_the_concurrent_change() {
 }
 
 /// A structured entry that names only its reason borrows the envelope's message rather than
-/// reading "BigQuery gave no message".
+/// reading "BigQuery gave no message". A 404 keeps the `notFound:` spelling a job error carries,
+/// which dbt 2.0's not-found matcher needs.
 #[test]
 fn an_entry_without_a_message_reads_the_envelope_message() {
     let body = br#"{"error": {"code": 404, "message": "Not found: Table p:d.t",

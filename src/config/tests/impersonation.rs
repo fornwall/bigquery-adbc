@@ -181,16 +181,7 @@ fn impersonation_refreshes_with_default_and_explicit_lifetimes() {
             config.impersonation.target_principal = Some(Arc::from("target@example.com"));
             config.impersonation.lifetime = lifetime.map(Duration::from_secs);
         });
-        crate::runtime::install_crypto_provider();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .start_paused(true)
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            // Inhibit auto-advance while mock HTTP is in flight; advance only explicitly.
-            let (hold, held) = std::sync::mpsc::channel::<()>();
-            let inhibitor = tokio::task::spawn_blocking(move || held.recv());
+        crate::test_support::block_on_paused_clock(async {
             let credentials = crate::config::client::configure_impersonation(
                 google_cloud_auth::credentials::impersonated::Builder::new(impersonated_document(
                     &endpoint,
@@ -214,8 +205,6 @@ fn impersonation_refreshes_with_default_and_explicit_lifetimes() {
                 panic!("expected refreshed headers for lifetime {lifetime:?}")
             };
             assert_eq!(data[http::header::AUTHORIZATION], "Bearer target-token-2");
-            drop(hold);
-            let _ = inhibitor.await;
         });
         let requests = server.join().unwrap();
         for request in &requests[1..] {
