@@ -272,18 +272,23 @@ fn storage_read_matches_rest_for_every_mapped_type() {
     assert_paths_match(&storage, &rest);
 }
 
+/// Reads inside a host's multi-threaded runtime, through the default single-stream Storage Read
+/// session, which must preserve `ORDER BY`.
 #[test]
 #[ignore = "requires Google Cloud ADC and access to the integration project"]
-fn reads_results_inside_a_multi_threaded_host_runtime() {
+fn reads_ordered_results_inside_a_multi_threaded_host_runtime() {
     let host = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .build()
         .unwrap();
     host.block_on(host.spawn(async {
         let mut connection = connect(project());
-        let sql = storage_read_row_sequence(" ORDER BY n");
+        let sql = storage_read_row_sequence(" ORDER BY n DESC");
         let storage = read_storage_path(&mut connection, &sql, true);
         let rest = read_storage_path(&mut connection, &sql, false);
+        let mut descending = ascending();
+        descending.reverse();
+        assert_eq!(int64_column(&storage.1), descending);
         assert_paths_match(&storage, &rest);
     }))
     .unwrap();
@@ -331,24 +336,6 @@ fn storage_read_permission_denied_falls_back_to_rest() {
         ADBC_OPTION_VALUE_DISABLED,
         "automatic fallback must not change the configured opt-out"
     );
-}
-
-/// The default single-stream Storage Read session must preserve `ORDER BY`.
-///
-/// Batch boundaries distinguish Storage Read from REST, which also preserves ordering.
-#[test]
-#[ignore = "requires Google Cloud ADC and access to the integration project"]
-fn storage_read_preserves_query_ordering() {
-    let sql = storage_read_row_sequence(" ORDER BY n DESC");
-    let mut connection = connect(project());
-    let mut statement = prepare_query(&mut connection, &sql);
-
-    let (_, batches) = read_all(&mut statement);
-    let mut descending = ascending();
-    descending.reverse();
-    assert_eq!(int64_column(&batches), descending);
-
-    assert_read_through_storage_read(&mut connection, &sql, &batches, "the ordered default read");
 }
 
 /// `bigquery.query.unordered_read` trades ordering for parallel streams; the rows must not change.
