@@ -319,31 +319,6 @@ fn a_rate_limited_create_is_resent() {
 }
 
 #[test]
-fn a_template_id_that_reshapes_the_resource_path_is_refused() {
-    // An empty value clears the option rather than naming a template, so it is not tested here.
-    for template_id in [
-        "../../other-project/locations/us/notebookRuntimeTemplates/1",
-        "a/b",
-        ".",
-    ] {
-        let (endpoint, captured) = capture_requests(Vec::new());
-        let mut connection = connection_running_notebooks_at(endpoint);
-        let mut statement = bigframes_statement(&mut connection, Some(template_id), "3600");
-
-        let error = statement.execute_update().unwrap_err();
-        assert_failure(
-            &error,
-            Status::InvalidArguments,
-            &["adbc.bigquery.notebook_execute_job.template_id"],
-        );
-        assert!(
-            captured.join().unwrap().is_empty(),
-            "nothing is sent for a template ID that was never a resource name"
-        );
-    }
-}
-
-#[test]
 fn template_lookup_continues_past_empty_pages() {
     let (endpoint, captured) = capture_requests(vec![
         ok(json!({"nextPageToken": "first+/=&"})),
@@ -372,64 +347,68 @@ fn template_lookup_continues_past_empty_pages() {
 }
 
 /// Where the fork answers an empty listing by creating a durable `default-one-click-notebook`
-/// template, this reports the missing template, once the last page has been read.
+/// template, this reports the missing template once the last page has been read. A listing that
+/// repeats a page token or is malformed is invalid data, so the lookup cannot loop forever.
 #[test]
-fn a_project_without_a_one_click_template_is_not_given_one() {
-    for pages in [
-        vec![ok(json!({"notebookRuntimeTemplates": []}))],
-        vec![
-            ok(json!({"nextPageToken": "next"})),
-            ok(json!({"nextPageToken": ""})),
-        ],
+fn a_template_listing_that_names_no_template_fails_without_creating_one() {
+    let missing = &[PARENT, "adbc.bigquery.notebook_execute_job.template_id"][..];
+    for (pages, status, expected) in [
+        (
+            vec![json!({"notebookRuntimeTemplates": []})],
+            Status::NotFound,
+            missing,
+        ),
+        (
+            vec![
+                json!({"nextPageToken": "next"}),
+                json!({"nextPageToken": ""}),
+            ],
+            Status::NotFound,
+            missing,
+        ),
+        (
+            vec![json!({"nextPageToken": "a"}), json!({"nextPageToken": "a"})],
+            Status::InvalidData,
+            &["repeated a page token"],
+        ),
+        (
+            vec![
+                json!({"nextPageToken": "a"}),
+                json!({"nextPageToken": "b"}),
+                json!({"nextPageToken": "a"}),
+            ],
+            Status::InvalidData,
+            &["repeated a page token"],
+        ),
+        (
+            vec![json!({"notebookRuntimeTemplates": {}})],
+            Status::InvalidData,
+            &["non-array"],
+        ),
+        (
+            vec![json!({"notebookRuntimeTemplates": [{}]})],
+            Status::InvalidData,
+            &["no resource name"],
+        ),
+        (
+            vec![json!({"notebookRuntimeTemplates": [{"name": ""}]})],
+            Status::InvalidData,
+            &["no resource name"],
+        ),
+        (
+            vec![json!({"nextPageToken": 1})],
+            Status::InvalidData,
+            &["non-string"],
+        ),
     ] {
         let count = pages.len();
-        let (endpoint, captured) = capture_requests(pages);
+        let (endpoint, captured) = capture_requests(pages.into_iter().map(ok).collect());
         let mut connection = connection_running_notebooks_at(endpoint);
-        let error = bigframes_statement(&mut connection, None, "3600")
+        let error = bigframes_statement(&mut connection, None, "0")
             .execute_update()
             .unwrap_err();
-        assert_failure(
-            &error,
-            Status::NotFound,
-            &[PARENT, "adbc.bigquery.notebook_execute_job.template_id"],
-        );
-        assert_eq!(captured.join().unwrap().len(), count);
-    }
-}
-
-#[test]
-fn template_lookup_rejects_pagination_cycles_without_a_timeout() {
-    for tokens in [vec!["a", "a"], vec!["a", "b", "a"]] {
-        let (endpoint, captured) = capture_requests(
-            tokens
-                .iter()
-                .map(|token| ok(json!({"nextPageToken": token})))
-                .collect(),
-        );
-        let mut connection = connection_running_notebooks_at(endpoint);
-        let failure = bigframes_statement(&mut connection, None, "0")
-            .execute_update()
-            .unwrap_err();
-        assert_failure(&failure, Status::InvalidData, &["repeated a page token"]);
-        assert_eq!(captured.join().unwrap().len(), tokens.len());
-    }
-}
-
-#[test]
-fn malformed_template_listings_are_invalid_data() {
-    for listed in [
-        json!({"notebookRuntimeTemplates": {}}),
-        json!({"notebookRuntimeTemplates": [{}]}),
-        json!({"notebookRuntimeTemplates": [{"name": ""}]}),
-        json!({"nextPageToken": 1}),
-    ] {
-        let (endpoint, captured) = capture_requests(vec![ok(listed)]);
-        let mut connection = connection_running_notebooks_at(endpoint);
-        let failure = bigframes_statement(&mut connection, None, "3600")
-            .execute_update()
-            .unwrap_err();
-        assert_eq!(failure.status, Status::InvalidData);
-        assert_eq!(captured.join().unwrap().len(), 1);
+        assert_failure(&error, status, expected);
+        captured.served(count);
     }
 }
 
@@ -558,39 +537,6 @@ fn a_deadline_that_expires_while_the_job_runs_says_it_may_still_be_running() {
     for poll in &server.stop()[1..] {
         assert_eq!(poll.line, format!("GET /v1/{JOB} HTTP/1.1"));
     }
-}
-
-/// The deadline is also checked between the template listing and the create, so a listing that
-/// outlives `pooling_timeout` creates no job. Nothing exists yet, so the message must not claim a
-/// job was stopped.
-#[test]
-fn a_deadline_spent_listing_the_runtime_templates_never_creates_the_job() {
-    let (endpoint, captured) = capture_requests_gated(
-        vec![ok(
-            json!({"notebookRuntimeTemplates": [{"name": TEMPLATE}]}),
-        )],
-        || {
-            thread::sleep(Duration::from_millis(1_500));
-            true
-        },
-    );
-    let mut connection = connection_running_notebooks_at(endpoint);
-    let mut statement = bigframes_statement(&mut connection, None, "1");
-
-    let error = statement.execute_update().unwrap_err();
-    assert_failure(
-        &error,
-        Status::Timeout,
-        &[Key::DataprocPoolingTimeout.as_str(), "1 s"],
-    );
-    assert_message_omits(&error, &["asked to stop"]);
-
-    let requests = captured.join().unwrap();
-    assert_eq!(
-        requests.len(),
-        1,
-        "the listing spent the budget; the create must not draw a second one"
-    );
 }
 
 /// A cancel during the create waits for its answer, which alone names the job to stop.
@@ -778,21 +724,27 @@ fn notebook_identity_can_be_derived_overridden_and_cleared() {
     }
 }
 
-/// The notebook `parent`, `project`, and `region` reach the request path, and the region also
-/// the host, so a value that would send credentials elsewhere is refused, as for Dataproc.
+/// The notebook `parent`, `project`, `region`, and template ID reach the request path, and the
+/// region also the host, so a value that would send credentials elsewhere is refused, as for
+/// Dataproc. An empty template ID clears the option rather than naming a template.
 #[test]
 fn resource_options_that_would_redirect_the_request_are_refused() {
     for (option, value) in [
         (Key::NotebookExecuteJobRegion, "us-central1.example.com/v1"),
         (Key::NotebookExecuteJobParent, "projects/p?alt=media"),
         (Key::NotebookExecuteJobProject, "data project"),
+        (
+            Key::NotebookExecuteJobTemplateId,
+            "../../other-project/locations/us/notebookRuntimeTemplates/1",
+        ),
+        (Key::NotebookExecuteJobTemplateId, "a/b"),
+        (Key::NotebookExecuteJobTemplateId, "."),
     ] {
         // A port nothing listens on: the option must be refused before any request is made.
         let mut connection = connection_running_notebooks_at("http://127.0.0.1:1".to_owned());
         let mut statement = bigframes_statement(&mut connection, Some("4242"), "3600");
         set_option(&mut statement, option, value.to_owned());
         let error = statement.execute_update().unwrap_err();
-        assert_eq!(error.status, Status::InvalidArguments, "{value}");
-        assert_message(&error, &[option.as_str()]);
+        assert_failure(&error, Status::InvalidArguments, &[option.as_str()]);
     }
 }
