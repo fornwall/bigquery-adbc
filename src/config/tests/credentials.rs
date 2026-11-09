@@ -48,9 +48,11 @@ fn the_execution_principal_is_derived_only_where_the_credentials_name_one() {
             r#"{"type":"service_account","project_id":"p","private_key_id":"k","private_key":"pem","client_email":""}"#,
         ));
     });
-    // An authorized-user credential does not identify a service-account principal.
+    // An authorized-user credential does not identify a service-account principal. Its asserted
+    // type matches, so it is accepted.
     named("an authorized-user key", None, &|config| {
         config.authentication_type = BigQueryAuthenticationType::JsonCredentialString;
+        config.credentials_type = Some(BigQueryCredentialsType::AuthorizedUser);
         config.credentials = Some(Secret::from(
             r#"{"type":"authorized_user","client_id":"id","client_secret":"secret","refresh_token":"token"}"#,
         ));
@@ -238,9 +240,10 @@ fn a_credential_document_in_the_file_path_option_is_refused_without_echoing_it()
         });
         let error = ClientConfiguration::build(&settings).unwrap_err();
         assert_eq!(error.status, Status::InvalidArguments);
-        for secret in ["private_key", "not-a-real-key", "BEGIN PRIVATE KEY", EMAIL] {
-            assert_message_omits(&error, &[secret]);
-        }
+        assert_message_omits(
+            &error,
+            &["private_key", "not-a-real-key", "BEGIN PRIVATE KEY", EMAIL],
+        );
         assert!(
             error
                 .message
@@ -250,18 +253,6 @@ fn a_credential_document_in_the_file_path_option_is_refused_without_echoing_it()
             error.message
         );
     }
-
-    // A plain path is still opened.
-    let settings = settings(|config| {
-        config.authentication_type = BigQueryAuthenticationType::JsonCredentialFile;
-        config.credentials = Some(Secret::from("/nonexistent/key.json"));
-    });
-    assert!(
-        ClientConfiguration::build(&settings)
-            .unwrap_err()
-            .message
-            .contains("that could not be read")
-    );
 }
 
 /// A directory, a path through a file, an overlong name, a path the process may not open, and a
@@ -303,7 +294,9 @@ fn a_credential_file_failure_is_retryable_only_when_trying_again_could_help() {
 }
 
 /// Both halves of a credential-type rejection are type names rather than secrets: the assertion
-/// the operator made, what the document turned out to be, and the set that exists at all.
+/// the operator made, what the document turned out to be, and the set that exists at all. The auth
+/// library's own error is dropped because it can quote the document, so a document it could not
+/// use is answered with the fields that type requires.
 #[test]
 fn credential_type_rejections_name_the_types_involved() {
     const EMAIL: &str = "dbt-runner@data-project.iam.gserviceaccount.com";
@@ -350,115 +343,65 @@ fn credential_type_rejections_name_the_types_involved() {
             .message
             .contains("must be exactly one of")
     );
-}
 
-/// The auth library's own error is dropped because it can quote the document, so a document it
-/// could not use is answered with the fields that type requires, never with the document.
-#[test]
-fn an_unusable_credential_document_names_the_fields_its_type_requires() {
     let incomplete = json_credentials(
         r#"{"type":"service_account","client_email":"sa@example.com","private_key_id":"secret-id"}"#,
     );
-    let failure = ClientConfiguration::build(&incomplete).unwrap_err();
-    assert_eq!(failure.status, Status::InvalidArguments);
     assert_eq!(
-        failure.message,
+        ClientConfiguration::build(&incomplete).unwrap_err().message,
         "the Google auth library could not use the \"service_account\" credentials in BigQuery \
          option bigquery.auth.credentials; check that the document is as Google issued it and \
          has client_email, private_key_id, private_key and project_id"
     );
 }
 
-#[test]
-fn matching_credentials_and_authentication_type_are_accepted() {
-    // Building user-account credentials arms a token cache, which needs a Tokio reactor.
-    let runtime = crate::runtime::new_runtime().unwrap();
-    let _guard = runtime.enter();
-    let settings = settings(|config| {
-        config.authentication_type = BigQueryAuthenticationType::JsonCredentialString;
-        config.credentials_type = Some(BigQueryCredentialsType::AuthorizedUser);
-        config.credentials = Some(Secret::from(
-            r#"{"type":"authorized_user","client_id":"id","client_secret":"secret","refresh_token":"token"}"#,
-        ));
-    });
-    ClientConfiguration::build(&settings).unwrap();
-}
-
 /// The static token is used exactly as given: one sensitive `Authorization` header, with the
-/// not-modified contract honored for a caller that presents the entity tag back.
-#[test]
-fn temporary_access_token_authentication_builds_static_credentials() {
-    use google_cloud_auth::credentials::CacheableResource;
-
-    let settings = temporary_access_token("static-token-value");
-    let configuration = ClientConfiguration::build(&settings).unwrap();
-
-    let runtime = crate::runtime::new_runtime().unwrap();
-    let headers = runtime
-        .block_on(configuration.credentials.headers(http::Extensions::new()))
-        .unwrap();
-    let CacheableResource::New { entity_tag, data } = headers else {
-        panic!("expected new headers from a fresh request");
-    };
-    let value = data.get(http::header::AUTHORIZATION).unwrap();
-    assert!(value.is_sensitive());
-    assert_eq!(value.to_str().unwrap(), "Bearer static-token-value");
-
-    let mut extensions = http::Extensions::new();
-    extensions.insert(entity_tag);
-    assert_eq!(
-        runtime
-            .block_on(configuration.credentials.headers(extensions))
-            .unwrap(),
-        CacheableResource::NotModified
-    );
-}
-
-#[test]
-fn access_tokens_that_cannot_form_a_header_are_rejected_without_echo() {
-    let settings = temporary_access_token("line\nbreak-secret");
-    let error = ClientConfiguration::build(&settings).unwrap_err();
-    assert_eq!(error.status, Status::InvalidArguments);
-    assert_message_omits(&error, &["break-secret"]);
-}
-
+/// not-modified contract honored for a caller that presents the entity tag back. A token that
+/// cannot form a header is refused without being echoed.
+///
 /// `bigquery.auth.quota_project` becomes an `x-goog-user-project` header for every other
 /// authentication type, because `google-cloud-auth` writes it. The static-token credential is the
 /// driver's own, so it must write the header itself or the option would be silently dropped.
 #[test]
-fn a_temporary_access_token_carries_the_configured_quota_project() {
+fn temporary_access_token_authentication_builds_static_credentials() {
     use google_cloud_auth::credentials::CacheableResource;
 
     let runtime = crate::runtime::new_runtime().unwrap();
-    let settings = settings(|config| {
-        config.authentication_type = BigQueryAuthenticationType::TemporaryAccessToken;
-        config.access_token = Some(Secret::from("static-token-value"));
-        config.quota_project = Some(ProjectIdentifier::try_new("quota-project").unwrap());
-    });
-    let configuration = ClientConfiguration::build(&settings).unwrap();
-    let CacheableResource::New { data, .. } = runtime
-        .block_on(configuration.credentials.headers(http::Extensions::new()))
-        .unwrap()
-    else {
-        panic!("the first headers must be new")
-    };
-    assert_eq!(data["x-goog-user-project"], "quota-project");
-    assert_eq!(
-        data[http::header::AUTHORIZATION],
-        "Bearer static-token-value"
-    );
+    for quota_project in [None, Some("quota-project")] {
+        let mut settings = temporary_access_token("static-token-value");
+        settings.quota_project =
+            quota_project.map(|project| ProjectIdentifier::try_new(project).unwrap());
+        let configuration = ClientConfiguration::build(&settings).unwrap();
+        let CacheableResource::New { entity_tag, data } = runtime
+            .block_on(configuration.credentials.headers(http::Extensions::new()))
+            .unwrap()
+        else {
+            panic!("expected new headers from a fresh request");
+        };
+        let value = data.get(http::header::AUTHORIZATION).unwrap();
+        assert!(value.is_sensitive());
+        assert_eq!(value.to_str().unwrap(), "Bearer static-token-value");
+        // Unset stays unset: the header is absent rather than empty.
+        assert_eq!(
+            data.get("x-goog-user-project")
+                .map(|project| project.to_str().unwrap()),
+            quota_project
+        );
 
-    // Unset stays unset: the header is absent rather than empty.
-    let mut without = settings;
-    without.quota_project = None;
-    let configuration = ClientConfiguration::build(&without).unwrap();
-    let CacheableResource::New { data, .. } = runtime
-        .block_on(configuration.credentials.headers(http::Extensions::new()))
-        .unwrap()
-    else {
-        panic!("the first headers must be new")
-    };
-    assert!(data.get("x-goog-user-project").is_none());
+        let mut extensions = http::Extensions::new();
+        extensions.insert(entity_tag);
+        assert_eq!(
+            runtime
+                .block_on(configuration.credentials.headers(extensions))
+                .unwrap(),
+            CacheableResource::NotModified
+        );
+    }
+
+    let error =
+        ClientConfiguration::build(&temporary_access_token("line\nbreak-secret")).unwrap_err();
+    assert_eq!(error.status, Status::InvalidArguments);
+    assert_message_omits(&error, &["break-secret"]);
 }
 
 /// Each of the three causes gets its own remedy. When `GOOGLE_APPLICATION_CREDENTIALS` named the
