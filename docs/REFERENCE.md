@@ -29,6 +29,8 @@ adbc_core = { git = "https://github.com/apache/arrow-adbc", rev = "aa2c1c2496d28
 - The crate enables the `release_max_level_off` features of `log` and `tracing`, which feature
   unification applies to the whole application. The driver's own [diagnostics](#diagnostics) are
   unaffected.
+- The crate pins `idna_adapter` to 1.0.0, `idna`'s stub back end, which also applies to the whole
+  application: `url` refuses non-ASCII host names instead of mapping them to Punycode.
 - The API is synchronous. From async code, use `spawn_blocking`, or a multi-threaded Tokio runtime
   where the driver can use `block_in_place`; a call inside a current-thread Tokio runtime panics.
   Inside a Tokio runtime, `cancel` sends the remote job cancellation in the background and reports a
@@ -613,6 +615,9 @@ somewhere new, but an explicit option can. Unless `bigquery.allow_untrusted_endp
 - Not checked: a document's `credential_source`, which names your identity provider (the subject
   token goes to `token_url`), and Application Default Credentials found through the environment or
   `gcloud`, which are the machine owner's configuration.
+- Hosts are ASCII. Endpoint options and proxy variables accept only ASCII host names, and a URL in a
+  credential document naming a non-ASCII host (an internationalized or fullwidth spelling) is
+  refused; write an internationalized host in Punycode (`xn--`).
 - Validation runs when clients are built, so options can be set in any order.
   `bigquery.allow_untrusted_endpoint` must be a database option; a URI cannot relax any check (G13).
 - Two exposures remain: an application that lets its own users set `bigquery.endpoint` lets them

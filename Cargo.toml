@@ -11,9 +11,9 @@ keywords = ["adbc", "arrow", "bigquery", "database", "google-cloud"]
 categories = ["database"]
 publish = false
 
-# Unused in code; listed only to set their release-level log caps.
+# Unused in code; listed only to set their release-level log caps and the IDNA back end.
 [package.metadata.cargo-machete]
-ignored = ["log", "tracing"]
+ignored = ["idna_adapter", "log", "tracing"]
 
 # The C ABI library is built on its own with `cargo rustc --lib --crate-type cdylib`. Declaring a
 # cdylib here too would make `cargo build` link one without the release profile's LTO.
@@ -161,6 +161,9 @@ google-cloud-gax = { git = "https://github.com/googleapis/google-cloud-rust", re
 http = { version = "1.5.0", default-features = false, features = ["std"] }
 # CSV uploads need the body trait, not reqwest's broader stream feature.
 http-body = { version = "1.1.0", default-features = false }
+# Selects `idna`'s stub back end: URL hosts must be ASCII, so non-ASCII host names are rejected and
+# internationalized ones are spelled in Punycode. ICU4X's normalization would add 130 KB.
+idna_adapter = { version = "=1.0.0", default-features = false }
 libc = { version = "0.2.191", default-features = false }
 # Cap dependency logging in release builds; driver diagnostics use src/diag.rs.
 log = { version = "0.4.34", default-features = false, features = ["release_max_level_off"] }
@@ -288,16 +291,6 @@ opt-level = "z"
 opt-level = "z"
 [profile.release.package.hyper-util]
 opt-level = "z"
-[profile.release.package.icu_collections]
-opt-level = "z"
-[profile.release.package.icu_locale_core]
-opt-level = "z"
-[profile.release.package.icu_normalizer]
-opt-level = "z"
-[profile.release.package.icu_properties]
-opt-level = "z"
-[profile.release.package.icu_provider]
-opt-level = "z"
 [profile.release.package.idna]
 opt-level = "z"
 [profile.release.package.idna_adapter]
@@ -310,8 +303,6 @@ opt-level = "z"
 opt-level = "z"
 [profile.release.package.lazy_static]
 opt-level = "z"
-[profile.release.package.litemap]
-opt-level = "z"
 [profile.release.package.openssl-probe]
 opt-level = "z"
 [profile.release.package.opentelemetry]
@@ -321,8 +312,6 @@ opt-level = "z"
 [profile.release.package.opentelemetry_sdk]
 opt-level = "z"
 [profile.release.package.percent-encoding]
-opt-level = "z"
-[profile.release.package.potential_utf]
 opt-level = "z"
 [profile.release.package.reqwest]
 opt-level = "z"
@@ -353,8 +342,6 @@ opt-level = "s"
 opt-level = "s"
 [profile.release.package.time]
 opt-level = "z"
-[profile.release.package.tinystr]
-opt-level = "z"
 [profile.release.package.tokio-rustls]
 opt-level = "s"
 [profile.release.package.tonic]
@@ -374,14 +361,4 @@ opt-level = "z"
 [profile.release.package.url]
 opt-level = "z"
 [profile.release.package.uuid]
-opt-level = "z"
-[profile.release.package.writeable]
-opt-level = "z"
-[profile.release.package.yoke]
-opt-level = "z"
-[profile.release.package.zerofrom]
-opt-level = "z"
-[profile.release.package.zerotrie]
-opt-level = "z"
-[profile.release.package.zerovec]
 opt-level = "z"

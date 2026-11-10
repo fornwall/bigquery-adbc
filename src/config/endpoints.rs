@@ -346,11 +346,28 @@ mod tests {
 
     use std::sync::Arc;
 
-    use super::normalize_endpoint;
+    use super::{is_trusted_credential_url, normalize_endpoint, parse_credential_url};
     use crate::config::{ServiceEndpointKind, ServiceEndpoints};
     use crate::{BigQueryDatabaseOption, BigQueryStatementOption};
 
     const KEY: &str = BigQueryDatabaseOption::Endpoint.as_str();
+
+    /// `idna` runs on its stub back end (`Cargo.toml`), so URL hosts are ASCII: a non-ASCII host,
+    /// a fullwidth spelling of a Google host included, is refused rather than mapped, and an
+    /// internationalized name passes only in Punycode. ASCII case still folds before the trust rule.
+    #[test]
+    fn credential_url_hosts_must_be_ascii() {
+        for refused in [
+            "https://ｏａｕｔｈ２.googleapis.com/token",
+            "https://bücher.example/token",
+        ] {
+            assert!(parse_credential_url(refused).is_none(), "{refused}");
+        }
+        let punycode = parse_credential_url("https://xn--bcher-kva.example/token").unwrap();
+        assert_eq!(punycode.host_str(), Some("xn--bcher-kva.example"));
+        let folded = parse_credential_url("https://OAuth2.GoogleAPIs.COM/token").unwrap();
+        assert!(is_trusted_credential_url(&folded, false));
+    }
 
     #[test]
     fn endpoint_normalization_is_strict_and_clearable() {

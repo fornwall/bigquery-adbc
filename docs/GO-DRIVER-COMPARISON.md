@@ -636,6 +636,14 @@ Go also accepts it per connection and sends it on every request.
 Credential file errors name the option or variable, the OS cause and the remedy, but not the value,
 which may be a misplaced key or token. Go's client library errors name the path.
 
+### G97. URL hosts in credential documents must be ASCII
+
+A credential document's `token_uri`, `token_url`, `service_account_impersonation_url` or
+`credential_source.url` naming a non-ASCII host is refused, so an internationalized host must be
+written in Punycode (`xn--`); Go's HTTP client converts such a host to Punycode itself. Without
+Unicode mapping, a fullwidth spelling of a Google host cannot pass the [endpoint
+rules](REFERENCE.md#endpoint-overrides) either.
+
 ## C interface and object lifecycle
 
 ### G14. Only the driver-manager entrypoint is exported

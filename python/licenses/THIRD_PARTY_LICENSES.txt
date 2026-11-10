@@ -536,12 +536,6 @@ Source: registry+https://github.com/rust-lang/crates.io-index
   [a9040321c3712d8fd0b09cf52b17445de04a23a10165049ae187cd39e5c86be5] LICENSE-APACHE
   [af59cea35d7f5e2777a713b8d155d65efa2c339eb43f3c14e868c6ac8506edad] LICENSE-MIT
 
-displaydoc 0.2.7
-License declaration: MIT OR Apache-2.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2] LICENSE-APACHE
-  [23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3] LICENSE-MIT
-
 dyn-clone 1.0.20
 License declaration: MIT OR Apache-2.0
 Source: registry+https://github.com/rust-lang/crates.io-index
@@ -1246,41 +1240,6 @@ Source: registry+https://github.com/rust-lang/crates.io-index
   [696759d65dfe558ff7d9f031c76db19ec5c0767470fb67c4e8d990820d1e99c9] LICENSE-APACHE
   [da28ccc6b158fc2d8cccc74e99794b1cff1d29bd7bbeb019442fcf0c04c6cad9] LICENSE-MIT
 
-icu_collections 2.4.0
-License declaration: Unicode-3.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2] LICENSE
-
-icu_locale_core 2.4.0
-License declaration: Unicode-3.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2] LICENSE
-
-icu_normalizer 2.4.0
-License declaration: Unicode-3.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2] LICENSE
-
-icu_normalizer_data 2.4.0
-License declaration: Unicode-3.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2] LICENSE
-
-icu_properties 2.4.0
-License declaration: Unicode-3.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2] LICENSE
-
-icu_properties_data 2.4.0
-License declaration: Unicode-3.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2] LICENSE
-
-icu_provider 2.4.0
-License declaration: Unicode-3.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2] LICENSE
-
 ident_case 1.0.1
 License declaration: MIT/Apache-2.0
 Source: registry+https://github.com/rust-lang/crates.io-index
@@ -1300,7 +1259,7 @@ Source: registry+https://github.com/rust-lang/crates.io-index
   [d8d793505354fc63c0756964eef5db9c83325be0c4f205f9d27064e1d477c1cf] tests/punycode.rs (source notice 1)
   [454f6f9525490bd6421568b9a3ecc5642b2d43ff41f2199a7836ac480a9b4386] tests/uts46.rs (source notice 1)
 
-idna_adapter 1.2.2
+idna_adapter 1.0.0
 License declaration: Apache-2.0 OR MIT
 Source: registry+https://github.com/rust-lang/crates.io-index
   [a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2] LICENSE-APACHE
@@ -1458,11 +1417,6 @@ Source: registry+https://github.com/rust-lang/crates.io-index
   [e2c5e3a74a29f6c88233646995cfe44b14516067992b9670439ffa0a595e56a5] src/math/support/modular.rs (source notice 1)
   [59ee71a59035c18a5043881ef760e797cc17dc0cfd65eb43075f72a0ecf8292a] src/math/tan.rs (source notice 1)
   [565eff8b979411888b4fc163ba49daf7ad9beba47ee485942f032edcefd17948] src/math/tanf.rs (source notice 1)
-
-litemap 0.8.3
-License declaration: Unicode-3.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2] LICENSE
 
 log 0.4.34
 License declaration: MIT OR Apache-2.0
@@ -1735,11 +1689,6 @@ Source: registry+https://github.com/rust-lang/crates.io-index
   [7fd770efff953e8e1561250e47efa5dda6f1c71889727f2bf1942e2d5db923fd] tests/ui/pin_project/unsupported.rs (source notice 1)
   [7fd770efff953e8e1561250e47efa5dda6f1c71889727f2bf1942e2d5db923fd] tests/ui/pinned_drop/call-drop-inner.rs (source notice 1)
   [7fd770efff953e8e1561250e47efa5dda6f1c71889727f2bf1942e2d5db923fd] tests/ui/pinned_drop/conditional-drop-impl.rs (source notice 1)
-
-potential_utf 0.1.6
-License declaration: Unicode-3.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2] LICENSE
 
 powerfmt 0.2.1
 License declaration: MIT OR Apache-2.0
@@ -2418,13 +2367,6 @@ Source: registry+https://github.com/rust-lang/crates.io-index
   [b54ab1543eb4985c47cc3a484ec988d4746c97c958065b7d3cdb5263d2734883] src/sys/unix.rs (source notice 1)
   [b54ab1543eb4985c47cc3a484ec988d4746c97c958065b7d3cdb5263d2734883] src/sys/windows.rs (source notice 1)
 
-stable_deref_trait 1.2.1
-License declaration: MIT OR Apache-2.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2] LICENSE-APACHE
-  [3c125f249fc6fb19f2415d027a0d9a170860583960ea53d08ea1d2b3f269d153] LICENSE-MIT
-  [4d854c78554e7b14dd38275a06a5ec9ea6294e514a6cd609136f5f9feb5bfb06] src/lib.rs (source notice 1)
-
 strsim 0.11.1
 License declaration: MIT
 Source: registry+https://github.com/rust-lang/crates.io-index
@@ -2453,11 +2395,6 @@ License declaration: Apache-2.0
 Source: registry+https://github.com/rust-lang/crates.io-index
   [0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594] LICENSE
   [e635f612e61a783747a06d298c7d409573fa9abb79a204b648cdcd7f534c50aa] src/lib.rs (source notice 1)
-
-synstructure 0.14.0
-License declaration: MIT
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [219920e865eee70b7dcfc948a86b099e7f4fe2de01bcca2ca9a20c0a033f2b59] LICENSE
 
 system-configuration 0.7.0
 License declaration: MIT OR Apache-2.0
@@ -2518,11 +2455,6 @@ tiny-keccak 2.0.2
 License declaration: CC0-1.0
 Source: registry+https://github.com/rust-lang/crates.io-index
   [a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499] LICENSE
-
-tinystr 0.8.5
-License declaration: Unicode-3.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2] LICENSE
 
 tinyvec 1.13.3
 License declaration: Zlib OR Apache-2.0 OR MIT
@@ -2830,21 +2762,6 @@ License declaration: MIT
 Source: registry+https://github.com/rust-lang/crates.io-index
   [cb5aedb296c5246d1f22e9099f925a65146f9f0d6b4eebba97fd27a6cdbbab2d] LICENSE-MIT
 
-writeable 0.6.4
-License declaration: Unicode-3.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2] LICENSE
-
-yoke 0.8.4
-License declaration: Unicode-3.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2] LICENSE
-
-yoke-derive 0.8.4
-License declaration: Unicode-3.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2] LICENSE
-
 zerocopy 0.8.63
 License declaration: BSD-2-Clause OR Apache-2.0 OR MIT
 Source: registry+https://github.com/rust-lang/crates.io-index
@@ -2999,36 +2916,11 @@ Source: registry+https://github.com/rust-lang/crates.io-index
   [dfa265ace1a8eac40d3059e3bce1a736460a767bc58c74162c39a688a14988a8] tests/union_unaligned.rs (source notice 1)
   [05b19f2a815feb8453d570e7f49fe39ccfba2d2da1a67d6ac7e045faeed825d2] tests/unsafe_cell.rs (source notice 1)
 
-zerofrom 0.1.8
-License declaration: Unicode-3.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2] LICENSE
-
-zerofrom-derive 0.1.8
-License declaration: Unicode-3.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2] LICENSE
-
 zeroize 1.9.1
 License declaration: Apache-2.0 OR MIT
 Source: registry+https://github.com/rust-lang/crates.io-index
   [cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30] LICENSE-APACHE
   [8c7516d4b27b1e495be5e38b612298b63de48d05f49cdac94f70f3cd70f8864b] LICENSE-MIT
-
-zerotrie 0.2.5
-License declaration: Unicode-3.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2] LICENSE
-
-zerovec 0.11.9
-License declaration: Unicode-3.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2] LICENSE
-
-zerovec-derive 0.11.7
-License declaration: Unicode-3.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2] LICENSE
 
 zmij 1.0.23
 License declaration: MIT
@@ -5016,18 +4908,6 @@ DEALINGS IN THE SOFTWARE.
 
 
 ==============================================================================
-DOCUMENT 219920e865eee70b7dcfc948a86b099e7f4fe2de01bcca2ca9a20c0a033f2b59
-==============================================================================
-Copyright 2016 Nika Layzell
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-
-==============================================================================
 DOCUMENT 231c837c45eb53f108fb48929e488965bc4fcc14e9ea21d35f50e6b99d98685b
 ==============================================================================
 Copyright (c) 2024 Jacob Pratt et al.
@@ -6953,36 +6833,6 @@ DOCUMENT 3b7df402160fc95c1ec4d256f720da6b75b1c5c69ad6826acfa5f096e349a42c
 
 
 ==============================================================================
-DOCUMENT 3c125f249fc6fb19f2415d027a0d9a170860583960ea53d08ea1d2b3f269d153
-==============================================================================
-Copyright (c) 2017 Robert Grosse
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-
-==============================================================================
 DOCUMENT 3c97f5b6ad4e73ad22dc0d1e0c7120579a350df57095120017ddfe5a8669604e
 ==============================================================================
                               Apache License
@@ -8330,12 +8180,6 @@ DOCUMENT 4d6a22864230012069284ffc528e169aa077cb0a96dbac8d144ce42df8261c15
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
-
-
-==============================================================================
-DOCUMENT 4d854c78554e7b14dd38275a06a5ec9ea6294e514a6cd609136f5f9feb5bfb06
-==============================================================================
-// Copyright 2017 Robert Grosse
 
 
 ==============================================================================
@@ -26705,57 +26549,6 @@ DOCUMENT f19171d4bdf293aeab9691045ffaf33e2b0be70c57d5d7f05092461aa4f04c7d
  * Copyright (c) 2021-2022 Alexei Sibidanov.
  * Ported to Rust in 2025 by Trevor Gross.
  */
-
-
-==============================================================================
-DOCUMENT f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2
-==============================================================================
-UNICODE LICENSE V3
-
-COPYRIGHT AND PERMISSION NOTICE
-
-Copyright © 2020-2024 Unicode, Inc.
-
-NOTICE TO USER: Carefully read the following legal agreement. BY
-DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
-SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
-TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
-DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of data files and any associated documentation (the "Data Files") or
-software and any associated documentation (the "Software") to deal in the
-Data Files or Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, and/or sell
-copies of the Data Files or Software, and to permit persons to whom the
-Data Files or Software are furnished to do so, provided that either (a)
-this copyright and permission notice appear with all copies of the Data
-Files or Software, or (b) this copyright and permission notice appear in
-associated Documentation.
-
-THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
-KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
-THIRD PARTY RIGHTS.
-
-IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
-BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
-OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
-WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
-ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
-FILES OR SOFTWARE.
-
-Except as contained in this notice, the name of a copyright holder shall
-not be used in advertising or otherwise to promote the sale, use or other
-dealings in these Data Files or Software without prior written
-authorization of the copyright holder.
-
-SPDX-License-Identifier: Unicode-3.0
-
-—
-
-Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
-ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 
 
 ==============================================================================

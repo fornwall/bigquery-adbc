@@ -99,6 +99,7 @@ adding 44,800.
 | `&str` input decodes through `from_slice(s.as_bytes())`, not `from_str`, at five sites | -7,616 |
 | Exception: the REST row array uses `from_str` after one UTF-8 check, for a 15–19% faster row decode (`benches/rest_rows.rs`) | +42,560 |
 | The row page's schema, job reference and errors decode with `from_slice` | -35,432 |
+| `idna_adapter` pinned to 1.0.0, `idna`'s stub back end, so `url` links no ICU4X UTS 46 tables and URL hosts must be ASCII; 21 packages leave the build | -130,904 |
 | IAM's impersonation refusal decodes into three driver-owned structs, not gax's `rpc::Status`, whose typed detail decoder links every `google.rpc` detail type | -107,024 |
 | `src/arrow_ipc_bigquery` replaces `arrow-ipc`, which stays a test oracle | -1,323,880 |
 | LZ4 blocks decode in place, without `lz4_flex`'s frame decoder | -6,080 |
@@ -210,7 +211,7 @@ cargo tree --locked --target x86_64-unknown-linux-gnu -e normal,build \
 Removing Reqwest `system-proxy` drops only its and Hyper-util's system-proxy flags on Linux (the
 lookup is compiled only for macOS and Windows, where removing it changes proxy behavior). Removing
 Reqwest `http2` drops REST multiplexing but keeps `h2` and Hyper's HTTP/2 for gRPC. None of the
-seven variants removes any of the 210 Linux normal/build package instances. Larger candidates need
+seven variants removes any of the 189 Linux normal/build package instances. Larger candidates need
 narrower SDK features ([upstream-only weights](#upstream-only-weights)).
 
 ### YAML and authentication dependencies
