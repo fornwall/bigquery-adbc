@@ -58,14 +58,14 @@ size -A libadbc_driver_bigquery.so
 | Metric | Value |
 | --- | ---: |
 | Rust/Cargo | 1.99.1 |
-| Artifact bytes | 8,858,024 |
-| `.text` | 6,467,014 |
-| `.eh_frame` | 761,412 |
-| `.rodata` | 762,533 |
-| `.gcc_except_table` | 345,060 |
-| `.rela.dyn` | 237,792 |
-| `.data.rel.ro` | 158,952 |
-| `.eh_frame_hdr` | 105,564 |
+| Artifact bytes | 8,549,496 |
+| `.text` | 6,318,278 |
+| `.eh_frame` | 739,564 |
+| `.rodata` | 647,845 |
+| `.gcc_except_table` | 337,440 |
+| `.rela.dyn` | 231,528 |
+| `.data.rel.ro` | 155,656 |
+| `.eh_frame_hdr` | 102,012 |
 | `.got` | 1,816 |
 
 The x86-64 Linux wheel is smaller by its
@@ -190,6 +190,7 @@ has no `--icf`, so it keeps only the remapping.
 | Sharing `named` and `failed_to` through one cold formatter taking a prefix, context and `&dyn Display` | -224 | Within noise. |
 | `or_list` as one cold loop over `&mut dyn ExactSizeIterator<Item = &str>`, without its intermediate vector and joined string | +512 | Grows the file. |
 | The same `or_list` loop, generic over the input slice | +192 | Within noise. |
+| Control-plane modules for size: nightly `#[optimize(size)]` on the 836 functions of `ffi`, `connection`, `dbt`, `driver`, `clients`, `config`, `statement`, `cancellation`, `error`, `transaction` and `options` | -135,112 | Stable Rust sets `opt-level` per crate, so this needs those modules in a crate of their own. |
 | `panic = "abort"` | | Kills the host instead of returning an ADBC error. |
 
 ## Linked dependencies
