@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use google_cloud_auth::credentials::{CacheableResource, Credentials, CredentialsProvider};
 use google_cloud_gax::error::CredentialsError;
-use google_cloud_gax::error::rpc::StatusDetails;
 use http::{Extensions, HeaderMap};
 
 use crate::BigQueryAuthenticationType;
@@ -174,11 +173,17 @@ fn iam_refusal(
         let error = candidate.downcast_ref::<google_cloud_gax::error::Error>()?;
         Some((error.http_status_code()?, error.http_payload()?))
     })?;
-    let status = google_cloud_gax::error::rpc::Status::try_from(payload).ok()?;
-    let reason = status.details.iter().find_map(|detail| match detail {
-        StatusDetails::ErrorInfo(info) => Some(info.reason.as_str()),
-        _ => None,
-    });
+    let status = serde_json::from_slice::<RefusalBody>(payload).ok()?.error;
+    // As in gax's `rpc::Status`, legacy `errors` entries stand in for an empty `details` list.
+    let reason = if status.details.is_empty() {
+        status.errors.first()
+    } else {
+        status
+            .details
+            .iter()
+            .find(|detail| detail.type_url.as_deref() == Some(ERROR_INFO_TYPE))
+    }
+    .map(|info| info.reason.as_deref().unwrap_or_default());
     let mut message = format!("IAM refused generateAccessToken with HTTP {code}");
     if let Some(reason) = reason {
         message.push_str(" (");
@@ -188,6 +193,35 @@ fn iam_refusal(
     message.push_str(": ");
     message.push_str(&status.message);
     Some(message.into())
+}
+
+const ERROR_INFO_TYPE: &str = "type.googleapis.com/google.rpc.ErrorInfo";
+
+/// The `{"error": google.rpc.Status}` refusal body, reduced to what [`iam_refusal`] reports.
+///
+/// Decoded here rather than with gax's `rpc::Status`, whose typed detail decoder links every
+/// `google.rpc` detail type for this one diagnostic. Absent fields default, as there.
+#[derive(serde::Deserialize)]
+struct RefusalBody {
+    error: RefusalStatus,
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct RefusalStatus {
+    message: String,
+    details: Vec<RefusalDetail>,
+    /// The legacy `{reason, domain, message}` list some services send instead of `details`.
+    errors: Vec<RefusalDetail>,
+}
+
+/// A `details` or `errors` entry; only an `ErrorInfo`'s `reason` is read.
+#[derive(serde::Deserialize)]
+struct RefusalDetail {
+    #[serde(rename = "@type", default)]
+    type_url: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 #[cfg(test)]
@@ -379,5 +413,38 @@ mod tests {
             ),
             "{message}"
         );
+    }
+
+    /// The refusal decoder follows gax's `rpc::Status`: legacy `errors` entries stand in for an
+    /// empty `details` list, only an `ErrorInfo` names a reason, and a body that is not a status
+    /// yields no verdict.
+    #[test]
+    fn impersonation_refusal_reads_only_an_error_info_reason() {
+        let verdict = |body: &'static [u8]| {
+            let source = CredentialsError::new(
+                false,
+                "failed to fetch token",
+                GoogleError::http(403, HeaderMap::new(), bytes::Bytes::from_static(body)),
+            );
+            iam_refusal(&source).map(|refusal| refusal.to_string())
+        };
+        assert_eq!(
+            verdict(br#"{"error": {"message": "denied", "errors": [{"reason": "forbidden"}]}}"#)
+                .as_deref(),
+            Some("IAM refused generateAccessToken with HTTP 403 (forbidden): denied")
+        );
+        assert_eq!(
+            verdict(
+                br#"{"error": {"message": "denied", "errors": [{"reason": "forbidden"}],
+                    "details": [{"@type": "type.googleapis.com/google.rpc.Help", "links": []}]}}"#
+            )
+            .as_deref(),
+            Some("IAM refused generateAccessToken with HTTP 403: denied")
+        );
+        assert_eq!(
+            verdict(br#"{"error": {"code": 403}}"#).as_deref(),
+            Some("IAM refused generateAccessToken with HTTP 403: ")
+        );
+        assert_eq!(verdict(br#"{"access_token": "sentinel"}"#), None);
     }
 }

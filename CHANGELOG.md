@@ -7,6 +7,8 @@ changes.
 
 ### Changed
 
+- The native library is smaller: IAM impersonation refusals decode without the SDK's generic
+  `google.rpc.Status` parser.
 - The dbt installer accepts dbt's Rust target triples with `--target`, and rejects unknown
   options and missing values before installing.
 

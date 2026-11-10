@@ -99,6 +99,7 @@ adding 44,800.
 | `&str` input decodes through `from_slice(s.as_bytes())`, not `from_str`, at five sites | -7,616 |
 | Exception: the REST row array uses `from_str` after one UTF-8 check, for a 15–19% faster row decode (`benches/rest_rows.rs`) | +42,560 |
 | The row page's schema, job reference and errors decode with `from_slice` | -35,432 |
+| IAM's impersonation refusal decodes into three driver-owned structs, not gax's `rpc::Status`, whose typed detail decoder links every `google.rpc` detail type | -107,024 |
 | `src/arrow_ipc_bigquery` replaces `arrow-ipc`, which stays a test oracle | -1,323,880 |
 | LZ4 blocks decode in place, without `lz4_flex`'s frame decoder | -6,080 |
 | Gathers use type-erased `MutableArrayData`; one generic `arrow_select::concat` import instantiated 780,091 bytes | |
