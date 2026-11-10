@@ -113,6 +113,7 @@ adding 44,800.
 | Session creation, transaction control and connection cleanup share one `Box<dyn FnOnce() + Send>` blocking-task type (`DriverRuntime::spawn_detached_blocking`; 8,859,344 → 8,842,464, `.text` -11,392, `.eh_frame` -1,144); query submission and row conversion keep their own | -16,880 |
 | Boxing that shares no existing instantiation grows the file: `tables.get` fan-out task, `Operation::wait` | +1,504; +5,856 |
 | Per-package `opt-level`: control-plane crates at `"z"`, the HTTP and TLS stream glue at `"s"`, data-path crates at 3. Versus no per-package levels; versus the same crates at 14 `"z"` and 56 `"s"` | -1,177,480; -67,168 |
+| `flatbuffers`, which reads and writes only per-message IPC headers, at `"z"` ([throughput](#flatbuffers-at-z)) | -16,792 |
 | `adbc_core` (ADBC schemas, option names, errors) and `tokio-util` (cancellation tokens, the gRPC request buffer's sender) at `"z"`; `prost-types` there grows the file | -11,560; +1,152 |
 | No overflow checks in dependencies except the four `arrow-*` crates whose arithmetic feeds `unsafe` indexing | -105,256 |
 | Overflow checks kept in this crate, so the FFI guards report an ADBC error | +8,304 |
@@ -134,6 +135,13 @@ The data-path crates at `opt-level` 3 are this crate, `arrow-*`, `serde_json`, `
 moving it to `"z"` would save 9,216 bytes. A root-package override
 (`[profile.release.package.bigquery-adbc]`) silently disables `strip = true` and ships a 15 MB
 library; the `"*"` spelling does not.
+
+### `flatbuffers` at `"z"`
+
+Alternating pinned runs of the `ipc` benchmark (`taskset -c 8`; base, `"z"`, `"z"`, base) kept
+every case's best median within -3% and +6% of the base, inside the base runs' own spread; the
+largest ratio is the 1-row scalar encode at 11 ns. `memchr`, which `serde_json` scans strings with,
+and `hashbrown` would save 2,816 and 2,072 bytes at `"s"`, but stay at 3.
 
 The shared option-name scan trades speed: median of five 3,000,000-call samples per run, two runs
 alternating before/after/after/before, AMD Ryzen 9 7950X3D pinned to CPU 8 (local parsing, not

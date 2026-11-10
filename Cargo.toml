@@ -247,6 +247,8 @@ overflow-checks = true
 # it.
 [profile.release.package.adbc_core]
 opt-level = "z"
+[profile.release.package.flatbuffers]
+opt-level = "z"
 [profile.release.package.form_urlencoded]
 opt-level = "z"
 [profile.release.package.futures]
