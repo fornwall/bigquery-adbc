@@ -113,6 +113,7 @@ adding 44,800.
 | Session creation, transaction control and connection cleanup share one `Box<dyn FnOnce() + Send>` blocking-task type (`DriverRuntime::spawn_detached_blocking`; 8,859,344 → 8,842,464, `.text` -11,392, `.eh_frame` -1,144); query submission and row conversion keep their own | -16,880 |
 | Boxing that shares no existing instantiation grows the file: `tables.get` fan-out task, `Operation::wait` | +1,504; +5,856 |
 | Per-package `opt-level`: control-plane crates at `"z"`, the HTTP and TLS stream glue at `"s"`, data-path crates at 3. Versus no per-package levels; versus the same crates at 14 `"z"` and 56 `"s"` | -1,177,480; -67,168 |
+| `adbc_core` (ADBC schemas, option names, errors) and `tokio-util` (cancellation tokens, the gRPC request buffer's sender) at `"z"`; `prost-types` there grows the file | -11,560; +1,152 |
 | No overflow checks in dependencies except the four `arrow-*` crates whose arithmetic feeds `unsafe` indexing | -105,256 |
 | Overflow checks kept in this crate, so the FFI guards report an ADBC error | +8,304 |
 | HTTP/2 for REST, kept for multiplexing and safe replay after `REFUSED_STREAM` and `GOAWAY` | +170,288 |

@@ -245,6 +245,8 @@ overflow-checks = true
 # Control-plane dependencies are compiled for size ("z"), the HTTP and TLS stream glue at "s", and
 # data paths keep opt-level 3. Measured under fat LTO; remeasure size and throughput before changing
 # it.
+[profile.release.package.adbc_core]
+opt-level = "z"
 [profile.release.package.form_urlencoded]
 opt-level = "z"
 [profile.release.package.futures]
@@ -344,6 +346,8 @@ opt-level = "s"
 opt-level = "z"
 [profile.release.package.tokio-rustls]
 opt-level = "s"
+[profile.release.package.tokio-util]
+opt-level = "z"
 [profile.release.package.tonic]
 opt-level = "z"
 [profile.release.package.tonic-prost]
