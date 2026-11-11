@@ -138,9 +138,10 @@ fn out_of_range() -> String {
 /// Materializes a dictionary as its value type, the shape the Storage Write API expects.
 ///
 /// This is `arrow_select::take::take(values, keys)` narrowed to the one gather the driver needs,
-/// without linking arrow-select's per-type take kernels. Fixed-width values are copied a run of
-/// ascending keys at a time and byte values row by row; other value types, and byte values in
-/// long runs, go through `MutableArrayData`, one type-erased extend per run.
+/// without linking arrow-select's per-type take kernels. Primitive values (those with a
+/// `primitive_width`) are copied a run of ascending keys at a time and byte values row by row;
+/// other value types, Boolean and `FixedSizeBinary` included, and byte values in long runs, go
+/// through `MutableArrayData`, one type-erased extend per run.
 fn unpack_dictionary(column: &ArrayRef) -> CastResult {
     downcast_dictionary_array!(
         column => expand_dictionary(column.values(), column.keys()),
@@ -209,8 +210,10 @@ where
 /// A row whose key, or the value its key names, is NULL, among the indices a gather copies.
 const NULL_ROW: usize = usize::MAX;
 
-/// Turns each row's key, read as an index (or [`NULL_ROW`] for a negative one), into the value
-/// index the gathers copy, or [`NULL_ROW`] where the key or its value is NULL.
+/// Turns each row's key, read as an index ([`NULL_ROW`] for one that does not fit `usize`, such as
+/// a negative one; a `u64::MAX` key reads the same), into the value index the gathers copy, or
+/// [`NULL_ROW`] where the key or its value is NULL. A non-NULL key read as [`NULL_ROW`] is out of
+/// bounds and refused as such.
 ///
 /// Every key is checked before anything is copied, so a bad one fails first, naming its row:
 /// Arrow validates dictionary keys on construction, but arrays imported over the C data interface
