@@ -495,12 +495,6 @@ impl ColumnBuilder {
                 let RestValue::Repeated(items) = value else {
                     return Err(located(type_mismatch("array", value)));
                 };
-                // `OffsetBufferBuilder::finish` panics once the running element count leaves
-                // `i32`, and it derefs to the offsets it has pushed so far.
-                let appended = offsets.last().copied().unwrap_or_default();
-                // An Arrow offset is never negative; reading a negative one as full fails closed.
-                let appended = usize::try_from(appended).unwrap_or(usize::MAX);
-                check_offset_room(appended, items.len(), "ARRAY").map_err(located)?;
                 values.append_elements(items, at, cancellation)?;
                 offsets.push_length(items.len());
             }
@@ -555,9 +549,14 @@ impl ColumnBuilder {
                 item_field,
                 offsets,
                 values,
-            } => ListArray::try_new(item_field, offsets.finish(), values.finish()?, None)
-                .map(|array| Arc::new(array) as ArrayRef)
-                .map_err(|source| malformed_column(&source)),
+            } => {
+                let offsets = offsets
+                    .try_finish()
+                    .map_err(|_| offsets_overflow("ARRAY"))?;
+                ListArray::try_new(item_field, offsets, values.finish()?, None)
+                    .map(|array| Arc::new(array) as ArrayRef)
+                    .map_err(|source| malformed_column(&source))
+            }
             Self::Struct {
                 fields,
                 children,
@@ -711,18 +710,23 @@ fn record_width_error(expected: usize, actual: usize) -> ArrowError {
 }
 
 /// Refuses an append that would push a 32-bit Arrow offset past `i32::MAX`, where Arrow's
-/// `GenericByteBuilder::append_value` and `OffsetBufferBuilder::<i32>::finish` panic with no
-/// fallible form. `BATCH_SIZE` makes that pathological, not impossible.
+/// `GenericByteBuilder::append_value` panics with no fallible form. `BATCH_SIZE` makes that
+/// pathological, not impossible.
 fn check_offset_room(appended: usize, additional: usize, kind: &str) -> Result<(), ArrowError> {
     if appended
         .checked_add(additional)
         .is_none_or(|total| i32::try_from(total).is_err())
     {
-        return Err(ArrowError::ParseError(format!(
-            "BigQuery {kind} column exceeds the 32-bit Arrow offsets of one result batch"
-        )));
+        return Err(offsets_overflow(kind));
     }
     Ok(())
+}
+
+#[cold]
+fn offsets_overflow(kind: &str) -> ArrowError {
+    ArrowError::ParseError(format!(
+        "BigQuery {kind} column exceeds the 32-bit Arrow offsets of one result batch"
+    ))
 }
 
 fn unsupported_column(field: &Field) -> ArrowError {

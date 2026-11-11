@@ -428,11 +428,11 @@ fn preserves_struct_fields_by_position() {
     }
 }
 
-/// Arrow's 32-bit offset builders panic on overflow rather than reporting it, so the bound is
-/// enforced where each value arrives. A panic crossing the ADBC FFI boundary aborts the
+/// Arrow's byte-array builder panics when its 32-bit offsets overflow, and a list's offset
+/// builder does unless finished fallibly. A panic crossing the ADBC FFI boundary aborts the
 /// caller's process; an error status does not.
 #[test]
-fn refuses_appends_that_would_overflow_32_bit_arrow_offsets() {
+fn refuses_columns_that_would_overflow_32_bit_arrow_offsets() {
     let limit = usize::try_from(i32::MAX).unwrap();
     check_offset_room(limit - 1, 1, "STRING").unwrap();
     check_offset_room(limit, 0, "STRING").unwrap();
@@ -442,7 +442,23 @@ fn refuses_appends_that_would_overflow_32_bit_arrow_offsets() {
         "{error}"
     );
     // The running total itself must not wrap before it is compared.
-    check_offset_room(usize::MAX, 1, "ARRAY").unwrap_err();
+    check_offset_room(usize::MAX, 1, "STRING").unwrap_err();
+
+    // A list's offsets are checked once, when the column is assembled.
+    let schema =
+        convert_schema(&table_schema([field_mode("numbers", "INT64", "REPEATED")])).unwrap();
+    let mut builder = ColumnBuilder::new(schema.field(0), 1).unwrap();
+    let ColumnBuilder::List { offsets, .. } = &mut builder else {
+        panic!("a REPEATED column builds a list");
+    };
+    offsets.push_length(limit + 1);
+    let error = builder.finish().unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("ARRAY column exceeds the 32-bit Arrow offsets"),
+        "{error}"
+    );
 }
 
 /// The wrong-shape message names the column and the JSON kinds, never the server-supplied value:
