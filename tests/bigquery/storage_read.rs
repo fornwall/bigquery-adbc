@@ -493,6 +493,78 @@ fn storage_read_matches_rest_for_parameterized_decimals() {
     assert_paths_match(&storage, &rest);
 }
 
+/// Query results report every field `NULLABLE`, but a job appending to a table reports the table's
+/// `REQUIRED` modes, top-level and nested, and its partition reads that table. Storage Read must
+/// reconcile those non-nullable fields, and a flexible column name, rather than fall back to REST.
+/// A table read has no order, so the values are compared sorted.
+#[test]
+#[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
+fn reads_a_partition_of_required_fields_and_flexible_names_through_storage_read() {
+    let mut connection = connect_with_dataset_at("US");
+    let table = scratch_table("storage_read_required");
+    let _drop_table = DropTable::table(&table);
+    execute_sql(
+        &mut connection,
+        &format!(
+            "CREATE TABLE `{table}` (\
+               n INT64 NOT NULL, \
+               s STRUCT<x INT64 NOT NULL, y STRING> NOT NULL, \
+               r ARRAY<STRUCT<z INT64 NOT NULL>>, \
+               `flexible name-é` INT64, \
+               padding STRING)"
+        ),
+    );
+    let mut statement = prepare_query(
+        &mut connection,
+        &format!(
+            "SELECT n, STRUCT(n AS x, IF(MOD(n, 2) = 0, NULL, 'y') AS y) AS s, \
+               [STRUCT(n AS z)] AS r, n AS `flexible name-é`, {PADDING} \
+             FROM UNNEST(GENERATE_ARRAY(1, {STORAGE_READ_ROWS})) AS n"
+        ),
+    );
+    set_option(
+        &mut statement,
+        BigQueryStatementOption::DestinationTable,
+        table.as_str(),
+    );
+    set_option(
+        &mut statement,
+        BigQueryStatementOption::WriteDisposition,
+        BigQueryWriteDisposition::WriteAppend,
+    );
+    let batches = read_only_partition(&connection, &mut statement);
+
+    let schema = batches.first().unwrap().schema();
+    let first_child = |field: &arrow_schema::Field| match field.data_type() {
+        DataType::Struct(fields) => fields.first().unwrap().clone(),
+        DataType::List(item) => match item.data_type() {
+            DataType::Struct(fields) => fields.first().unwrap().clone(),
+            other => panic!("{} is a list of {other}", field.name()),
+        },
+        other => panic!("{} is {other}", field.name()),
+    };
+    for field in [
+        schema.field(0),
+        schema.field(1),
+        &first_child(schema.field(1)),
+        &first_child(schema.field(2)),
+    ] {
+        assert!(
+            !field.is_nullable(),
+            "{} lost its REQUIRED mode",
+            field.name()
+        );
+    }
+    assert_eq!(schema.field(3).name(), "flexible name-é");
+    assert!(
+        batches.iter().any(|batch| batch.num_rows() > 1024),
+        "the partition fell back to REST, whose batches hold at most 1,024 rows"
+    );
+    let mut values = int64_column(&batches);
+    values.sort_unstable();
+    assert_eq!(values, ascending());
+}
+
 /// Cost statistics survive into a Storage Read result schema of a stored table, which bills bytes
 /// where generated rows bill none. Padding pushes the result past one `jobs.query` response (about
 /// 10 MB of JSON), so `JOB_CREATION_OPTIONAL` still creates the job and destination table Storage
