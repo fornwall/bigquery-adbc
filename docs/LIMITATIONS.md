@@ -94,10 +94,12 @@ Open limitations and missing test coverage. Behavior is documented in the
   `jobs.get`, and retry classification from the first job error (`src/error/status.rs`,
   `src/query/direct/poll.rs`, `src/query/response.rs`).
 - Recovery of a replayed `jobs.query` through BigQuery's undocumented 409 wording (G47) has mock
-  coverage only. The `jobs.insert` conflict, cross-region `jobs.list` recovery, and cancellation
-  after a lost submission response have [live coverage in `asia-northeast1`](../tests/bigquery/regional_recovery.rs),
-  which drops real responses in one region; delayed listing propagation, regional outages and
-  multi-page recovery searches have mock coverage only.
+  coverage only, as does recovery after BigQuery refuses a `jobs.insert` replay, which assumes a
+  refusal rather than a 409 can follow a lost attempt that created the job. The `jobs.insert`
+  conflict, cross-region `jobs.list` recovery, and cancellation after a lost submission response
+  have [live coverage in `asia-northeast1`](../tests/bigquery/regional_recovery.rs), which drops
+  real responses in one region; delayed listing propagation, regional outages and multi-page
+  recovery searches have mock coverage only.
 - Storage Read reshaping beyond the types BigQuery sends (decimal widening, timestamp-zone
   conversion, interval reshaping) has unit coverage only (`src/storage_read/reshape.rs`).
 - No test writes a `project.catalog.namespace.table` destination, because the integration project
