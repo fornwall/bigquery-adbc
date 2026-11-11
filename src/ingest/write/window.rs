@@ -13,17 +13,23 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Schema};
 
-/// The rows from `offset` the next window of `input` takes: `suggested`, or as many as fit
-/// twice `target_size`, the slack leaving the chunk encoder to make the exact cut.
+/// The rows from `offset` the next window of `input` takes: the `suggested` rows the density of
+/// the chunk before predicts, or as many as fit twice `target_size`, the slack leaving the chunk
+/// encoder to make the exact cut. With no suggestion, the bytes the rows address are the only
+/// estimate, so the window aims for `target_size` itself: rows normalized past the cut are
+/// normalized again for the next chunk.
 pub(super) fn window_rows(
     input: &RecordBatch,
     schema: &Schema,
     offset: usize,
-    suggested: usize,
+    suggested: Option<usize>,
     target_size: usize,
 ) -> usize {
+    let (suggested, limit) = match suggested {
+        Some(rows) => (rows, target_size.saturating_mul(2)),
+        None => (usize::MAX, target_size),
+    };
     let mut rows = suggested.clamp(1, input.num_rows() - offset);
-    let limit = target_size.saturating_mul(2);
     loop {
         let bytes = input
             .columns()

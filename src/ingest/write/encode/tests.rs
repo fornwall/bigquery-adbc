@@ -160,7 +160,13 @@ fn splits_ingest_batches_by_serialized_size_without_losing_rows() {
     let mut chunks = Vec::new();
     let mut offset = 0;
     assert!(
-        window_rows(&batch, &batch.schema(), 0, batch.num_rows(), target_size) < batch.num_rows()
+        window_rows(
+            &batch,
+            &batch.schema(),
+            0,
+            Some(batch.num_rows()),
+            target_size
+        ) < batch.num_rows()
     );
     // Start with the whole skewed candidate: the encoder must shrink it without
     // materializing the oversized framed payload it discards.

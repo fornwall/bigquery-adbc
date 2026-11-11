@@ -39,16 +39,29 @@ fn a_window_is_capped_by_the_bytes_its_rows_address() {
     let target = 100_000;
 
     // The density of an empty-string chunk suggests every remaining row.
-    let rows = window_rows(&skewed, &skewed.schema(), 2_990, 1_000_000, target);
+    let rows = window_rows(&skewed, &skewed.schema(), 2_990, Some(1_000_000), target);
     assert!(rows < 210, "the window took {rows} rows");
     assert!(window_bytes(&skewed, 2_990, rows) <= 2 * target);
     // Empty strings still need offsets, but this many fit.
     assert_eq!(
-        window_rows(&skewed, &skewed.schema(), 0, 1_000, target),
+        window_rows(&skewed, &skewed.schema(), 0, Some(1_000), target),
         1_000
     );
     // A single row is a window, however long.
-    assert_eq!(window_rows(&skewed, &skewed.schema(), 3_000, 1, 1), 1);
+    assert_eq!(window_rows(&skewed, &skewed.schema(), 3_000, Some(1), 1), 1);
+}
+
+/// A chunk's density may take up to twice the target, leaving the encoder the exact cut, but with
+/// no chunk before it a window aims for the target itself, so it normalizes no rows past the cut.
+#[test]
+fn a_window_without_a_density_aims_for_the_target() {
+    let input = batch(Arc::new(Int64Array::from_iter_values(0..1_000)));
+    assert_eq!(
+        window_rows(&input, &input.schema(), 0, Some(1_000), 5_000),
+        1_000
+    );
+    assert_eq!(window_rows(&input, &input.schema(), 0, None, 5_000), 625);
+    assert_eq!(window_rows(&input, &input.schema(), 900, None, 5_000), 100);
 }
 
 /// Fixed-width values count at their width, not at the capacity of a buffer a slice shares with
@@ -59,7 +72,7 @@ fn a_slice_counts_only_its_own_rows() {
     let slice = whole.slice(500_000, 10_000);
     assert_eq!(window_bytes(&slice, 0, 10_000), 80_000);
     assert_eq!(
-        window_rows(&slice, &slice.schema(), 0, 10_000, 100_000),
+        window_rows(&slice, &slice.schema(), 0, Some(10_000), 100_000),
         10_000
     );
 }
@@ -113,7 +126,7 @@ fn dictionary_windows_count_selected_values_including_repeated_keys() {
     assert_eq!(window_bytes(&input, 0, 2), 8);
     assert_eq!(window_bytes(&input, 2, 1_000), 1_004_000);
     let slice = input.slice(2, 1_000);
-    let rows = window_rows(&slice, &slice.schema(), 10, 990, 100_000);
+    let rows = window_rows(&slice, &slice.schema(), 10, Some(990), 100_000);
     assert!((100..=200).contains(&rows), "the window took {rows} rows");
 }
 
@@ -152,7 +165,7 @@ fn list_view_windows_count_overlapping_ranges_and_skip_null_lists() {
     assert_eq!(window_bytes(&input, 0, 10), 40);
     assert_eq!(window_bytes(&input, 10, 990), 990 * 1_008);
     let slice = input.slice(10, 990);
-    let rows = window_rows(&slice, &slice.schema(), 10, 980, 100_000);
+    let rows = window_rows(&slice, &slice.schema(), 10, Some(980), 100_000);
     assert!((99..=199).contains(&rows), "the window took {rows} rows");
 }
 
@@ -187,7 +200,7 @@ fn null_dictionary_rows_count_offsets_including_struct_children() {
         let values = arrow_array::new_empty_array(&data_type);
         let keys = Int8Array::from(vec![None; 1_000]);
         let input = batch(Arc::new(DictionaryArray::<Int8Type>::new(keys, values)));
-        let rows = window_rows(&input, &input.schema(), 0, 1_000, 100);
+        let rows = window_rows(&input, &input.schema(), 0, Some(1_000), 100);
         assert!(rows <= 50, "{data_type} took {rows} null rows");
         assert!(window_bytes(&input, 0, rows) <= 200);
     }

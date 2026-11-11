@@ -253,6 +253,23 @@ The normalization-only control `dictionary-scattered/narrow` stayed at 32.99. Ex
 values (`gather_dictionary` in `src/types/cast.rs`) is most of what remains. Check with
 `cargo test --locked --lib ingest::write::window::`.
 
+**First request window.** A batch's first window, with no chunk before it to give a density,
+aims for the request target by the bytes its rows address, rather than taking up to twice the
+target and normalizing the rows past the cut again for the next chunk. Batches between one and
+two request targets gain; the 65,536-row wide fixtures are such batches. Same measurement as above,
+with pinned timings and allocations from one bench run each:
+
+| Case | Instructions before → after, billions | Before → after, ms | Requested bytes before → after |
+| --- | ---: | ---: | ---: |
+| `dictionary-scattered/wide/encode` | 411.96 → 322.04 (−21.8%) | 24.58 → 14.33 | 71,311,372 → 55,127,516 |
+| `dictionary-runs/wide/encode` | 147.59 → 134.15 (−9.1%) | 12.16 → 6.37 | 71,308,796 → 55,125,468 |
+| `large-offsets/wide/encode` | 71.22 → 51.69 (−27.4%) | 3.21 → 2.47 | 20,097,476 → 18,549,572 |
+| `list-window/wide/encode` | 25.41 → 16.43 (−35.3%) | 1.36 → 0.96 | 16,847,788 → 16,832,940 |
+
+Controls, unchanged within 0.002%: `decimal-scale/wide/encode` at 65,536 rows (over twice the
+target), `dictionary-scattered/narrow/encode` and `large-offsets/narrow/encode` at 65,536 rows
+(under the target), `canonical/wide/encode` at 1,024 rows.
+
 ### Storage Write encoding
 
 `encode-sliced` rows of `ipc`, identical fixtures. Two successive changes:

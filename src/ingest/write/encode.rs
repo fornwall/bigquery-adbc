@@ -140,8 +140,8 @@ impl ChunkEncoder {
 
     /// Normalizes the rows of `input` from `offset` that should make a chunk of about
     /// `target_size` bytes: as many as the last chunk's density predicts, and no more than the
-    /// bytes they address allow. `stream_row` is row `offset`'s position in the whole bound
-    /// stream, which is what a rejection names.
+    /// bytes they address allow (see [`window_rows`]). `stream_row` is row `offset`'s position in
+    /// the whole bound stream, which is what a rejection names.
     pub(super) fn window(
         &self,
         input: &RecordBatch,
@@ -149,10 +149,9 @@ impl ChunkEncoder {
         stream_row: usize,
         target_size: usize,
     ) -> Result<RecordBatch> {
-        let suggested = match self.last_chunk {
-            Some((rows, size)) => scaled(rows, target_size, size),
-            None => input.num_rows(),
-        };
+        let suggested = self
+            .last_chunk
+            .map(|(rows, size)| scaled(rows, target_size, size));
         let rows = window_rows(input, &self.schema, offset, suggested, target_size);
         let window = if rows == input.num_rows() {
             input.clone()
