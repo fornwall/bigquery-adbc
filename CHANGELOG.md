@@ -96,6 +96,8 @@ changes.
   and a dbt seed load or copy whose job a 409 or a lost answer leaves unfetched. Such a failure
   reads `failed to submit`, not `BigQuery rejected`, and when the job a 409 names cannot be
   fetched it is `UNKNOWN` instead of `ALREADY_EXISTS`.
+- A dbt 2.0 seed load or table copy whose wait for its job ends on failed polls links the job and
+  names it in `bigquery.job_id`, as a query's wait does.
 - An append to a view, snapshot or other object that is not a table reports that, rather than
   what one of its columns makes of a bound all-null field.
 - A Storage Read stream that BigQuery fails with `OUT_OF_RANGE`, for a value Arrow cannot hold

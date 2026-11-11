@@ -160,6 +160,77 @@ fn a_wait_outlasts_failed_polls_and_leaves_the_job_alone() {
     );
 }
 
+/// A wait that ends on a failed poll links the job, as a query's does, whether the poll was
+/// refused or the polls failed for too long. Ending the wait cancels the job.
+#[test]
+fn a_failed_wait_links_its_job() {
+    let unavailable = (503, error_body("backendError", "unavailable"));
+    for (polls, status, reported) in [
+        (
+            vec![(403, error_body("accessDenied", "denied"))],
+            Status::Unauthorized,
+            "accessDenied: denied (HTTP 403)",
+        ),
+        (
+            vec![unavailable; MAX_ATTEMPTS as usize],
+            Status::IO,
+            "; the driver stopped waiting for BigQuery job billing-project:EU.job-1 after 0 s of \
+             failed requests and is cancelling it if unfinished",
+        ),
+    ] {
+        let mut responses = polls;
+        let polled = responses.len();
+        responses.push(ok(json!({})));
+        let (endpoint, server) = capture_requests_until_stopped(responses);
+        let runtime = new_runtime().unwrap();
+        let client = JobClient::for_test(&endpoint);
+        let cancellation = Cancellation::new(
+            runtime.clone(),
+            ClientState::for_test_at(ServiceEndpointKind::BigQuery, &endpoint),
+            "statement",
+        );
+        let operation = cancellation.begin();
+        let submitted = json!({
+            "jobReference": {"projectId": "billing-project", "jobId": "job-1", "location": "EU"},
+            "status": {"state": "RUNNING"}
+        })
+        .to_string();
+
+        let failure = runtime
+            .block_on(super::wait_for_submitted(
+                &client,
+                &operation,
+                &requested(),
+                submitted.as_bytes(),
+                WHAT,
+            ))
+            .unwrap_err();
+
+        assert_failure(
+            &failure,
+            status,
+            &[
+                reported,
+                "(Query: https://console.cloud.google.com/bigquery?project=billing-project\
+                 &j=bq:EU:job-1&page=queryresults)",
+            ],
+        );
+        assert!(failure.details.unwrap().contains(&(
+            crate::error::DETAIL_JOB_ID.to_owned(),
+            b"billing-project:EU.job-1".to_vec(),
+        )));
+        OperationCancelHandle(cancellation).try_cancel().unwrap();
+        operation.finish();
+        let requests = server.stop();
+        assert_eq!(requests.len(), polled + 1, "the job was not cancelled");
+        assert!(
+            requests[polled]
+                .path()
+                .ends_with("/jobs/job-1/cancel?location=EU")
+        );
+    }
+}
+
 /// The authoritative failure is rendered first and never twice, even when its repeat in `errors`
 /// carries a `debugInfo` the primary lacks. The job names itself, and an unfinished response is
 /// not a result.

@@ -11,7 +11,7 @@ use super::lro::PollBackoff;
 use super::table_copy::CopyConfiguration;
 use crate::BigQueryDatabaseOption;
 use crate::cancellation::Operation;
-use crate::error::{append_remedy, error, job_error, job_name};
+use crate::error::{append_remedy, error, job_error, job_name, with_job_link};
 use crate::query::{ExecutionContext, QualifiedTableName, StatementQueryOptions};
 use crate::rest::jobs::{JobClient, JobReference, may_still_run, next_identity};
 use crate::rest::json::decode_json;
@@ -168,7 +168,8 @@ pub(super) fn decode_job(body: &[u8], what: &str) -> Result<LoadOrCopyJob> {
 ///
 /// A 2xx proves the job was accepted, but its body may be truncated or malformed. A response that
 /// does not decode or names another job is reconciled by fetching the requested job ID, never by
-/// resubmitting; if that fails too, the job may still run.
+/// resubmitting; if that fails too, the job may still run. A wait that fails links the job, as a
+/// query's does.
 pub(super) async fn wait_for_submitted(
     client: &JobClient,
     operation: &Operation,
@@ -189,7 +190,9 @@ pub(super) async fn wait_for_submitted(
     };
     // Retain the canonical identity before polling or a later cancellation addresses it.
     operation.register_job(&reference)?;
-    let mut job = Box::pin(wait_for_job(client, operation, &reference, job, what)).await?;
+    let mut job = Box::pin(wait_for_job(client, operation, &reference, job, what))
+        .await
+        .map_err(|failure| with_job_link(failure, Some(&reference)))?;
     validate_completed(&mut job, what)?;
     Ok(job)
 }
