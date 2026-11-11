@@ -14,7 +14,9 @@ use crate::cancellation::Operation;
 use crate::error::job_name;
 use crate::query::{ExecutionContext, QualifiedTableName, StatementQueryOptions};
 use crate::rest::client::RestClient;
-use crate::rest::jobs::{JobClient, JobReference, JobRequest, may_have_created, settle_submission};
+use crate::rest::jobs::{
+    JobClient, JobReference, JobRequest, may_have_created, may_still_run, settle_submission,
+};
 use crate::rest::metadata::TableId;
 use crate::rest::model::TableSchema;
 use crate::rest::rejection::service_error;
@@ -118,7 +120,8 @@ async fn submit_csv_load(
     }
     let recovered = jobs
         .reconcile_submission(Some(operation), requested, WHAT, Some(failure))
-        .await?;
+        .await
+        .map_err(|failure| may_still_run(failure, requested, false))?;
     wait_for_submitted(jobs, operation, requested, &recovered, WHAT).await
 }
 

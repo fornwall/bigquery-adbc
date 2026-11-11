@@ -934,7 +934,7 @@ pub(crate) fn may_have_created(
 /// and which may still run, so the failure says so and links the job. `set_location` adds that a
 /// configured location avoids the search. A cancellation is returned as is: it stopped the
 /// recovery, and the operation cancels the job.
-fn may_still_run(
+pub(crate) fn may_still_run(
     mut failure: adbc_core::error::Error,
     reference: &JobReference,
     set_location: bool,

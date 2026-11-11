@@ -13,7 +13,7 @@ use crate::BigQueryDatabaseOption;
 use crate::cancellation::Operation;
 use crate::error::{append_remedy, error, job_error, job_name};
 use crate::query::{ExecutionContext, QualifiedTableName, StatementQueryOptions};
-use crate::rest::jobs::{JobClient, JobReference, next_identity};
+use crate::rest::jobs::{JobClient, JobReference, may_still_run, next_identity};
 use crate::rest::json::decode_json;
 use crate::rest::metadata::DatasetId;
 use crate::rest::model::{JobOptions, JobStatus};
@@ -168,7 +168,7 @@ pub(super) fn decode_job(body: &[u8], what: &str) -> Result<LoadOrCopyJob> {
 ///
 /// A 2xx proves the job was accepted, but its body may be truncated or malformed. A response that
 /// does not decode or names another job is reconciled by fetching the requested job ID, never by
-/// resubmitting.
+/// resubmitting; if that fails too, the job may still run.
 pub(super) async fn wait_for_submitted(
     client: &JobClient,
     operation: &Operation,
@@ -179,10 +179,12 @@ pub(super) async fn wait_for_submitted(
     let (job, reference) = match decode_resolved_job(body, requested, what) {
         Ok(resolved) => resolved,
         Err(failure) => {
+            let unrecovered = |failure| may_still_run(failure, requested, false);
             let recovered = client
                 .reconcile_submission(Some(operation), requested, what, Some(failure))
-                .await?;
-            decode_resolved_job(&recovered, requested, what)?
+                .await
+                .map_err(unrecovered)?;
+            decode_resolved_job(&recovered, requested, what).map_err(unrecovered)?
         }
     };
     // Retain the canonical identity before polling or a later cancellation addresses it.

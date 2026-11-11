@@ -245,6 +245,68 @@ fn cancellation_during_reconciliation_stops_after_confirming_the_one_shot_upload
     assert_eq!(cancels.join().unwrap().len(), 1);
 }
 
+/// An upload BigQuery may have accepted, whose job recovery then cannot fetch or read, names that
+/// job, with its console link, as one that may still run: after a lost answer, after an answer
+/// that does not decode, and after a fetched job that does not decode.
+#[test]
+fn an_unrecovered_upload_says_its_job_may_still_run() {
+    let attempts = crate::rest::jobs::MAX_RECONCILIATION_ATTEMPTS as usize;
+    let unavailable = || vec![(503, error_body("backendError", "reconcile")); attempts];
+    let lost = (500, error_body("backendError", "ambiguous"));
+    let malformed = ok(json!({"jobReference": 5}));
+    for (upload, fetched, reported) in [
+        (
+            lost.clone(),
+            unavailable(),
+            "backendError: reconcile (HTTP 503)",
+        ),
+        (
+            malformed.clone(),
+            unavailable(),
+            "backendError: reconcile (HTTP 503)",
+        ),
+        // The fetched job is read like an accepted answer, which is reconciled once more.
+        (
+            lost,
+            vec![malformed.clone(), malformed],
+            "unexpected JSON structure",
+        ),
+    ] {
+        let (cancel_endpoint, cancels) = capture_requests_until_stopped(vec![ok(json!({}))]);
+        let (runtime, _cancellation, operation) = cancellable_at(&cancel_endpoint);
+        let fetches = fetched.len();
+        let (jobs_endpoint, reconciliations) = capture_requests(fetched);
+        let (upload_endpoint, uploads) = capture_requests(vec![upload]);
+
+        let failure = submit(
+            &runtime,
+            &operation,
+            &JobClient::for_test(&jobs_endpoint),
+            &format!("{upload_endpoint}/upload"),
+            bytes::Bytes::from_static(b"large-media").into(),
+        )
+        .unwrap_err();
+        operation.finish();
+
+        crate::test_support::errors::assert_message(
+            &failure,
+            &[
+                reported,
+                "; BigQuery may still run job example-project:EU.csv-job; recovery did not \
+                 complete; check the job before running it again (Query: ",
+                "j=bq:EU:csv-job",
+            ],
+        );
+        assert!(failure.details.unwrap().contains(&(
+            crate::error::DETAIL_JOB_ID.to_owned(),
+            b"example-project:EU.csv-job".to_vec(),
+        )));
+        uploads.served(1);
+        reconciliations.served(fetches);
+        cancels.stop();
+    }
+}
+
 /// A refused upload is never replayed, and created no job, so a later cancel has nothing to
 /// address: it would answer 404 and warn that the job may keep running.
 #[test]
