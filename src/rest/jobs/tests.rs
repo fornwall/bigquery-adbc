@@ -1969,6 +1969,63 @@ impl google_cloud_auth::credentials::CredentialsProvider for SlowCredentials {
     }
 }
 
+/// Credentials that mint one token, then fail as an expired refresh token does.
+#[derive(Debug, Default)]
+struct MintsOnce(std::sync::atomic::AtomicBool);
+
+impl google_cloud_auth::credentials::CredentialsProvider for MintsOnce {
+    async fn headers(
+        &self,
+        _extensions: http::Extensions,
+    ) -> std::result::Result<
+        google_cloud_auth::credentials::CacheableResource<http::HeaderMap>,
+        google_cloud_gax::error::CredentialsError,
+    > {
+        if self.0.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            return Err(google_cloud_gax::error::CredentialsError::from_msg(
+                false,
+                "the refresh token expired",
+            ));
+        }
+        Ok(google_cloud_auth::credentials::CacheableResource::New {
+            entity_tag: google_cloud_auth::credentials::EntityTag::new(),
+            data: http::HeaderMap::new(),
+        })
+    }
+
+    async fn universe_domain(&self) -> Option<String> {
+        Some("googleapis.com".to_owned())
+    }
+}
+
+/// An attempt that never reached BigQuery says nothing about the job, even after one that did:
+/// a rate-limited submission whose retry cannot mint a token still proves no job was created.
+#[test]
+fn an_unsent_retry_after_a_refusal_proves_its_job_was_not_created() {
+    let (endpoint, captured) =
+        capture_requests(vec![(429, error_body("rateLimitExceeded", "slow down"))]);
+    let runtime = new_runtime().unwrap();
+    let client = JobClient::new(
+        google_cloud_auth::credentials::Credentials::from(MintsOnce::default()),
+        Some(&endpoint),
+        crate::rest::client::rest_client("job client test").unwrap(),
+    )
+    .with_flat_delays(Duration::from_millis(1));
+
+    let failure = runtime
+        .block_on(client.insert(None, &request("unsent", Some("EU"), false), "copy"))
+        .unwrap_err();
+
+    assert_eq!(
+        failure.status,
+        Status::Unauthenticated,
+        "{}",
+        failure.message
+    );
+    assert!(has_job_verdict(&failure), "{}", failure.message);
+    captured.served(1);
+}
+
 /// A cancel that lands while the submission is still minting its token stops it before any POST,
 /// so the job it would have named is never confirmed: the cancel spends only its own attempts on
 /// the provisional identity and succeeds, instead of starting a second generation and reporting

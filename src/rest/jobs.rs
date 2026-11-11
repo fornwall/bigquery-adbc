@@ -486,10 +486,11 @@ impl JobClient {
             operation.register_provisional_job(&request.reference)?;
         }
         // A submission that stops with no attempt that may have created the job withdraws its
-        // identity rather than confirming it.
-        let start = RequestStart::default();
+        // identity rather than confirming it. Each attempt has its own start signal, so one that
+        // cannot connect after a refusal still proves nothing was created.
         let mut may_exist = false;
         for attempt in 1..=MAX_ATTEMPTS {
+            let start = RequestStart::default();
             let response = send(
                 operation,
                 &self.credentials,
