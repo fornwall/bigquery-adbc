@@ -1,7 +1,7 @@
 use adbc_core::error::Status;
 
 use super::*;
-use crate::ffi::abi::{ADBC_ERROR_INIT, AdbcDriver};
+use crate::ffi::abi::ADBC_ERROR_INIT;
 use crate::ffi::test_support::{c_string, error_message, null, release_error};
 
 fn export(out: &mut AdbcError, error: Error) {
@@ -43,8 +43,8 @@ fn error_v100() -> AdbcError {
         vendor_code: 0,
         sqlstate: [0; 5],
         release: None,
-        private_data: 0xf00d_usize as *mut c_void,
-        private_driver: 0x5eed_usize as *const AdbcDriver,
+        private_data: std::ptr::without_provenance_mut(0xf00d),
+        private_driver: std::ptr::without_provenance(0x5eed),
     }
 }
 
@@ -237,7 +237,7 @@ fn a_foreign_release_cannot_take_private_driver_with_it() {
         unsafe { std::ptr::write_bytes(error.cast::<u8>(), 0, size_of::<AdbcError>()) };
     }
 
-    let sentinel_driver = 0x5eed_usize as *const AdbcDriver;
+    let sentinel_driver = std::ptr::without_provenance(0x5eed);
     let mut out = AdbcError {
         release: Some(clearing_release),
         private_driver: sentinel_driver,
