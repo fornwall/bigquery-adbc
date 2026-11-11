@@ -533,8 +533,8 @@ fn accumulates_decimal_digits_across_chunk_boundaries() {
             "-{digits} nines"
         );
     }
-    // The same across the whole BIGNUMERIC width, where the chunking replaces four `i256`
-    // multiplies per digit with three for the entire value.
+    // The same across the whole BIGNUMERIC width, where the chunking replaces four 128-bit
+    // multiplies per digit with one `i256` multiply per eighteen digits.
     for digits in 1..=76 {
         let expected = (0..digits).fold(i256::ZERO, |value, _| {
             value.checked_mul(i256::from_i128(10)).unwrap() + i256::from_i128(9)

@@ -61,7 +61,7 @@ pub struct NormalizeFixture {
 }
 
 impl NormalizeFixture {
-    /// Creates a fixture without cloning its input batch for any timed iteration.
+    /// A `row_count`-row batch of `kind` columns and the schema it normalizes to.
     pub fn new(row_count: usize, kind: NormalizeKind, width: NormalizeWidth) -> Self {
         let column_count = match width {
             NormalizeWidth::Narrow => 2,

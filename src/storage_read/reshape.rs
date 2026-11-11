@@ -165,7 +165,7 @@ fn column_plan(source: &DataType, target: &DataType) -> Option<ColumnPlan> {
             Some(ColumnPlan::Struct(children, target_fields.clone()))
         }
         // Scale widening is exact if the extra digits fit the target precision. Query sessions
-        // currently report canonical decimal types; this also accepts stored-column parameters.
+        // report canonical decimal types; this also accepts a stored column's parameters.
         (
             DataType::Decimal128(source_precision, source_scale),
             DataType::Decimal128(target_precision, target_scale)

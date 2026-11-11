@@ -1,4 +1,4 @@
-//! Allocation-counted IPC fixtures, with scalar controls and nested list/struct columns.
+//! Storage API IPC fixtures: scalar columns, nested list/struct columns and booleans.
 
 use std::cell::RefCell;
 use std::sync::Arc;
