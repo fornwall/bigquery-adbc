@@ -13,11 +13,7 @@ def _vendor_version() -> str:
 
     with (Path(__file__).resolve().parents[3] / "Cargo.lock").open("rb") as lock:
         packages = tomllib.load(lock)["package"]
-    [version] = {
-        package["version"]
-        for package in packages
-        if package["name"] == "google-cloud-bigquery"
-    }
+    [version] = {package["version"] for package in packages if package["name"] == "google-cloud-bigquery"}
     return f"google-cloud-bigquery {version}"
 
 
@@ -66,9 +62,7 @@ class BigQueryQuirks(model.DriverQuirks):
     )
     setup = model.DriverSetup(
         database={
-            "uri": model.FromEnv(
-                "BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT", template="bigquery:///{}"
-            ),
+            "uri": model.FromEnv("BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT", template="bigquery:///{}"),
             "bigquery.dataset_id": model.FromEnv("ADBC_BIGQUERY_DATASET"),
         },
     )
@@ -77,9 +71,7 @@ class BigQueryQuirks(model.DriverQuirks):
     def queries_paths(self) -> tuple[Path]:
         return (Path(__file__).parent.parent / "queries" / "bigquery",)
 
-    def is_table_not_found(
-        self, table_name: str | None, error: Exception
-    ) -> bool:
+    def is_table_not_found(self, table_name: str | None, error: Exception) -> bool:
         del table_name
         return (
             isinstance(error, adbc_driver_manager.Error)
@@ -126,12 +118,9 @@ class BigQueryQuirks(model.DriverQuirks):
     @property
     def sample_ddl_constraints(self) -> list[str]:
         return [
-            "CREATE TABLE constraint_primary "
-            "(z INT64, a INT64, b STRING, PRIMARY KEY (a) NOT ENFORCED)",
-            "CREATE TABLE constraint_primary_multi "
-            "(z INT64, a INT64, b STRING, PRIMARY KEY (b, a) NOT ENFORCED)",
-            "CREATE TABLE constraint_primary_multi2 "
-            "(z INT64, a STRING, b INT64, PRIMARY KEY (a, b) NOT ENFORCED)",
+            "CREATE TABLE constraint_primary (z INT64, a INT64, b STRING, PRIMARY KEY (a) NOT ENFORCED)",
+            "CREATE TABLE constraint_primary_multi (z INT64, a INT64, b STRING, PRIMARY KEY (b, a) NOT ENFORCED)",
+            "CREATE TABLE constraint_primary_multi2 (z INT64, a STRING, b INT64, PRIMARY KEY (a, b) NOT ENFORCED)",
             "CREATE TABLE constraint_foreign "
             "(z INT64, a INT64, b INT64, FOREIGN KEY (b) "
             "REFERENCES constraint_primary(a) NOT ENFORCED)",

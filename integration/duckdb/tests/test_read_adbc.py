@@ -122,9 +122,7 @@ def test_timestamp_is_an_instant(duck: duckdb.DuckDBPyConnection, profile: str) 
     assert matches_utc_literal is True
 
 
-def test_bignumeric_is_wider_than_duckdb_can_represent(
-    duck: duckdb.DuckDBPyConnection, profile: str
-) -> None:
+def test_bignumeric_is_wider_than_duckdb_can_represent(duck: duckdb.DuckDBPyConnection, profile: str) -> None:
     """DuckDB supports only 128-bit DECIMAL, so Decimal256 fails binding before query execution."""
 
     with pytest.raises(duckdb.NotImplementedException) as failure:
@@ -174,10 +172,7 @@ def test_null_of_every_type(duck: duckdb.DuckDBPyConnection, profile: str) -> No
 
 
 def test_all_null_column(duck: duckdb.DuckDBPyConnection, profile: str) -> None:
-    query = (
-        "SELECT CAST(NULL AS STRING) AS label, x "
-        "FROM UNNEST(GENERATE_ARRAY(1, 500)) AS x"
-    )
+    query = "SELECT CAST(NULL AS STRING) AS label, x FROM UNNEST(GENERATE_ARRAY(1, 500)) AS x"
     assert _types(_scan(duck, profile, query)) == ["VARCHAR", "BIGINT"]
     assert _one_row(
         _scan(
@@ -226,8 +221,7 @@ def test_unicode_and_long_strings(duck: duckdb.DuckDBPyConnection, profile: str)
     relation = _scan(
         duck,
         profile,
-        f"SELECT {sql.string_literal(text)} AS text, "
-        f"REPEAT('ab', 25000) AS long_text",
+        f"SELECT {sql.string_literal(text)} AS text, REPEAT('ab', 25000) AS long_text",
     )
     assert _types(relation) == ["VARCHAR", "VARCHAR"]
     assert _one_row(relation) == (text, long_text)
@@ -258,17 +252,14 @@ def test_empty_result(duck: duckdb.DuckDBPyConnection, profile: str) -> None:
     assert relation.fetchall() == []
 
 
-def test_large_result_streams_every_row(
-    duck: duckdb.DuckDBPyConnection, profile: str
-) -> None:
+def test_large_result_streams_every_row(duck: duckdb.DuckDBPyConnection, profile: str) -> None:
     """A multi-batch result reaches DuckDB whole; the aggregates run in DuckDB."""
 
     total, checksum, distinct_remainders = _one_row(
         _scan(
             duck,
             profile,
-            "SELECT x, CAST(x AS FLOAT64) / 8 AS half "
-            f"FROM UNNEST(GENERATE_ARRAY(1, {LARGE_ROW_COUNT})) AS x",
+            f"SELECT x, CAST(x AS FLOAT64) / 8 AS half FROM UNNEST(GENERATE_ARRAY(1, {LARGE_ROW_COUNT})) AS x",
             columns=[
                 "count(*) AS total",
                 "sum(x) AS checksum",
@@ -281,9 +272,7 @@ def test_large_result_streams_every_row(
     assert distinct_remainders == 97
 
 
-def test_large_result_consumed_partially(
-    duck: duckdb.DuckDBPyConnection, profile: str
-) -> None:
+def test_large_result_consumed_partially(duck: duckdb.DuckDBPyConnection, profile: str) -> None:
     """`LIMIT 1` closes the statement and connection mid-result without hanging."""
 
     query = f"SELECT x FROM UNNEST(GENERATE_ARRAY(1, {LARGE_ROW_COUNT})) AS x ORDER BY x"
@@ -294,27 +283,17 @@ def test_two_scans_joined(duck: duckdb.DuckDBPyConnection, profile: str) -> None
     """Two `read_adbc()` scans in one query pull two streams at once."""
 
     left = sql.read_adbc(profile, "SELECT x FROM UNNEST(GENERATE_ARRAY(1, 10)) AS x")
-    right = sql.read_adbc(
-        profile, "SELECT x AS y, CAST(x AS STRING) AS label FROM UNNEST(GENERATE_ARRAY(5, 15)) AS x"
-    )
-    rows = duck.sql(
-        f"SELECT l.x, r.label FROM ({left}) AS l JOIN ({right}) AS r ON l.x = r.y "
-        "ORDER BY l.x"
-    ).fetchall()
+    right = sql.read_adbc(profile, "SELECT x AS y, CAST(x AS STRING) AS label FROM UNNEST(GENERATE_ARRAY(5, 15)) AS x")
+    rows = duck.sql(f"SELECT l.x, r.label FROM ({left}) AS l JOIN ({right}) AS r ON l.x = r.y ORDER BY l.x").fetchall()
     assert rows == [(value, str(value)) for value in range(5, 11)]
 
 
-def test_scan_joined_with_local_table(
-    duck: duckdb.DuckDBPyConnection, profile: str, sample_table: str
-) -> None:
+def test_scan_joined_with_local_table(duck: duckdb.DuckDBPyConnection, profile: str, sample_table: str) -> None:
     duck.execute("CREATE TABLE notes (id BIGINT, note VARCHAR)")
     duck.execute("INSERT INTO notes VALUES (1, 'first'), (2, 'second'), (3, 'absent')")
-    remote = sql.read_adbc(
-        profile, f"SELECT id, label FROM {sql.identifier(sample_table)}"
-    )
+    remote = sql.read_adbc(profile, f"SELECT id, label FROM {sql.identifier(sample_table)}")
     rows = duck.sql(
-        f"SELECT n.note, r.label FROM notes AS n JOIN ({remote}) AS r ON n.id = r.id "
-        "ORDER BY n.id"
+        f"SELECT n.note, r.label FROM notes AS n JOIN ({remote}) AS r ON n.id = r.id ORDER BY n.id"
     ).fetchall()
     assert rows == [("first", "one"), ("second", "two")]
 
@@ -327,9 +306,7 @@ def test_table_by_qualified_and_relative_name(
         profile,
         f"SELECT * FROM {sql.qualified(project, dataset, sample_table)} ORDER BY id",
     )
-    relative = _scan(
-        duck, profile, f"SELECT * FROM {sql.identifier(sample_table)} ORDER BY id"
-    )
+    relative = _scan(duck, profile, f"SELECT * FROM {sql.identifier(sample_table)} ORDER BY id")
     assert _types(qualified) == ["BIGINT", "VARCHAR", "STRUCT(weight BIGINT)[]"]
     assert _types(relative) == _types(qualified)
     expected = [(1, "one", [{"weight": 10}]), (2, "two", [])]
@@ -356,9 +333,7 @@ def test_information_schema_columns(
     ]
 
 
-def test_information_schema_schemata(
-    duck: duckdb.DuckDBPyConnection, profile: str, project: str, dataset: str
-) -> None:
+def test_information_schema_schemata(duck: duckdb.DuckDBPyConnection, profile: str, project: str, dataset: str) -> None:
     """sync_status is checked by type only because its value is outside the test's control."""
 
     query = (
@@ -373,7 +348,7 @@ def test_information_schema_schemata(
         "TIMESTAMP WITH TIME ZONE",
         "STRUCT(last_completion_time TIMESTAMP WITH TIME ZONE, "
         'error_time TIMESTAMP WITH TIME ZONE, "error" '
-        "STRUCT(reason VARCHAR, \"location\" VARCHAR, message VARCHAR))",
+        'STRUCT(reason VARCHAR, "location" VARCHAR, message VARCHAR))',
     ]
     *identity, creation_time = _one_row(
         _scan(
@@ -390,9 +365,7 @@ def test_information_schema_schemata(
     assert creation_time < now + datetime.timedelta(minutes=5)
 
 
-def test_invalid_syntax_fails_at_bind_time(
-    duck: duckdb.DuckDBPyConnection, profile: str
-) -> None:
+def test_invalid_syntax_fails_at_bind_time(duck: duckdb.DuckDBPyConnection, profile: str) -> None:
     """BigQuery rejects `AdbcStatementExecuteSchema`, so a parse error is a binder error."""
 
     with pytest.raises(duckdb.BinderException) as failure:
@@ -402,9 +375,7 @@ def test_invalid_syntax_fails_at_bind_time(
     assert "invalidQuery" in message
 
 
-def test_missing_table_fails_at_bind_time(
-    duck: duckdb.DuckDBPyConnection, profile: str, dataset: str
-) -> None:
+def test_missing_table_fails_at_bind_time(duck: duckdb.DuckDBPyConnection, profile: str, dataset: str) -> None:
     with pytest.raises(duckdb.BinderException) as failure:
         _scan(duck, profile, "SELECT * FROM no_such_table_at_all")
     message = str(failure.value)
@@ -412,9 +383,7 @@ def test_missing_table_fails_at_bind_time(
     assert f"{dataset}.no_such_table_at_all" in message
 
 
-def test_runtime_failure_surfaces_while_scanning(
-    duck: duckdb.DuckDBPyConnection, profile: str
-) -> None:
+def test_runtime_failure_surfaces_while_scanning(duck: duckdb.DuckDBPyConnection, profile: str) -> None:
     relation = _scan(duck, profile, "SELECT 1 / 0 AS value")
     assert _types(relation) == ["DOUBLE"]
     with pytest.raises(duckdb.IOException) as failure:

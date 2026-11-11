@@ -10,16 +10,12 @@ from adbc_drivers_validation import model
 
 from . import bigquery
 
-_UPSTREAM_TEST_GET_STATISTICS = connection_tests.TestConnection.__dict__.get(
-    "test_get_statistics"
-)
+_UPSTREAM_TEST_GET_STATISTICS = connection_tests.TestConnection.__dict__.get("test_get_statistics")
 assert _UPSTREAM_TEST_GET_STATISTICS is not None, (
     "pinned Driver Foundry renamed or removed TestConnection.test_get_statistics; "
     "review the UP-38 approximate row-count workaround"
 )
-assert "assert row_count_value >= 3" in inspect.getsource(
-    _UPSTREAM_TEST_GET_STATISTICS
-), (
+assert "assert row_count_value >= 3" in inspect.getsource(_UPSTREAM_TEST_GET_STATISTICS), (
     "pinned Driver Foundry changed its approximate row-count assertion; "
     "review and remove the UP-38 workaround if it is fixed"
 )
@@ -78,11 +74,7 @@ class TestConnection(connection_tests.TestConnection):
 
         assert table_found, f"Table {table_name} not found in statistics results"
 
-        all_stats = table_stats + [
-            statistic
-            for statistics in column_stats.values()
-            for statistic in statistics
-        ]
+        all_stats = table_stats + [statistic for statistics in column_stats.values() for statistic in statistics]
         for statistic in all_stats:
             key = statistic["statistic_key"]
             assert key >= 0, f"Invalid negative statistic key: {key}"
@@ -91,11 +83,7 @@ class TestConnection(connection_tests.TestConnection):
         assert names.schema.equals(_GET_STATISTIC_NAMES_SCHEMA), (
             "GetStatisticNames returned schema does not match ADBC specification"
         )
-        vendor_keys = {
-            statistic["statistic_key"]
-            for statistic in all_stats
-            if statistic["statistic_key"] >= 1024
-        }
+        vendor_keys = {statistic["statistic_key"] for statistic in all_stats if statistic["statistic_key"] >= 1024}
         missing_keys = vendor_keys - set(names.column("statistic_key").to_pylist())
         assert not missing_keys, (
             "GetStatistics returned implementation-specific statistic key(s) not "
@@ -113,11 +101,7 @@ class TestConnection(connection_tests.TestConnection):
 
         if "name" in column_stats:
             null_count_stat = next(
-                (
-                    statistic
-                    for statistic in column_stats["name"]
-                    if statistic["statistic_key"] == 5
-                ),
+                (statistic for statistic in column_stats["name"] if statistic["statistic_key"] == 5),
                 None,
             )
             if null_count_stat is not None:

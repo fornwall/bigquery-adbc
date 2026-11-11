@@ -31,9 +31,7 @@ def _create_outside_attachment(
 ) -> str:
     """Clear the attachment cache so it sees the table created outside it."""
 
-    bigquery.execute(
-        f"CREATE TABLE {sql.qualified(project, dataset, table)} ({columns})"
-    )
+    bigquery.execute(f"CREATE TABLE {sql.qualified(project, dataset, table)} ({columns})")
     attached.execute("CALL adbc_clear_cache()")
     return sql.attached(ATTACHED_CATALOG, dataset, table)
 
@@ -46,18 +44,16 @@ def test_insert_values_into_an_existing_table(
     dataset: str,
 ) -> None:
     table = name("target")
-    target = _create_outside_attachment(
-        bigquery, attached, project, dataset, table, "i INT64, s STRING"
-    )
+    target = _create_outside_attachment(bigquery, attached, project, dataset, table, "i INT64, s STRING")
 
-    inserted = attached.execute(
-        f"INSERT INTO {target} VALUES (1, 'one'), (2, 'two'), (3, NULL)"
-    ).fetchall()
+    inserted = attached.execute(f"INSERT INTO {target} VALUES (1, 'one'), (2, 'two'), (3, NULL)").fetchall()
 
     assert inserted == [(3,)]
-    assert bigquery.query(
-        f"SELECT i, s FROM {sql.qualified(project, dataset, table)} ORDER BY i"
-    ) == [(1, "one"), (2, "two"), (3, None)]
+    assert bigquery.query(f"SELECT i, s FROM {sql.qualified(project, dataset, table)} ORDER BY i") == [
+        (1, "one"),
+        (2, "two"),
+        (3, None),
+    ]
 
 
 def test_insert_select_from_a_local_duckdb_table(
@@ -73,14 +69,14 @@ def test_insert_select_from_a_local_duckdb_table(
     attached.execute("INSERT INTO local_rows VALUES (1, 'a'), (2, 'b'), (3, NULL)")
     attached.execute(f"CREATE TABLE {target} (i BIGINT, s VARCHAR)")
 
-    inserted = attached.execute(
-        f"INSERT INTO {target} SELECT i, s FROM local_rows"
-    ).fetchall()
+    inserted = attached.execute(f"INSERT INTO {target} SELECT i, s FROM local_rows").fetchall()
 
     assert inserted == [(3,)]
-    assert bigquery.query(
-        f"SELECT i, s FROM {sql.qualified(project, dataset, table)} ORDER BY i"
-    ) == [(1, "a"), (2, "b"), (3, None)]
+    assert bigquery.query(f"SELECT i, s FROM {sql.qualified(project, dataset, table)} ORDER BY i") == [
+        (1, "a"),
+        (2, "b"),
+        (3, None),
+    ]
 
 
 def test_a_second_insert_appends_rather_than_replaces(
@@ -97,9 +93,7 @@ def test_a_second_insert_appends_rather_than_replaces(
     assert attached.execute(f"INSERT INTO {target} VALUES (1), (2)").fetchall() == [(2,)]
     assert attached.execute(f"INSERT INTO {target} VALUES (3)").fetchall() == [(1,)]
 
-    assert bigquery.query(
-        f"SELECT i FROM {sql.qualified(project, dataset, table)} ORDER BY i"
-    ) == [(1,), (2,), (3,)]
+    assert bigquery.query(f"SELECT i FROM {sql.qualified(project, dataset, table)} ORDER BY i") == [(1,), (2,), (3,)]
 
 
 def test_ingest_type_fidelity(
@@ -238,8 +232,7 @@ def test_ingest_nested_list_and_struct(
         ("nested", "STRUCT<`outer` STRUCT<deep STRING>>"),
     ]
     assert bigquery.query(
-        f"SELECT k, numbers, record, records, nested "
-        f"FROM {sql.qualified(project, dataset, table)} ORDER BY k"
+        f"SELECT k, numbers, record, records, nested FROM {sql.qualified(project, dataset, table)} ORDER BY k"
     ) == [
         (1, [10, 20], {"a": 1, "b": "x"}, [{"n": 1}], {"outer": {"deep": "y"}}),
         (2, [], {"a": None, "b": None}, [], {"outer": None}),
@@ -265,16 +258,12 @@ def test_ingest_unicode_and_awkward_strings(
         "x" * 100_000,
         "",
     ]
-    rows = ", ".join(
-        f"({index}, {sql.duckdb_literal(value)})" for index, value in enumerate(values)
-    )
+    rows = ", ".join(f"({index}, {sql.duckdb_literal(value)})" for index, value in enumerate(values))
 
-    assert attached.execute(f"INSERT INTO {target} VALUES {rows}").fetchall() == [
-        (len(values),)
-    ]
-    assert bigquery.query(
-        f"SELECT k, s FROM {sql.qualified(project, dataset, table)} ORDER BY k"
-    ) == list(enumerate(values))
+    assert attached.execute(f"INSERT INTO {target} VALUES {rows}").fetchall() == [(len(values),)]
+    assert bigquery.query(f"SELECT k, s FROM {sql.qualified(project, dataset, table)} ORDER BY k") == list(
+        enumerate(values)
+    )
 
 
 def test_multi_batch_insert(
@@ -292,15 +281,12 @@ def test_multi_batch_insert(
     target = sql.attached(ATTACHED_CATALOG, dataset, table)
     attached.execute(f"CREATE TABLE {target} (i BIGINT, s VARCHAR)")
 
-    inserted = attached.execute(
-        f"INSERT INTO {target} SELECT i, 'row ' || i FROM range({rows}) AS t(i)"
-    ).fetchall()
+    inserted = attached.execute(f"INSERT INTO {target} SELECT i, 'row ' || i FROM range({rows}) AS t(i)").fetchall()
 
     assert inserted == [(rows,)]
     # The aggregates catch a dropped or duplicated row without reading 20k rows back.
     assert bigquery.query(
-        f"SELECT COUNT(*), SUM(i), COUNT(DISTINCT s) "
-        f"FROM {sql.qualified(project, dataset, table)}"
+        f"SELECT COUNT(*), SUM(i), COUNT(DISTINCT s) FROM {sql.qualified(project, dataset, table)}"
     ) == [(rows, rows * (rows - 1) // 2, rows)]
 
 
@@ -348,13 +334,9 @@ def test_ctas_creates_the_table_and_fills_it(
     table = name("ctas")
     target = sql.attached(ATTACHED_CATALOG, dataset, table)
     attached.execute("CREATE TABLE local_rows (i BIGINT, s VARCHAR, d DATE)")
-    attached.execute(
-        "INSERT INTO local_rows VALUES (1, 'a', DATE '2024-01-01'), (2, 'b', NULL)"
-    )
+    attached.execute("INSERT INTO local_rows VALUES (1, 'a', DATE '2024-01-01'), (2, 'b', NULL)")
 
-    created = attached.execute(
-        f"CREATE TABLE {target} AS SELECT i, s, d FROM local_rows"
-    ).fetchall()
+    created = attached.execute(f"CREATE TABLE {target} AS SELECT i, s, d FROM local_rows").fetchall()
 
     assert created == [(2,)]
     assert bigquery.columns(project, dataset, table) == [
@@ -362,9 +344,10 @@ def test_ctas_creates_the_table_and_fills_it(
         ("s", "STRING"),
         ("d", "DATE"),
     ]
-    assert bigquery.query(
-        f"SELECT i, s, d FROM {sql.qualified(project, dataset, table)} ORDER BY i"
-    ) == [(1, "a", datetime.date(2024, 1, 1)), (2, "b", None)]
+    assert bigquery.query(f"SELECT i, s, d FROM {sql.qualified(project, dataset, table)} ORDER BY i") == [
+        (1, "a", datetime.date(2024, 1, 1)),
+        (2, "b", None),
+    ]
 
 
 def test_ctas_with_zero_rows_still_creates_the_table(
@@ -379,19 +362,14 @@ def test_ctas_with_zero_rows_still_creates_the_table(
     table = name("empty")
     target = sql.attached(ATTACHED_CATALOG, dataset, table)
 
-    created = attached.execute(
-        f"CREATE TABLE {target} AS SELECT 1::BIGINT AS i, 'x' AS s WHERE FALSE"
-    ).fetchall()
+    created = attached.execute(f"CREATE TABLE {target} AS SELECT 1::BIGINT AS i, 'x' AS s WHERE FALSE").fetchall()
 
     assert created == [(0,)]
     assert bigquery.columns(project, dataset, table) == [
         ("i", "INT64"),
         ("s", "STRING"),
     ]
-    assert (
-        bigquery.scalar(f"SELECT COUNT(*) FROM {sql.qualified(project, dataset, table)}")
-        == 0
-    )
+    assert bigquery.scalar(f"SELECT COUNT(*) FROM {sql.qualified(project, dataset, table)}") == 0
 
 
 def test_create_table_with_an_explicit_column_list(
@@ -434,18 +412,17 @@ def test_copy_and_read_csv_both_reach_the_ingest_path(
     csv.write_text("i,s\n1,a\n2,b\n", encoding="utf-8")
     literal = sql.duckdb_literal(str(csv))
 
-    copied = attached.execute(
-        f"COPY {target} FROM {literal} (FORMAT csv, HEADER)"
-    ).fetchall()
-    scanned = attached.execute(
-        f"INSERT INTO {target} SELECT i, s FROM read_csv({literal})"
-    ).fetchall()
+    copied = attached.execute(f"COPY {target} FROM {literal} (FORMAT csv, HEADER)").fetchall()
+    scanned = attached.execute(f"INSERT INTO {target} SELECT i, s FROM read_csv({literal})").fetchall()
 
     assert copied == [(2,)]
     assert scanned == [(2,)]
-    assert bigquery.query(
-        f"SELECT i, s FROM {sql.qualified(project, dataset, table)} ORDER BY i, s"
-    ) == [(1, "a"), (1, "a"), (2, "b"), (2, "b")]
+    assert bigquery.query(f"SELECT i, s FROM {sql.qualified(project, dataset, table)} ORDER BY i, s") == [
+        (1, "a"),
+        (1, "a"),
+        (2, "b"),
+        (2, "b"),
+    ]
 
 
 def test_write_into_a_dataset_other_than_the_profile_default(
@@ -463,9 +440,7 @@ def test_write_into_a_dataset_other_than_the_profile_default(
     created = attached.execute(f"CREATE TABLE {target} AS SELECT 1::BIGINT AS i").fetchall()
 
     assert created == [(1,)]
-    assert bigquery.query(
-        f"SELECT i FROM {sql.qualified(project, secondary_dataset, table)}"
-    ) == [(1,)]
+    assert bigquery.query(f"SELECT i FROM {sql.qualified(project, secondary_dataset, table)}") == [(1,)]
 
 
 def test_rollback_does_not_undo_a_remote_write(
@@ -499,9 +474,7 @@ def test_driver_rejects_an_unsupported_arrow_type(
 
     with pytest.raises(
         duckdb.IOException,
-        match=re.escape(
-            'Arrow ingest field "u" has type UInt64, but BigQuery has no unsigned integer type'
-        ),
+        match=re.escape('Arrow ingest field "u" has type UInt64, but BigQuery has no unsigned integer type'),
     ):
         attached.execute(f"CREATE TABLE {target} AS SELECT 1::UBIGINT AS u")
 
@@ -532,22 +505,14 @@ def test_append_reaches_a_table_with_a_required_column(
     """DuckDB binds nullable fields; append must accept them unless an actual null violates REQUIRED."""
 
     table = name("required")
-    target = _create_outside_attachment(
-        bigquery, attached, project, dataset, table, "i INT64 NOT NULL, s STRING"
-    )
+    target = _create_outside_attachment(bigquery, attached, project, dataset, table, "i INT64 NOT NULL, s STRING")
 
     attached.execute(f"INSERT INTO {target} VALUES (1, 'x')")
-    assert bigquery.query(
-        f"SELECT i, s FROM {sql.qualified(project, dataset, table)}"
-    ) == [(1, "x")]
+    assert bigquery.query(f"SELECT i, s FROM {sql.qualified(project, dataset, table)}") == [(1, "x")]
 
-    with pytest.raises(
-        duckdb.IOException, match=re.escape("Field 'i' is required but has null value")
-    ):
+    with pytest.raises(duckdb.IOException, match=re.escape("Field 'i' is required but has null value")):
         attached.execute(f"INSERT INTO {target} VALUES (NULL, 'y')")
-    assert bigquery.query(
-        f"SELECT i, s FROM {sql.qualified(project, dataset, table)}"
-    ) == [(1, "x")]
+    assert bigquery.query(f"SELECT i, s FROM {sql.qualified(project, dataset, table)}") == [(1, "x")]
 
 
 def test_driver_rejects_an_append_whose_schema_does_not_match(
@@ -560,22 +525,14 @@ def test_driver_rejects_an_append_whose_schema_does_not_match(
     """Replace the table behind the attachment so its cached schema shapes an incompatible stream."""
 
     table = name("mismatch")
-    target = _create_outside_attachment(
-        bigquery, attached, project, dataset, table, "i INT64, s STRING"
-    )
+    target = _create_outside_attachment(bigquery, attached, project, dataset, table, "i INT64, s STRING")
     # Cache the columns in the attachment, then replace the table behind it.
     attached.execute(f"SELECT * FROM {target}").fetchall()
-    bigquery.execute(
-        f"CREATE OR REPLACE TABLE {sql.qualified(project, dataset, table)} "
-        "(i INT64, s TIMESTAMP)"
-    )
+    bigquery.execute(f"CREATE OR REPLACE TABLE {sql.qualified(project, dataset, table)} (i INT64, s TIMESTAMP)")
 
     with pytest.raises(
         duckdb.IOException,
-        match=re.escape(
-            'column "s" is TIMESTAMP NULLABLE in the table but STRING NULLABLE '
-            "in the bound data"
-        ),
+        match=re.escape('column "s" is TIMESTAMP NULLABLE in the table but STRING NULLABLE in the bound data'),
     ):
         attached.execute(f"INSERT INTO {target} VALUES (1, 'one')")
 
@@ -590,25 +547,19 @@ def test_duckdb_rejects_a_write_before_the_driver_sees_it(
     """The cached schema lets DuckDB reject these before contacting BigQuery."""
 
     table = name("guarded")
-    target = _create_outside_attachment(
-        bigquery, attached, project, dataset, table, "i INT64"
-    )
+    target = _create_outside_attachment(bigquery, attached, project, dataset, table, "i INT64")
     missing = sql.attached(ATTACHED_CATALOG, dataset, name("absent"))
 
     with pytest.raises(duckdb.BinderException, match='does not have a column with name "nope"'):
         attached.execute(f"INSERT INTO {target} (nope) VALUES (1)")
-    with pytest.raises(
-        duckdb.ConversionException, match=re.escape("Could not convert string 'abc' to INT64")
-    ):
+    with pytest.raises(duckdb.ConversionException, match=re.escape("Could not convert string 'abc' to INT64")):
         attached.execute(f"INSERT INTO {target} VALUES ('abc')")
     # Name suggestions resolve tables across the project through remote queries.
     attached.execute("SET catalog_error_max_schemas = 0")
     with pytest.raises(duckdb.CatalogException, match="does not exist"):
         attached.execute(f"INSERT INTO {missing} VALUES (1)")
 
-    assert (
-        bigquery.scalar(f"SELECT COUNT(*) FROM {sql.qualified(project, dataset, table)}") == 0
-    )
+    assert bigquery.scalar(f"SELECT COUNT(*) FROM {sql.qualified(project, dataset, table)}") == 0
 
 
 def test_write_statements_the_extension_does_not_implement(
@@ -633,8 +584,7 @@ def test_write_statements_the_extension_does_not_implement(
         match="CREATE TABLE commands not yet supported with IF NOT EXISTS or REPLACE",
     ):
         attached.execute(
-            f"CREATE TABLE IF NOT EXISTS "
-            f"{sql.attached(ATTACHED_CATALOG, dataset, name('never'))} AS SELECT 1 AS i"
+            f"CREATE TABLE IF NOT EXISTS {sql.attached(ATTACHED_CATALOG, dataset, name('never'))} AS SELECT 1 AS i"
         )
     with pytest.raises(duckdb.BinderException, match="Can only delete from base table"):
         attached.execute(f"DELETE FROM {target}")
@@ -644,6 +594,4 @@ def test_write_statements_the_extension_does_not_implement(
         attached.execute(f"DROP TABLE {target}")
 
     session.execute(f"DELETE FROM {sql.qualified(project, dataset, table)} WHERE i = 1")
-    assert bigquery.query(
-        f"SELECT i FROM {sql.qualified(project, dataset, table)}"
-    ) == [(2,)]
+    assert bigquery.query(f"SELECT i FROM {sql.qualified(project, dataset, table)}") == [(2,)]

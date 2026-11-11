@@ -108,9 +108,7 @@ def _clarify_known_skip_reasons(items: list[pytest.Item]) -> set[str]:
     return clarified
 
 
-def pytest_collection_modifyitems(
-    session: pytest.Session, config: pytest.Config, items: list[pytest.Item]
-) -> None:
+def pytest_collection_modifyitems(session: pytest.Session, config: pytest.Config, items: list[pytest.Item]) -> None:
     global _guard_enabled
 
     adbc_drivers_validation.tests.conftest.pytest_collection_modifyitems(session, config, items)

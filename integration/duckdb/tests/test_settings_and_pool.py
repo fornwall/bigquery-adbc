@@ -107,15 +107,12 @@ def test_a_pool_of_one_serves_several_scans_in_one_statement(
         right_table = sql.attached(ATTACHED_CATALOG, dataset, right)
 
         joined = connection.execute(
-            f"SELECT COUNT(*), SUM(x.i) FROM {left_table} x "
-            f"JOIN {right_table} y ON x.i = y.i"
+            f"SELECT COUNT(*), SUM(x.i) FROM {left_table} x JOIN {right_table} y ON x.i = y.i"
         ).fetchall()
         assert joined == [(5, 15)]
 
         unioned = connection.execute(
-            "SELECT COUNT(*), SUM(i) FROM ("
-            f"SELECT i FROM {left_table} UNION ALL SELECT i FROM {right_table}"
-            ")"
+            f"SELECT COUNT(*), SUM(i) FROM (SELECT i FROM {left_table} UNION ALL SELECT i FROM {right_table})"
         ).fetchall()
         assert unioned == [(10, 30)]
 
@@ -137,23 +134,16 @@ def test_a_larger_pool_scans_several_tables_across_worker_threads(
         connection.execute("SET adbc_connection_pool_size = 8")
         connection.execute(sql.attach(profile, ATTACHED_CATALOG))
         branches = " UNION ALL ".join(
-            f"SELECT i FROM {sql.attached(ATTACHED_CATALOG, dataset, table)}"
-            for table in tables
+            f"SELECT i FROM {sql.attached(ATTACHED_CATALOG, dataset, table)}" for table in tables
         )
         # Rows: 1+2+3+4. Sum: 1 + (1+2) + (1+2+3) + (1+2+3+4).
-        assert connection.execute(
-            f"SELECT COUNT(*), SUM(i) FROM ({branches})"
-        ).fetchall() == [(10, 20)]
+        assert connection.execute(f"SELECT COUNT(*), SUM(i) FROM ({branches})").fetchall() == [(10, 20)]
 
 
-def test_many_read_adbc_calls_in_one_statement(
-    duck: duckdb.DuckDBPyConnection, profile: str
-) -> None:
+def test_many_read_adbc_calls_in_one_statement(duck: duckdb.DuckDBPyConnection, profile: str) -> None:
     """`read_adbc()` bypasses the pool, so six scans initialize six databases."""
 
-    branches = " UNION ALL ".join(
-        f"({sql.read_adbc(profile, f'SELECT {index} AS i')})" for index in range(1, 7)
-    )
+    branches = " UNION ALL ".join(f"({sql.read_adbc(profile, f'SELECT {index} AS i')})" for index in range(1, 7))
     assert duck.execute(f"SELECT COUNT(*), SUM(i) FROM ({branches})").fetchall() == [(6, 21)]
 
 
@@ -162,9 +152,7 @@ def test_parallel_duckdb_connections_share_one_profile(profile: str) -> None:
 
     def run(index: int) -> list[tuple]:
         with closing(extension.connect()) as connection:
-            return connection.execute(
-                sql.read_adbc(profile, f"SELECT {index} AS i")
-            ).fetchall()
+            return connection.execute(sql.read_adbc(profile, f"SELECT {index} AS i")).fetchall()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
         results = list(pool.map(run, range(6)))
@@ -183,9 +171,7 @@ def test_a_read_and_a_write_run_concurrently_on_one_dataset(
     source = name("source")
     destination = name("destination")
     _counted_table(bigquery, project, dataset, source, 10)
-    bigquery.execute(
-        f"CREATE TABLE {sql.qualified(project, dataset, destination)} (i BIGINT)"
-    )
+    bigquery.execute(f"CREATE TABLE {sql.qualified(project, dataset, destination)} (i BIGINT)")
 
     def read() -> list[tuple]:
         with closing(extension.connect()) as connection:
@@ -200,8 +186,7 @@ def test_a_read_and_a_write_run_concurrently_on_one_dataset(
         with closing(extension.connect()) as connection:
             connection.execute(sql.attach(profile, ATTACHED_CATALOG))
             return connection.execute(
-                f"INSERT INTO {sql.attached(ATTACHED_CATALOG, dataset, destination)} "
-                "SELECT i FROM range(1, 6) t(i)"
+                f"INSERT INTO {sql.attached(ATTACHED_CATALOG, dataset, destination)} SELECT i FROM range(1, 6) t(i)"
             ).fetchall()
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
@@ -210,9 +195,7 @@ def test_a_read_and_a_write_run_concurrently_on_one_dataset(
         assert reader.result() == [(55,)]
         assert writer.result() == [(5,)]
 
-    assert bigquery.query(
-        f"SELECT COUNT(*), SUM(i) FROM {sql.qualified(project, dataset, destination)}"
-    ) == [(5, 15)]
+    assert bigquery.query(f"SELECT COUNT(*), SUM(i) FROM {sql.qualified(project, dataset, destination)}") == [(5, 15)]
 
 
 def test_mixing_a_read_and_a_write_needs_the_setting(
@@ -228,30 +211,21 @@ def test_mixing_a_read_and_a_write_needs_the_setting(
     source = name("source")
     destination = name("destination")
     _counted_table(bigquery, project, dataset, source, 4)
-    bigquery.execute(
-        f"CREATE TABLE {sql.qualified(project, dataset, destination)} (i INT64)"
-    )
+    bigquery.execute(f"CREATE TABLE {sql.qualified(project, dataset, destination)} (i INT64)")
 
     duck.execute(sql.attach(profile, ATTACHED_CATALOG))
-    statement = (
-        f"INSERT INTO {sql.attached(ATTACHED_CATALOG, dataset, destination)} "
-        + sql.read_adbc(profile, f"SELECT i FROM {sql.qualified(project, dataset, source)}")
+    statement = f"INSERT INTO {sql.attached(ATTACHED_CATALOG, dataset, destination)} " + sql.read_adbc(
+        profile, f"SELECT i FROM {sql.qualified(project, dataset, source)}"
     )
 
-    with pytest.raises(
-        duckdb.NotImplementedException, match="mixes ADBC reads and writes"
-    ):
+    with pytest.raises(duckdb.NotImplementedException, match="mixes ADBC reads and writes"):
         duck.execute(statement)
     # The refusal is a plan-time check, so nothing reached BigQuery.
-    assert bigquery.query(
-        f"SELECT COUNT(*) FROM {sql.qualified(project, dataset, destination)}"
-    ) == [(0,)]
+    assert bigquery.query(f"SELECT COUNT(*) FROM {sql.qualified(project, dataset, destination)}") == [(0,)]
 
     duck.execute("SET adbc_mix_reads_writes = true")
     assert duck.execute(statement).fetchall() == [(4,)]
-    assert bigquery.query(
-        f"SELECT COUNT(*), SUM(i) FROM {sql.qualified(project, dataset, destination)}"
-    ) == [(4, 10)]
+    assert bigquery.query(f"SELECT COUNT(*), SUM(i) FROM {sql.qualified(project, dataset, destination)}") == [(4, 10)]
 
 
 def test_settings_do_not_leak_between_duckdb_connections() -> None:
