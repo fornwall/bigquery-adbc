@@ -1058,13 +1058,6 @@ struct Unlocated {
 }
 
 impl Unlocated {
-    fn unknown(failure: adbc_core::error::Error) -> Self {
-        Self {
-            failure,
-            job_may_exist: true,
-        }
-    }
-
     fn into_failure(self) -> adbc_core::error::Error {
         if self.job_may_exist {
             self.failure
@@ -1075,7 +1068,8 @@ impl Unlocated {
 }
 
 /// The job's identity with its location, and the job resource that named it.
-type Located = std::result::Result<(JobReference, bytes::Bytes), Unlocated>;
+type Found = (JobReference, bytes::Bytes);
+type Located = std::result::Result<Found, Unlocated>;
 
 impl InferredSubmission {
     /// Submits the job for a caller waiting under its operation.
@@ -1158,14 +1152,12 @@ impl InferredSubmission {
                     let _ = confirm_submission(self.operation.as_ref(), &located);
                     // The job exists there, so one that never appears there is still the
                     // original submission's failure.
-                    return match self
+                    return self
                         .client
                         .reconcile_submission(None, &located, &self.what, Some(failure))
                         .await
-                    {
-                        Ok(body) => found(&located, body),
-                        Err(failure) => Err(self.unrecovered(failure, &located)),
-                    };
+                        .and_then(|body| found(&located, body))
+                        .map_err(|failure| self.unrecovered(failure, &located));
                 }
                 answer => match classify_submission(answer, &error_context) {
                     Ok(body) => {
@@ -1232,7 +1224,10 @@ impl InferredSubmission {
             &self.error_context(),
             &format!("failed to {}", self.send_context()),
         );
-        Unlocated::unknown(may_still_run(failure, reference, true))
+        Unlocated {
+            failure: may_still_run(failure, reference, true),
+            job_may_exist: true,
+        }
     }
 
     /// How a submission attempt is named in its transport failures. See [`JobClient::insert`].
@@ -1247,20 +1242,10 @@ impl InferredSubmission {
 
     /// Steps 2–4: the job with its location and resource, `None` if no step found it, or the
     /// failure that ended the search.
-    async fn search(&self) -> Result<Option<(JobReference, bytes::Bytes)>> {
-        let fetched = |candidate: &JobReference, body| {
-            found(candidate, body)
-                .map(Some)
-                .map_err(|unlocated| unlocated.failure)
-        };
-        match self
-            .client
-            .reconcile_submission(None, &self.reference, &self.what, None)
-            .await
-        {
-            Ok(body) => return fetched(&self.reference, body),
-            Err(failure) if failure.status == Status::NotFound => {}
-            Err(failure) => return Err(failure),
+    async fn search(&self) -> Result<Option<Found>> {
+        let job = self.fetch(&self.reference).await?;
+        if job.is_some() {
+            return Ok(job);
         }
         if let Some(locations) = &self.client.dataset_locations {
             let mut searched = Vec::with_capacity(self.datasets.len());
@@ -1293,21 +1278,30 @@ impl InferredSubmission {
                     self.reference.job_id.clone(),
                 );
                 searched.push(location);
-                match self
-                    .client
-                    .reconcile_submission(None, &candidate, &self.what, None)
-                    .await
-                {
-                    Ok(body) => return fetched(&candidate, body),
-                    Err(failure) if failure.status == Status::NotFound => {}
-                    Err(failure) => return Err(failure),
+                let job = self.fetch(&candidate).await?;
+                if job.is_some() {
+                    return Ok(job);
                 }
             }
         }
         self.locate_by_listing().await
     }
 
-    async fn locate_by_listing(&self) -> Result<Option<(JobReference, bytes::Bytes)>> {
+    /// `jobs.get` of `candidate`: the job with the location it names, or `None` if it is not
+    /// there.
+    async fn fetch(&self, candidate: &JobReference) -> Result<Option<Found>> {
+        match self
+            .client
+            .reconcile_submission(None, candidate, &self.what, None)
+            .await
+        {
+            Ok(body) => found(candidate, body).map(Some),
+            Err(failure) if failure.status == Status::NotFound => Ok(None),
+            Err(failure) => Err(failure),
+        }
+    }
+
+    async fn locate_by_listing(&self) -> Result<Option<Found>> {
         let mut reference = self.reference.clone();
         tokio::time::timeout(JOB_SEARCH_TIMEOUT, self.search_recent_jobs(&mut reference))
             .await
@@ -1325,10 +1319,7 @@ impl InferredSubmission {
 
     /// Listing needs `bigquery.jobs.list` but no location. Keep the search independent of local
     /// cancellation: finding the reference lets us cancel remotely.
-    async fn search_recent_jobs(
-        &self,
-        resolved: &mut JobReference,
-    ) -> Result<Option<(JobReference, bytes::Bytes)>> {
+    async fn search_recent_jobs(&self, resolved: &mut JobReference) -> Result<Option<Found>> {
         let earliest = self
             .submitted_at
             .duration_since(UNIX_EPOCH)
@@ -1389,9 +1380,7 @@ impl InferredSubmission {
                         .client
                         .reconcile_submission(None, resolved, &self.what, None)
                         .await?;
-                    return found(resolved, body)
-                        .map(Some)
-                        .map_err(|unlocated| unlocated.failure);
+                    return found(resolved, body).map(Some);
                 }
                 page_token = page.next_page_token;
                 if page_token.is_empty() {
@@ -1430,10 +1419,9 @@ struct NamedJob {
 const ACCEPTED: &str = "the BigQuery jobs.insert response";
 
 /// `candidate`, which a fetched job resource `body` describes, with the location it names.
-fn found(candidate: &JobReference, body: bytes::Bytes) -> Located {
-    located_by(candidate, &body, "the BigQuery jobs.get response")
-        .map(|located| (located, body))
-        .map_err(Unlocated::unknown)
+fn found(candidate: &JobReference, body: bytes::Bytes) -> Result<Found> {
+    let located = located_by(candidate, &body, "the BigQuery jobs.get response")?;
+    Ok((located, body))
 }
 
 /// The identity `body`, a job resource for `requested`, gives the job, which must name its

@@ -268,7 +268,8 @@ fn a_conflict_names_where_a_job_without_a_location_runs() {
 }
 
 /// A job a 409 places that then cannot be fetched there still exists, so the failure names it,
-/// with its console link, as one that may run, whether the fetch failed or never saw it.
+/// with its console link, as one that may run, whether the fetch failed, never saw it, or got
+/// another job.
 #[test]
 fn a_conflict_whose_job_cannot_be_fetched_names_the_job_that_may_run() {
     let conflict = (
@@ -280,21 +281,28 @@ fn a_conflict_whose_job_cannot_be_fetched_names_the_job_that_may_run() {
     );
     for (fetched, lead, status) in [
         (
-            (503, error_body("backendError", "fetch failed")),
+            vec![(503, error_body("backendError", "fetch failed")); MAX_RECONCILIATION_ATTEMPTS],
             "failed to reconcile the submission of BigQuery query job \
              billing/project:asia-northeast1.job-f: backendError: fetch failed (HTTP 503)",
             Status::IO,
         ),
         // The 409 is no rejection: the job exists, and its outcome is unknown.
         (
-            (404, error_body("notFound", "Not found: Job")),
+            invisible(MAX_RECONCILIATION_ATTEMPTS),
             "failed to submit the BigQuery query job billing/project:job-f: duplicate: Already \
              Exists: Job billing/project:asia-northeast1.job-f (HTTP 409)",
             Status::Unknown,
         ),
+        (
+            vec![ok(job_in("job-g", "asia-northeast1"))],
+            "the BigQuery jobs.get response names job billing/project:asia-northeast1.job-g, but \
+             the request was for job billing/project:asia-northeast1.job-f",
+            Status::InvalidData,
+        ),
     ] {
         let mut responses = vec![conflict.clone()];
-        responses.extend(vec![fetched; MAX_RECONCILIATION_ATTEMPTS]);
+        responses.extend(fetched);
+        let count = responses.len();
         let (endpoint, captured) = capture_requests(responses);
         let (runtime, client) = job_client(&endpoint);
 
@@ -315,7 +323,7 @@ fn a_conflict_whose_job_cannot_be_fetched_names_the_job_that_may_run() {
             DETAIL_JOB_ID.to_owned(),
             b"billing/project:asia-northeast1.job-f".to_vec(),
         )));
-        captured.served(1 + MAX_RECONCILIATION_ATTEMPTS);
+        captured.served(count);
     }
 }
 
