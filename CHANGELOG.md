@@ -31,10 +31,11 @@ changes.
 - A malformed Storage Read session schema fails with `INVALID_DATA`, as a malformed record batch or
   REST response does, instead of `INTERNAL`.
 - A bulk ingest whose table creation BigQuery refuses as rate-limited on every attempt no longer
-  says the table may have been created. Likewise, a `jobs.insert` whose retries after such a
-  refusal never reach BigQuery reports `bigquery.job.verdict` `not_created` without looking for
-  the job, and a `jobs.query` neither warns that its statement may have run nor sends it again
-  after a cancel.
+  says the table may have been created, and a `jobs.insert` whose retries after such a refusal
+  never reach BigQuery reports `bigquery.job.verdict` `not_created` without looking for the job.
+- A query cancelled while its submission retried after a rate-limited attempt, with a retry that
+  could not reach BigQuery, returns `CANCELLED` instead of sending the statement again. Without a
+  cancel, its error no longer warns that the statement may have run.
 
 ## [0.6.0] - 2026-11-11
 
