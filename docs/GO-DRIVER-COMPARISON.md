@@ -655,6 +655,15 @@ written in Punycode (`xn--`); Go's HTTP client converts such a host to Punycode 
 Unicode mapping, a fullwidth spelling of a Google host cannot pass the [endpoint
 rules](REFERENCE.md#endpoint-overrides) either.
 
+### G98. JSON credential options take four document types
+
+`json_credential_file` and `json_credential_string` accept `service_account`, `authorized_user`,
+`impersonated_service_account` and `external_account` documents. Go hands any type to its auth
+library, which also takes `external_account_authorized_user`, the Workforce Identity Federation
+user credentials `gcloud auth application-default login --login-config` writes. Here such a file
+works only as Application Default Credentials, where the bundled SDK ignores
+`bigquery.auth.scopes`.
+
 ## C interface and object lifecycle
 
 ### G14. Only the driver-manager entrypoint is exported
