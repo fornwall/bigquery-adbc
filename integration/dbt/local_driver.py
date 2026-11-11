@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import platform
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -52,11 +51,11 @@ def sha256(path: Path) -> str:
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
-def built_driver_library(cargo_messages: str) -> Path:
-    """Use Cargo's artifact report: configured targets can move the output path."""
-
+def build() -> Path:
+    """Build the library, located from Cargo's artifact report: configured targets can move it."""
+    messages = subprocess.run(BUILD_COMMAND, cwd=REPO_DIR, check=True, text=True, stdout=subprocess.PIPE).stdout
     libraries: list[Path] = []
-    for line in cargo_messages.splitlines():
+    for line in messages.splitlines():
         if not line.startswith("{"):
             continue
         message = json.loads(line)
@@ -71,14 +70,3 @@ def built_driver_library(cargo_messages: str) -> Path:
     if len(libraries) != 1:
         raise RuntimeError(f"cargo must report exactly one BigQuery driver library, found {libraries}")
     return libraries[0]
-
-
-def stage(cache_home: Path) -> tuple[Path, str]:
-    if shutil.which("cargo") is None:
-        raise RuntimeError("cargo is not on PATH")
-    messages = subprocess.run(BUILD_COMMAND, cwd=REPO_DIR, check=True, text=True, stdout=subprocess.PIPE).stdout
-    source = built_driver_library(messages)
-    destination = cache_path(cache_home)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, destination)
-    return destination, sha256(destination)

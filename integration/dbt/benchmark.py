@@ -77,16 +77,15 @@ def command(arguments: list[str], *, cwd: Path, env: dict[str, str]) -> None:
     subprocess.run(arguments, cwd=cwd, env=env, check=True)
 
 
-def stage_local_driver(cache_home: Path, library: Path | None = None) -> tuple[Path, str]:
+def stage_local_driver(cache_home: Path, library: Path | None) -> tuple[Path, str]:
     log("\n==> Build and stage the local driver (not timed)")
     if library is None:
         log(f"  $ {' '.join(local_driver.BUILD_COMMAND)}")
-        destination, digest = local_driver.stage(cache_home)
-    else:
-        destination = local_driver.cache_path(cache_home)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(library, destination)
-        digest = local_driver.sha256(destination)
+        library = local_driver.build()
+    destination = local_driver.cache_path(cache_home)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(library, destination)
+    digest = local_driver.sha256(destination)
     log(f"  -> staged {destination} ({digest[:12]})")
     return destination, digest
 
