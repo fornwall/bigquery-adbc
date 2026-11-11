@@ -61,16 +61,16 @@ fn database_options_round_trip_and_redact_credentials() {
     let original_clients = database.clients().clone();
 
     set_option(&mut database, BigQueryDatabaseOption::Location, "EU");
+    set_option(
+        &mut database,
+        BigQueryDatabaseOption::ProjectId,
+        "fixture-project",
+    );
     assert!(Arc::ptr_eq(&original_clients, database.clients()));
 
     // One row per option: what is set, and what the getter must report after every set has
     // been applied. `None` marks a secret that must read back as NOT_FOUND.
     let rows = [
-        (
-            BigQueryDatabaseOption::ProjectId,
-            "fixture-project",
-            Some("fixture-project"),
-        ),
         (
             BigQueryDatabaseOption::AuthenticationType,
             BigQueryAuthenticationType::JsonCredentialString.as_str(),
@@ -146,6 +146,10 @@ fn database_options_round_trip_and_redact_credentials() {
     assert_eq!(
         option_string(&database, BigQueryDatabaseOption::Location),
         "EU"
+    );
+    assert_eq!(
+        option_string(&database, BigQueryDatabaseOption::ProjectId),
+        "fixture-project"
     );
 
     let debug = format!("{database:?}");

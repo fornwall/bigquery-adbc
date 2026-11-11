@@ -77,7 +77,11 @@ fn apply_option(
                 config.endpoint_from_uri = false;
             }
         }
-        // Dataset and location affect new connections, not cached clients.
+        // Project, dataset and location affect new connections, not cached clients.
+        O::ProjectId => {
+            config.project_id = project_identifier(key, value)?;
+            return Ok(false);
+        }
         O::DatasetId => {
             validate_dataset_id(&format!("BigQuery option {key}"), &value)?;
             config.dataset_id = nonempty_arc(value);
@@ -92,7 +96,6 @@ fn apply_option(
             config.location = nonempty_arc(value);
             return Ok(false);
         }
-        O::ProjectId => config.project_id = project_identifier(key, value)?,
         O::AllowUntrustedEndpoint => {
             config.allow_untrusted_endpoint = boolean_value(key, OptionValue::String(value))?;
         }

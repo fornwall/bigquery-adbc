@@ -373,8 +373,12 @@ fn external_account_accepts_dbt_profile_options_and_preserves_execution_principa
     let mut database = new_database();
     let runtime = database.runtime.clone();
     let _guard = runtime.enter();
+    set_option(
+        &mut database,
+        OptionDatabase::Other("adbc.bigquery.sql.project_id".to_owned()),
+        "wif-project",
+    );
     for (option, value) in [
-        ("adbc.bigquery.sql.project_id", "wif-project"),
         (
             "adbc.bigquery.sql.auth_type",
             "adbc.bigquery.sql.auth_type.external_account",
