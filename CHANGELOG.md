@@ -5,6 +5,12 @@ changes.
 
 ## [Unreleased]
 
+### Changed
+
+- The dbt installer creates its destination directories only after the download matches
+  `dbt-SHA256SUMS`, and with `SHELL` unset prints `PATH` instructions instead of guessing a shell
+  startup file.
+
 ### Fixed
 
 - An append of an all-null list or struct field, which pyarrow types with Arrow `Null` elements,
