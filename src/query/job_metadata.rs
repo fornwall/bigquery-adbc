@@ -12,7 +12,8 @@ use crate::types::schema::convert_schema;
 
 use super::response::QueryMetadata;
 
-/// Fills missing job metadata without overwriting values already attached to the schema.
+/// Attaches the query's identity and the statistics BigQuery reported to a result schema that
+/// [`result_schema`] converted; an unreported statistic gets no key.
 pub(super) fn schema_with_rest_metadata(
     mut schema: SchemaRef,
     metadata: &QueryMetadata,
@@ -27,16 +28,11 @@ pub(super) fn schema_with_rest_metadata(
         let Some(value) = value else {
             return;
         };
-        if let Some(legacy_key) = legacy_key
-            && !schema.metadata().contains_key(legacy_key)
-        {
-            Arc::make_mut(&mut schema)
-                .metadata
-                .insert(legacy_key, value.clone());
+        let entries = &mut Arc::make_mut(&mut schema).metadata;
+        if let Some(legacy_key) = legacy_key {
+            entries.insert(legacy_key, value.clone());
         }
-        if !schema.metadata().contains_key(key) {
-            Arc::make_mut(&mut schema).metadata.insert(key, value);
-        }
+        entries.insert(key, value);
     };
     fill(
         crate::BIGQUERY_SCHEMA_METADATA_QUERY_ID,
@@ -166,34 +162,6 @@ mod tests {
         for key in keys {
             assert_eq!(schema.metadata()[key], "0", "{key}");
         }
-    }
-
-    #[test]
-    fn filling_metadata_preserves_existing_values_and_shared_schemas() {
-        let original = Arc::new(
-            arrow_schema::Schema::empty().with_metadata(
-                arrow_schema::Metadata::new()
-                    .with(crate::BIGQUERY_SCHEMA_METADATA_QUERY_ID, "original-id")
-                    .with(crate::BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE, "SELECT")
-                    .with("application", "value"),
-            ),
-        );
-        let metadata = QueryMetadata {
-            query_id: "later-id".to_owned(),
-            statement_type: "UPDATE".to_owned(),
-            ..QueryMetadata::default()
-        };
-
-        let filled = schema_with_rest_metadata(original.clone(), &metadata);
-        for (key, value) in original.metadata() {
-            assert_eq!(filled.metadata().get(key), Some(value));
-        }
-        assert_eq!(filled.metadata()[legacy::STATEMENT_TYPE], "UPDATE");
-        assert!(!original.metadata().contains_key(legacy::STATEMENT_TYPE));
-
-        // Reattaching already present values leaves the shared schema untouched.
-        let unchanged = schema_with_rest_metadata(filled.clone(), &metadata);
-        assert!(Arc::ptr_eq(&filled, &unchanged));
     }
 
     #[test]
