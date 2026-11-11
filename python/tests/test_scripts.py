@@ -831,7 +831,7 @@ def test_dbt_installer_ignores_variables_from_the_environment(tmp_path: Path, db
     (unrelated / "kept").touch()
     environment = {
         "td": str(unrelated),
-        "tmp_bin": str(unrelated / "kept"),
+        "tmp_file": str(unrelated / "kept"),
         "prefix": str(tmp_path / "inherited-prefix"),
         "version": "9.9.9",
         "target": "unsupported-target",
