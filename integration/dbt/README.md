@@ -68,10 +68,11 @@ seed paths.
 
 Successful runs delete their datasets, including the `_authorized_source` companion, unless given
 `--keep-datasets`, and the `run-operation` parity datasets once their comparison passes. Failed and
-interrupted runs keep them; the next run drops them, or replaces the parity table, first. Logs go to `integration/dbt/logs/` and dbt artifacts to
-`integration/dbt/target/`, with each phase's saved under `target/<mode>/phases/<phase>/`, even on
-failure. For an intended selection change, review missing or unexpected IDs against those artifacts
-and update `coverage.json` in the same commit; do not remove tests merely to pass the baseline.
+interrupted runs keep them; the next run drops them, or replaces the parity table, first. Logs go
+to `integration/dbt/logs/` and dbt artifacts to `integration/dbt/target/`, with each phase's saved
+under `target/<mode>/phases/<phase>/`, even on failure. For an intended selection change, review
+missing or unexpected IDs against those artifacts and update `coverage.json` in the same commit; do
+not remove tests merely to pass the baseline.
 
 ## Offline regression tests
 
