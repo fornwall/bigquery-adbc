@@ -204,33 +204,23 @@ fn validate_timestamp_values(
 ) -> Result<()> {
     match unit {
         TimeUnit::Second => {
-            validate_epoch_unit::<TimestampSecondType>(column, site, "timestamp", SECONDS_PER_DAY)
+            validate_epoch_unit::<TimestampSecondType>(column, site, SECONDS_PER_DAY)
         }
-        TimeUnit::Millisecond => validate_epoch_unit::<TimestampMillisecondType>(
-            column,
-            site,
-            "timestamp",
-            MILLISECONDS_PER_DAY,
-        ),
-        TimeUnit::Microsecond => validate_epoch_unit::<TimestampMicrosecondType>(
-            column,
-            site,
-            "timestamp",
-            MICROSECONDS_PER_DAY,
-        ),
+        TimeUnit::Millisecond => {
+            validate_epoch_unit::<TimestampMillisecondType>(column, site, MILLISECONDS_PER_DAY)
+        }
+        TimeUnit::Microsecond => {
+            validate_epoch_unit::<TimestampMicrosecondType>(column, site, MICROSECONDS_PER_DAY)
+        }
         // Every `i64` nanosecond instant lies between 1677 and 2262, well inside BigQuery's
         // range, so there is nothing a nanosecond column can carry that needs rejecting.
         TimeUnit::Nanosecond => Ok(()),
     }
 }
 
-/// Checks an `i64` column of `per_day`-sized units since the epoch against BigQuery's calendar.
-fn validate_epoch_unit<T>(
-    column: &ArrayRef,
-    site: &ValueSite<'_>,
-    kind: &str,
-    per_day: i64,
-) -> Result<()>
+/// Checks an `i64` timestamp column of `per_day`-sized units since the epoch against BigQuery's
+/// calendar.
+fn validate_epoch_unit<T>(column: &ArrayRef, site: &ValueSite<'_>, per_day: i64) -> Result<()>
 where
     T: ArrowPrimitiveType<Native = i64>,
 {
@@ -241,7 +231,7 @@ where
     validate_primitive_values(
         array,
         |value| (!range.contains(value)).then_some(()),
-        |index, ()| out_of_calendar_range(kind, site, index),
+        |index, ()| out_of_calendar_range("timestamp", site, index),
     )
 }
 
