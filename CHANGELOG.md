@@ -55,9 +55,6 @@ changes.
   `jobs.query` no longer says BigQuery may have run the statement.
 - A `create` bulk ingest whose commit fails says it kept the table it created and suggests
   retrying with `append`, rather than suggesting a retry that would fail on that table.
-- A job submission none of whose attempts could connect (DNS, TCP or TLS) reports
-  `bigquery.job.verdict` `not_created` instead of failing to look for its job, and such a
-  `jobs.query` no longer says BigQuery may have run the statement.
 - When looking for a job submitted without `bigquery.location` fails partway, for example on a
   transient `jobs.get` failure, the error now says the job may still run and names it in
   `bigquery.job_id`, as it does when the job is found nowhere.
