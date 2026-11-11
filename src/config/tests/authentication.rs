@@ -11,7 +11,7 @@ fn credential_options_without_their_authentication_type_are_rejected() {
     for (option, required, apply) in [
         (
             "bigquery.auth.credentials",
-            "\"json_credential_file\", or \"json_credential_string\"",
+            "\"json_credential_file\" or \"json_credential_string\"",
             (|config: &mut DatabaseConfig| {
                 config.authentication_type = BigQueryAuthenticationType::Anonymous;
                 config.credentials = Some(Secret::from(r#"{"type":"service_account"}"#));
@@ -19,7 +19,7 @@ fn credential_options_without_their_authentication_type_are_rejected() {
         ),
         (
             "bigquery.auth.credentials_type",
-            "\"json_credential_file\", or \"json_credential_string\"",
+            "\"json_credential_file\" or \"json_credential_string\"",
             |config| {
                 config.credentials_type = Some(BigQueryCredentialsType::ServiceAccount);
             },
@@ -221,7 +221,7 @@ fn configuration_rejections_name_the_option_the_way_every_other_one_does() {
     assert_eq!(
         ClientConfiguration::build(&json_only).unwrap_err().message,
         "BigQuery option bigquery.auth.credentials is set but bigquery.auth_type is \
-         \"user_authentication\"; it requires bigquery.auth_type \"json_credential_file\", or \
+         \"user_authentication\"; it requires bigquery.auth_type \"json_credential_file\" or \
          \"json_credential_string\""
     );
 

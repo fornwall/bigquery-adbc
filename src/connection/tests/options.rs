@@ -377,7 +377,7 @@ fn naming_a_schema_without_a_project_reports_the_options_that_supply_one() {
     assert_eq!(
         error.message,
         "a BigQuery project must be available before setting the connection option \
-         adbc.connection.db_schema; set the connection option adbc.connection.catalog, or the \
+         adbc.connection.db_schema; set the connection option adbc.connection.catalog or the \
          database option bigquery.project_id"
     );
     assert!(requests.join().unwrap().is_empty());

@@ -218,6 +218,7 @@ pub(crate) fn or_list<T: AsRef<str>>(values: &[T]) -> String {
     match values {
         [] => String::new(),
         [only] => only.as_ref().to_owned(),
+        [first, second] => format!("{} or {}", first.as_ref(), second.as_ref()),
         [rest @ .., last] => {
             let rest: Vec<&str> = rest.iter().map(AsRef::as_ref).collect();
             format!("{}, or {}", rest.join(", "), last.as_ref())
