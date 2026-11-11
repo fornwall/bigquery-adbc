@@ -239,10 +239,14 @@ fn nearest_option_key(kind: &str, key: &str) -> Option<(&'static str, &'static s
 fn nearest_key<T: StringEnum>(key: &str) -> Option<(usize, &'static str)> {
     // At most a quarter of the key's length in edits, capped at four.
     let budget = (key.len() / 4).min(4);
+    // The edit distance is at least the difference in length, so an option outside the budget
+    // by length alone is skipped before the quadratic comparison: a caller can pass a huge key.
+    let length = key.chars().count();
     T::ALL
         .iter()
-        .copied()
-        .map(|option| (edit_distance(key, option.as_str()), option.as_str()))
+        .map(|option| option.as_str())
+        .filter(|option| length.abs_diff(option.chars().count()) <= budget)
+        .map(|option| (edit_distance(key, option), option))
         .filter(|&(distance, _)| distance <= budget)
         .min_by_key(|&(distance, _)| distance)
 }

@@ -227,6 +227,29 @@ fn a_knowingly_refused_option_says_why() {
     );
 }
 
+/// A key no option is near in length is never compared character by character, so a huge key
+/// (a value passed as the key, say) is refused at once rather than after a quadratic search.
+#[test]
+fn a_huge_unknown_key_is_refused_without_a_quadratic_typo_search() {
+    let key = format!("bigquery.{}", "x".repeat(4 << 20));
+    let started = std::time::Instant::now();
+    let failure = option_set_refusal("database", &key);
+    // Comparing it with every option, as the search once did, took minutes in a debug build.
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(failure.status, Status::NotImplemented);
+    assert!(
+        failure
+            .message
+            .ends_with("\"; no BigQuery database option has that name"),
+        "{}",
+        &failure.message[failure.message.len() - 80..]
+    );
+}
+
 #[test]
 fn edit_distance_counts_insertions_deletions_and_substitutions() {
     assert_eq!(edit_distance("", ""), 0);
