@@ -11,7 +11,7 @@ The findings apply to these revisions:
 | --- | --- | --- |
 | Google Cloud Rust | [`9ba3387`](https://github.com/googleapis/google-cloud-rust/commit/9ba338718561739ab257e87502516d4be42dd5d1) | Cargo pin; BigQuery 1.0.0, auth 1.18.0. |
 | Apache Arrow ADBC | [`5565c52`](https://github.com/apache/arrow-adbc/commit/5565c52cb71006e3f6322c8821de6955775f631d) | Rust, C++ validation and Python integration pins. Python packaging allows `adbc-driver-manager>=1.13,<2`. |
-| [Driver Foundry](https://github.com/adbc-drivers) validation | [`5db1f44`](https://github.com/adbc-drivers/validation/commit/5db1f44782f4868c5ae9e89d6ac9812ca6e1758c) | Integration pin. |
+| [Driver Foundry](https://github.com/adbc-drivers) validation | [`f063165`](https://github.com/adbc-drivers/validation/commit/f0631651f79bd01b67c5776be6fe3b7fbfbe083b) | Integration pin. |
 | `h2` | 0.4.20 and [`e64c166`](https://github.com/hyperium/h2/commit/e64c1662ebb14794fc19cbcbb5b5dd0f67925f27) | Cargo uses 0.4.20; upstream `master` at this commit has UP-94. |
 | dbt | [`b601ffe`](https://github.com/dbt-labs/dbt/commit/b601ffe469be8404e70b5e20f0ea0babc35ba6a8) | External client, not a Cargo dependency. |
 
@@ -130,7 +130,7 @@ ADBC's list ingest tests require null lists to read back as null, but BigQuery
 
 ## UP-38: Driver Foundry assumes approximate statistics are immediately current
 
-[`test_get_statistics`](https://github.com/adbc-drivers/validation/blob/5db1f44782f4868c5ae9e89d6ac9812ca6e1758c/adbc_drivers_validation/tests/connection.py#L1188)
+[`test_get_statistics`](https://github.com/adbc-drivers/validation/blob/f0631651f79bd01b67c5776be6fe3b7fbfbe083b/adbc_drivers_validation/tests/connection.py#L1188)
 requires an approximate row count of at least three right after ingesting three rows, but
 BigQuery's approximate metadata can report zero for over a minute. The override in
 `integration/foundry-validation/tests/test_connection.py` accepts any nonnegative count.

@@ -4,7 +4,7 @@ version = "0.0.0"
 requires-python = ">=3.15,<3.16"
 dependencies = [
     "adbc-driver-manager @ git+https://github.com/apache/arrow-adbc.git@5565c52cb71006e3f6322c8821de6955775f631d#subdirectory=python/adbc_driver_manager",
-    "adbc-drivers-validation @ git+https://github.com/adbc-drivers/validation.git@5db1f44782f4868c5ae9e89d6ac9812ca6e1758c",
+    "adbc-drivers-validation @ git+https://github.com/adbc-drivers/validation.git@f0631651f79bd01b67c5776be6fe3b7fbfbe083b",
 ]
 
 [tool.uv]
