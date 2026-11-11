@@ -33,6 +33,9 @@ Open limitations and missing test coverage. Behavior is documented in the
 - All Storage Read traffic on a database shares one HTTP/2 connection, so three paused readers can
   starve its other reads and new read sessions into `TIMEOUT`, even though BigQuery is healthy
   ([flow control](REFERENCE.md#reading-large-results-through-the-storage-read-api)).
+- An `INTERVAL` whose time part exceeds 2,562,047:47:16.854775, the most Arrow's nanosecond field
+  holds, fails the read with `INVALID_DATA` on both paths, though BigQuery allows 87,840,000
+  hours. Select it as `CAST(x AS STRING)` or as the `EXTRACT` parts you need.
 - Storage Write schemas are fixed for an ingestion. Like the Go driver, the driver ignores
   `AppendRowsResponse.updated_schema`, so a concurrent incompatible change fails with
   `SCHEMA_MISMATCH_*` before commit.

@@ -368,6 +368,17 @@ fn refusal(code: Code) -> Option<SessionRefusal> {
     session_refusal(&service_failure(code))
 }
 
+/// BigQuery fails a row stream with `OUT_OF_RANGE` for a value it cannot convert to Arrow, such as
+/// an INTERVAL whose time part overflows nanoseconds. That is a value that could not be cast, as
+/// the REST path reports the same value, not a caller's invalid argument; other codes keep theirs.
+#[test]
+fn a_row_stream_value_out_of_arrow_range_is_invalid_data() {
+    let status = |code| adbc_failure(&read_rows_failure(service_failure(code))).status;
+    assert_eq!(status(Code::OutOfRange), Status::InvalidData);
+    assert_eq!(status(Code::InvalidArgument), Status::InvalidArguments);
+    assert_eq!(status(Code::NotFound), Status::NotFound);
+}
+
 /// Only refusals that leave the result readable over REST may become a REST read. A transport
 /// failure the client already retried has to reach the caller rather than hide behind a slower
 /// path that happens to work.

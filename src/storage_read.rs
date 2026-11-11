@@ -579,10 +579,15 @@ fn dropped_rows_failure(stream: &str, first_row: i64, rows: i64, what: &str) -> 
 }
 
 fn read_rows_failure(source: GoogleError) -> ArrowError {
-    ArrowError::ExternalError(Box::new(google_error(
-        "failed to read BigQuery Storage Read rows",
-        source,
-    )))
+    // BigQuery fails a stream with OUT_OF_RANGE for a value it cannot convert to its Arrow type,
+    // such as an INTERVAL whose time part overflows nanoseconds: a value that could not be cast,
+    // which the REST path reports for the same value, rather than a caller's invalid argument.
+    let unconvertible = google_error_code(&source) == Some(Code::OutOfRange);
+    let mut failure = google_error("failed to read BigQuery Storage Read rows", source);
+    if unconvertible {
+        failure.status = Status::InvalidData;
+    }
+    ArrowError::ExternalError(Box::new(failure))
 }
 
 /// Decode and reshape one stream's batches in order, reusing its session schema.

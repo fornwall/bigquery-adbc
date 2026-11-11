@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use adbc_core::constants::{ADBC_OPTION_VALUE_DISABLED, ADBC_OPTION_VALUE_ENABLED};
+use adbc_core::error::{Error, Status};
 use adbc_core::options::OptionConnection;
 use adbc_core::{Connection, Database, Optionable, Statement};
 use adbc_driver_bigquery::{
@@ -676,5 +677,61 @@ fn reads_an_empty_result_through_both_read_settings() {
             "use_storage_read={storage_read}"
         );
         assert_eq!(row_count(&batches), 0, "use_storage_read={storage_read}");
+    }
+}
+
+/// Arrow's INTERVAL holds its time part in i64 nanoseconds, about 2,562,047 hours, where BigQuery's
+/// reaches 87,840,000. The longest representable one reads alike on both paths; past it, REST names
+/// the `CAST` that reads the value and Storage Read relays BigQuery's own refusal, both as invalid
+/// data (a REST `ParseError` is `INVALID_DATA` through the C API).
+#[test]
+#[ignore = "requires Google Cloud ADC and access to the integration project"]
+fn an_interval_past_arrows_time_part_is_invalid_data_on_both_paths() {
+    let sql = |time: &str| {
+        format!(
+            "SELECT n, INTERVAL '0-0 0 {time}' YEAR TO SECOND AS i, {PADDING} \
+             FROM UNNEST(GENERATE_ARRAY(1, {STORAGE_READ_ROWS})) AS n"
+        )
+    };
+    let mut connection = connect(project());
+    let longest = sql("2562047:47:16.854775");
+    let storage = read_storage_path(&mut connection, &longest, true);
+    let rest = read_storage_path(&mut connection, &longest, false);
+    assert_paths_match(&storage, &rest);
+
+    let past = sql("2562048:0:0");
+    for storage_read in [true, false] {
+        let mut statement = connection.new_statement().unwrap();
+        set_option(
+            &mut statement,
+            BigQueryStatementOption::UseStorageApiDisabledClient,
+            if storage_read {
+                ADBC_OPTION_VALUE_DISABLED
+            } else {
+                ADBC_OPTION_VALUE_ENABLED
+            },
+        );
+        statement.set_sql_query(&past).unwrap();
+        let failure = statement
+            .execute()
+            .unwrap()
+            .find_map(Result::err)
+            .expect("no Arrow INTERVAL holds the value");
+        match failure {
+            ArrowError::ExternalError(source) if storage_read => {
+                let failure = source.downcast::<Error>().unwrap();
+                assert_eq!(failure.status, Status::InvalidData, "{}", failure.message);
+                assert!(
+                    failure.message.contains("Storage Read rows")
+                        && failure.message.contains("OUT_OF_RANGE"),
+                    "{}",
+                    failure.message
+                );
+            }
+            ArrowError::ParseError(message) if !storage_read => {
+                assert!(message.contains("CAST(x AS STRING)"), "{message}");
+            }
+            other => panic!("use_storage_read={storage_read}: {other}"),
+        }
     }
 }

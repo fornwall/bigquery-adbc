@@ -60,6 +60,9 @@ changes.
   `bigquery.job_id`, as it does when the job is found nowhere.
 - An append to a view, snapshot or other object that is not a table reports that, rather than
   what one of its columns makes of a bound all-null field.
+- A Storage Read stream that BigQuery fails with `OUT_OF_RANGE`, for a value Arrow cannot hold
+  such as an `INTERVAL` past 2,562,047 hours, reports `INVALID_DATA`, as REST does for the same
+  value, instead of `INVALID_ARGUMENT`.
 
 ## [0.5.0] - 2026-11-09
 
