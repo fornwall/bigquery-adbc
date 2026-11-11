@@ -637,7 +637,7 @@ impl<'a> TransactionContext<'a> {
                 }
             }
         }
-        self.begin_in_new_session(operation)
+        self.begin_in_new_session(operation, CONTROL_TIMEOUT)
             .map_err(|source| (source, None))
     }
 
@@ -645,16 +645,16 @@ impl<'a> TransactionContext<'a> {
     /// returns the session for the caller, or ends it if the caller stops waiting first.
     ///
     /// Cancelling the request could drop the only response that names the session, so the job
-    /// runs to completion on the blocking pool, and cancellation or [`CONTROL_TIMEOUT`] ends only
-    /// the caller's wait. Whichever side holds the session ID once the caller stops waiting ends
-    /// the session, and with it the transaction. A `BEGIN` that fails, or whose outcome is
-    /// unknown, returns no session to keep or end: BigQuery expires the session it may have
-    /// created, which holds at most an empty transaction and so no locks.
+    /// runs to completion on the blocking pool, and cancellation or `timeout` ends only the
+    /// caller's wait. Whichever side holds the session ID once the caller stops waiting ends the
+    /// session, and with it the transaction. A `BEGIN` that fails, or whose outcome is unknown,
+    /// returns no session to keep or end: BigQuery expires the session it may have created, which
+    /// holds at most an empty transaction and so no locks.
     ///
     /// A failure keeps its own status, unlike one in an existing session (see
     /// [`Self::run_to_verdict`]): no caller acts on whether this `BEGIN` took effect, and a
     /// failure before it is sent, such as a missing project, names what to fix.
-    fn begin_in_new_session(&self, operation: &Operation) -> Result<Arc<str>> {
+    fn begin_in_new_session(&self, operation: &Operation, timeout: Duration) -> Result<Arc<str>> {
         operation.check()?;
         let context = self.context.clone();
         let default_dataset = self
@@ -681,9 +681,10 @@ impl<'a> TransactionContext<'a> {
                 }
             }));
         // The timer is created inside the runtime, which it needs.
-        let waited = self.context.runtime.block_on(async {
-            tokio::time::timeout(CONTROL_TIMEOUT, operation.wait(&mut receiver)).await
-        });
+        let waited = self
+            .context
+            .runtime
+            .block_on(async { tokio::time::timeout(timeout, operation.wait(&mut receiver)).await });
         let stopped = match waited {
             Ok(Ok(Ok(outcome))) => return outcome,
             Ok(Ok(Err(_))) => {
@@ -692,7 +693,7 @@ impl<'a> TransactionContext<'a> {
                 )));
             }
             Ok(Err(cancelled)) => cancelled,
-            Err(_) => control_timeout("BEGIN TRANSACTION", CONTROL_TIMEOUT),
+            Err(_) => control_timeout("BEGIN TRANSACTION", timeout),
         };
         // A session sent before `close` is the caller's to end; a later one fails to send and the
         // creating task ends it.

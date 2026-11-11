@@ -1,13 +1,23 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use adbc_core::error::Status;
+use serde_json::json;
 
 use super::{
-    EnableAutocommit, Finish, FinishTransaction, QueryStart, QueryTransaction, TransactionState,
-    googlesql_string_literal, outcome_unknown,
+    EnableAutocommit, Finish, FinishTransaction, QueryStart, QueryTransaction, TransactionContext,
+    TransactionState, googlesql_string_literal, outcome_unknown,
 };
+use crate::clients::ClientState;
+use crate::config::ServiceEndpointKind;
 use crate::error::{error, with_job_verdict};
-use crate::test_support::errors::assert_message;
+use crate::identifiers::ProjectIdentifier;
+use crate::pipeline::QueryResultOptions;
+use crate::query::ExecutionContext;
+use crate::runtime::new_runtime;
+use crate::test_support::cancellation::operation_at;
+use crate::test_support::errors::{assert_failure, assert_message};
+use crate::test_support::http::{CapturedRequest, capture_statements_responding, completed_job};
 
 /// GoogleSQL escapes with backslashes: a doubled quote lexes as two adjacent literals, and an
 /// unescaped trailing backslash would escape the closing quote.
@@ -316,6 +326,59 @@ fn only_a_transaction_no_other_statement_joined_is_begun_again() {
     let (session_id, finish) = finishing(&restored);
     finish.failed(session_id).unwrap();
     assert!(restored.begin_replacing("shared-session").is_none());
+}
+
+/// A caller that stops waiting at the deadline for the `BEGIN` creating its session reports
+/// `TIMEOUT`, and the session BigQuery names afterwards is ended, since no caller holds it.
+#[test]
+fn a_session_creating_begin_past_its_deadline_times_out_and_ends_the_session() {
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (endpoint, requests) = capture_statements_responding(2, move |request| {
+        Some(
+            if request.body["configuration"]["query"]["createSession"] == true {
+                released.recv().unwrap();
+                completed_job(
+                    "session-job",
+                    json!({"sessionInfo": {"sessionId": "mock-session"}}),
+                )
+            } else {
+                completed_job("job", json!({}))
+            },
+        )
+    });
+    let context = ExecutionContext {
+        runtime: new_runtime().unwrap(),
+        state: ClientState::for_test_at(ServiceEndpointKind::BigQuery, &endpoint),
+        billing_project_id: Some(ProjectIdentifier::try_new_from("test", "project").unwrap()),
+        current_catalog: None,
+        current_schema: None,
+        location: Some(Arc::from("EU")),
+        result_options: QueryResultOptions::default(),
+    };
+    let (_cancellation, operation) = operation_at(&context.runtime, &endpoint);
+
+    let failure = TransactionContext::new(&context, context.defaults())
+        .begin_in_new_session(&operation, Duration::from_millis(200))
+        .unwrap_err();
+    assert_failure(
+        &failure,
+        Status::Timeout,
+        &["did not finish BEGIN TRANSACTION"],
+    );
+    release.send(()).unwrap();
+
+    let requests = requests.served(2);
+    assert_eq!(
+        requests
+            .iter()
+            .map(CapturedRequest::sql)
+            .collect::<Vec<_>>(),
+        ["BEGIN TRANSACTION", "CALL BQ.ABORT_SESSION('mock-session')"]
+    );
+    assert_eq!(
+        *requests[1].connection_properties(),
+        json!([{"key": "session_id", "value": "mock-session"}])
+    );
 }
 
 /// Begins finishing the active transaction in `state`.
