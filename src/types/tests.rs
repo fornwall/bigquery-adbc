@@ -133,6 +133,12 @@ fn range_fields_need_start_and_end_bounds_of_the_element_type() {
         );
     }
     assert_eq!(range("STRUCT<a INT64>", Fields::empty()).unwrap(), None);
+    // A struct field's metadata names a STRUCT or a RANGE, nothing else.
+    assert_failure(
+        &range("INT64", Fields::empty()).unwrap_err(),
+        Status::InvalidArguments,
+        &["\"INT64\" is incompatible with Arrow field \"period\""],
+    );
 
     let reversed: Fields = vec![
         Field::new("end", DataType::Date32, true),

@@ -473,16 +473,22 @@ pub(crate) fn range_metadata(field: &Field) -> Option<&str> {
 
 /// The element type of a RANGE struct field, which its `RANGE<...>` metadata names.
 ///
-/// `Ok(None)` when the metadata names no RANGE; an error when it does but the struct is not
-/// exactly `start` and `end` bounds whose Arrow types both map to the element type. Converting
-/// the bound values to that element type is left to the caller.
+/// `Ok(None)` for a STRUCT: a struct field without metadata or with `STRUCT<...>` metadata. An
+/// error for other metadata, or for a RANGE whose struct is not exactly `start` and `end` bounds
+/// whose Arrow types both map to the element type. Converting the bound values to that element
+/// type is left to the caller.
 pub(crate) fn range_field_element(
     field: &Field,
     fields: &Fields,
     subject: &str,
 ) -> Result<Option<RangeElement>> {
     let Some(element) = range_element_from_metadata(field, subject)? else {
-        return Ok(None);
+        return match field.metadata().get(BIGQUERY_TYPE_METADATA_KEY) {
+            Some(rich_type) if !rich_type.starts_with("STRUCT<") => {
+                Err(incompatible_metadata_error(field, rich_type))
+            }
+            _ => Ok(None),
+        };
     };
     let holds_element =
         |bound: &Field| inferred_scalar_type(bound.data_type()) == Some(element.bigquery_type());

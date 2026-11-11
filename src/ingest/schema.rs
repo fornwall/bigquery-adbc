@@ -24,8 +24,8 @@ use crate::types::{
     ARROW_EXTENSION_METADATA_KEY, ARROW_EXTENSION_NAME_KEY, BIGQUERY_TYPE_METADATA_KEY,
     BigQueryType, INGEST_FIELD, RangeElement, array_item_field, canonical_scalar_data_type,
     case_duplicate, decimal_metadata_type_hint, extension_overridden_by_metadata, folded_name,
-    has_bigquery_extension, incompatible_metadata_error, nested_array_error, range_field_element,
-    scalar_arrow_field_type, validate_schema_nesting,
+    has_bigquery_extension, nested_array_error, range_field_element, scalar_arrow_field_type,
+    validate_schema_nesting,
 };
 use crate::{
     BIGQUERY_FIELD_METADATA_MAX_LENGTH, BIGQUERY_FIELD_METADATA_PRECISION,
@@ -525,11 +525,6 @@ fn arrow_field_to_bigquery(field: &Field) -> Result<TableFieldSchema> {
                         r#type: element.rest().to_owned(),
                     });
                 } else {
-                    if let Some(rich_type) = field.metadata().get(BIGQUERY_TYPE_METADATA_KEY)
-                        && !rich_type.starts_with("STRUCT<")
-                    {
-                        return Err(incompatible_metadata_error(field, rich_type));
-                    }
                     result.r#type = BigQueryType::Struct.rest().to_owned();
                     let owner = format!("column {:?}", field.name());
                     // BigQuery refuses an empty RECORD ("type RECORD but has no schema"); a

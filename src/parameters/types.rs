@@ -8,8 +8,8 @@ use crate::rest::model::{QueryParameterStructType, QueryParameterType};
 use crate::types::decimal::{BigQueryDecimalType, decimal_mapping};
 use crate::types::{
     BIGQUERY_TYPE_METADATA_KEY, BigQueryType, PARAMETER_FIELD, array_item_field, case_duplicate,
-    decimal_metadata_type_hint, folded_name, incompatible_metadata_error, is_composite_literal,
-    metadata_type, nested_array_error, range_field_element, scalar_arrow_field_type,
+    decimal_metadata_type_hint, folded_name, is_composite_literal, metadata_type,
+    nested_array_error, range_field_element, scalar_arrow_field_type,
 };
 
 pub(super) fn parameter_type(field: &Field) -> Result<QueryParameterType> {
@@ -112,20 +112,13 @@ fn parameter_type_for(
              integer",
             field.name()
         ))),
-        DataType::Struct(fields) => {
-            if let Some(element) = range_field_element(field, fields, PARAMETER_FIELD)? {
-                return Ok(QueryParameterType {
-                    range_element_type: Some(Box::new(named(element.sql()))),
-                    ..named(BigQueryType::Range.sql())
-                });
-            }
-            if let Some(rich_type) = field.metadata().get(BIGQUERY_TYPE_METADATA_KEY)
-                && !rich_type.starts_with("STRUCT<")
-            {
-                return Err(incompatible_metadata_error(field, rich_type));
-            }
-            struct_parameter_type(field, fields)
-        }
+        DataType::Struct(fields) => match range_field_element(field, fields, PARAMETER_FIELD)? {
+            Some(element) => Ok(QueryParameterType {
+                range_element_type: Some(Box::new(named(element.sql()))),
+                ..named(BigQueryType::Range.sql())
+            }),
+            None => struct_parameter_type(field, fields),
+        },
         data_type => Err(not_implemented(format!(
             "Arrow field {:?} has type {data_type}, which no BigQuery query parameter type covers",
             field.name()
