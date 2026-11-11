@@ -206,11 +206,12 @@ user instructions over 1,000 iterations, including harness, preparation and drop
 37.513→9.483 billion, scattered 37.512→32.850, alternating 28.789→30.263. Check against Arrow's
 `take` with `cargo test --locked --lib types::cast::tests::`.
 
-**Direct dictionary gathers.** Keys resolve once into value indices; fixed-width values are then
-copied a run at a time and string or binary values row by row (or through `MutableArrayData`
-when runs average eight rows or more), instead of one type-erased `MutableArrayData` extend per
-run, which scattered keys make one per row. Same fixtures, CPU 5, median of three alternating
-runs:
+**Direct dictionary gathers.** Keys resolve once into value indices; primitive values (numeric,
+temporal and decimal) are then copied a run at a time and string or binary values row by row (or
+through `MutableArrayData` when runs average eight rows or more), instead of one type-erased
+`MutableArrayData` extend per run, which scattered keys make one per row. Boolean and
+`FixedSizeBinary` values keep the per-run extend. Same fixtures, CPU 5, median of three
+alternating runs:
 
 | Dictionary keys, 65,536 rows | Columns | Before, ms | After, ms |
 | --- | ---: | ---: | ---: |
@@ -287,8 +288,8 @@ within 0.0001%); allocations are unchanged:
 | `dictionary-alternating/narrow/encode` | 36.01 | 33.59 | −6.7% |
 
 The normalization-only control `dictionary-scattered/narrow` stayed at 32.99. Expanding the
-values (`gather_dictionary` in `src/types/cast.rs`) is most of what remains. Check with
-`cargo test --locked --lib ingest::write::window::`.
+values (`expand_dictionary` in `src/types/cast.rs`, [direct gathers](#ingest-normalization)) is
+most of what remains. Check with `cargo test --locked --lib ingest::write::window::`.
 
 **First request window.** A batch's first window, with no chunk before it to give a density,
 aims for the request target by the bytes its rows address, rather than taking up to twice the
@@ -308,20 +309,20 @@ target), `dictionary-scattered/narrow/encode` and `large-offsets/narrow/encode` 
 (under the target), `canonical/wide/encode` at 1,024 rows.
 
 Sizing walks a dictionary's keys and a list view's ranges until the bytes pass a cap, and each
-refused pass walks them again. With the cap at the target itself, a column that held nearly
-every byte stopped each walk just past the target, so a pass shrank the window by a sliver: one
-1,000,000-row `Dictionary<Int16, Utf8>` of 100-byte labels took 41 s to size at the 9 MB target
-in a release build. The walks now stop above twice the target, which more than halves a refused
-window, and an estimate from exact bytes is trusted once, after which a refusal at least halves
-the window. That case now takes 5 passes (8 at the 1 MB first-append target). User instructions
-for 1,000 `dictionary-labels` encodes of 65,536 rows, and one pinned timing run each:
+refused pass walks them again. The walks stop above twice the target, which more than halves a
+refused window, and an estimate from exact bytes is trusted once, after which a refusal at least
+halves the window. Capped at the target itself, a column that held nearly every byte would stop
+each walk just past the target, so a pass shrank the window by a sliver: one 1,000,000-row
+`Dictionary<Int16, Utf8>` of 100-byte labels took 41 s to size at the 9 MB target in a release
+build, where it takes 5 passes (8 at the 1 MB first-append target). User instructions for 1,000
+`dictionary-labels` encodes of 65,536 rows, and one pinned timing run each:
 
-| Case | Instructions before → after, billions | Before → after, ms |
+| Case | Instructions, cap at target → above twice it, billions | Cap at target → above twice it, ms |
 | --- | ---: | ---: |
 | `dictionary-labels/narrow/encode` | 1,082.96 → 26.46 (−97.6%) | 42.77 → 1.67 |
 | `dictionary-labels/wide/encode` | 98.73 → 26.63 (−73.0%) | 4.35 → 1.69 |
 
-The other `encode` cases above are unchanged. Check with
+The other `encode` cases above are the same under either cap. Check with
 `cargo test --locked --lib ingest::write::window::tests::a_window_without`.
 
 **First batch of an append.** `create` and `replace` normalize and size the whole first batch
