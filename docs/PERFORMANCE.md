@@ -549,8 +549,8 @@ PYTEST_ADDOPTS='-q --durations=15' \
 
 Each database used to build its own REST connection pool, so a process opening a database per
 connection, as Python's `dbapi.connect()` does, paid a TCP and TLS handshake and a reload of the
-system's root certificates before each first request; a closed database's pool now serves the next
-database on the runtime. 2026-11-11, Linux x86-64, release builds of both versions on one machine:
+system's root certificates before each first request; a closed database's pool now serves the
+driver's next database. 2026-11-11, Linux x86-64, release builds of both versions on one machine:
 
 | Measurement | One pool per database | Pool reuse |
 | --- | ---: | ---: |

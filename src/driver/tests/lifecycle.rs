@@ -14,19 +14,22 @@ fn driver_propagates_one_runtime_to_databases() {
 }
 
 /// The C ABI's driver is a static a `fork` child inherits. A database opened there must get a
-/// runtime with workers, through either constructor, and must not disturb the inherited one.
+/// runtime with workers, through either constructor, and must not disturb the inherited one or
+/// reuse its connection pools.
 #[test]
 fn a_forked_child_opens_databases_on_a_runtime_of_its_own() {
     let mut driver = BigQueryDriver::try_new().unwrap();
     for options in [None, Some(Vec::new())] {
         let inherited = crate::runtime::orphaned_runtime();
         driver.runtime = inherited.clone();
+        let inherited_pools = driver.idle_pools.clone();
         let database = match options {
             None => driver.new_database(),
             Some(options) => driver.new_database_with_opts(options),
         }
         .unwrap();
         assert!(!Arc::ptr_eq(&database.runtime, &inherited));
+        assert!(!Arc::ptr_eq(&database.idle_pools, &inherited_pools));
         assert_eq!(database.runtime.block_on(async { 1 }), 1);
     }
 }

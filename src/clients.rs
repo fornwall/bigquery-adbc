@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::collections::{HashSet, VecDeque};
 use std::fmt::Write as _;
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use adbc_core::error::Result;
 use google_cloud_bigquery::client::{Read, Write};
@@ -12,10 +12,10 @@ use crate::cancellation::{Operation, gate};
 use crate::config::{ClientConfiguration, DatabaseConfig, ServiceEndpointKind};
 use crate::error::{chain, invalid_argument};
 use crate::identifiers::ProjectIdentifier;
-use crate::rest::client::{RestClient, pooled_rest_client, user_agent};
+use crate::rest::client::{IdlePools, RestClient, pooled_rest_client, user_agent};
 use crate::rest::jobs::JobClient;
 use crate::rest::metadata::{DatasetId, MetadataClient, MetadataError};
-use crate::runtime::{DriverRuntime, SharedRuntime};
+use crate::runtime::SharedRuntime;
 
 #[derive(Default)]
 struct ClientCache {
@@ -33,9 +33,9 @@ struct ClientCache {
 pub(crate) struct ClientState {
     settings: DatabaseConfig,
     cache: ClientCache,
-    /// The database's runtime, whose idle connection pools the REST transport reuses; dangling
-    /// where no database owns the state.
-    runtime: Weak<DriverRuntime>,
+    /// The driver's idle REST connection pools, of which the REST transport takes one and to
+    /// which it returns; `None` where no database owns the state.
+    idle_pools: Option<Arc<IdlePools>>,
     /// Projects with a permanent Storage Read refusal. Shared across connections because
     /// `bigquery.readsessions.create` is granted per project. Automatic fallback leaves the
     /// configured opt-out value unchanged; re-enabling Storage Read clears the project's entry.
@@ -117,20 +117,19 @@ impl ClientState {
     /// State no database owns, whose REST transport reuses no pool.
     #[cfg(any(test, feature = "benchmark"))]
     pub(crate) fn new(config: &DatabaseConfig) -> Arc<Self> {
-        Self::with_runtime(config, Weak::new())
+        Self::with_idle_pools(config, None)
     }
 
-    /// The state of a database on `runtime`, whose REST transport may reuse a connection pool an
-    /// earlier database on the runtime left idle.
-    pub(crate) fn for_database(config: &DatabaseConfig, runtime: &SharedRuntime) -> Arc<Self> {
-        Self::with_runtime(config, Arc::downgrade(runtime))
+    /// The state of a database whose REST transport reuses one of the driver's `idle_pools`.
+    pub(crate) fn for_database(config: &DatabaseConfig, idle_pools: &Arc<IdlePools>) -> Arc<Self> {
+        Self::with_idle_pools(config, Some(idle_pools.clone()))
     }
 
-    fn with_runtime(config: &DatabaseConfig, runtime: Weak<DriverRuntime>) -> Arc<Self> {
+    fn with_idle_pools(config: &DatabaseConfig, idle_pools: Option<Arc<IdlePools>>) -> Arc<Self> {
         Arc::new(Self {
             settings: config.clone(),
             cache: ClientCache::default(),
-            runtime,
+            idle_pools,
             storage_read_disabled: Mutex::new(HashSet::new()),
             dataset_locations: Mutex::new(DatasetLocationCache::default()),
         })
@@ -164,11 +163,10 @@ impl ClientState {
     /// deadlines in `rest::request` let media uploads use the same pool.
     pub(crate) fn rest_client(&self) -> Result<RestClient> {
         cached(&self.cache.rest, || {
-            let runtime = self.runtime.upgrade();
             Ok(pooled_rest_client(
                 "direct REST transport",
                 &self.user_agent(),
-                runtime.as_ref(),
+                self.idle_pools.as_ref(),
             )?
             .with_unauthenticated_remedy(unauthenticated_remedy(&self.settings)))
         })

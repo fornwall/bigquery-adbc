@@ -15,6 +15,7 @@ use crate::clients::ClientState;
 use crate::config::DatabaseConfig;
 use crate::config::secret::Secret;
 use crate::connection::BigQueryConnection;
+use crate::rest::client::IdlePools;
 use crate::runtime::{SharedRuntime, new_runtime};
 
 #[cfg(feature = "ffi")]
@@ -30,6 +31,8 @@ pub(crate) use options::database_option_kind;
 #[derive(Clone, Debug)]
 pub struct BigQueryDriver {
     runtime: SharedRuntime,
+    /// The REST connection pools the runtime's databases leave idle for the next one.
+    idle_pools: Arc<IdlePools>,
 }
 
 impl BigQueryDriver {
@@ -38,16 +41,22 @@ impl BigQueryDriver {
         crate::diag::init();
         Ok(Self {
             runtime: new_runtime()?,
+            idle_pools: IdlePools::new(),
         })
     }
 
-    /// The runtime for a new database. A `fork` child inherits the C ABI's process-wide driver
-    /// without the runtime's workers, so each database it opens starts a runtime of its own.
-    fn runtime(&mut self) -> Result<SharedRuntime> {
+    /// A new database on the driver's runtime. A `fork` child inherits the C ABI's process-wide
+    /// driver without the runtime's workers, so each database it opens starts a runtime of its
+    /// own, with no pools to share.
+    fn database(&mut self) -> Result<BigQueryDatabase> {
         if self.runtime.orphaned() {
             self.runtime = new_runtime()?;
+            self.idle_pools = IdlePools::new();
         }
-        Ok(self.runtime.clone())
+        Ok(BigQueryDatabase::new(
+            self.runtime.clone(),
+            self.idle_pools.clone(),
+        ))
     }
 }
 
@@ -55,14 +64,14 @@ impl Driver for BigQueryDriver {
     type DatabaseType = BigQueryDatabase;
 
     fn new_database(&mut self) -> Result<Self::DatabaseType> {
-        Ok(BigQueryDatabase::new(self.runtime()?))
+        self.database()
     }
 
     fn new_database_with_opts(
         &mut self,
         opts: impl IntoIterator<Item = (OptionDatabase, OptionValue)>,
     ) -> Result<Self::DatabaseType> {
-        let mut database = BigQueryDatabase::new(self.runtime()?);
+        let mut database = self.database()?;
         // The URI goes first so explicit options override it whatever their order; of several
         // URIs the last wins, as repeated set_option calls would.
         let mut uri = None;
@@ -91,6 +100,7 @@ impl Driver for BigQueryDriver {
 #[derive(Debug)]
 pub struct BigQueryDatabase {
     runtime: SharedRuntime,
+    idle_pools: Arc<IdlePools>,
     config: DatabaseConfig,
     clients: OnceLock<Arc<ClientState>>,
     /// The last `uri` the caller set, with its credential values redacted so the standard option
@@ -100,9 +110,10 @@ pub struct BigQueryDatabase {
 }
 
 impl BigQueryDatabase {
-    pub(crate) fn new(runtime: SharedRuntime) -> Self {
+    pub(crate) fn new(runtime: SharedRuntime, idle_pools: Arc<IdlePools>) -> Self {
         Self {
             runtime,
+            idle_pools,
             config: DatabaseConfig::default(),
             clients: OnceLock::new(),
             uri: None,
@@ -111,7 +122,7 @@ impl BigQueryDatabase {
 
     fn clients(&self) -> &Arc<ClientState> {
         self.clients
-            .get_or_init(|| ClientState::for_database(&self.config, &self.runtime))
+            .get_or_init(|| ClientState::for_database(&self.config, &self.idle_pools))
     }
 
     /// A copy sharing this database's runtime and client generation, from which connections can
@@ -121,6 +132,7 @@ impl BigQueryDatabase {
     pub(crate) fn snapshot(&self) -> Self {
         Self {
             runtime: self.runtime.clone(),
+            idle_pools: self.idle_pools.clone(),
             config: self.config.clone(),
             clients: OnceLock::from(Arc::clone(self.clients())),
             uri: self.uri.clone(),

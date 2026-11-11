@@ -1,14 +1,14 @@
 //! Shared HTTP connection pool with per-request deadlines and upload progress timeouts.
 
 use std::borrow::Cow;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use adbc_core::error::{Error, Result, Status};
 use reqwest::header::{HeaderValue, USER_AGENT as USER_AGENT_HEADER};
 
 use crate::error::{driver_defect, error, failed_to, request_error};
-use crate::runtime::{DriverRuntime, SharedRuntime};
+use crate::runtime::process_id;
 
 #[cfg(test)]
 mod tests;
@@ -81,10 +81,10 @@ pub(crate) struct RestClient {
     upload_progress_timeout: Duration,
 }
 
-/// A connection pool, which the databases of one runtime reuse one after another.
+/// A connection pool, which the databases of one driver reuse one after another.
 ///
 /// When the last client of a database's client generation drops it, the pool and its open
-/// connections join the runtime's idle pools, and the next database the runtime opens takes one
+/// connections join the driver's [`IdlePools`], and the next database the driver opens takes one
 /// instead of building its own: a process that opens a database per connection, as the Python
 /// DB-API does, then skips the TCP and TLS handshakes and reloading the system's root
 /// certificates. A pool serves one generation at a time, so databases open together still get
@@ -94,53 +94,57 @@ pub(crate) struct RestClient {
 /// reads them once per process. Hyper closes a connection idle for 90 seconds.
 struct Transport {
     http: reqwest::Client,
-    /// The runtime whose tasks drive the pool's connections, which alone may reuse them, so a
-    /// `fork` child, whose databases each get a runtime of their own, never writes to its parent's
-    /// sockets. Dangling for a pool no runtime shares.
-    owner: Weak<DriverRuntime>,
+    /// Where the pool goes when no client uses it; `None` for a pool nothing reuses.
+    idle: Option<Arc<IdlePools>>,
 }
 
-/// The idle pools, at most [`IDLE_TRANSPORTS`] per runtime, each with the runtime that owns it.
-static IDLE: Mutex<Vec<(Weak<DriverRuntime>, reqwest::Client)>> = Mutex::new(Vec::new());
+/// The idle connection pools of one driver runtime's databases, which only they may reuse: the
+/// runtime's tasks drive the connections.
+///
+/// A `fork` child gives each database a new runtime and a new set, so it never writes to its
+/// parent's sockets nor waits on this lock, which a thread the child lacks may have held.
+pub(crate) struct IdlePools {
+    pools: Mutex<Vec<reqwest::Client>>,
+    /// The process that may use them, compared as `DriverRuntime::orphaned` compares its own.
+    process: u32,
+}
 
 /// Enough for a few workers that each open and close databases in turn.
-const IDLE_TRANSPORTS: usize = 4;
+const IDLE_POOLS: usize = 4;
 
-/// The lock is held only to move an entry, so a poisoned one is recovered.
-fn idle() -> MutexGuard<'static, Vec<(Weak<DriverRuntime>, reqwest::Client)>> {
-    IDLE.lock().unwrap_or_else(PoisonError::into_inner)
+impl IdlePools {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            pools: Mutex::new(Vec::new()),
+            process: process_id(),
+        })
+    }
+
+    /// The pools, unless a `fork` child inherited them. A poisoned lock is recovered: it is held
+    /// only to move one entry.
+    fn pools(&self) -> Option<MutexGuard<'_, Vec<reqwest::Client>>> {
+        (self.process == process_id())
+            .then(|| self.pools.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    fn take(&self) -> Option<reqwest::Client> {
+        self.pools()?.pop()
+    }
 }
 
-/// An idle pool of `runtime`'s, if there is one. The pools of dropped runtimes are discarded.
-fn check_out(runtime: &SharedRuntime) -> Option<reqwest::Client> {
-    let owner = Arc::downgrade(runtime);
-    let mut idle = idle();
-    idle.retain(|(candidate, _)| candidate.strong_count() > 0);
-    let index = idle
-        .iter()
-        .position(|(candidate, _)| candidate.ptr_eq(&owner))?;
-    Some(idle.swap_remove(index).1)
+impl std::fmt::Debug for IdlePools {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("IdlePools")
+    }
 }
 
 impl Drop for Transport {
     fn drop(&mut self) {
-        // A runtime that is gone, or that a `fork` child inherited, drives no connection.
-        let Some(owner) = self.owner.upgrade().filter(|owner| !owner.orphaned()) else {
-            return;
-        };
-        let mut idle = idle();
-        idle.retain(|(candidate, _)| candidate.strong_count() > 0);
-        let pooled = idle
-            .iter()
-            .filter(|(candidate, _)| candidate.ptr_eq(&self.owner))
-            .count();
-        if pooled < IDLE_TRANSPORTS {
-            idle.push((self.owner.clone(), self.http.clone()));
+        if let Some(mut pools) = self.idle.as_deref().and_then(IdlePools::pools)
+            && pools.len() < IDLE_POOLS
+        {
+            pools.push(self.http.clone());
         }
-        drop(idle);
-        // Released after the lock: were this the runtime's last reference, its shutdown must not
-        // run under it.
-        drop(owner);
     }
 }
 
@@ -285,26 +289,26 @@ pub(crate) fn rest_client(what: &str) -> Result<RestClient> {
     build_client(what, reqwest::Client::builder())
 }
 
-/// A client sending `user_agent`. With a `runtime`, it takes an idle pool of the runtime's, or
-/// builds one that becomes idle once the client and its clones are dropped.
+/// A client sending `user_agent`. With `idle`, it takes one of those pools, or builds one that
+/// joins them once the client and its clones are dropped.
 pub(crate) fn pooled_rest_client(
     what: &str,
     user_agent: &str,
-    runtime: Option<&SharedRuntime>,
+    idle: Option<&Arc<IdlePools>>,
 ) -> Result<RestClient> {
     let user_agent = HeaderValue::from_str(user_agent).map_err(|_| {
         driver_defect(format_args!(
             "the BigQuery {what} user agent is not an HTTP header value"
         ))
     })?;
-    let http = match runtime.and_then(check_out) {
+    let http = match idle.and_then(|idle| idle.take()) {
         Some(http) => http,
         None => build_http(what, reqwest::Client::builder())?,
     };
     Ok(RestClient {
         transport: Arc::new(Transport {
             http,
-            owner: runtime.map_or_else(Weak::new, Arc::downgrade),
+            idle: idle.cloned(),
         }),
         user_agent,
         unauthenticated_remedy: None,
@@ -329,7 +333,7 @@ fn build_client(what: &str, builder: reqwest::ClientBuilder) -> Result<RestClien
     Ok(RestClient {
         transport: Arc::new(Transport {
             http: build_http(what, builder)?,
-            owner: Weak::new(),
+            idle: None,
         }),
         user_agent: HeaderValue::from_static(USER_AGENT),
         unauthenticated_remedy: None,

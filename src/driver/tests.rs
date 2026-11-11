@@ -31,7 +31,10 @@ const AUTHORIZED_USER_JSON: &str = r#"{
 
 /// A database on its own runtime, with no option set.
 pub(super) fn new_database() -> BigQueryDatabase {
-    BigQueryDatabase::new(new_runtime().unwrap())
+    BigQueryDatabase::new(
+        new_runtime().unwrap(),
+        crate::rest::client::IdlePools::new(),
+    )
 }
 
 /// Builds every client the database can hand out and asserts the cache saw them all. The Storage
