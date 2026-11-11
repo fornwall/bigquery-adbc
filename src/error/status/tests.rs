@@ -319,7 +319,9 @@ fn the_typed_and_numeric_code_tables_agree() {
         (Code::ResourceExhausted, 8, Status::IO),
         (Code::FailedPrecondition, 9, Status::InvalidState),
         (Code::Aborted, 10, Status::InvalidState),
-        (Code::OutOfRange, 11, Status::InvalidArguments),
+        // Past a range the system state can move, such as a Storage Write append past the end
+        // of its stream: a precondition, not a malformed argument.
+        (Code::OutOfRange, 11, Status::InvalidState),
         (Code::Unimplemented, 12, Status::NotImplemented),
         (Code::Internal, 13, Status::Internal),
         (Code::Unavailable, 14, Status::IO),

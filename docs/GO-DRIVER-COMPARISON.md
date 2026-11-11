@@ -347,6 +347,7 @@ message with `(Query: <console URL>)`. These statuses differ:
 | HTTP 401 | `UNAUTHENTICATED` | `UNAUTHORIZED` |
 | HTTP 403 without a recognized reason | `UNAUTHORIZED` | Call-site default, usually `INTERNAL` |
 | Connection, transport and transient token-exchange failures | `IO` | `IO` for discrete OAuth transport failures, otherwise the call-site default |
+| gRPC `OUT_OF_RANGE`, such as a Storage Write append past its stream's end | `INVALID_STATE`; `INVALID_DATA` for a Storage Read value Arrow cannot hold | `INVALID_ARGUMENT` |
 
 ### G86. Diagnostics use timestamped plain text and a fixed stderr sink
 

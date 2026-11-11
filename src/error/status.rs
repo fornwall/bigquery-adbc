@@ -274,14 +274,17 @@ pub(crate) fn rpc_code_status(code: i64) -> Status {
 fn code_status(code: Code) -> Status {
     match code {
         Code::Cancelled => Status::Cancelled,
-        Code::InvalidArgument | Code::OutOfRange => Status::InvalidArguments,
+        Code::InvalidArgument => Status::InvalidArguments,
         Code::DeadlineExceeded => Status::Timeout,
         Code::NotFound => Status::NotFound,
         Code::AlreadyExists => Status::AlreadyExists,
         Code::PermissionDenied => Status::Unauthorized,
         // `Aborted` reports a concurrency conflict, which callers handle like
-        // `FailedPrecondition`.
-        Code::FailedPrecondition | Code::Aborted => Status::InvalidState,
+        // `FailedPrecondition`. `OutOfRange` is, unlike `InvalidArgument`, a range the system
+        // state can move: Storage Write answers an append past the end of its stream with it, the
+        // stream state its `OFFSET_OUT_OF_RANGE` detail names. Storage Read's `ReadRows` uses it
+        // for an unconvertible value, which `crate::storage_read` reports as `InvalidData`.
+        Code::FailedPrecondition | Code::Aborted | Code::OutOfRange => Status::InvalidState,
         Code::Unimplemented => Status::NotImplemented,
         // AIP-194: "usually means a bug should be filed against the system", to be surfaced
         // rather than retried. The Storage API callers retry it first anyway (see

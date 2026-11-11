@@ -24,6 +24,9 @@ changes.
   is refused with how to select `json_credential_file` instead.
 - The dbt installer accepts dbt's Rust target triples with `--target`, and rejects unknown
   options and missing values before installing.
+- A gRPC `OUT_OF_RANGE`, such as a Storage Write append past the end of its stream, returns
+  `INVALID_STATE` rather than `INVALID_ARGUMENT`, as the same condition reported by a stream
+  commit already did.
 - Python's `dbapi.connect()` takes `backend` as its only keyword beyond `autocommit`, so a
   misspelled keyword raises `TypeError` before the driver loads, instead of after opening the
   database and connection.
