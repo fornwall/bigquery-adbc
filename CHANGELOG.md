@@ -47,6 +47,8 @@ changes.
 - A job submission none of whose attempts could connect (DNS, TCP or TLS) reports
   `bigquery.job.verdict` `not_created` instead of failing to look for its job, and such a
   `jobs.query` no longer says BigQuery may have run the statement.
+- A `create` bulk ingest whose commit fails says it kept the table it created and suggests
+  retrying with `append`, rather than suggesting a retry that would fail on that table.
 
 ## [0.5.0] - 2026-11-09
 

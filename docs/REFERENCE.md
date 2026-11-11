@@ -546,7 +546,7 @@ Bulk ingest uses the Storage Write API.
 
 | Mode | Table preparation and failure behavior |
 | --- | --- |
-| `create` | Requires a new table. If a later step fails, the created table is kept. A failure before commit reports that no rows were committed and suggests retrying with `append`. |
+| `create` | Requires a new table. If a later step fails, the created table is kept, and the error says so and suggests retrying with `append`; a failure before commit also reports that no rows were committed. |
 | `append` | Requires an existing compatible table. |
 | `create_append` | Creates a missing table, or appends to an existing compatible one. |
 | `replace` | With the same schema, uploads before truncating, so an upload failure or cancellation keeps the old rows; a failure after truncation can leave the table empty, and the error says so. With a different schema, recreates the table before uploading, so a later failure leaves the new, empty table, and the error says the old rows are gone. A cancel or lost response after a `TRUNCATE` or recreation is sent says the old rows may be gone, since BigQuery can finish such a statement. The `TRUNCATE` before the commit cannot be cancelled, and BigQuery stops it after ten minutes. |

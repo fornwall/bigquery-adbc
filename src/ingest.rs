@@ -191,16 +191,14 @@ pub(crate) fn execute_ingest(
     let stream = match staged {
         Ok(Some(stream)) => stream,
         Ok(None) => return Ok(0),
-        Err(mut failure) if options.mode == IngestMode::Create => {
+        Err(failure) if options.mode == IngestMode::Create => {
             // Even an empty-table check followed by DROP can race a concurrent writer's commit.
             // Keep the table; this ingest has not committed any rows, so retrying append is safe.
-            failure.message = format!(
-                "{}; the ingest committed no rows but kept the table it created, {table}; retry \
-                 with {ADBC_INGEST_OPTION_MODE}={ADBC_INGEST_OPTION_MODE_APPEND:?}, or drop the \
-                 table and retry",
-                failure.message
-            );
-            return Err(failure);
+            return Err(kept_created_table(
+                failure,
+                table,
+                "committed no rows but kept",
+            ));
         }
         Err(failure) if plan == TablePlan::Recreate => return Err(recreated(failure, table)),
         Err(failure) => return Err(failure),
@@ -231,8 +229,28 @@ pub(crate) fn execute_ingest(
                 failure
             }
             TablePlan::Recreate => recreated(failure, table),
+            // The commit says whether its rows can be retried, but not that a `create` retry
+            // would only meet the table this one created.
+            TablePlan::Create if options.mode == IngestMode::Create => {
+                kept_created_table(failure, table, "kept")
+            }
             TablePlan::Reuse | TablePlan::Create => failure,
         })
+}
+
+/// Tells the caller of a failed `create` that the table it created remains, so a retry in that
+/// mode would only meet it. `outcome` is what the ingest did, ending in the table being kept.
+fn kept_created_table(
+    mut failure: adbc_core::error::Error,
+    table: TableId<'_>,
+    outcome: &str,
+) -> adbc_core::error::Error {
+    failure.message = format!(
+        "{}; the ingest {outcome} the table it created, {table}; retry with \
+         {ADBC_INGEST_OPTION_MODE}={ADBC_INGEST_OPTION_MODE_APPEND:?}, or drop the table and retry",
+        failure.message
+    );
+    failure
 }
 
 /// Tells the caller of a `replace` that failed after recreating its target that the old table's

@@ -261,6 +261,33 @@ fn a_failed_create_retains_the_table_and_reports_how_to_retry() {
     assert_eq!(requests.len(), 1);
     assert!(requests[0].path().contains("/datasets/dataset/tables"));
     assert_eq!(storage.finalized(), (Some(1), false));
+
+    // A refused commit, too, leaves the created table behind, so a retry in `create` mode would
+    // only meet the table: the remedy is the same.
+    let (outcome, _requests, storage) = ingest_against_mocks(
+        vec![ok(json!({})), ddl_answer()],
+        MockPlan {
+            commit_errors: Some(vec![
+                StorageError::new()
+                    .set_code(StorageErrorCode::InvalidStreamState)
+                    .set_error_message("stream not finalized"),
+            ]),
+            ..MockPlan::default()
+        },
+        IngestMode::Create,
+        reading(one_id_batch()),
+    );
+    assert_failure(
+        &outcome.unwrap_err(),
+        Status::InvalidState,
+        &[
+            "stream not finalized",
+            "none of its 1 rows were written",
+            "kept the table it created, project.dataset.events",
+            "adbc.ingest.mode.append",
+        ],
+    );
+    assert!(!storage.finalized().1);
 }
 
 /// A `replace` whose schema differs recreates the target before uploading, so a failure after
