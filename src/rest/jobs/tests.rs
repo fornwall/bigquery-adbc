@@ -1449,6 +1449,56 @@ fn an_exhausted_submission_reports_what_its_reconciliation_learned() {
     }
 }
 
+/// A located submission whose job a 409 proves, or ambiguous attempts leave possible, but which
+/// recovery cannot fetch, names that job, with its console link, as one that may still run. Its
+/// location is configured, so the remedy does not suggest setting one.
+#[test]
+fn a_located_job_that_recovery_cannot_fetch_may_still_run() {
+    let not_found = || vec![(404, error_body("notFound", "Not found: Job")); 3];
+    let mut conflict = vec![(
+        409,
+        error_body(
+            "duplicate",
+            "Already Exists: Job billing/project:EU.unfetched",
+        ),
+    )];
+    conflict.extend(not_found());
+    let mut exhausted = vec![(500, error_body("backendError", "submit")); MAX_ATTEMPTS];
+    exhausted.extend(vec![
+        (503, error_body("backendError", "reconcile"));
+        MAX_RECONCILIATION_ATTEMPTS
+    ]);
+    for (responses, reported) in [
+        (
+            conflict,
+            "duplicate: Already Exists: Job billing/project:EU.unfetched (HTTP 409)",
+        ),
+        (exhausted, "backendError: reconcile (HTTP 503)"),
+    ] {
+        let count = responses.len();
+        let (endpoint, captured) = capture_requests(responses);
+        let failure = insert_copy(&endpoint, "unfetched").unwrap_err();
+
+        assert_message(
+            &failure,
+            &[
+                &format!(
+                    "{reported}; BigQuery may still run job billing/project:EU.unfetched; \
+                     recovery did not complete; check the job before running it again \
+                     (Query: "
+                ),
+                "j=bq:EU:unfetched",
+            ],
+        );
+        assert!(!has_job_verdict(&failure));
+        assert!(failure.details.unwrap().contains(&(
+            DETAIL_JOB_ID.to_owned(),
+            b"billing/project:EU.unfetched".to_vec(),
+        )));
+        captured.served(count);
+    }
+}
+
 /// A job poll retries a quota failure as it does a 5xx, and a 404 as a job not yet visible, so a
 /// load, copy, or python model survives the same rate-limit episode as a concurrent query.
 #[test]

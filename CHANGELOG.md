@@ -71,7 +71,9 @@ changes.
   retrying with `append`, rather than suggesting a retry that would fail on that table.
 - When looking for a job submitted without `bigquery.location` fails partway, for example on a
   transient `jobs.get` failure, the error now says the job may still run and names it in
-  `bigquery.job_id`, as it does when the job is found nowhere.
+  `bigquery.job_id`, as it does when the job is found nowhere. So does a submission with a
+  location whose job a 409 or a lost answer leaves unfetched, rather than reporting the 409 as
+  BigQuery rejecting the job.
 - An append to a view, snapshot or other object that is not a table reports that, rather than
   what one of its columns makes of a bound all-null field.
 - A Storage Read stream that BigQuery fails with `OUT_OF_RANGE`, for a value Arrow cannot hold

@@ -505,7 +505,8 @@ impl JobClient {
                     confirm_submission(operation, &request.reference)?;
                     return self
                         .reconcile_submission(operation, &request.reference, what, Some(failure))
-                        .await;
+                        .await
+                        .map_err(|failure| may_still_run(failure, &request.reference, false));
                 }
                 Err(failure) if failure.status == Status::Cancelled => {
                     // A cancel that raced job visibility may have received 404; confirming the
@@ -533,7 +534,8 @@ impl JobClient {
                 confirm_submission(operation, &request.reference)?;
                 return self
                     .reconcile_submission(operation, &request.reference, what, Some(failure))
-                    .await;
+                    .await
+                    .map_err(|failure| may_still_run(failure, &request.reference, false));
             }
             diag!(
                 Debug,
@@ -928,6 +930,35 @@ pub(crate) fn may_have_created(
     start.started() && !refused
 }
 
+/// `failure` ended the recovery of a submitted job, which `reference` names as far as it is known
+/// and which may still run, so the failure says so and links the job. `set_location` adds that a
+/// configured location avoids the search. A cancellation is returned as is: it stopped the
+/// recovery, and the operation cancels the job.
+fn may_still_run(
+    mut failure: adbc_core::error::Error,
+    reference: &JobReference,
+    set_location: bool,
+) -> adbc_core::error::Error {
+    if failure.status == Status::Cancelled {
+        return failure;
+    }
+    let mut remedy = format!(
+        "BigQuery may still run job {}; recovery did not complete; check the job before running \
+         it again",
+        job_name(reference)
+    );
+    if set_location {
+        write!(
+            remedy,
+            ", or set {}",
+            BigQueryDatabaseOption::Location.as_str()
+        )
+        .expect("writing to a String cannot fail");
+    }
+    append_remedy(&mut failure, &remedy);
+    with_job_link(failure, Some(reference))
+}
+
 /// Ends a stopped submission's provisional identity: confirmed when the job may exist, and
 /// otherwise recorded as finished, so neither a cancel's retry nor the operation's end sends a
 /// `jobs.cancel` that could only answer 404.
@@ -1157,21 +1188,8 @@ impl InferredSubmission {
 
     /// `failure` ended recovery of the job, which `reference` names as far as it is known and
     /// which may still run.
-    fn unrecovered(
-        &self,
-        mut failure: adbc_core::error::Error,
-        reference: &JobReference,
-    ) -> Unlocated {
-        append_remedy(
-            &mut failure,
-            &format!(
-                "BigQuery may still run job {}; recovery did not complete; \
-                 check the job before running it again, or set {}",
-                job_name(reference),
-                BigQueryDatabaseOption::Location.as_str()
-            ),
-        );
-        Unlocated::unknown(with_job_link(failure, Some(reference)))
+    fn unrecovered(&self, failure: adbc_core::error::Error, reference: &JobReference) -> Unlocated {
+        Unlocated::unknown(may_still_run(failure, reference, true))
     }
 
     /// Steps 2–4: the job with its location and resource, `None` if no step found it, or the
