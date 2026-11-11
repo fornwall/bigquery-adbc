@@ -4,7 +4,7 @@ set -euo pipefail
 
 # dbt's main branch, with Cargo.lock beside this script because dbt only commits one on release
 # tags. Move them together.
-readonly DBT_COMMIT=327f5269737bfec2440f10e07702f8280dfec1e9
+readonly DBT_COMMIT=ef0aa4db3a70a7a5df5c4f008686e95f4fbab5e0
 readonly DBT_REPOSITORY=https://github.com/dbt-labs/dbt.git
 readonly RELEASES=https://github.com/fornwall/bigquery-adbc/releases/download
 

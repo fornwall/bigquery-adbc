@@ -6,7 +6,7 @@ adapters are unchanged. The binary is named `dbt-bigquery-adbc`, so it can sit b
 `PATH`, and `--version` names the build and dbt commit:
 
 ```text
-dbt (modified with bigquery-adbc 0.4.0) 327f526973 2026-11-07
+dbt (modified with bigquery-adbc 0.4.0) ef0aa4db3a 2026-11-11
 ```
 
 dbt's own version is unchanged everywhere else, including `dbt_version` in Jinja and artifacts.
