@@ -59,6 +59,18 @@ fn parses_and_completes_destination_tables() {
             Some("default_dataset"),
             "example.com:project.default_dataset.table",
         ),
+        (
+            "other-project.my_catalog.my_namespace.table",
+            None,
+            None,
+            "other-project.my_catalog.my_namespace.table",
+        ),
+        (
+            "example.com:project.my_catalog.my_namespace.table",
+            None,
+            None,
+            "example.com:project.my_catalog.my_namespace.table",
+        ),
     ] {
         let default_project = default_project_id.map(project);
         assert_eq!(
@@ -76,6 +88,17 @@ fn parses_and_completes_destination_tables() {
         ("project..table", None, None),
         (".dataset.table", None, None),
         ("project.dataset.", None, None),
+        ("project.catalog.namespace.nested.table", None, None),
+        (
+            "example.com:project.catalog.namespace.nested.table",
+            None,
+            None,
+        ),
+        ("project.catalog..table", None, None),
+        ("project..namespace.table", None, None),
+        (".catalog.namespace.table", None, None),
+        ("project.catalog.namespace.", None, None),
+        ("example.com:project.table", None, None),
     ] {
         let default_project = default_project_id.map(project);
         assert_eq!(
@@ -92,15 +115,63 @@ fn destination_projects_keep_their_spelling_for_server_validation() {
     for value in [
         "INVALID",
         "short",
-        "project.with.dots",
         "example.com:project",
         "analytics.example.com:project",
     ] {
-        let table = parse(&format!("{value}.dataset.table"), None, None).unwrap();
-        assert_eq!(table.project_id().as_str(), value);
-        assert_eq!(table.dataset_id(), "dataset");
-        assert_eq!(table.table_id(), "table");
+        for (path, dataset) in [
+            ("dataset", "dataset"),
+            ("catalog.namespace", "catalog.namespace"),
+        ] {
+            let table = parse(&format!("{value}.{path}.table"), None, None).unwrap();
+            assert_eq!(table.project_id().as_str(), value);
+            assert_eq!(table.dataset_id(), dataset);
+            assert_eq!(table.table_id(), "table");
+        }
     }
+}
+
+/// `project.catalog.namespace.table` names a BigLake Iceberg table, which BigQuery addresses with
+/// the dataset ID `catalog.namespace`. A dotted project needs the colon of a domain-scoped ID, as
+/// BigQuery refuses any other.
+#[test]
+fn a_four_part_reference_names_a_catalog_namespace_dataset() {
+    for (value, project_id, dataset_id) in [
+        (
+            "project.catalog.namespace.table",
+            "project",
+            "catalog.namespace",
+        ),
+        (
+            "my-project.my-catalog.my-namespace.table",
+            "my-project",
+            "my-catalog.my-namespace",
+        ),
+        ("project.with.dots.table", "project", "with.dots"),
+        (
+            "example.com:project.catalog.namespace.table",
+            "example.com:project",
+            "catalog.namespace",
+        ),
+    ] {
+        let table = parse(value, Some(&project("default-project")), Some("default")).unwrap();
+        assert_eq!(table.project_id().as_str(), project_id, "{value}");
+        assert_eq!(table.dataset_id(), dataset_id, "{value}");
+        assert_eq!(table.table_id(), "table", "{value}");
+        assert_eq!(table.as_option_value(), value);
+        assert_eq!(
+            serde_json::to_value(table.id()).unwrap(),
+            serde_json::json!({
+                "projectId": project_id,
+                "datasetId": dataset_id,
+                "tableId": "table",
+            })
+        );
+    }
+
+    // Three parts stay `project.dataset.table`, holding the dataset to BigQuery's dataset rule.
+    let error = parse("project.my-catalog.table", None, None).unwrap_err();
+    assert_eq!(error.status, Status::InvalidArguments);
+    assert_message(&error, &["the dataset ID in BigQuery option"]);
 }
 
 /// A reference that needs a missing default names the options that would supply it.
@@ -150,7 +221,8 @@ fn an_unparsable_reference_names_the_accepted_forms_without_echoing_the_value() 
     assert_message_omits(&error, &[secret]);
     assert_message(
         &error,
-        &["expected table, dataset.table, or project.dataset.table"],
+        &["expected table, dataset.table, project.dataset.table, or \
+             project.catalog.namespace.table"],
     );
 }
 
@@ -187,6 +259,19 @@ fn an_invalid_component_names_the_option_the_half_and_the_rule() {
             format!(
                 "the table ID in BigQuery option {key} is 1025 bytes long in UTF-8; it cannot \
                  exceed 1,024 bytes"
+            ),
+        ),
+        (
+            "project.cat/alog.namespace.table".to_owned(),
+            format!(
+                "the catalog in BigQuery option {key} cannot contain slashes or control characters"
+            ),
+        ),
+        (
+            "project.catalog.name\nspace.table".to_owned(),
+            format!(
+                "the namespace in BigQuery option {key} cannot contain slashes or control \
+                 characters"
             ),
         ),
     ] {

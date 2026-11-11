@@ -112,6 +112,23 @@ pub(crate) fn validate_table_id(subject: &str, table_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validates the catalog or namespace of a BigLake `catalog.namespace` dataset ID, naming what the
+/// rejected value was supplied as. The caller has already rejected an empty component.
+///
+/// BigQuery does not hold these to the dataset rule (verified live: it resolves `my-catalog.my-ns`
+/// but refuses the dataset `my-dataset`), so only `/` and control characters, which would break
+/// the dataset's resource-name segment, are checked.
+///
+/// The value itself is never echoed, so the subject is the only thing that identifies the input.
+pub(crate) fn validate_catalog_component(subject: &str, component: &str) -> Result<()> {
+    if component.contains('/') || component.chars().any(char::is_control) {
+        return Err(invalid_argument(format!(
+            "{subject} cannot contain slashes or control characters"
+        )));
+    }
+    Ok(())
+}
+
 /// Whether `name` is `.` or `..`, which a URL parser resolves away rather than reading as a name.
 ///
 /// A request for such a resource would address its parent instead, and percent-encoding does

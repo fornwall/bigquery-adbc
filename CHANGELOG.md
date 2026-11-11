@@ -5,6 +5,13 @@ changes.
 
 ## [Unreleased]
 
+### Added
+
+- `bigquery.query.destination_table`, the dbt copy options and authorized views accept
+  `project.catalog.namespace.table` for a BigLake Iceberg table, sent as dataset
+  `catalog.namespace`. A project with dots but no domain-scoped colon is no longer read as one
+  project, since BigQuery refuses it.
+
 ### Changed
 
 - The native library is 3% smaller (266 KB on x86-64 Linux): IAM impersonation refusals decode

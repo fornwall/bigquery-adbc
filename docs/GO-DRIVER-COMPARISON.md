@@ -540,8 +540,10 @@ URIs](REFERENCE.md#connection-uris)). Go applies only the fields the URI contain
 
 Like Go, this driver leaves project validity, including project numbers and domain-scoped IDs, to
 BigQuery; it refuses only `/`, `\`, control characters, `.` and `..`, which Go stores unchecked.
-Qualified table options split at the final two dots, so a domain-scoped project keeps its dots; the
-fork's stricter component counting is in [DBT.md](DBT.md).
+In qualified table options a domain-scoped project ends at the first dot after its colon, so it can
+precede a dataset or a BigLake catalog and namespace. Go splits at every dot, reading
+`example.com:project.dataset.table` as project `example` and dataset `com:project.dataset`; the
+fork parses domain-scoped projects but rejects `project.catalog.namespace.table`.
 
 ### G28. Legacy-SQL-only query options are not supported
 

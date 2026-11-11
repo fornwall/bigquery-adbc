@@ -6,7 +6,9 @@ use adbc_core::error::Result;
 
 use crate::clients::DatasetKey;
 use crate::error::invalid_argument;
-use crate::identifiers::{ProjectIdentifier, validate_dataset_id, validate_table_id};
+use crate::identifiers::{
+    ProjectIdentifier, validate_catalog_component, validate_dataset_id, validate_table_id,
+};
 use crate::rest::metadata::TableId;
 use crate::{BigQueryCreateDisposition, BigQueryQueryPriority, BigQueryWriteDisposition};
 use crate::{BigQueryDatabaseOption, BigQueryStatementOption};
@@ -54,6 +56,7 @@ pub(crate) struct StatementQueryOptions {
 
 /// A validated `project.dataset.table` name set through an option: a destination, a table copy's
 /// source, or an authorized view. [`Self::id`] borrows it as the [`TableId`] a request carries.
+/// A BigLake `project.catalog.namespace.table` name has the dataset ID `catalog.namespace`.
 /// Ordering makes authorized-view option output deterministic.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct QualifiedTableName {
@@ -63,26 +66,39 @@ pub(crate) struct QualifiedTableName {
 }
 
 impl QualifiedTableName {
-    /// Parses a `[[project.]dataset.]table` reference set through `key`. Errors name `key`, so a
-    /// copy endpoint is never reported as a bad destination table.
+    /// Parses a `[[project.]dataset.]table` or `project.catalog.namespace.table` reference set
+    /// through `key`. Errors name `key`, so a copy endpoint is never reported as a bad
+    /// destination table.
     ///
-    /// Split from the right because the project can contain dots, as in a domain-scoped ID.
-    /// Project validity belongs to BigQuery; only resource-segment safety is checked locally.
-    /// The table ID gets [`validate_table_id`]'s checks, which admit partition decorators
-    /// (`model$20240101`).
+    /// The four-part form names a table in a BigLake Iceberg catalog. Its dataset ID is
+    /// `catalog.namespace`, the dataset BigQuery's SQL resolves the same path to. Project validity
+    /// belongs to BigQuery; only resource-segment safety is checked locally. The table ID gets
+    /// [`validate_table_id`]'s checks, which admit partition decorators (`model$20240101`).
     pub(crate) fn parse_option(
         key: &str,
         value: &str,
         default_project_id: Option<&ProjectIdentifier>,
         default_dataset_id: Option<&str>,
     ) -> Result<Self> {
-        let mut parts = value.rsplitn(3, '.');
-        let table_id = parts.next().expect("split always returns one element");
-        let dataset_id = parts.next();
-        let project_id = parts.next();
+        let (path, table_id) = match value.rsplit_once('.') {
+            Some((path, table_id)) => (Some(path), table_id),
+            None => (None, value),
+        };
+        let (project_id, dataset_id) = match path {
+            None => (None, None),
+            Some(path) => match split_project(path) {
+                Some((project_id, dataset_id)) => (Some(project_id), Some(dataset_id)),
+                None => (None, Some(path)),
+            },
+        };
+        // A dotted dataset ID is a BigLake `catalog.namespace`; it always follows a project.
+        let catalog_namespace = dataset_id.and_then(|dataset_id| dataset_id.split_once('.'));
         if table_id.is_empty()
             || dataset_id.is_some_and(str::is_empty)
             || project_id.is_some_and(str::is_empty)
+            || catalog_namespace.is_some_and(|(catalog, namespace)| {
+                catalog.is_empty() || namespace.is_empty() || namespace.contains('.')
+            })
         {
             return Err(invalid_table_reference(key));
         }
@@ -97,10 +113,22 @@ impl QualifiedTableName {
         };
         let dataset_id = match dataset_id {
             Some(dataset_id) => {
-                validate_dataset_id(
-                    &format!("the dataset ID in BigQuery option {key}"),
-                    dataset_id,
-                )?;
+                match catalog_namespace {
+                    None => validate_dataset_id(
+                        &format!("the dataset ID in BigQuery option {key}"),
+                        dataset_id,
+                    )?,
+                    Some((catalog, namespace)) => {
+                        validate_catalog_component(
+                            &format!("the catalog in BigQuery option {key}"),
+                            catalog,
+                        )?;
+                        validate_catalog_component(
+                            &format!("the namespace in BigQuery option {key}"),
+                            namespace,
+                        )?;
+                    }
+                }
                 dataset_id
             }
             None => default_dataset_id
@@ -143,6 +171,21 @@ impl QualifiedTableName {
     }
 }
 
+/// Splits `project.dataset` or `project.catalog.namespace` after its project; `None` is a bare
+/// dataset.
+///
+/// A legacy domain-scoped project (`example.com:project`) keeps the dots before its colon, so it
+/// ends at the first dot after the colon. BigQuery refuses every other dotted project ID, so any
+/// other project ends at the first dot.
+fn split_project(path: &str) -> Option<(&str, &str)> {
+    let start = path
+        .find(':')
+        .filter(|&colon| path[colon..].contains('.'))
+        .unwrap_or(0);
+    let dot = start + path[start..].find('.')?;
+    Some((&path[..dot], &path[dot + 1..]))
+}
+
 #[derive(Clone, Copy)]
 enum MissingDefault {
     Project,
@@ -174,7 +217,8 @@ fn missing_table_default(key: &str, missing: MissingDefault) -> adbc_core::error
 
 fn invalid_table_reference(key: &str) -> adbc_core::error::Error {
     invalid_argument(format!(
-        "BigQuery option {key} is not a table reference; expected table, dataset.table, or project.dataset.table"
+        "BigQuery option {key} is not a table reference; expected table, dataset.table, \
+         project.dataset.table, or project.catalog.namespace.table"
     ))
 }
 

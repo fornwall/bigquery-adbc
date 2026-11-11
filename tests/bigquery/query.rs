@@ -21,10 +21,10 @@ use arrow_schema::{DataType, IntervalUnit, TimeUnit};
 use crate::cancellation::CANCELLABLE_QUERY;
 use crate::support::{
     DropTable, SCRATCH_DATASET, assert_harvested_job_statistics, assert_matches_dry_run, bool_at,
-    connect, connect_with_dataset, connect_with_dataset_at, count_rows, date_at, date_value,
-    execute_failure, execute_sql, i64_at, int64_column, interval_at, list_at, prepare_query,
-    project, read_all, read_single_i64, scratch_fixture, scratch_table, set_option, single_batch,
-    str_at, str_value, struct_at, ts_at, ts_value, typed,
+    connect, connect_at_location, connect_with_dataset, connect_with_dataset_at, count_rows,
+    date_at, date_value, execute_failure, execute_sql, i64_at, int64_column, interval_at, list_at,
+    prepare_query, project, read_all, read_single_i64, scratch_fixture, scratch_table, set_option,
+    single_batch, str_at, str_value, struct_at, ts_at, ts_value, typed,
 };
 
 #[test]
@@ -134,6 +134,36 @@ fn a_destination_query_without_a_location_writes_its_table() {
 
     let mut verify = prepare_query(&mut connection, &format!("SELECT value FROM `{table}`"));
     assert_eq!(read_single_i64(&mut verify), 7);
+}
+
+/// A `project.catalog.namespace.table` destination names the BigLake dataset `catalog.namespace`,
+/// the dataset BigQuery's SQL resolves the same path to. No such catalog exists, and
+/// `CREATE_NEVER` keeps the job from creating anything.
+#[test]
+#[ignore = "requires Google Cloud ADC and access to the integration project"]
+fn a_four_part_destination_names_the_dataset_sql_resolves() {
+    let project = project();
+    let path = format!("{project}.adbc_missing_catalog.adbc_missing_namespace.t");
+    let dataset = format!("Dataset {project}:adbc_missing_catalog.adbc_missing_namespace ");
+    let mut connection = connect_at_location(project, "US");
+
+    let mut destination = prepare_query(&mut connection, "SELECT 1 AS value");
+    set_option(
+        &mut destination,
+        BigQueryStatementOption::DestinationTable,
+        path.clone(),
+    );
+    set_option(
+        &mut destination,
+        BigQueryStatementOption::CreateDisposition,
+        BigQueryCreateDisposition::CreateNever,
+    );
+    let mut read = prepare_query(&mut connection, &format!("SELECT * FROM `{path}`"));
+    for (what, statement) in [("the destination", &mut destination), ("SQL", &mut read)] {
+        let (status, message) = execute_failure(statement);
+        assert_eq!(status, Status::NotFound, "{what}: {message}");
+        assert!(message.contains(&dataset), "{what}: {message}");
+    }
 }
 
 #[test]

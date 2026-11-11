@@ -93,6 +93,9 @@ Open limitations and missing test coverage. Behavior is documented in the
   conversion, interval reshaping) has unit coverage only (`src/storage_read/reshape.rs`).
 - Exact metadata filters in a dataset created with `isCaseInsensitive` (G56, G74) have mock coverage
   only.
+- No test writes a `project.catalog.namespace.table` destination: the integration project has no
+  BigLake catalog. The live test shows only that BigQuery resolves such a destination to the
+  dataset its SQL names, so writes to Iceberg tables and reading their results are unverified.
 - The [Driver Foundry suite](../integration/foundry-validation/README.md)'s live
   `test_get_statistics` checks only `row_count >= 0` (UP-38). Its two scratch datasets share a
   project, so its catalog tests do not cover switching projects; the Python

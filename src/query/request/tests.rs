@@ -229,30 +229,51 @@ fn every_job_only_option_selects_jobs_insert_but_required_job_mode_does_not() {
     );
 }
 
+/// Domain-scoped projects and BigLake `catalog.namespace` datasets reach the destination
+/// `TableReference` intact.
 #[test]
-fn domain_scoped_destination_projects_reach_the_job_configuration() {
-    let options = StatementQueryOptions {
-        destination_table: Some(
-            QualifiedTableName::parse_option(
-                crate::BigQueryStatementOption::DestinationTable.as_str(),
-                "analytics.example.com:project.dataset.table$20240101",
-                None,
-                None,
-            )
-            .unwrap(),
+fn qualified_destinations_reach_the_job_configuration() {
+    for (value, project_id, dataset_id) in [
+        (
+            "analytics.example.com:project.dataset.table$20240101",
+            "analytics.example.com:project",
+            "dataset",
         ),
-        ..StatementQueryOptions::default()
-    };
-    let job = simple_plan(&options).jobs_insert_body().unwrap();
-    assert_eq!(job["jobReference"]["projectId"], "billing-project");
-    assert_eq!(
-        job["configuration"]["query"]["destinationTable"],
-        json!({
-            "projectId": "analytics.example.com:project",
-            "datasetId": "dataset",
-            "tableId": "table$20240101",
-        })
-    );
+        (
+            "data-project.my_catalog.my_namespace.table$20240101",
+            "data-project",
+            "my_catalog.my_namespace",
+        ),
+        (
+            "example.com:project.my_catalog.my_namespace.table$20240101",
+            "example.com:project",
+            "my_catalog.my_namespace",
+        ),
+    ] {
+        let options = StatementQueryOptions {
+            destination_table: Some(
+                QualifiedTableName::parse_option(
+                    crate::BigQueryStatementOption::DestinationTable.as_str(),
+                    value,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            ),
+            ..StatementQueryOptions::default()
+        };
+        let job = simple_plan(&options).jobs_insert_body().unwrap();
+        assert_eq!(job["jobReference"]["projectId"], "billing-project");
+        assert_eq!(
+            job["configuration"]["query"]["destinationTable"],
+            json!({
+                "projectId": project_id,
+                "datasetId": dataset_id,
+                "tableId": "table$20240101",
+            }),
+            "{value}"
+        );
+    }
 }
 
 #[test]
