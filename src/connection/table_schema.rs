@@ -268,6 +268,13 @@ pub(super) fn resolve_table_reference<'a>(
     table_name: &'a str,
 ) -> Result<(ProjectIdentifier, &'a str, &'a str)> {
     let project_id = match catalog {
+        // Like an empty db_schema below: an empty catalog names no project, not the current one.
+        Some("") => {
+            return Err(invalid_argument(
+                "the BigQuery catalog argument must not be empty; pass NULL to use the \
+                 connection's current catalog",
+            ));
+        }
         Some(project_id) => ProjectIdentifier::try_new_from("the catalog argument", project_id)?,
         None => configured_project.cloned().ok_or_else(|| {
             invalid_state(

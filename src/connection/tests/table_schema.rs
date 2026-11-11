@@ -517,21 +517,28 @@ fn table_reference_uses_explicit_or_configured_components() {
         );
     }
 
-    // An empty db_schema names no dataset rather than the configured one, and the refusal says
-    // how to ask for that one instead of claiming none is configured.
-    let empty = resolve_table_reference(
-        Some(&configured),
-        Some("configured_dataset"),
-        None,
-        Some(""),
-        "table",
-    )
-    .unwrap_err();
-    assert_eq!(empty.status, Status::InvalidArguments);
-    assert_message(
-        &empty,
-        &["db_schema argument must not be empty", "pass NULL"],
-    );
+    // An empty catalog or db_schema names no project or dataset rather than the configured one,
+    // and the refusal says how to ask for that one instead of claiming none is configured.
+    for (catalog, db_schema, argument) in
+        [(None, Some(""), "db_schema"), (Some(""), None, "catalog")]
+    {
+        let empty = resolve_table_reference(
+            Some(&configured),
+            Some("configured_dataset"),
+            catalog,
+            db_schema,
+            "table",
+        )
+        .unwrap_err();
+        assert_eq!(empty.status, Status::InvalidArguments);
+        assert_message(
+            &empty,
+            &[
+                &format!("{argument} argument must not be empty"),
+                "pass NULL",
+            ],
+        );
+    }
 }
 
 /// A bad argument is `INVALID_ARGUMENTS`; an absent component is `INVALID_STATE`, as an unset
