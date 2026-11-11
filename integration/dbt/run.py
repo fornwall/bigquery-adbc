@@ -868,10 +868,6 @@ def assert_table_layout(
     expect(f"{table.table_id} clustering", table.clustering_fields, clustering_fields)
 
 
-def assert_field_types(table: bigquery.Table, expected: dict[str, str]) -> None:
-    expect(f"{table.table_id} field types", {field.name: field.field_type for field in table.schema}, expected)
-
-
 def assert_column_description(table: bigquery.Table, column: str, expected: str) -> None:
     field = next((field for field in table.schema if field.name == column), None)
     if field is None:
@@ -883,8 +879,7 @@ def assert_nested_persist_docs(client: bigquery.Client, project: str, dataset: s
     """Check top-level descriptions and the known loss of nested descriptions.
 
     dbt 2.0's do_nest_column_data_types drops nested paths before sending
-    update_columns_descriptions (docs/UPSTREAM.md UP-77). If nested descriptions
-    arrive, update the expectations and the corresponding KNOWN_ISSUES.md entry.
+    update_columns_descriptions (docs/UPSTREAM.md UP-77).
     """
     descriptions = {
         row.field_path: row.description
@@ -1144,7 +1139,6 @@ def assert_bigquery_state(*, expected_mv_refresh_minutes: int, local: bool) -> N
     assert_table_layout(fct_orders, partition_field="order_date", clustering_fields=["status", "customer_id"])
     if not {"component": "adbc_integration", "materialization": "table"}.items() <= (fct_orders.labels or {}).items():
         raise RuntimeError(f"unexpected fct_orders labels: {fct_orders.labels!r}")
-    # No DDL in this project sets this text; only the option-only update can have persisted it.
     expect("fct_orders description", fct_orders.description, TABLE_DESCRIPTION_SENTINEL)
     line_items = next((field for field in fct_orders.schema if field.name == "line_items"), None)
     if line_items is None:
@@ -1160,22 +1154,19 @@ def assert_bigquery_state(*, expected_mv_refresh_minutes: int, local: bool) -> N
     assert_table_layout(table("dim_customers"), clustering_fields=["region"])
     incremental = table("incremental_order_totals")
     assert_table_layout(incremental, partition_field="order_date", clustering_fields=["customer_id"])
-    # The second wave merges into the existing relation, so persist_docs must use the
-    # description update rather than DDL.
     expect("incremental_order_totals description", incremental.description, INCREMENTAL_DESCRIPTION)
     assert_column_description(incremental, "order_id", INCREMENTAL_COLUMN_DESCRIPTION)
     assert_nested_persist_docs(client, project, dataset)
 
     tables = {identifier: table(identifier) for identifier in EXPECTED_FIELD_TYPES}
     for identifier, types in EXPECTED_FIELD_TYPES.items():
-        assert_field_types(tables[identifier], types)
-    # The seed materialization calls update_table_description directly once the rows are in.
+        expect(
+            f"{identifier} field types", {field.name: field.field_type for field in tables[identifier].schema}, types
+        )
     expect("customers description", tables["customers"].description, SEED_DESCRIPTION)
     if local:
-        # dbt's bundled Go drivers drop decimal precision and scale from CSV loads, so under
-        # --upstream-adbc `numeric(20,4)` reads back as (None, None).
+        # dbt's driver drops these (EXPECTED_DECIMAL_PARAMETER_DIFFERENCES).
         assert_decimal_parameters(tables["exotic_wide_types"], {"precise_amount": (20, 4), "huge_amount": (None, None)})
-    # A plain `numeric` declaration loads as a parameter-free NUMERIC under both drivers.
     assert_decimal_parameters(tables["orders"], {"shipping_amount": (None, None)})
     assert_column_description(
         tables["select"], "名前-列", "Unicode flexible column, persisted through the metadata update."
