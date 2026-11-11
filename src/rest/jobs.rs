@@ -944,7 +944,7 @@ pub(crate) fn may_have_created(
 /// A submission's 409: BigQuery says the job exists, created by an earlier attempt whose answer
 /// was lost. That is no rejection, and what became of the job is unknown until it is fetched, so
 /// it reads as a failure to submit, with [`Status::Unknown`]. `send_context` names the attempt.
-fn existing_job(send_context: &str, body: &[u8]) -> adbc_core::error::Error {
+pub(crate) fn existing_job(send_context: &str, body: &[u8]) -> adbc_core::error::Error {
     let mut failure = service_error(
         &format!("failed to {send_context}"),
         reqwest::StatusCode::CONFLICT,

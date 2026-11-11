@@ -247,29 +247,46 @@ fn cancellation_during_reconciliation_stops_after_confirming_the_one_shot_upload
 
 /// An upload BigQuery may have accepted, whose job recovery then cannot fetch or read, names that
 /// job, with its console link, as one that may still run: after a lost answer, after an answer
-/// that does not decode, and after a fetched job that does not decode.
+/// that does not decode, after a fetched job that does not decode, and after a 409 for a job that
+/// never shows, which is no rejection, as for a `jobs.insert`.
 #[test]
 fn an_unrecovered_upload_says_its_job_may_still_run() {
     let attempts = crate::rest::jobs::MAX_RECONCILIATION_ATTEMPTS as usize;
     let unavailable = || vec![(503, error_body("backendError", "reconcile")); attempts];
     let lost = (500, error_body("backendError", "ambiguous"));
     let malformed = ok(json!({"jobReference": 5}));
-    for (upload, fetched, reported) in [
+    for (upload, fetched, reported, status) in [
         (
             lost.clone(),
             unavailable(),
             "backendError: reconcile (HTTP 503)",
+            Status::IO,
         ),
         (
             malformed.clone(),
             unavailable(),
             "backendError: reconcile (HTTP 503)",
+            Status::IO,
         ),
         // The fetched job is read like an accepted answer, which is reconciled once more.
         (
             lost,
             vec![malformed.clone(), malformed],
             "unexpected JSON structure",
+            Status::InvalidData,
+        ),
+        (
+            (
+                409,
+                error_body(
+                    "duplicate",
+                    "Already Exists: Job example-project:EU.csv-job",
+                ),
+            ),
+            vec![(404, error_body("notFound", "Not found: Job")); attempts],
+            "failed to submit the BigQuery CSV load job: duplicate: Already Exists: Job \
+             example-project:EU.csv-job (HTTP 409)",
+            Status::Unknown,
         ),
     ] {
         let (cancel_endpoint, cancels) = capture_requests_until_stopped(vec![ok(json!({}))]);
@@ -288,8 +305,9 @@ fn an_unrecovered_upload_says_its_job_may_still_run() {
         .unwrap_err();
         operation.finish();
 
-        crate::test_support::errors::assert_message(
+        crate::test_support::errors::assert_failure(
             &failure,
+            status,
             &[
                 reported,
                 "; BigQuery may still run job example-project:EU.csv-job; recovery did not \

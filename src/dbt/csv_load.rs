@@ -15,7 +15,8 @@ use crate::error::job_name;
 use crate::query::{ExecutionContext, QualifiedTableName, StatementQueryOptions};
 use crate::rest::client::RestClient;
 use crate::rest::jobs::{
-    JobClient, JobReference, JobRequest, may_have_created, may_still_run, settle_submission,
+    JobClient, JobReference, JobRequest, existing_job, may_have_created, may_still_run,
+    settle_submission,
 };
 use crate::rest::metadata::TableId;
 use crate::rest::model::TableSchema;
@@ -109,6 +110,8 @@ async fn submit_csv_load(
             operation.register_job(requested)?;
             return wait_for_submitted(jobs, operation, requested, &body, WHAT).await;
         }
+        // The job ID is new, so a 409 says this upload created the job, as a replay's would.
+        Ok((reqwest::StatusCode::CONFLICT, body)) => existing_job(context, &body),
         Ok((status, body)) => service_error(&format!("failed to {context}"), status, &body),
         Err(failure) => failure,
     };
