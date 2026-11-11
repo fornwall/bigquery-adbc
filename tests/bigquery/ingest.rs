@@ -37,7 +37,9 @@ use crate::support::{
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn bulk_ingests_arrow_with_standard_lifecycle_modes() {
-    let (table, _drop_table, mut connection) = scratch_fixture("ingest");
+    // BigQuery allows spaces and non-ASCII letters in a table name, so every request on the way
+    // (table lookup and creation, the write stream, the TRUNCATE) has to quote or encode it.
+    let (table, _drop_table, mut connection) = scratch_fixture("ingest naïve");
     set_option(
         &mut connection,
         BigQueryConnectionOption::BulkIngestMethod,
