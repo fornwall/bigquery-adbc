@@ -1,8 +1,8 @@
 //! Bounded delivery from async REST and Storage Read producers to synchronous Arrow readers.
 //!
 //! Each pipeline limits buffered batches, bytes and uncharged decoding work. All readers share
-//! a driver-wide CPU conversion limit. Cancellation propagates from reader drop, the statement
-//! and the remote operation.
+//! a driver-wide CPU conversion limit. Releasing the reader or cancelling its operation stops the
+//! producers.
 
 use std::future::Future;
 use std::pin::Pin;
