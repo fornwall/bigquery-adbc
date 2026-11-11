@@ -339,8 +339,9 @@ Conversion rules:
 the next query that needs one.
 
 - A `COMMIT TRANSACTION` or `ROLLBACK TRANSACTION` in SQL, alone or in a script, ends the
-  transaction, and the next statement starts a new one. A statement that fails, including one
-  BigQuery aborts for a concurrent update, leaves the transaction and its earlier work open.
+  transaction, and the next statement starts a new one. A statement that fails leaves the
+  transaction and its earlier work open, including one BigQuery aborts for a concurrent update and
+  DDL, which BigQuery refuses in a transaction except on temporary tables and functions.
 - Commit and rollback ignore cancellation for up to a minute, plus ten seconds to end the session
   after a failure. Releasing a connection with a transaction open rolls it back and ends the
   session, which the release waits for within the same limits, except on a Tokio worker thread.
