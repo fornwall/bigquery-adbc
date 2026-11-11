@@ -4,6 +4,7 @@ use std::future::Future;
 use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use adbc_core::error::{Result, Status};
 use tokio::runtime::{Builder, Handle, Runtime, RuntimeFlavor};
@@ -17,6 +18,26 @@ pub(crate) type SharedRuntime = Arc<DriverRuntime>;
 /// Why a handle inherited across `fork` cannot be used. See [`DriverRuntime::orphaned`].
 pub(crate) const INHERITED_ACROSS_FORK: &str = "this BigQuery handle was inherited across fork \
      and cannot be used; open a new database in this process";
+
+/// This process's ID once something keeps it current in every `fork` child, as the C ABI does
+/// with a `pthread_atfork` handler; zero (no process has that ID) until then, and for Rust callers.
+/// The fork checks run on every exported call, where `getpid` was most of the cost.
+static PROCESS_ID: AtomicU32 = AtomicU32::new(0);
+
+/// The current process's ID, which objects record at creation to detect `fork`.
+pub(crate) fn process_id() -> u32 {
+    match PROCESS_ID.load(Ordering::Relaxed) {
+        0 => std::process::id(),
+        cached => cached,
+    }
+}
+
+/// Cache the current process ID for [`process_id`]. Async-signal-safe, so a `fork` child handler
+/// can call it. Calling it without such a handler would leave a child its parent's ID.
+#[cfg(feature = "ffi")]
+pub(crate) fn cache_process_id() {
+    PROCESS_ID.store(std::process::id(), Ordering::Relaxed);
+}
 
 /// A boxed spawned task with no output. Tokio instantiates its task harness per future type and
 /// scheduler flavor, so boxing lets the driver's detached tasks share the instantiation the HTTP
@@ -37,7 +58,7 @@ impl DriverRuntime {
     /// only the calling thread, so no worker is left to drive I/O or timers, and whatever the
     /// child blocks on would never finish.
     pub(crate) fn orphaned(&self) -> bool {
-        self.process != std::process::id()
+        self.process != process_id()
     }
 
     pub(crate) fn result_conversion_permits(&self) -> Arc<Semaphore> {
@@ -181,7 +202,7 @@ fn build_runtime(result_conversion_concurrency: usize) -> Result<SharedRuntime> 
         .map(|runtime| {
             Arc::new(DriverRuntime {
                 runtime: Some(runtime),
-                process: std::process::id(),
+                process: process_id(),
                 result_conversion_permits: Arc::new(Semaphore::new(result_conversion_concurrency)),
                 result_conversion_concurrency,
             })

@@ -174,15 +174,17 @@ unsafe extern "C" fn release_driver(
 /// `driver` must point to an `AdbcDriver` allocation of at least the size implied by `version`.
 /// Initialization permits byte-aligned storage; later typed access to the vtable requires its
 /// natural alignment. Unsupported versions are rejected without accessing the vtable.
-// Guard-exempt (also covers the two exported wrappers below): builds a vtable of plain function
-// pointers and copies it with non-panicking pointer operations; the error paths are contained
-// inside `finish`.
+// Guard-exempt (also covers the two exported wrappers below): registers a fork handler and builds
+// a vtable of plain function pointers, copying it with non-panicking pointer operations; the error
+// paths are contained inside `finish`.
 unsafe fn init(version: c_int, driver: *mut c_void, error: *mut AdbcError) -> AdbcStatusCode {
     if driver.is_null() {
         // SAFETY: the caller provides initialized, exclusively writable error storage or null.
         return unsafe { finish(Err(guard::missing_argument("driver")), error) };
     }
 
+    // Before the caller can create any handle.
+    handle::track_forks();
     let table = vtable();
     match version {
         // SAFETY: the caller advertises writable space for the complete 1.1.0 vtable.

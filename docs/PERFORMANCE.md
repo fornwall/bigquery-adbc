@@ -550,6 +550,35 @@ python/.venv/bin/python -X importtime -c 'import bigquery_adbc' 2>&1 | tail -n 1
 perf stat -e instructions:u python/.venv/bin/python -c 'import bigquery_adbc'
 ```
 
+### C ABI calls
+
+Every exported call, stream release, runtime wait and result batch checks whether the process is
+a `fork` child of the one that created the object. That check called `getpid`, a system call
+costing about 270 ns here, which was most of the export layer's overhead. From `AdbcDriverInit`
+on, a `pthread_atfork` handler keeps a cached process ID current instead; Rust callers, which
+register no handler, still call `getpid`. The library grew 496 bytes.
+[`benches/ffi_calls.c`](../benches/ffi_calls.c) calls the vtable directly with no driver manager or
+network, 200,000 iterations, three alternating runs on 2026-11-11 (machine shared with other
+builds, unpinned); instructions are per iteration, after subtracting a zero-iteration run:
+
+| Case | Before ns | After ns | User instructions | Kernel instructions |
+| --- | ---: | ---: | ---: | ---: |
+| `StatementSetOption` | 402–406 | 77–82 | 1,615 → 1,613 | 483 → 1 |
+| `StatementGetOption` | 367–375 | 59–63 | 1,355 → 1,353 | 483 → 1 |
+| `StatementGetOptionDouble` (progress) | 323–326 | 28–31 | 550 → 548 | 483 → 0 |
+| `StatementNew` and `StatementRelease` | 1,052–1,121 | 182–205 | 2,125 → 2,118 | 1,447 → 3 |
+| `ConnectionGetTableTypes`, read and release | 1,982–2,036 | 494–530 | 7,834 → 7,823 | 2,414 → 5 |
+
+The gain is per call, so it does not show next to BigQuery round trips. Check the handler with
+`cargo test --locked --lib a_fork_child_sees_its_own_process_id`; reproduce with:
+
+```sh
+cargo rustc --release --locked --lib --crate-type cdylib
+cc -O2 benches/ffi_calls.c -o ffi_calls -ldl   # needs <arrow-adbc/adbc.h>
+perf stat -e instructions:u,instructions:k \
+    ./ffi_calls target/release/libadbc_driver_bigquery.so setopt 200000
+```
+
 ## Rejected optimizations
 
 Re-evaluating one means rebuilding the rejected code and [measuring again](#reproducing).

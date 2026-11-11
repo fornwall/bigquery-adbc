@@ -18,6 +18,7 @@ use super::abi::{ADBC_ERROR_INIT, ADBC_STATUS_OK, AdbcError, AdbcStatusCode};
 use super::error::export_error;
 use super::guard::{panic_message, sanitized_cstring};
 use crate::error::{chain, driver_defect, invalid_argument};
+use crate::runtime::process_id;
 
 /// Move a driver-produced schema into the caller's out parameter.
 ///
@@ -88,7 +89,7 @@ pub(super) fn export_reader(reader: Box<dyn RecordBatchReader + Send>) -> FFI_Ar
         last_error: None,
         exported_error: Box::into_raw(Box::new(ADBC_ERROR_INIT)),
         panicked: false,
-        process: std::process::id(),
+        process: process_id(),
     });
     // SAFETY: each callback reads `private_data` as the `PrivateData` boxed here, which `release`
     // alone frees, once, before marking the stream released.
@@ -267,7 +268,7 @@ unsafe extern "C" fn release(stream: *mut FFI_ArrowArrayStream) {
     let private_data = private_data.cast::<PrivateData>();
     // SAFETY: A non-null pointer is the live box export_reader created, and clearing the stream
     // first transferred its sole release ownership to this call.
-    if private_data.is_null() || unsafe { (*private_data).process } != std::process::id() {
+    if private_data.is_null() || unsafe { (*private_data).process } != process_id() {
         return;
     }
     // A reader can own arbitrary client code. Its destructor must not unwind through `release`.

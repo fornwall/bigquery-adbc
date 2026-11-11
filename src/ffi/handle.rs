@@ -9,6 +9,7 @@
 //! use separate fields so they remain available during execution.
 
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
 
 use adbc_core::CancelHandle;
@@ -20,7 +21,7 @@ use super::error::export_error;
 use super::guard::{catch, missing_argument};
 use crate::error::invalid_state;
 use crate::query::ExecutionProgress;
-use crate::runtime::INHERITED_ACROSS_FORK;
+use crate::runtime::{INHERITED_ACROSS_FORK, process_id};
 
 /// Buffer `New`/`SetOption` options until `Init` passes them to the driver's constructor.
 pub(crate) enum Staged<K, S> {
@@ -88,7 +89,7 @@ impl<S> Exported<S> {
         progress: Option<Arc<ExecutionProgress>>,
     ) -> Self {
         Self {
-            process: std::process::id(),
+            process: process_id(),
             cancel: cancel.map_or_else(OnceLock::new, OnceLock::from),
             progress,
             state: Mutex::new(state),
@@ -122,6 +123,43 @@ fn poisoned(kind: &str) -> Error {
 /// hold it only while taking their reference, and `Release` only while emptying the slot, so the
 /// object a slot names cannot be freed between a reader loading the pointer and counting itself.
 static SLOTS: RwLock<()> = RwLock::new(());
+
+/// Let the `fork` checks read a cached process ID instead of calling `getpid`, by refreshing it
+/// in every child (see [`crate::runtime::process_id`]). `AdbcDriverInit` calls this before any
+/// handle exists.
+///
+/// It never waits, so a `fork` racing it cannot leave the child blocked; a child forked before
+/// the cache is filled keeps calling `getpid`. A child that bypasses `pthread_atfork` (`_Fork`, a
+/// raw `clone`) keeps its parent's ID. If the parent was multithreaded, as the runtime makes it,
+/// such a child may make only async-signal-safe calls, which excludes this driver; a
+/// single-threaded parent leaves it no runtime or held lock that a stale ID could hide.
+pub(crate) fn track_forks() {
+    static REGISTERED: AtomicBool = AtomicBool::new(false);
+
+    if !REGISTERED.swap(true, Ordering::Relaxed) && refresh_in_fork_children() {
+        crate::runtime::cache_process_id();
+    }
+}
+
+/// Have every `fork` child refresh the cached process ID, reporting whether it will.
+#[cfg(unix)]
+fn refresh_in_fork_children() -> bool {
+    /// Runs in the child before `fork` returns there, which permits only async-signal-safe work:
+    /// `getpid` and an atomic store.
+    extern "C" fn refresh_process_id() {
+        crate::runtime::cache_process_id();
+    }
+    // SAFETY: the handler is async-signal-safe and cannot unwind. It stays mapped because the
+    // library must never be unloaded (see `AdbcDriverBigqueryInit`); glibc also unregisters it if
+    // the library is.
+    unsafe { libc::pthread_atfork(None, None, Some(refresh_process_id)) == 0 }
+}
+
+/// Without `fork` (Windows), a cached process ID never goes stale.
+#[cfg(not(unix))]
+fn refresh_in_fork_children() -> bool {
+    true
+}
 
 /// Install `exported` in an empty slot, as `New` does.
 ///
@@ -196,7 +234,7 @@ unsafe fn acquire<S>(slot: *const *mut c_void, kind: &str) -> Result<Arc<Exporte
         Arc::increment_strong_count(pointer);
         Arc::from_raw(pointer)
     };
-    if exported.process != std::process::id() {
+    if exported.process != process_id() {
         return Err(invalid_state(INHERITED_ACROSS_FORK));
     }
     Ok(exported)
@@ -359,7 +397,7 @@ pub(crate) unsafe fn release<S>(
         // SAFETY: taken is the handle's Arc::into_raw reference for S, which emptying the slot
         // transferred to this call exactly once.
         let exported = unsafe { Arc::from_raw(taken.cast_const().cast::<Exported<S>>()) };
-        if exported.process != std::process::id() {
+        if exported.process != process_id() {
             // A `fork` child lacks the threads that may hold the locks the object's destructors
             // take, such as Tokio's scheduler and the cancellation registry, so it leaks the
             // object rather than risk waiting on them forever.

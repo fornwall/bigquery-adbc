@@ -381,3 +381,31 @@ fn an_object_inherited_across_fork_is_refused_and_released_without_dropping_it()
         "a fork child ran the inherited object's destructors"
     );
 }
+
+/// Every exported call checks for `fork` against a cached process ID, so the `pthread_atfork`
+/// handler must refresh it before a child can run driver code, or the child would take its
+/// parent's handles for its own.
+#[test]
+#[cfg(unix)]
+#[cfg_attr(miri, ignore = "Miri cannot fork")]
+fn a_fork_child_sees_its_own_process_id() {
+    track_forks();
+    assert_eq!(process_id(), std::process::id());
+    // SAFETY: The child makes only async-signal-safe calls (an atomic load, `getpid` and `_exit`),
+    // which is all a child of this multithreaded test process may do.
+    let child = unsafe { libc::fork() };
+    if child == 0 {
+        let refreshed = process_id() == std::process::id();
+        // SAFETY: `_exit` ends the child without running exit handlers or the parent's
+        // destructors.
+        unsafe { libc::_exit(if refreshed { 0 } else { 1 }) };
+    }
+    assert!(child > 0, "fork failed");
+    let mut status = 0;
+    // SAFETY: `child` is this process's own unreaped child, and `status` a writable local.
+    assert_eq!(unsafe { libc::waitpid(child, &raw mut status, 0) }, child);
+    assert!(
+        libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+        "the child kept its parent's process ID (wait status {status})"
+    );
+}

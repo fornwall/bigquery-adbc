@@ -14,6 +14,8 @@ changes.
 
 ### Changed
 
+- C API calls no longer make a `getpid` system call each to detect `fork`. On x86-64 Linux that
+  was most of their overhead: setting or getting an option takes about a fifth of the time.
 - The native library is 3% smaller (250 KB on x86-64 Linux): IAM impersonation refusals decode
   without the SDK's generic `google.rpc.Status` parser, URL parsing links no Unicode host-name
   tables, and `adbc_core`, `tokio-util` and `flatbuffers` compile for size.
