@@ -553,7 +553,7 @@ fn skip_unreadable(source: MetadataError, context: &str) -> Result<()> {
 /// The `404 Not Found:` text is load-bearing: dbt 2.0 detects a missing relation by that
 /// substring (`is_bigquery_not_found_error` in `crates/dbt-adapter/src/metadata/bigquery/mod.rs`),
 /// not by the ADBC status. It is only a compatibility marker, so the rejection's usual details
-/// and `(HTTP n)` still follow, and a rejected table ID shows both the 404 and the service's 400.
+/// and `(HTTP n)` still follow, and a rejected name shows both the 404 and the service's 400.
 pub(super) fn table_metadata_error(
     project_id: &str,
     dataset_id: &str,
@@ -568,10 +568,11 @@ pub(super) fn table_metadata_error(
             service_error(&format!("{context}: 404 Not Found"), status, &body)
         }
         // ADBC GetTableSchema treats an invalid object name as a missing object; BigQuery answers
-        // an invalid table ID with 400 `invalid` rather than 404. Other 400s stay errors.
+        // an invalid dataset or table ID, or a partition decorator on an unpartitioned table, with
+        // 400 `invalid` rather than 404 (verified live). Other 400s stay errors.
         MetadataError::Rejected(status, body) if invalid_name => {
             let mut failure = service_error(
-                &format!("{context}: 404 Not Found: BigQuery rejected the table ID"),
+                &format!("{context}: 404 Not Found: BigQuery rejected the dataset or table ID"),
                 status,
                 &body,
             );

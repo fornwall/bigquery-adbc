@@ -83,8 +83,8 @@ fn cancelled_table_discovery_keeps_the_last_retry_diagnostics() {
 /// missing-table shapes must contain that exact spelling.
 #[test]
 fn table_metadata_errors_keep_the_not_found_spelling_dbt_matches() {
-    // A missing table, and a table ID BigQuery rejects, which ADBC GetTableSchema also reports
-    // as missing. Both keep the rejection's structured details.
+    // A missing table, and a table or dataset ID BigQuery rejects, which ADBC GetTableSchema
+    // also reports as missing. All keep the rejection's structured details.
     for (status, body, reason, message) in [
         (
             reqwest::StatusCode::NOT_FOUND,
@@ -98,7 +98,14 @@ fn table_metadata_errors_keep_the_not_found_spelling_dbt_matches() {
             br#"{"error": {"errors": [{"reason": "invalid", "message": "Invalid table ID"}], "message": "Invalid table ID"}}"#.as_slice(),
             "invalid",
             "failed to get BigQuery table metadata for p.d.t: 404 Not Found: BigQuery rejected the \
-             table ID: invalid: Invalid table ID (HTTP 400)",
+             dataset or table ID: invalid: Invalid table ID (HTTP 400)",
+        ),
+        (
+            reqwest::StatusCode::BAD_REQUEST,
+            br#"{"error": {"errors": [{"reason": "invalid", "message": "Invalid dataset ID \"d\""}], "message": "Invalid dataset ID \"d\""}}"#.as_slice(),
+            "invalid",
+            "failed to get BigQuery table metadata for p.d.t: 404 Not Found: BigQuery rejected the \
+             dataset or table ID: invalid: Invalid dataset ID \"d\" (HTTP 400)",
         ),
     ] {
         let source = MetadataError::Rejected(status, bytes::Bytes::from_static(body));
