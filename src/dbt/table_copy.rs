@@ -12,7 +12,6 @@ use super::jobs::{
 };
 use super::missing_option;
 use crate::cancellation::Operation;
-use crate::error::not_implemented;
 use crate::query::{ExecutionContext, QualifiedTableName, StatementQueryOptions};
 use crate::rest::jobs::{JobReference, JobRequest};
 use crate::rest::metadata::TableId;
@@ -35,9 +34,6 @@ impl TableCopyOptions {
 
     /// Submits the copy job and waits for it, returning the rows BigQuery reports copying, if
     /// any.
-    ///
-    /// A dry run is refused before any request: BigQuery answers `dryRun` on a copy job with
-    /// `400 Dry run not supported for copy job`, so there is nothing it could validate.
     pub(crate) fn execute(
         &self,
         context: &ExecutionContext,
@@ -52,13 +48,6 @@ impl TableCopyOptions {
             .destination
             .as_ref()
             .ok_or_else(|| missing_option(WHAT, BigQueryStatementOption::CopyTableDestination))?;
-        if options.dry_run {
-            return Err(not_implemented(format!(
-                "a BigQuery table copy cannot be dry-run: BigQuery does not support {} on copy \
-                 jobs; clear the option to run the copy",
-                BigQueryStatementOption::DryRun.as_str()
-            )));
-        }
         // The copy runs where its destination is; a source elsewhere fails with BigQuery's own
         // error.
         in_job_location(context, operation, destination, "copy", WHAT, |reference| {

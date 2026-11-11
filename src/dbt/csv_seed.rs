@@ -3,9 +3,11 @@
 use adbc_core::error::Result;
 use arrow_schema::{DataType, Field};
 
+use super::missing_option;
+use super::statement::DbtOperation;
 use crate::BigQueryStatementOption;
 use crate::arrow_ipc_bigquery::reader::decode_schema as decode_ipc_schema;
-use crate::error::{invalid_argument, invalid_state, not_implemented, unreadable_file};
+use crate::error::{invalid_argument, not_implemented, unreadable_file};
 use crate::rest::model::{TableFieldSchema, TableSchema};
 use crate::types::decimal::{BigQueryDecimalType, bigquery_decimal_data_type, decimal_mapping};
 use crate::types::{BIGQUERY_TYPE_METADATA_KEY, BigQueryType, scalar_arrow_field_type};
@@ -131,12 +133,15 @@ impl CsvSeedOptions {
 
     /// Opens the seed (see [`CsvSeedFile::open`]) and answers it with the load job's schema.
     pub(crate) fn open_seed(&self) -> Result<(CsvSeedFile<'_>, &TableSchema)> {
-        let filepath = self.filepath.as_deref().ok_or_else(|| {
-            invalid_state("cannot execute a BigQuery CSV seed ingest without a file path")
-        })?;
-        let schema = self.schema.as_ref().ok_or_else(|| {
-            invalid_state("cannot execute a BigQuery CSV seed ingest without an Arrow IPC schema")
-        })?;
+        let missing = |option| missing_option(DbtOperation::CsvSeed.subject(), option);
+        let filepath = self
+            .filepath
+            .as_deref()
+            .ok_or_else(|| missing(BigQueryStatementOption::CsvFilepath))?;
+        let schema = self
+            .schema
+            .as_ref()
+            .ok_or_else(|| missing(BigQueryStatementOption::CsvSchema))?;
         Ok((CsvSeedFile::open(filepath)?, schema))
     }
 }

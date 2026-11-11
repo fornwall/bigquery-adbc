@@ -18,7 +18,6 @@ use crate::statement::OptionOnlyOutcome;
 use crate::statement::sql_text::{has_no_statement, skip_comments};
 use crate::transaction::TransactionState;
 
-use super::FinishedJob;
 use super::csv_load::execute_csv_load;
 use super::csv_seed::CsvSeedOptions;
 use super::dataproc::DataprocOptions;
@@ -28,6 +27,7 @@ use super::gcs::GcsWriteOptions;
 use super::table_copy::TableCopyOptions;
 use super::table_mutation::TableMutationOptions;
 use super::vertex::NotebookExecutionOptions;
+use super::{FinishedJob, missing_option};
 
 /// A pattern matching every statement option [`DbtStatementState`] serves, which lets the generic
 /// option dispatch route them without naming them and still match exhaustively.
@@ -461,16 +461,7 @@ impl DbtStatementState {
         statement
             .transaction
             .require_autocommit("CSV seed ingest")?;
-        let destination = statement
-            .query_options
-            .destination_table
-            .as_ref()
-            .ok_or_else(|| {
-                invalid_state(format!(
-                    "BigQuery CSV seed ingest requires the {} option",
-                    BigQueryStatementOption::DestinationTable.as_str()
-                ))
-            })?;
+        let destination = destination_table(statement, DbtOperation::CsvSeed)?;
         let (csv, schema) = self.csv_seed.open_seed()?;
         // A dry run stops at the seed's schema, reading and sending nothing; nothing is loaded, so
         // the count is unknown rather than 0.
@@ -554,16 +545,7 @@ impl DbtStatementState {
             .transaction
             .require_autocommit("table metadata updates")?;
         refuse_dry_run(statement, DbtOperation::TableMutation.subject())?;
-        let table = statement
-            .query_options
-            .destination_table
-            .as_ref()
-            .ok_or_else(|| {
-                invalid_state(format!(
-                    "BigQuery table metadata updates require the {} option",
-                    BigQueryStatementOption::DestinationTable.as_str()
-                ))
-            })?;
+        let table = destination_table(statement, DbtOperation::TableMutation)?;
         statement
             .cancellation
             .run(|operation| {
@@ -575,6 +557,8 @@ impl DbtStatementState {
 
     fn execute_table_copy(&self, statement: &DbtExecution<'_>) -> Result<OptionOnlyOutcome> {
         statement.transaction.require_autocommit("table copy")?;
+        // BigQuery answers `dryRun` on a copy job with `400 Dry run not supported for copy job`.
+        refuse_dry_run(statement, DbtOperation::TableCopy.subject())?;
         statement
             .cancellation
             .run(|operation| {
@@ -686,7 +670,7 @@ fn parse_pooling_timeout(key: &str, value: OptionValue) -> Result<Option<i64>> {
 
 /// Refuses an operation that changes something under `bigquery.query.dry_run`, before any
 /// request: a dry run validates without executing, and none of these services can validate such
-/// a change without making it. A table copy refuses its own; a CSV seed validates locally.
+/// a change without making it. A CSV seed validates locally instead.
 fn refuse_dry_run(statement: &DbtExecution<'_>, subject: &str) -> Result<()> {
     if statement.query_options.dry_run {
         return Err(not_implemented(format!(
@@ -696,6 +680,23 @@ fn refuse_dry_run(statement: &DbtExecution<'_>, subject: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// The `bigquery.query.destination_table` that `operation` writes.
+fn destination_table<'a>(
+    statement: &DbtExecution<'a>,
+    operation: DbtOperation,
+) -> Result<&'a QualifiedTableName> {
+    statement
+        .query_options
+        .destination_table
+        .as_ref()
+        .ok_or_else(|| {
+            missing_option(
+                operation.subject(),
+                BigQueryStatementOption::DestinationTable,
+            )
+        })
 }
 
 /// A python-model text option [`dbt_statement_option`] lists but no slot table claims. Unreachable

@@ -98,12 +98,19 @@ fn only_the_dbt_placeholder_query_keeps_an_authorization() {
 }
 
 /// A dry run validates without executing, so no dbt operation that changes something may run
-/// under one: each is refused before it sends a request, as a table copy is.
+/// under one: each is refused before it sends a request.
 #[test]
 fn a_dry_run_never_runs_an_operation_that_changes_something() {
     const REGION: (Key, &str) = (Key::DataprocComputeRegion, "us-central1");
     const PARENT: &str = "projects/exec-project/locations/us-central1";
-    let operations: [(&str, &[(Key, &str)]); 6] = [
+    let operations: [(&str, &[(Key, &str)]); 7] = [
+        (
+            "table copy",
+            &[
+                (Key::CopyTableSource, "data-project.analytics.source"),
+                (Key::CopyTableDestination, "data-project.analytics.copy"),
+            ],
+        ),
         (
             "authorized-view update",
             &[(Key::AuthorizeViewToDatasets, AUTHORIZATION)],
@@ -181,4 +188,33 @@ fn a_dry_run_never_runs_an_operation_that_changes_something() {
         );
         assert!(server.join().unwrap().is_empty(), "{subject}");
     }
+}
+
+/// An operation without an option it needs names that option before any request.
+#[test]
+fn an_operation_missing_an_option_it_needs_names_it() {
+    const SEED: (Key, &str) = (Key::CsvFilepath, "/tmp/seed.csv");
+    const DESTINATION: (Key, &str) = (Key::DestinationTable, "data-project.analytics.seed");
+    let assert_missing = |options: &[(Key, &str)], missing: Key, subject: &str| {
+        let mut statement = test_statement();
+        for (option, value) in options {
+            set_option(&mut statement, *option, *value);
+        }
+        let error = statement.execute_update().unwrap_err();
+        assert_failure(
+            &error,
+            Status::InvalidState,
+            &[&format!(
+                "BigQuery option {} is required by the BigQuery {subject}",
+                missing.as_str()
+            )],
+        );
+    };
+    assert_missing(&[SEED], Key::DestinationTable, "CSV seed load");
+    assert_missing(&[SEED, DESTINATION], Key::CsvSchema, "CSV seed load");
+    assert_missing(
+        &[(Key::UpdateDescription, "A documented table.")],
+        Key::DestinationTable,
+        "table metadata update",
+    );
 }
