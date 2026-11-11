@@ -122,39 +122,26 @@ fn instant_incomplete_answers_are_paced_rather_than_spun_on() {
     );
 }
 
+/// A complete response's `errors` may be warnings: a job that finished without an `errorResult`
+/// succeeded, whether or not the response carried a result schema.
 #[test]
-fn completed_warning_is_verified_as_success_without_reissue() {
-    let (endpoint, captured) = capture_requests(vec![
-        ok(json!({
-            "jobComplete": true,
-            "jobReference": {"projectId":"project","jobId":"job-1","location":"EU"},
-            "schema": {"fields":[]},
-            "errors": [{"reason":"backendError","message":"warning"}]
-        })),
-        ok(json!({
-            "jobReference": {"projectId":"project","jobId":"job-1","location":"EU"},
-            "status": {"state":"DONE","errors":[{"reason":"backendError","message":"warning"}]}
-        })),
-    ]);
-    run(&endpoint, plan(StatementQueryOptions::default())).unwrap();
-    let captured = captured.served(2);
-    assert!(captured[0].line.starts_with("POST "));
-    assert!(captured[1].line.starts_with("GET "));
-}
-
-#[test]
-fn completed_no_schema_response_verifies_errors_as_warnings() {
+fn completed_warnings_are_verified_as_success_without_reissue() {
     let reference = json!({"projectId":"project","jobId":"job-1","location":"EU"});
-    let (endpoint, captured) = capture_requests(vec![
-        ok(json!({
-            "jobComplete": true,
-            "jobReference": reference,
-            "errors": [{"reason":"backendError","message":"warning"}]
-        })),
-        ok(json!({"jobReference":reference,"status":{"state":"DONE"}})),
-    ]);
-    let completed = run(&endpoint, plan_at(StatementQueryOptions::default(), None)).unwrap();
-    assert!(completed.metadata.job_reference.is_some());
-    assert!(completed.metadata.schema.is_none());
-    captured.served(2);
+    let warnings = json!([{"reason":"backendError","message":"warning"}]);
+    for has_schema in [true, false] {
+        let mut response =
+            json!({"jobComplete": true, "jobReference": reference, "errors": warnings});
+        if has_schema {
+            response["schema"] = json!({"fields":[]});
+        }
+        let (endpoint, captured) = capture_requests(vec![
+            ok(response),
+            ok(json!({"jobReference":reference,"status":{"state":"DONE","errors":warnings}})),
+        ]);
+        let completed = run(&endpoint, plan(StatementQueryOptions::default())).unwrap();
+        assert_eq!(completed.metadata.schema.is_some(), has_schema);
+        let captured = captured.served(2);
+        assert!(captured[0].line.starts_with("POST "));
+        assert!(captured[1].line.starts_with("GET "));
+    }
 }

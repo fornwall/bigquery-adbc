@@ -104,81 +104,54 @@ fn delivers_resident_rows_while_the_next_page_is_waiting() {
     }
 }
 
+/// A started blocking conversion stops cooperatively when its tasks are dropped or its operation
+/// is cancelled, and a cancelled one reports no batch.
 #[test]
-fn dropping_conversion_tasks_stops_started_blocking_work_cooperatively() {
+fn started_result_conversion_stops_on_drop_or_operation_cancellation() {
     let runtime = new_runtime().unwrap();
-    let cancellation = ResultPipelineCancellation::new(None);
-    let conversion_cancellation = cancellation.clone();
-    let (started_sender, started_receiver) = mpsc::channel();
-    let (stopped_sender, stopped_receiver) = mpsc::channel();
-    let mut conversions = ConversionTasks::new(cancellation);
-    conversions.push(
-        runtime.spawn_blocking(move || {
-            started_sender.send(()).unwrap();
-            while !conversion_cancellation.is_cancelled() {
-                std::thread::yield_now();
-            }
-            stopped_sender.send(()).unwrap();
-            Ok(None)
-        }),
-        0,
-    );
-    started_receiver
-        .recv_timeout(Duration::from_secs(5))
+    for drop_tasks in [true, false] {
+        let operation_cancellation = crate::cancellation::Cancellation::new(
+            runtime.clone(),
+            crate::clients::ClientState::for_test(),
+            "statement",
+        );
+        let cancellation = ResultPipelineCancellation::new(Some(operation_cancellation.begin()));
+        let conversion_cancellation = cancellation.clone();
+        let (started_sender, started_receiver) = mpsc::channel();
+        let (stopped_sender, stopped_receiver) = mpsc::channel();
+        let mut conversions = ConversionTasks::new(cancellation);
+        conversions.push(
+            runtime.spawn_blocking(move || {
+                started_sender.send(()).unwrap();
+                while !conversion_cancellation.is_cancelled() {
+                    std::thread::yield_now();
+                }
+                stopped_sender.send(()).unwrap();
+                Ok(None)
+            }),
+            0,
+        );
+        started_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+
+        if drop_tasks {
+            drop(conversions);
+            stopped_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            continue;
+        }
+        adbc_core::CancelHandle::try_cancel(&crate::cancellation::OperationCancelHandle(
+            operation_cancellation,
+        ))
         .unwrap();
-
-    drop(conversions);
-
-    stopped_receiver
-        .recv_timeout(Duration::from_secs(5))
-        .unwrap();
-}
-
-#[test]
-fn operation_cancellation_stops_started_result_conversion() {
-    let runtime = new_runtime().unwrap();
-    let operation_cancellation = crate::cancellation::Cancellation::new(
-        runtime.clone(),
-        crate::clients::ClientState::for_test(),
-        "statement",
-    );
-    let operation = operation_cancellation.begin();
-    let cancellation = ResultPipelineCancellation::new(Some(operation));
-    let conversion_cancellation = cancellation.clone();
-    let (started_sender, started_receiver) = mpsc::channel();
-    let (stopped_sender, stopped_receiver) = mpsc::channel();
-    let mut conversions = ConversionTasks::new(cancellation);
-    conversions.push(
-        runtime.spawn_blocking(move || {
-            started_sender.send(()).unwrap();
-            while !conversion_cancellation.is_cancelled() {
-                std::thread::yield_now();
-            }
-            stopped_sender.send(()).unwrap();
-            Ok(None)
-        }),
-        0,
-    );
-    started_receiver
-        .recv_timeout(Duration::from_secs(5))
-        .unwrap();
-
-    adbc_core::CancelHandle::try_cancel(&crate::cancellation::OperationCancelHandle(
-        operation_cancellation,
-    ))
-    .unwrap();
-
-    stopped_receiver
-        .recv_timeout(Duration::from_secs(5))
-        .unwrap();
-    assert!(
-        runtime
-            .block_on(conversions.next())
-            .unwrap()
-            .unwrap()
-            .unwrap()
-            .is_none()
-    );
+        stopped_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        let converted = runtime.block_on(conversions.next()).unwrap().unwrap();
+        assert!(converted.unwrap().is_none());
+    }
 }
 
 /// One conversion always proceeds; beyond it, neither the prefetch width nor the byte window may
