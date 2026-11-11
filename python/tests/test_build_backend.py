@@ -485,6 +485,7 @@ def test_native_archives_carry_manifest_library_and_complete_licenses(
 ) -> None:
     library = tmp_path / "custom-driver-build"
     library.write_bytes(b"native fixture")
+    library.chmod(0o600)
     monkeypatch.setattr(_build_support.platform, "system", lambda: system)
     monkeypatch.setattr(package_native, "validate_native_library", lambda path: None)
     monkeypatch.setattr(package_native, "inspect_native_binary", lambda path: NativeBinaryInfo(binary_format, "x86_64"))
@@ -498,7 +499,11 @@ def test_native_archives_carry_manifest_library_and_complete_licenses(
             for member in archive.getmembers():
                 source = archive.extractfile(member)
                 assert source is not None
-                contents[member.name.split("/", 1)[1]] = source.read()
+                relative = member.name.split("/", 1)[1]
+                contents[relative] = source.read()
+                # Root extracts with these owners, and the library and checkout modes may be 0600.
+                assert (member.uid, member.gid, member.uname, member.gname) == (0, 0, "", "")
+                assert member.mode == (0o755 if relative == filename else 0o644)
     assert contents[filename] == b"native fixture"
     assert library.name not in contents
     for document in (*LICENSE_FILES, "licenses/manifest.json"):

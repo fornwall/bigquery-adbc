@@ -105,6 +105,9 @@ changes.
 - When an ingest's table creation reached BigQuery but failed without its verdict, such as a lost
   response, the error says the table may exist, and in `create` mode suggests retrying with
   `create_append`. A creation that could not connect says nothing more.
+- The `.tar.gz` native release archives name root as their files' owner, with mode 0755 for the
+  library and 0644 for the rest, instead of the build machine's user and modes: extracting as root
+  kept that user, such as uid 1001 on Linux, as the library's owner.
 - The dbt installer takes no option or temporary path from the environment. A `td` variable named
   a directory it deleted on exit, even when the installed dbt was already current, and `prefix`,
   `dest`, `version`, `target` or `package` changed what it installed where.
