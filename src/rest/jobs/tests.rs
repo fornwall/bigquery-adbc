@@ -733,19 +733,6 @@ fn a_location_search_deadline_includes_credentials_and_all_pages() {
     captured.served(1);
 }
 
-/// A rejection proves no job was created, so nothing is looked for.
-#[test]
-fn a_rejected_submission_without_a_location_is_not_looked_for() {
-    let (endpoint, captured) =
-        capture_requests(vec![(400, error_body("invalidQuery", "Syntax error"))]);
-    let (runtime, client) = job_client(&endpoint);
-
-    let failure = insert_query(&runtime, &client, &request("job-e", None, false)).unwrap_err();
-
-    assert_eq!(failure.status, Status::InvalidArguments);
-    captured.served(1);
-}
-
 /// A cancel before the answer is known first addresses the job without a location. The submission
 /// still finishes, and the answer's location is where the job is cancelled.
 #[test]
@@ -1527,10 +1514,16 @@ fn a_located_job_that_recovery_cannot_fetch_may_still_run() {
         (503, error_body("backendError", "reconcile"));
         MAX_RECONCILIATION_ATTEMPTS
     ]);
-    // The last attempt's rejection is no verdict on the attempts whose answers were lost.
+    // The last attempt's rejection is no verdict on the attempts whose answers were lost, whether
+    // it ends the retries or they run out.
     let mut refused_last = vec![(500, error_body("backendError", "submit")); MAX_ATTEMPTS - 1];
     refused_last.push((429, error_body("rateLimitExceeded", "slow down")));
     refused_last.extend(not_found());
+    let mut denied_replay = vec![
+        (500, error_body("backendError", "submit")),
+        (403, error_body("accessDenied", "denied")),
+    ];
+    denied_replay.extend(not_found());
     for (responses, lead, reported, status) in [
         (
             conflict,
@@ -1549,6 +1542,12 @@ fn a_located_job_that_recovery_cannot_fetch_may_still_run() {
             submit,
             "rateLimitExceeded: slow down (HTTP 429)",
             Status::IO,
+        ),
+        (
+            denied_replay,
+            submit,
+            "accessDenied: denied (HTTP 403)",
+            Status::Unauthorized,
         ),
     ] {
         let count = responses.len();
@@ -1686,25 +1685,38 @@ fn a_non_dry_run_is_registered_before_the_post_can_answer() {
 }
 
 /// A refusal proves no job exists only if no earlier attempt could have created one, on both
-/// submission routes. The verdict is what a caller may trust; the status alone cannot say.
+/// submission routes. A refusal of a replay is no verdict on the attempt whose answer was lost, so
+/// the job that attempt created is fetched: a replayed `COMMIT` can find no transaction.
 #[test]
 fn only_a_submission_with_no_ambiguous_attempt_proves_its_job_was_not_created() {
-    let denied = (403, error_body("accessDenied", "denied"));
     let unavailable = (503, error_body("backendError", "unavailable"));
+    let refused = || {
+        (
+            400,
+            error_body("invalidQuery", "No active transaction found"),
+        )
+    };
     for location in [Some("EU"), None] {
-        for (answers, proven) in [
-            (vec![denied.clone()], true),
-            (vec![unavailable.clone(), denied.clone()], false),
-        ] {
-            let count = answers.len();
-            let (endpoint, requests) = capture_requests(answers);
-            let (runtime, client) = job_client(&endpoint);
-            let failure = runtime
-                .block_on(client.insert(None, &request("refused", location, false), "query"))
-                .unwrap_err();
-            assert_eq!(has_job_verdict(&failure), proven, "{location:?} {count}");
-            requests.served(count);
-        }
+        let (endpoint, requests) = capture_requests(vec![refused()]);
+        let (runtime, client) = job_client(&endpoint);
+        let failure = runtime
+            .block_on(client.insert(None, &request("refused", location, false), "query"))
+            .unwrap_err();
+        assert_eq!(failure.status, Status::InvalidArguments, "{location:?}");
+        assert!(has_job_verdict(&failure), "{location:?}");
+        requests.served(1);
+
+        let (endpoint, requests) = capture_requests(vec![
+            unavailable.clone(),
+            refused(),
+            ok(job_in("refused", "EU")),
+        ]);
+        let (runtime, client) = job_client(&endpoint);
+        let response = insert_query(&runtime, &client, &request("refused", location, false))
+            .unwrap_or_else(|failure| panic!("{location:?}: {failure:?}"));
+        assert_eq!(response["jobReference"]["location"], "EU");
+        let requests = requests.served(3);
+        assert!(requests[2].line.starts_with("GET "), "{location:?}");
     }
 }
 

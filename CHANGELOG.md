@@ -15,6 +15,10 @@ changes.
   instead of `NOT_IMPLEMENTED` claiming the driver lacks the type.
 - A CSV seed upload that BigQuery refuses reports `BigQuery rejected the CSV load job` and the
   `bigquery.job.verdict` detail `not_created`, as other refused job submissions do.
+- A `jobs.insert` submission, including a dbt table copy, whose retry BigQuery refuses after an
+  attempt whose answer was lost fetches the job that attempt may have created, as it does when
+  retries run out, instead of reporting the refusal as though no job ran. If the job cannot be
+  fetched, the error says it may still run.
 
 ## [0.6.0] - 2026-11-11
 

@@ -501,12 +501,7 @@ impl JobClient {
             may_exist |= may_have_created(&start, &response);
             let (class, failure) = match response {
                 Ok((reqwest::StatusCode::CONFLICT, body)) => {
-                    let failure = existing_job(&send_context, &body);
-                    confirm_submission(operation, &request.reference)?;
-                    return self
-                        .reconcile_submission(operation, &request.reference, what, Some(failure))
-                        .await
-                        .map_err(|failure| may_still_run(failure, &request.reference, false));
+                    (RetryClass::Final, existing_job(&send_context, &body))
                 }
                 Err(failure) if failure.status == Status::Cancelled => {
                     // A cancel that raced job visibility may have received 404; confirming the
@@ -523,20 +518,18 @@ impl JobClient {
                     Err(rejected) => rejected,
                 },
             };
-            if class == RetryClass::Final || (attempt == MAX_ATTEMPTS && !may_exist) {
+            if class == RetryClass::Final || attempt == MAX_ATTEMPTS {
                 if !may_exist {
                     settle_submission(operation, &request.reference, false);
                     return Err(with_job_verdict(failure, "not_created"));
                 }
-                return Err(failure);
-            }
-            if attempt == MAX_ATTEMPTS {
+                // A 409 says the job exists. Any other answer is about the last attempt alone,
+                // not an earlier one whose answer was lost, so the job is looked for either way.
                 confirm_submission(operation, &request.reference)?;
                 return self
                     .reconcile_submission(operation, &request.reference, what, Some(failure))
                     .await
                     .map_err(|mut failure| {
-                        // The last attempt's rejection is no verdict on the earlier ones.
                         relead(
                             &mut failure,
                             &error_context,
@@ -775,7 +768,7 @@ impl JobClient {
     /// separate from it and each other, because what each does around an attempt is its purpose:
     ///
     /// - [`JobClient::insert`] moves the cancellation identity through every outcome, and
-    ///   reconciles an exhausted submission that may have created its job.
+    ///   reconciles a submission whose attempts end after one that may have created its job.
     /// - [`InferredSubmission::run`] sends and sleeps ungated, so that it can outlive a cancelled
     ///   caller, stops resubmitting once cancelled, and takes the job's location from a 409.
     /// - [`JobClient::query`] retains ambiguous attempts after cancellation, reads a replay's
@@ -1149,7 +1142,7 @@ impl InferredSubmission {
         let error_context = self.error_context();
         let mut attempt = 0;
         let mut may_exist = false;
-        let ambiguous = loop {
+        let failure = loop {
             attempt += 1;
             let request = Request::post_json(&url, self.body.clone(), &send_context)
                 .with_start_signal(&self.start);
@@ -1185,13 +1178,9 @@ impl InferredSubmission {
                     Err(rejected) => rejected,
                 },
             };
-            if class == RetryClass::Final {
-                return Err(Unlocated {
-                    failure,
-                    job_may_exist: may_exist,
-                });
-            }
-            if attempt == MAX_ATTEMPTS || self.cancelled() {
+            // A refusal is no verdict on an earlier attempt that may have created the job, so it
+            // ends the attempts as exhaustion does.
+            if class == RetryClass::Final || attempt == MAX_ATTEMPTS || self.cancelled() {
                 break failure;
             }
             diag!(
@@ -1208,11 +1197,11 @@ impl InferredSubmission {
         };
         if !may_exist {
             return Err(Unlocated {
-                failure: ambiguous,
+                failure,
                 job_may_exist: false,
             });
         }
-        self.locate(ambiguous).await
+        self.locate(failure).await
     }
 
     fn cancelled(&self) -> bool {

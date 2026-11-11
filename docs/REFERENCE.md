@@ -326,8 +326,9 @@ Conversion rules:
   submits its own with `jobs.insert`. Such a statement written in SQL still uses `jobs.query`: if
   its answer is lost, the retry fails with "No active transaction found" and, like any definitive
   answer to a retry, says the statement may still have run.
-- `jobs.insert` uses a driver-chosen job ID, stable across submission retries. If its answer is lost
-  and no location is configured, recovery tries the location named by a duplicate-job response, US
+- `jobs.insert` uses a driver-chosen job ID, stable across submission retries. If its answer is
+  lost, the driver fetches the job, also when a retry is refused, since that refusal is no verdict
+  on the lost attempt. Without a configured location, recovery tries the location named by a duplicate-job response, US
   and EU, and known dataset locations, then
   [lists the caller's recent jobs](https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/jobs/list)
   across regions for the exact ID, within 30 seconds; this needs no extra IAM permission. If
