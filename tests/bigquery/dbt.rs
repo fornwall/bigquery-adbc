@@ -282,6 +282,52 @@ fn loads_dbt_csv_seeds_atomically_with_bigquery_csv_semantics() {
     );
 }
 
+/// The driver sends a seed's bytes unparsed, so BigQuery's CSV reader decides the edge cases: an
+/// empty upload and a header-only seed each load no rows, and a UTF-8 byte order mark stays in
+/// the skipped header rather than reaching the first value. dbt itself skips seeds without rows,
+/// but a multipart upload with an empty media part still has to create the table.
+#[test]
+#[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
+fn seeds_bigquery_reads_without_rows_or_with_a_byte_order_mark() {
+    let table = scratch_table("csv_seed_edges");
+    let _drop_table = DropTable::table(&table);
+    let mut connection = connect_with_dataset_at("US");
+
+    for (case, contents, rows) in [
+        ("empty", &b""[..], 0),
+        ("header", b"id,amount,civil,payload,label\r\n", 0),
+        (
+            "bom",
+            b"\xef\xbb\xbfid,amount,civil,payload,label\n9,1.5,2026-01-02 03:04:05,SGk=,bom\n",
+            1,
+        ),
+    ] {
+        let csv = TempFile::new(&format!("{table}_{case}.csv"), contents);
+        let mut seed = seed_statement(&mut connection, &table, &csv, None);
+        set_option(
+            &mut seed,
+            BigQueryStatementOption::WriteDisposition,
+            BigQueryWriteDisposition::WriteTruncate,
+        );
+        assert_eq!(seed.execute_update().unwrap(), Some(rows), "{case}");
+        assert_eq!(count_rows(&mut connection, &table), rows, "{case}");
+    }
+
+    let mut verify = prepare_query(
+        &mut connection,
+        &format!("SELECT id, CAST(amount AS STRING), label FROM `{table}`"),
+    );
+    let batch = single_batch(&mut verify);
+    assert_eq!(typed::<Int64Array>(batch.column(0).as_ref()).values(), &[9]);
+    let strings = |column: usize| {
+        typed::<StringArray>(batch.column(column).as_ref())
+            .iter()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(strings(1), [Some("1.5")]);
+    assert_eq!(strings(2), [Some("bom")]);
+}
+
 /// dbt's `column_types` reach the table exactly as declared, as `CREATE TABLE` would declare them:
 /// a plain `numeric` stays parameter-free and parameterized types keep their parameters.
 #[test]
