@@ -624,7 +624,8 @@ somewhere new, but an explicit option can. Unless `bigquery.allow_untrusted_endp
   `gcloud`, which are the machine owner's configuration.
 - Hosts are ASCII. Endpoint options and proxy variables accept only ASCII host names, and a URL in a
   credential document naming a non-ASCII host (an internationalized or fullwidth spelling) is
-  refused; write an internationalized host in Punycode (`xn--`).
+  refused; write an internationalized host in Punycode (`xn--`). The URL options above and the
+  destinations the driver checks in a document also refuse a percent-encoded host.
 - Validation runs when clients are built, so options can be set in any order.
   `bigquery.allow_untrusted_endpoint` must be a database option; a URI cannot relax any check (G13).
 - Two exposures remain: an application that lets its own users set `bigquery.endpoint` lets them

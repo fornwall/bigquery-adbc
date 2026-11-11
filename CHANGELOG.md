@@ -18,7 +18,8 @@ changes.
   without the SDK's generic `google.rpc.Status` parser, URL parsing links no Unicode host-name
   tables, and `adbc_core`, `tokio-util` and `flatbuffers` compile for size.
 - A URL in a credential document naming a non-ASCII host is refused; write an internationalized
-  host in Punycode (`xn--`).
+  host in Punycode (`xn--`). The credential URL options and the destinations checked in a document
+  also refuse a percent-encoded host.
 - The dbt installer accepts dbt's Rust target triples with `--target`, and rejects unknown
   options and missing values before installing.
 - Python's `dbapi.connect()` takes `backend` as its only keyword beyond `autocommit`, so a

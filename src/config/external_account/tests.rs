@@ -243,9 +243,12 @@ fn external_account_validates_urls_without_echoing_credentials() {
         "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/:generateAccessToken",
         "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/test:generateAccessToken?secret",
         "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/a%2Fb:generateAccessToken",
+        // An upper-case letter before a non-ASCII one would panic a debug build's parser.
+        "https://IAMCREDENTIALS.GOOGLEAPI\u{ff33}.COM/v1/projects/-/serviceAccounts/test:generateAccessToken",
     ] {
         assert!(impersonation_principal(url).is_err());
     }
+    assert!(parse_request_url("https://IDP\u{c9}.example/token", true).is_err());
 }
 
 #[test]

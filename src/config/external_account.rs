@@ -20,7 +20,7 @@ use google_cloud_auth::credentials::subject_token::{
 use google_cloud_auth::errors::SubjectTokenProviderError;
 use google_cloud_gax::retry_policy::{AlwaysRetry, RetryPolicyExt};
 
-use super::endpoints::parse_credential_url;
+use super::endpoints::{parse_credential_url, parse_url};
 use super::rejections::required_option;
 use super::{DatabaseConfig, Secret};
 use crate::error::{driver_defect, invalid_argument};
@@ -236,7 +236,7 @@ pub(crate) fn impersonation_principal(value: &str) -> Result<(&str, Cow<'_, str>
             BigQueryDatabaseOption::AuthenticationExternalAccountImpersonationUrl.as_str()
         ))
     };
-    if reqwest::Url::parse(value).map_err(|_| invalid())?.as_str() != value {
+    if parse_url(value).ok_or_else(invalid)?.as_str() != value {
         return Err(invalid());
     }
     let principal = value

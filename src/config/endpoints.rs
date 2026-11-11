@@ -162,11 +162,34 @@ pub(crate) fn endpoint_scheme_and_host(endpoint: &str) -> Option<(&'static str, 
     Some((scheme, host))
 }
 
+/// Parses a URL with the WHATWG parser `reqwest` uses, first refusing an authority that carries a
+/// non-ASCII character or a percent-escape.
+///
+/// `idna` runs on its stub back end (`Cargo.toml`), which refuses every non-ASCII host anyway, but
+/// in a debug build it asserts that an ASCII letter it normalizes is lower case, and an upper-case
+/// letter just before a non-ASCII one (`https://Bü/`) is handed to it as is. Refusing such a host
+/// here keeps that a parse failure instead of a panic. The scan reads the authority as the parser
+/// does for HTTP: after any run of `/` and `\` following the scheme, ignoring tabs and newlines,
+/// up to `/`, `\`, `?` or `#`. No endpoint spells its host with percent-escapes.
+pub(crate) fn parse_url(value: &str) -> Option<reqwest::Url> {
+    let (_, after_scheme) = value.split_once(':')?;
+    let unsafe_authority = after_scheme
+        .chars()
+        .filter(|character| !matches!(character, '\t' | '\n' | '\r'))
+        .skip_while(|character| matches!(character, '/' | '\\'))
+        .take_while(|character| !matches!(character, '/' | '\\' | '?' | '#'))
+        .any(|character| character == '%' || !character.is_ascii());
+    if unsafe_authority {
+        return None;
+    }
+    reqwest::Url::parse(value).ok()
+}
+
 /// Parses a URL a credential is sent to (an OAuth token endpoint or an identity-provider token
 /// request) with the WHATWG parser `reqwest` uses, so the reported host is the host the request
 /// reaches. User information is refused so the host can be quoted.
 pub(crate) fn parse_credential_url(value: &str) -> Option<reqwest::Url> {
-    let url = reqwest::Url::parse(value).ok()?;
+    let url = parse_url(value)?;
     let well_formed = !value.chars().any(char::is_whitespace)
         && url.host_str().is_some()
         && url.username().is_empty()
@@ -326,9 +349,8 @@ fn regional_endpoint(
         return Ok(configured.trim_end_matches('/').to_owned());
     }
     let endpoint = format!("https://{region}-{service}.googleapis.com");
-    let trusted = reqwest::Url::parse(&endpoint)
-        .ok()
-        .is_some_and(|url| url.host_str().is_some_and(is_google_api_host));
+    let trusted =
+        parse_url(&endpoint).is_some_and(|url| url.host_str().is_some_and(is_google_api_host));
     if trusted {
         Ok(endpoint)
     } else {
@@ -355,14 +377,33 @@ mod tests {
     /// `idna` runs on its stub back end (`Cargo.toml`), so URL hosts are ASCII: a non-ASCII host,
     /// a fullwidth spelling of a Google host included, is refused rather than mapped, and an
     /// internationalized name passes only in Punycode. ASCII case still folds before the trust rule.
+    ///
+    /// In a debug build the stub asserts that an ASCII letter it normalizes is lower case, which
+    /// fails for an upper-case letter just before a non-ASCII one (`Bü`), so such a host must be
+    /// refused before parsing rather than panic. That holds through the spellings the parser
+    /// accepts: percent-encoded, after a removed tab, without slashes. A percent-encoded ASCII
+    /// host is refused with them, since no endpoint is spelled that way.
     #[test]
     fn credential_url_hosts_must_be_ascii() {
         for refused in [
             "https://ｏａｕｔｈ２.googleapis.com/token",
             "https://bücher.example/token",
+            "https://Bücher.example/token",
+            "https://OAUTH2.GOOGLEAPI\u{ff33}.COM/token",
+            "HTTPS:B\u{fc}/token",
+            "https:\\\\B\u{fc}/token",
+            "https:/\t/B\u{fc}/token",
+            "https://B%C3%BC.example/token",
+            "https://%5A\u{e9}.example/token",
+            "https://user@B\u{fc}/token",
+            "https://%6Fauth2.googleapis.com/token",
         ] {
             assert!(parse_credential_url(refused).is_none(), "{refused}");
         }
+        // Non-ASCII text past the host is percent-encoded rather than mapped, so it stays legal.
+        let path =
+            parse_credential_url("https://oauth2.googleapis.com/t\u{f6}ken?x=%C3%A9").unwrap();
+        assert_eq!(path.host_str(), Some("oauth2.googleapis.com"));
         let punycode = parse_credential_url("https://xn--bcher-kva.example/token").unwrap();
         assert_eq!(punycode.host_str(), Some("xn--bcher-kva.example"));
         let folded = parse_credential_url("https://OAuth2.GoogleAPIs.COM/token").unwrap();
@@ -480,6 +521,8 @@ mod tests {
             "attacker.example\\?",
             "attacker.example/",
             "user@attacker.example\\",
+            // An upper-case letter before a non-ASCII one would panic a debug build's parser.
+            "B\u{fc}",
         ] {
             let failure = defaults.dataproc(region, key).unwrap_err();
             assert_eq!(failure.status, Status::InvalidArguments, "{region:?}");
