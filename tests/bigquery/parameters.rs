@@ -11,9 +11,9 @@ use adbc_driver_bigquery::{
 use arrow_array::types::{Int8Type, Int64Type};
 use arrow_array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Decimal128Array, DictionaryArray,
-    Float64Array, Int64Array, IntervalDayTimeArray, IntervalMonthDayNanoArray, ListArray,
-    NullArray, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray, StructArray,
-    TimestampMicrosecondArray,
+    DurationMicrosecondArray, DurationSecondArray, Float64Array, Int64Array, IntervalDayTimeArray,
+    IntervalMonthDayNanoArray, ListArray, NullArray, RecordBatch, RecordBatchIterator,
+    RecordBatchReader, StringArray, StructArray, TimestampMicrosecondArray,
 };
 use arrow_buffer::{IntervalDayTime, IntervalMonthDayNano, NullBuffer};
 use arrow_schema::{DataType, Field, IntervalUnit, Metadata, Schema};
@@ -697,4 +697,141 @@ fn binds_typed_null_parameters() {
             .collect::<Vec<_>>(),
         [Some(true); 12]
     );
+}
+
+/// One row of every type the driver maps, at its extremes and special values: what a result
+/// decodes into must bind back as a parameter BigQuery reads as the same value.
+const ROUND_TRIP_SELECT: &str = r#"
+SELECT
+  CAST('9223372036854775807' AS INT64) AS int64_max,
+  CAST('-9223372036854775808' AS INT64) AS int64_min,
+  IEEE_DIVIDE(0, 0) AS float64_nan,
+  IEEE_DIVIDE(1, 0) AS float64_infinity,
+  IEEE_DIVIDE(-1, 0) AS float64_negative_infinity,
+  CAST('-0' AS FLOAT64) AS float64_negative_zero,
+  CAST('5e-324' AS FLOAT64) AS float64_subnormal,
+  CAST('1.7976931348623157e308' AS FLOAT64) AS float64_max,
+  CAST('-2.2250738585072014e-308' AS FLOAT64) AS float64_negative_min_normal,
+  0.1 + 0.2 AS float64_shortest_round_trip,
+  NUMERIC '99999999999999999999999999999.999999999' AS numeric_max,
+  NUMERIC '-0.000000001' AS numeric_smallest,
+  BIGNUMERIC '578960446186580977117854925043439539266.34992332820282019728792003956564819967' AS bignumeric_max,
+  BIGNUMERIC '-578960446186580977117854925043439539266.34992332820282019728792003956564819968' AS bignumeric_min,
+  BIGNUMERIC '0.00000000000000000000000000000000000001' AS bignumeric_smallest,
+  FALSE AS bool_false,
+  '' AS empty_string,
+  CODE_POINTS_TO_STRING([97, 0, 233, 128013]) AS string_with_nul,
+  b'' AS empty_bytes,
+  b'\x00\x01\xff' AS bytes_with_nul,
+  DATE '0001-01-01' AS date_min,
+  DATE '9999-12-31' AS date_max,
+  TIME '00:00:00' AS time_min,
+  TIME '23:59:59.999999' AS time_max,
+  DATETIME '0001-01-01 00:00:00' AS datetime_min,
+  DATETIME '9999-12-31 23:59:59.999999' AS datetime_max,
+  DATETIME '1969-12-31 23:59:59.999999' AS datetime_before_epoch,
+  TIMESTAMP '0001-01-01 00:00:00+00' AS timestamp_min,
+  TIMESTAMP '9999-12-31 23:59:59.999999+00' AS timestamp_max,
+  TIMESTAMP '1969-12-31 23:59:59.999999+00' AS timestamp_before_epoch,
+  MAKE_INTERVAL(-1, -2, -3, -4, -5, -6) AS interval_negative,
+  INTERVAL '-1-2 3 -4:5:6.000001' YEAR TO SECOND AS interval_mixed_signs,
+  INTERVAL '10000-0 -3660000 0:0:0' YEAR TO SECOND AS interval_extreme_parts,
+  INTERVAL '0-0 0 -2562047:47:16.854775' YEAR TO SECOND AS interval_widest_decodable_time,
+  JSON '{"b":[1,{"c":null}],"a":"\\u00e9\\ud83d\\udc0d\\n"}' AS json_escapes,
+  JSON '18446744073709551615' AS json_u64_max,
+  JSON 'null' AS json_null,
+  ST_GEOGPOINT(1, 2) AS geography_point,
+  ST_GEOGFROMTEXT('GEOMETRYCOLLECTION(POINT(1 2), LINESTRING(3 4, 5 6))') AS geography_collection,
+  RANGE(DATE '0001-01-01', DATE '9999-12-31') AS range_date_extremes,
+  RANGE(CAST(NULL AS DATETIME), DATETIME '1969-12-31 23:59:59.999999') AS range_unbounded_start,
+  RANGE(TIMESTAMP '0001-01-01 00:00:00+00', NULL) AS range_unbounded_end,
+  RANGE(CAST(NULL AS DATE), NULL) AS range_unbounded,
+  CAST(NULL AS RANGE<TIMESTAMP>) AS range_null,
+  ARRAY<INT64>[] AS empty_array,
+  [IEEE_DIVIDE(0, 0), CAST('-0' AS FLOAT64), CAST('5e-324' AS FLOAT64)] AS array_of_float64,
+  [NUMERIC '-99999999999999999999999999999.999999999', 0] AS array_of_numeric,
+  [JSON '{"a":1}', JSON 'null'] AS array_of_json,
+  [RANGE(DATE '2026-01-01', NULL)] AS array_of_range,
+  [b'\x00', b''] AS array_of_bytes,
+  ['', 'x'] AS array_of_string,
+  [STRUCT(CAST(NULL AS TIMESTAMP) AS t, ARRAY<INT64>[] AS xs), STRUCT(TIMESTAMP '9999-12-31 23:59:59.999999+00', [1])] AS array_of_struct,
+  STRUCT(STRUCT(STRUCT(NUMERIC '1.5' AS x) AS c) AS b) AS deep_struct,
+  STRUCT(CAST(NULL AS INT64) AS a, CAST(NULL AS RANGE<DATE>) AS r) AS struct_of_nulls,
+  STRUCT(ARRAY<STRING>[] AS xs, [STRUCT(JSON '[1]' AS j)] AS ys) AS struct_of_arrays,
+  CAST(NULL AS STRUCT<a INT64, b STRING>) AS null_struct,
+  CAST(NULL AS INT64) AS null_int64,
+  CAST(NULL AS BIGNUMERIC) AS null_bignumeric,
+  CAST(NULL AS JSON) AS null_json,
+  CAST(NULL AS INTERVAL) AS null_interval
+"#;
+
+/// A result binds back as parameters BigQuery reads as the same values and types, so echoing
+/// every column of [`ROUND_TRIP_SELECT`] through a named parameter returns the original batch: the
+/// parameter spellings of each type's extremes, its special values and its empty and NULL
+/// composites all parse back exactly.
+#[test]
+#[ignore = "requires Google Cloud ADC and access to the integration project"]
+fn result_columns_bind_back_as_the_same_parameter_values() {
+    let mut connection = connect(project());
+    let original = single_batch(&mut prepare_query(&mut connection, ROUND_TRIP_SELECT));
+    assert_eq!(original.num_rows(), 1);
+
+    let echo = original
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| format!("@{name} AS {name}", name = field.name()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut statement = named_parameter_query(&mut connection, &format!("SELECT {echo}"));
+    statement.bind(original.clone()).unwrap();
+    let echoed = single_batch(&mut statement);
+
+    assert_eq!(echoed.num_columns(), original.num_columns());
+    for (index, field) in original.schema().fields().iter().enumerate() {
+        let name = field.name();
+        assert_eq!(echoed.schema().field(index), field.as_ref(), "{name}");
+        assert_eq!(
+            echoed.column(index).to_data(),
+            original.column(index).to_data(),
+            "{name}"
+        );
+    }
+}
+
+/// A duration binds as an INTERVAL's time part, which BigQuery bounds at 87,840,000 hours: far
+/// past the 2,562,047 hours an Arrow month-day-nanosecond interval, and so a result, can hold.
+#[test]
+#[ignore = "requires Google Cloud ADC and access to the integration project"]
+fn binds_durations_as_interval_time_up_to_bigquerys_bound() {
+    let mut connection = connect(project());
+    let mut statement = named_parameter_query(
+        &mut connection,
+        "SELECT CAST(@two_days AS STRING), CAST(@longest AS STRING), \
+        CAST(@most_negative AS STRING), @two_days = INTERVAL 48 HOUR",
+    );
+    let columns: Vec<(&str, ArrayRef)> = vec![
+        (
+            "two_days",
+            Arc::new(DurationSecondArray::from(vec![172_800])),
+        ),
+        (
+            "longest",
+            Arc::new(DurationSecondArray::from(vec![316_224_000_000])),
+        ),
+        (
+            "most_negative",
+            Arc::new(DurationMicrosecondArray::from(vec![
+                -316_224_000_000_000_000,
+            ])),
+        ),
+    ];
+    statement
+        .bind(RecordBatch::try_from_iter(columns).unwrap())
+        .unwrap();
+    let batch = single_batch(&mut statement);
+    assert_eq!(str_at(&batch, 0), "0-0 0 48:0:0");
+    assert_eq!(str_at(&batch, 1), "0-0 0 87840000:0:0");
+    assert_eq!(str_at(&batch, 2), "0-0 0 -87840000:0:0");
+    assert!(bool_at(&batch, 3));
 }
