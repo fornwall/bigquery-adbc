@@ -26,9 +26,10 @@ use crate::{BigQueryAuthenticationType, BigQueryCredentialsType, BigQueryDatabas
 use super::DatabaseConfig;
 use super::endpoints::{is_trusted_credential_url, parse_credential_url, unsafe_url_authority};
 use super::rejections::{
-    executable_source_from_uri, malformed_credential_source_url, malformed_document_destination,
-    oversized_credential_file, required_option, unreadable_credential_file,
-    unsuitable_subject_token_file_from_uri, untrusted_document_destination,
+    executable_source_from_uri, irregular_credential_file_from_uri,
+    malformed_credential_source_url, malformed_document_destination, oversized_credential_file,
+    required_option, unreadable_credential_file, unsuitable_subject_token_file_from_uri,
+    untrusted_document_destination,
 };
 
 /// Applies the quota project and effective base scopes to a credential builder.
@@ -235,12 +236,19 @@ pub(super) fn require_credentials(settings: &DatabaseConfig) -> Result<&str> {
 /// that much.
 ///
 /// The bound matters because the path can come from a URI's `AuthCredentials`: `/dev/zero` or a
-/// log file would otherwise be read into memory whole. A pipe still works, since it ends at its
-/// writer's EOF. Credential documents are a few KiB.
-pub(super) fn read_credential_file(path: &str) -> Result<String> {
+/// log file would otherwise be read into memory whole. Credential documents are a few KiB. A pipe
+/// set as an option still works, since it ends at its writer's EOF, but a path the URI supplied
+/// (`from_uri`) must be a regular file: a pipe, terminal or `/dev/stdin` could block the
+/// connection forever, on its open or its read, as no URI's author may make the driver do.
+/// `metadata` follows symbolic links and does not open the file, so the check cannot block; a path
+/// it cannot inspect is left to the open, whose error gives the cause.
+pub(super) fn read_credential_file(path: &str, from_uri: bool) -> Result<String> {
     use std::io::{Error, ErrorKind, Read as _};
     const LIMIT: usize = 1024 * 1024;
 
+    if from_uri && std::fs::metadata(path).is_ok_and(|metadata| !metadata.is_file()) {
+        return Err(irregular_credential_file_from_uri());
+    }
     let mut bytes = Vec::new();
     std::fs::File::open(path)
         .and_then(|file| file.take(LIMIT as u64 + 1).read_to_end(&mut bytes))

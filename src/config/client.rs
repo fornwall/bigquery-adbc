@@ -33,7 +33,10 @@ impl ClientConfiguration {
         let document = match settings.authentication_type {
             BigQueryAuthenticationType::JsonCredentialFile => {
                 let path = credential_file_path(require_credentials(settings)?)?;
-                Some(Secret::from(read_credential_file(path)?))
+                Some(Secret::from(read_credential_file(
+                    path,
+                    settings.credentials_from_uri,
+                )?))
             }
             BigQueryAuthenticationType::JsonCredentialString => {
                 Some(Secret::from(require_credentials(settings)?))

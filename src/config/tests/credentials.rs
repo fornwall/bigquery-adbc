@@ -329,6 +329,96 @@ fn a_credential_file_over_one_mebibyte_is_refused_after_a_bounded_read() {
     assert_message_omits(&error, &[oversized.path()]);
 }
 
+/// A URI's author may not make the driver block for good, so a credential file path a URI
+/// supplies must be a regular file: a pipe with no writer blocks its open, and a terminal or
+/// `/dev/stdin` its read. The check comes before the open; should it ever not, the watchdog
+/// opens the pipe's other end so the test fails instead of hanging. An option, the application's
+/// own choice, may still name a device or pipe, which is read to its end.
+#[cfg(unix)]
+#[test]
+fn a_uri_cannot_name_a_credential_file_that_is_not_a_regular_file() {
+    const REFUSAL: &str = "the connection URI's AuthCredentials names a credential file that is \
+                           not a regular file (value not echoed), such as a pipe or device, whose \
+                           read might never end; a URI cannot make the driver read anything \
+                           else, so set bigquery.auth.credentials as a database option to read it";
+
+    let runtime = crate::runtime::new_runtime().unwrap();
+    let _guard = runtime.enter();
+    let fifo = TemporaryFile(
+        std::env::temp_dir().join(format!("bigquery-adbc-fifo-{}", std::process::id())),
+    );
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo.0)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let directory = std::env::temp_dir();
+    let key = TemporaryFile::new(
+        "uri-credential-file",
+        service_account_key("uri@data-project.iam.gserviceaccount.com"),
+    );
+    let file_settings = |path: &str, from_uri: bool| {
+        settings(|config| {
+            config.authentication_type = BigQueryAuthenticationType::JsonCredentialFile;
+            config.credentials = Some(Secret::from(path));
+            config.credentials_from_uri = from_uri;
+        })
+    };
+
+    for path in ["/dev/null", fifo.path(), directory.to_str().unwrap()] {
+        let settings = file_settings(path, true);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(ClientConfiguration::build(&settings).map(|_| ()));
+        });
+        let built = receiver
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap_or_else(|_| {
+                let _ = std::fs::OpenOptions::new().write(true).open(&fifo.0);
+                panic!("{path}: the build blocked")
+            });
+        let error = built.unwrap_err();
+        assert_eq!(error.status, Status::InvalidArguments, "{path}");
+        assert_eq!(error.message, REFUSAL, "{path}");
+    }
+    ClientConfiguration::build(&file_settings(key.path(), true)).unwrap();
+    // A path that cannot be inspected keeps the cause the open reports.
+    let missing = ClientConfiguration::build(&file_settings("/nonexistent/key.json", true))
+        .unwrap_err()
+        .message;
+    assert!(missing.contains("could not be read"), "{missing}");
+    // An option reads the device to its end, finding no document.
+    let empty = ClientConfiguration::build(&file_settings("/dev/null", false))
+        .unwrap_err()
+        .message;
+    assert!(empty.contains("syntax error"), "{empty}");
+
+    // The URI marks the path it supplies.
+    let mut database = crate::BigQueryDriver::try_new()
+        .unwrap()
+        .new_database_with_opts([(
+            OptionDatabase::Uri,
+            "bigquery:///data-project?OAuthType=1&AuthCredentials=/dev/null".into(),
+        )])
+        .unwrap();
+    assert_eq!(database.new_connection().unwrap_err().message, REFUSAL);
+    database
+        .set_option(
+            OptionDatabase::Other("bigquery.auth.credentials".to_owned()),
+            "/dev/null".into(),
+        )
+        .unwrap();
+    assert!(
+        database
+            .new_connection()
+            .unwrap_err()
+            .message
+            .contains("syntax error")
+    );
+}
+
 /// A URI naming a credential file supplies that document as much as one carrying it inline: the
 /// path can be any file the process reads. The refusal follows the credential, not the
 /// authentication type, and an explicit initialization option replaces the URI's credential

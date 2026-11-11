@@ -601,8 +601,9 @@ twice, so an encoded `+` becomes a space. An IPv6 host without a port keeps its 
 (`bigquery://[::1]/p` is `https://[::1]:443`); Go drops them and builds `::1:443`, which it cannot
 dial. A credential document from `AuthCredentials` that names a `credential_source.executable`,
 or a `credential_source.file` that is not a regular file of at most 1 MiB, returns
-`INVALID_ARGUMENT`, so a URI cannot run a command or read `/dev/zero`; Go runs the command once the
-machine sets `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`, and reads any file.
+`INVALID_ARGUMENT`, as does an `AuthCredentials` file path that is not a regular file, so a URI
+cannot run a command, read `/dev/zero` or block on a pipe; Go runs the command once the machine sets
+`GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`, and reads any file.
 
 ### G76. Scopes can shape the credential, not only the impersonated token
 

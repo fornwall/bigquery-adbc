@@ -41,6 +41,17 @@ pub(super) fn oversized_credential_file() -> adbc_core::error::Error {
     ))
 }
 
+/// Reports a `bigquery.auth.credentials` path from a URI's `AuthCredentials` that is not a regular
+/// file. Takes no path, for the reason [`unreadable_credential_file`] gives.
+pub(super) fn irregular_credential_file_from_uri() -> adbc_core::error::Error {
+    invalid_argument(format!(
+        "the connection URI's AuthCredentials names a credential file that is not a regular file \
+         (value not echoed), such as a pipe or device, whose read might never end; a URI cannot \
+         make the driver read anything else, so set {} as a database option to read it",
+        BigQueryDatabaseOption::AuthenticationCredentials.as_str(),
+    ))
+}
+
 /// Reject likely credential documents before interpreting the option as a file path.
 ///
 /// The option is a path under `json_credential_file` and the document itself under

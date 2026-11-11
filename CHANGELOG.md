@@ -69,6 +69,9 @@ changes.
 - A `bigquery.auth.credentials` file over 1 MiB is refused after reading that much instead of
   being read whole, so a path such as `/dev/zero`, which a URI's `AuthCredentials` can name, no
   longer exhausts memory.
+- A credential file path a URI's `AuthCredentials` supplies must be a regular file, so a URI can
+  no longer block the connection forever on a pipe, terminal or `/dev/stdin`. A path set as
+  `bigquery.auth.credentials` can still name a pipe.
 - Cancel no longer fails with `UNKNOWN` and BigQuery's 404 after stopping a job submission before
   the job was created, when that submission ended just as the cancel claimed it.
 - A named parameter longer than BigQuery's 127-character limit is refused before sending when its
