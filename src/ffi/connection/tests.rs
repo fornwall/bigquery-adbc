@@ -602,6 +602,7 @@ fn init_against_an_allocated_but_uninitialized_database_is_refused() {
 /// on the same struct while `Init` waits on BigQuery put another object in the slot, and that one
 /// must not receive the first connection's handle, which would leave it uncancellable.
 #[test]
+#[cfg_attr(miri, ignore = "socket mocks can hang under Miri")]
 fn init_installs_cancellation_on_its_own_object_when_the_slot_is_refilled() {
     use std::sync::mpsc::channel;
 
