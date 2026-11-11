@@ -948,3 +948,53 @@ fn named_parameters_match_ignoring_ascii_case_only() {
         .collect::<Vec<_>>();
     assert_eq!(values, [1, 2, 3, 4, 5]);
 }
+
+/// A DB-API `execute(sql, (1, None))` binds `None` as an Arrow `Null` field, which binds as a
+/// STRING NULL, and BigQuery refuses to insert a STRING parameter into an INT64 column. The refusal
+/// names the field, and the CAST it suggests inserts the NULL.
+#[test]
+#[ignore = "requires Google Cloud ADC and access to the integration project"]
+fn an_untyped_null_refused_as_a_string_names_its_field() {
+    let mut connection = connect_with_dataset_at("US");
+    let table = scratch_table("untyped_null");
+    let _drop_table = DropTable::table(&table);
+    execute_sql(
+        &mut connection,
+        &format!("CREATE TABLE `{table}` (a INT64, b INT64)"),
+    );
+    let row = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("0", DataType::Int64, true),
+            Field::new("1", DataType::Null, true),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![1])) as ArrayRef,
+            Arc::new(NullArray::new(1)) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let mut insert = prepare_query(
+        &mut connection,
+        &format!("INSERT INTO `{table}` (a, b) VALUES (?, ?)"),
+    );
+    insert.bind(row.clone()).unwrap();
+    let failure = insert.execute_update().unwrap_err();
+    assert_eq!(failure.status, Status::InvalidArguments);
+    assert!(
+        failure
+            .message
+            .contains("Value has type STRING which cannot be inserted into column b")
+            && failure.message.contains(
+                "; bound parameter 1 \"1\" is an Arrow Null field, which binds as a STRING NULL"
+            ),
+        "message: {}",
+        failure.message
+    );
+
+    let mut cast = prepare_query(
+        &mut connection,
+        &format!("INSERT INTO `{table}` (a, b) VALUES (?, CAST(? AS INT64))"),
+    );
+    cast.bind(row).unwrap();
+    assert_eq!(cast.execute_update().unwrap(), Some(1));
+}

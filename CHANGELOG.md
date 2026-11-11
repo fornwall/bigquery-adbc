@@ -47,6 +47,9 @@ changes.
 - Executing a `?` placeholder with no parameters bound still returns BigQuery's
   `INVALID_ARGUMENT` "Positional parameters are not supported", but the error now says to bind
   the parameters, since positional parameters are the default.
+- When BigQuery refuses a query because of a `STRING`, such as inserting into an `INT64` column,
+  and a bound parameter came from an unannotated Arrow `Null` field (a DB-API `None`), the error
+  names that field and says to `CAST` its placeholder, since such a field binds as a `STRING` NULL.
 
 ### Fixed
 

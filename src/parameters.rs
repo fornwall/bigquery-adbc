@@ -8,14 +8,14 @@ mod inferred;
 mod types;
 mod values;
 
-use adbc_core::error::{Error, Result};
+use adbc_core::error::{Error, Result, Status};
 use arrow_array::RecordBatch;
-use arrow_schema::{Field, Fields, Schema};
+use arrow_schema::{DataType, Field, Fields, Schema};
 
 use crate::error::invalid_argument;
 use crate::options::string_enum;
 use crate::rest::model::{QueryParameter, QueryParameterType, QueryParameterValue};
-use crate::types::{ValueAt, case_duplicate, validate_schema_nesting};
+use crate::types::{BIGQUERY_TYPE_METADATA_KEY, ValueAt, case_duplicate, validate_schema_nesting};
 
 pub(crate) use inferred::parameter_schema;
 use types::parameter_type;
@@ -173,6 +173,30 @@ pub(crate) fn parameters_for_schema(
             parameter_value: Some(QueryParameterValue::default()),
         })
         .collect())
+}
+
+/// Names the bound field a STRING NULL came from when BigQuery refused a query over a STRING: an
+/// unannotated Arrow `Null` field, which pyarrow infers for a `None` parameter, binds as one, and
+/// BigQuery coerces a STRING parameter to few other types (an INT64 column refuses it), so the
+/// caller cannot tell from BigQuery's message where the STRING came from.
+pub(crate) fn explain_untyped_null(schema: &Schema, mut failure: Error) -> Error {
+    if failure.status != Status::InvalidArguments || !failure.message.contains("STRING") {
+        return failure;
+    }
+    let untyped = schema.fields().iter().enumerate().find(|(_, field)| {
+        field.data_type() == &DataType::Null
+            && !field.metadata().contains_key(BIGQUERY_TYPE_METADATA_KEY)
+    });
+    if let Some((index, field)) = untyped {
+        failure.message = format!(
+            "{}; bound parameter {index} {:?} is an Arrow Null field, which binds as a STRING \
+             NULL: where the query needs another type, CAST its placeholder to that type or give \
+             the field {BIGQUERY_TYPE_METADATA_KEY} metadata",
+            failure.message,
+            field.name()
+        );
+    }
+    failure
 }
 
 /// The longest named parameter name BigQuery accepts, in UTF-16 code units, so a character beyond

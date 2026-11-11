@@ -8,7 +8,7 @@ use arrow_schema::{ArrowError, Schema, SchemaRef};
 
 use crate::cancellation::Operation;
 use crate::error::error;
-use crate::parameters::{ParameterMode, ParameterPlan};
+use crate::parameters::{ParameterMode, ParameterPlan, explain_untyped_null};
 use crate::query::{ExecutionContext, StatementQueryContext, StatementQueryOptions, execute_query};
 use crate::rest::model::QueryParameter;
 use crate::transaction::{TransactionContext, TransactionState};
@@ -55,9 +55,13 @@ impl ParameterRows {
         Ok(())
     }
 
-    /// Identifies a failed execution of the last yielded row and the earlier rows that ran.
+    /// Identifies a failed execution of the last yielded row and the earlier rows that ran, and
+    /// an untyped NULL it bound.
     pub(super) fn failed_row(&self, failure: Error) -> Error {
-        after_executed_rows(self.yielded.saturating_sub(1), failure)
+        after_executed_rows(
+            self.yielded.saturating_sub(1),
+            explain_untyped_null(&self.batches.schema, failure),
+        )
     }
 
     /// Converts the next parameter row, or `None` at the end of the stream.

@@ -157,3 +157,49 @@ fn a_refused_placeholder_style_names_the_parameter_mode_to_set() {
         );
     }
 }
+
+/// A `None` parameter arrives as an Arrow `Null` field and binds as a STRING NULL, which BigQuery's
+/// type refusals name without saying where the STRING came from; the driver names the field.
+#[test]
+fn a_type_refusal_names_the_untyped_null_field_it_came_from() {
+    let refusal = "Value has type STRING which cannot be inserted into column a, which has type \
+                   INT64 at [1:30]";
+    let failure = |status| crate::error::error(refusal, status);
+    let schema = |fields: Vec<Field>| Schema::new(fields);
+    let untyped = schema(vec![
+        Field::new("0", DataType::Int64, true),
+        Field::new("1", DataType::Null, true),
+    ]);
+    let explained = explain_untyped_null(&untyped, failure(Status::InvalidArguments));
+    assert_eq!(explained.status, Status::InvalidArguments);
+    assert_eq!(
+        explained.message,
+        format!(
+            "{refusal}; bound parameter 1 \"1\" is an Arrow Null field, which binds as a STRING \
+             NULL: where the query needs another type, CAST its placeholder to that type or give \
+             the field BIGQUERY:type metadata"
+        )
+    );
+    // An annotated Null field already says what it is, a refusal without a STRING is about
+    // something else, and only a refused query is explained.
+    let annotated = schema(vec![bigquery_typed(
+        Field::new("a", DataType::Null, true),
+        "INT64",
+    )]);
+    let other_refusal = "Query parameter 'x' not found at [1:8]";
+    for (schema, failure) in [
+        (&annotated, failure(Status::InvalidArguments)),
+        (
+            &untyped,
+            crate::error::error(other_refusal, Status::InvalidArguments),
+        ),
+        (&untyped, failure(Status::IO)),
+        (
+            &schema(vec![Field::new("s", DataType::Utf8, true)]),
+            failure(Status::InvalidArguments),
+        ),
+    ] {
+        let message = failure.message.clone();
+        assert_eq!(explain_untyped_null(schema, failure).message, message);
+    }
+}

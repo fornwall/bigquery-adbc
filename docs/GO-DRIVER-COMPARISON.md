@@ -150,6 +150,7 @@ Fields with `BIGQUERY:type` metadata for `JSON`, `GEOGRAPHY` or `RANGE` bind as 
 result schema binds back unchanged, and a `Null` field binds as a NULL of its metadata's type. Go
 sends strings as `STRING` and structs as `STRUCT`, so `RANGE` fails, and every `Null` as a `STRING`
 NULL, which BigQuery refuses where the SQL needs another type (`UPDATE t SET n = ?` on `INT64`).
+An unannotated `Null` field binds as a `STRING` NULL here too, but such a refusal names the field.
 
 ### G10. Arrow interval query parameters are supported
 

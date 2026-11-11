@@ -551,6 +551,51 @@ fn parameters_reach_the_request_as_bigquery_spells_them() {
     }
 }
 
+/// A `None` parameter arrives as an Arrow `Null` field and binds as a STRING NULL. BigQuery's type
+/// refusal names the STRING; every path that sends the binding, its rows or its typed nulls, adds
+/// the field it came from.
+#[test]
+fn every_execute_names_the_untyped_null_behind_a_string_type_refusal() {
+    let refusal = "Value has type STRING which cannot be inserted into column a, which has type \
+                   INT64 at [1:30]";
+    let rejection = google_rejection(400, "INVALID_ARGUMENT", "invalidQuery", refusal);
+    let (endpoint, requests) = capture_requests(vec![rejection; 6]);
+    let mut statement = test_query_at(&endpoint, "INSERT INTO t (a) VALUES (?)");
+    let nulls = |rows| {
+        let schema = Schema::new(vec![Field::new("0", DataType::Null, true)]);
+        let column = Arc::new(arrow_array::NullArray::new(rows)) as ArrayRef;
+        RecordBatch::try_new(Arc::new(schema), vec![column]).unwrap()
+    };
+    let mut failures = Vec::new();
+    statement.bind(nulls(1)).unwrap();
+    failures.push(statement.execute().err().unwrap());
+    statement.bind(nulls(1)).unwrap();
+    failures.push(statement.execute_update().unwrap_err());
+    statement.bind(nulls(1)).unwrap();
+    failures.push(statement.execute_partitions().unwrap_err());
+    // An empty binding is described by a dry run typed from its schema.
+    statement.bind(nulls(0)).unwrap();
+    failures.push(statement.execute().err().unwrap());
+    // A description and a dry run send the binding's typed nulls and keep it.
+    statement.bind(nulls(1)).unwrap();
+    failures.push(statement.execute_schema().unwrap_err());
+    set_option(&mut statement, BqOption::DryRun, ADBC_OPTION_VALUE_ENABLED);
+    failures.push(statement.execute().err().unwrap());
+    for failure in failures {
+        assert_failure(
+            &failure,
+            Status::InvalidArguments,
+            &[
+                refusal,
+                "; bound parameter 0 \"0\" is an Arrow Null field, which binds as a STRING NULL",
+            ],
+        );
+        // Explained once, whichever layer saw it first.
+        assert_eq!(failure.message.matches("Arrow Null field").count(), 1);
+    }
+    requests.served(6);
+}
+
 /// An unbound statement sends no parameter mode, which BigQuery answers for a `?` with
 /// "Positional parameters are not supported", as if the driver lacked them; every execute entry
 /// point says the statement is missing its parameters instead.

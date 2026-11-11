@@ -25,7 +25,8 @@ use serde_json::json;
 use crate::rest::model::{QueryParameter, QueryParameterType, QueryParameterValue};
 
 use super::{
-    ParameterMode, ParameterPlan, parameter_schema, parameter_type, parameters_for_schema,
+    ParameterMode, ParameterPlan, explain_untyped_null, parameter_schema, parameter_type,
+    parameters_for_schema,
 };
 use crate::ingest::schema::arrow_schema_to_bigquery;
 use crate::test_support::arrow::{bigquery_typed, range_bounds};

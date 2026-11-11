@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 use adbc_core::constants::ADBC_CONNECTION_OPTION_AUTOCOMMIT;
-use adbc_core::error::Result;
+use adbc_core::error::{Error, Result};
 use adbc_core::{CancelHandle, PartitionedResult, Statement};
 use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_schema::Schema;
@@ -22,7 +22,7 @@ use crate::connection::{CurrentNamespace, Namespace};
 use crate::dbt::statement::{DbtStatementState, SqlDisposition};
 use crate::error::{invalid_state, not_implemented};
 use crate::ingest::{IngestContext, IngestOptions};
-use crate::parameters::{ParameterMode, parameters_for_schema};
+use crate::parameters::{ParameterMode, explain_untyped_null, parameters_for_schema};
 use crate::query::{
     ExecutionContext, ExecutionProgress, QueryDefaults, StatementQueryContext,
     StatementQueryOptions, empty_reader, execute_parameter_schema, execute_query,
@@ -244,8 +244,9 @@ impl BigQueryStatement {
             return Ok((empty_reader(Arc::new(schema)), 0));
         };
 
-        let (current, rows_affected) =
-            self.run_query(&operation, sql, Some(parameters), execute_query)?;
+        let (current, rows_affected) = self
+            .run_query(&operation, sql, Some(parameters), execute_query)
+            .map_err(|failure| rows.failed_row(failure))?;
         // A one-row binding, such as a DB-API `execute(sql, parameters)`, ran in full, so its
         // count is the statement's.
         if !rows.has_next(&operation)? {
@@ -308,7 +309,7 @@ impl BigQueryStatement {
             sql,
             parameters.map(|parameters| (self.parameter_mode.as_bigquery_value(), parameters)),
         )
-        .map_err(|failure| ParameterMode::explain_refusal(mode, failure))
+        .map_err(|failure| self.explain_typed_nulls(ParameterMode::explain_refusal(mode, failure)))
     }
 
     /// Typed nulls from the bound stream's schema, which is all a dry run or a description of the
@@ -333,7 +334,12 @@ impl BigQueryStatement {
             sql,
             Some((self.parameter_mode.as_bigquery_value(), parameters)),
         )
-        .map_err(|failure| ParameterMode::explain_refusal(Some(self.parameter_mode), failure))
+        .map_err(|failure| {
+            self.explain_typed_nulls(ParameterMode::explain_refusal(
+                Some(self.parameter_mode),
+                failure,
+            ))
+        })
     }
 
     /// The result schema of a statement whose bound parameter stream holds no rows: nothing
@@ -346,6 +352,17 @@ impl BigQueryStatement {
     ) -> Result<Schema> {
         let parameters = parameters_for_schema(rows.schema().as_ref(), self.parameter_mode)?;
         self.describe(operation, sql, parameters)
+            .map_err(|failure| explain_untyped_null(rows.schema(), failure))
+    }
+
+    /// Explains a refusal of what [`Self::typed_nulls`] sent for the binding, which a dry run or a
+    /// description leaves in place; any other binding was consumed, and its rows explain their
+    /// own refusals.
+    fn explain_typed_nulls(&self, failure: Error) -> Error {
+        match self.parameters.schema() {
+            Some(schema) => explain_untyped_null(&schema, failure),
+            None => failure,
+        }
     }
 }
 
