@@ -154,8 +154,9 @@ NULL, which BigQuery refuses where the SQL needs another type (`UPDATE t SET n =
 ### G10. Arrow interval query parameters are supported
 
 All three interval layouts and `Duration` bind as `INTERVAL` (a duration is the time part, so two
-days is `0-0 0 48:0:0`); a duration beyond 2,562,047 hours fails locally. Go rejects both. Results
-beyond that bound fail on REST and on Storage Read alike.
+days is `0-0 0 48:0:0`); a duration beyond BigQuery's 87,840,000 hours fails locally. Go rejects
+both. Results beyond 2,562,047 hours, the most an Arrow interval holds, fail on REST and on Storage
+Read alike.
 
 ### G17. Out-of-precision decimal values are rejected locally
 
@@ -451,7 +452,9 @@ Field metadata has `BIGQUERY:type`, `Type` and the extension keys, as in Go, but
 `Repeated` only when true, `Description` and `Collation` only when non-empty, and `MaxLength` only
 when declared, where Go writes `"0"` ([supported types](REFERENCE.md#supported-types)). Decimal
 columns add `BIGQUERY:precision` and `BIGQUERY:scale`, and `PolicyTags` uses BigQuery's
-`{"names":[…]}` rather than Go's `{"Names":[…]}`.
+`{"names":[…]}` rather than Go's `{"Names":[…]}`. A column default is `GetObjects`'
+`xdbc_column_def`, not Go's `DefaultValueExpression` key, and a list's item field carries the
+element's `BIGQUERY:type`, which Go's lacks.
 
 ### G69. An empty `table_type` list matches no tables
 
