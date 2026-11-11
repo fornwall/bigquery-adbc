@@ -467,7 +467,9 @@ fn a_uri_document_may_read_only_a_small_regular_subject_token_file() {
     for nested in [false, true] {
         let prefix = if nested { "source_credentials." } else { "" };
         for path in [
-            "/dev/zero",
+            // A device like `/dev/zero`, which the option case below would read without end in
+            // the library's background token fetch, outliving the test.
+            "/dev/null",
             directory.to_str().unwrap(),
             oversized.path(),
             "/nonexistent/subject-token",
