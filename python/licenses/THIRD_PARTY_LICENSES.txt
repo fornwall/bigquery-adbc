@@ -46,7 +46,7 @@ Source: registry+https://github.com/rust-lang/crates.io-index
   [62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a] LICENSE-APACHE
   [23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3] LICENSE-MIT
 
-arc-swap 1.9.3
+arc-swap 1.9.5
 License declaration: MIT OR Apache-2.0
 Source: registry+https://github.com/rust-lang/crates.io-index
   [a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2] LICENSE-APACHE
@@ -580,13 +580,6 @@ Source: registry+https://github.com/rust-lang/crates.io-index
   [a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2] LICENSE-APACHE
   [ab499c75a0f0da8e0fe83bf9ba3a27e5c39705310f07107c6c66b69958d2401c] LICENSE-MIT
 
-bitflags 1.3.2
-License declaration: MIT/Apache-2.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2] LICENSE-APACHE
-  [6485b8ed310d3f0340bf1ad1f47645069ce4069dcc6bb46c7d5c6faf41de1fdb] LICENSE-MIT
-  [3b7df402160fc95c1ec4d256f720da6b75b1c5c69ad6826acfa5f096e349a42c] src/lib.rs (source notice 1)
-
 bitflags 2.13.2
 License declaration: MIT OR Apache-2.0
 Source: registry+https://github.com/rust-lang/crates.io-index
@@ -623,7 +616,7 @@ License declaration: MIT
 Source: registry+https://github.com/rust-lang/crates.io-index
   [45f522cacecb1023856e46df79ca625dfc550c94910078bd8aec6e02880b3d42] LICENSE
 
-cc 1.10.0
+cc 1.11.1
 License declaration: MIT OR Apache-2.0
 Source: registry+https://github.com/rust-lang/crates.io-index
   [a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2] LICENSE-APACHE
@@ -789,7 +782,7 @@ Source: registry+https://github.com/rust-lang/crates.io-index
   [a9040321c3712d8fd0b09cf52b17445de04a23a10165049ae187cd39e5c86be5] LICENSE-APACHE
   [d2e7ec5355c96eeade56b09187ceb48a6a30299da3ce7531a66d3d11405ab963] LICENSE-MIT
 
-ctutils 0.4.7
+ctutils 0.4.8
 License declaration: Apache-2.0 OR MIT
 Source: registry+https://github.com/rust-lang/crates.io-index
   [cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30] LICENSE-APACHE
@@ -809,24 +802,6 @@ darling_macro 0.24.1
 License declaration: MIT
 Source: registry+https://github.com/rust-lang/crates.io-index
   [8ea93490d74a5a1b1af3ff71d786271b3f1e5f0bea79ac16e02ec533cef040d6] LICENSE
-
-defmt 1.2.0
-License declaration: MIT OR Apache-2.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90] LICENSE-APACHE
-  [0d17b75c1867fd568bcbb735f329d0d4253846c4b756a65e4d440c1e4bd59187] LICENSE-MIT
-
-defmt-macros 1.2.0
-License declaration: MIT OR Apache-2.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90] LICENSE-APACHE
-  [0d17b75c1867fd568bcbb735f329d0d4253846c4b756a65e4d440c1e4bd59187] LICENSE-MIT
-
-defmt-parser 1.1.0
-License declaration: MIT OR Apache-2.0
-Source: registry+https://github.com/rust-lang/crates.io-index
-  [8173d5c29b4f956d532781d2b86e4e30f83e6b7878dce18c919451d6ba707c90] LICENSE-APACHE
-  [0d17b75c1867fd568bcbb735f329d0d4253846c4b756a65e4d440c1e4bd59187] LICENSE-MIT
 
 deranged 0.5.9
 License declaration: MIT OR Apache-2.0
@@ -1588,26 +1563,26 @@ Source: registry+https://github.com/rust-lang/crates.io-index
   [87d9feb9238c6bd8e0024fc4733b06cff036f89f36d93b7df1c8a0549bbb7a5b] LICENSE-APACHE
   [47dc9ff29128ddfb4d6a0435383c9f89120bc374dbcc1dd00b933a0b28aa7865] LICENSE-MIT
 
-itertools 0.14.0
+itertools 0.15.0
 License declaration: MIT OR Apache-2.0
 Source: registry+https://github.com/rust-lang/crates.io-index
   [a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2] LICENSE-APACHE
   [7576269ea71f767b99297934c0b2367532690f8c4badc695edf8e04ab6a1e545] LICENSE-MIT
 
-itoa 1.0.18
+itoa 1.0.19
 License declaration: MIT OR Apache-2.0
 Source: registry+https://github.com/rust-lang/crates.io-index
   [62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a] LICENSE-APACHE
   [23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3] LICENSE-MIT
 
-jiff 0.2.38
+jiff 0.2.42
 License declaration: Unlicense OR MIT
 Source: registry+https://github.com/rust-lang/crates.io-index
   [01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f] COPYING
   [0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f] LICENSE-MIT
   [7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c] UNLICENSE
 
-jiff-core 0.1.2
+jiff-core 0.1.4
 License declaration: Unlicense OR MIT
 Source: registry+https://github.com/rust-lang/crates.io-index
   [01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f] COPYING
@@ -1763,7 +1738,7 @@ Source: registry+https://github.com/rust-lang/crates.io-index
   [59ee71a59035c18a5043881ef760e797cc17dc0cfd65eb43075f72a0ecf8292a] src/math/tan.rs (source notice 1)
   [565eff8b979411888b4fc163ba49daf7ad9beba47ee485942f032edcefd17948] src/math/tanf.rs (source notice 1)
 
-log 0.4.34
+log 0.4.35
 License declaration: MIT OR Apache-2.0
 Source: registry+https://github.com/rust-lang/crates.io-index
   [a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2] LICENSE-APACHE
@@ -2065,17 +2040,17 @@ Source: registry+https://github.com/rust-lang/crates.io-index
   [62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a] LICENSE-APACHE
   [23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3] LICENSE-MIT
 
-prost 0.14.4
+prost 0.14.5
 License declaration: Apache-2.0
 Source: registry+https://github.com/rust-lang/crates.io-index
   [a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2] LICENSE
 
-prost-derive 0.14.4
+prost-derive 0.14.5
 License declaration: Apache-2.0
 Source: registry+https://github.com/rust-lang/crates.io-index
   [a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2] LICENSE
 
-prost-types 0.14.4
+prost-types 0.14.5
 License declaration: Apache-2.0
 Source: registry+https://github.com/rust-lang/crates.io-index
   [a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2] LICENSE
@@ -2549,7 +2524,7 @@ Source: registry+https://github.com/rust-lang/crates.io-index
   [7cfafc877eccc46c0e346ccbaa5c51bb6b894d2b818e617d970211e232785ad4] LICENSE-ISC
   [709e3175b4212f7b13aa93971c9f62ff8c69ec45ad8c6532a7e0c41d7a7d6f8c] LICENSE-MIT
 
-rustls-pki-types 1.15.1
+rustls-pki-types 1.16.0
 License declaration: MIT OR Apache-2.0
 Source: registry+https://github.com/rust-lang/crates.io-index
   [45fd05c4865e7c350b98ad7ac50e1b15462d49af4a91e9b0c9dd933dc9a69742] LICENSE-APACHE
@@ -2721,7 +2696,7 @@ License declaration: MIT
 Source: registry+https://github.com/rust-lang/crates.io-index
   [8ce0830173fdac609dfb4ea603fdc002c2f4af0dc9b1a005653f5da9cf534b18] LICENSE
 
-smallvec 1.16.4
+smallvec 1.16.5
 License declaration: MIT OR Apache-2.0
 Source: registry+https://github.com/rust-lang/crates.io-index
   [a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2] LICENSE-APACHE
@@ -2754,7 +2729,7 @@ Source: registry+https://github.com/rust-lang/crates.io-index
   [62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a] LICENSE-APACHE
   [23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3] LICENSE-MIT
 
-syn 3.0.9
+syn 3.0.10
 License declaration: MIT OR Apache-2.0
 Source: registry+https://github.com/rust-lang/crates.io-index
   [62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a] LICENSE-APACHE
@@ -2859,13 +2834,13 @@ License declaration: MIT
 Source: registry+https://github.com/rust-lang/crates.io-index
   [253cd04c6714889df2d32f3f64d669179a1c95c76ac43c40882c52eb06bc3552] LICENSE
 
-toml_datetime 1.1.2+spec-1.1.0
+toml_datetime 1.1.3+spec-1.1.0
 License declaration: MIT OR Apache-2.0
 Source: registry+https://github.com/rust-lang/crates.io-index
   [249fdb6694467dd615b259f7ddde07be3f8ae5a72cecebb0e24f6629af4215fe] LICENSE-APACHE
   [6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6] LICENSE-MIT
 
-toml_edit 0.25.17+spec-1.1.0
+toml_edit 0.25.19+spec-1.1.0
 License declaration: MIT OR Apache-2.0
 Source: registry+https://github.com/rust-lang/crates.io-index
   [249fdb6694467dd615b259f7ddde07be3f8ae5a72cecebb0e24f6629af4215fe] LICENSE-APACHE
@@ -3073,7 +3048,7 @@ Source: registry+https://github.com/rust-lang/crates.io-index
   [117319946a34c90bd030673bd950776f1a2d46320be153c61de06dbcb55bacf0] src/utf16.rs (source notice 1)
   [117319946a34c90bd030673bd950776f1a2d46320be153c61de06dbcb55bacf0] src/utf8.rs (source notice 1)
 
-uuid 1.29.0
+uuid 1.29.2
 License declaration: Apache-2.0 OR MIT
 Source: registry+https://github.com/rust-lang/crates.io-index
   [a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2] LICENSE-APACHE
@@ -3127,7 +3102,7 @@ Source: registry+https://github.com/rust-lang/crates.io-index
   [c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383] license-mit
   [a48ff77be5dd144f696440880d34a8b4d9ac89f6c2a31cf45fe9cfa137f14a7f] src/Windows/Win32/Security/LicenseProtection/mod.rs
 
-winnow 1.0.4
+winnow 1.0.5
 License declaration: MIT
 Source: registry+https://github.com/rust-lang/crates.io-index
   [cb5aedb296c5246d1f22e9099f925a65146f9f0d6b4eebba97fd27a6cdbbab2d] LICENSE-MIT
@@ -4494,36 +4469,6 @@ DOCUMENT 0beade56a930d1c1a35daa8cd5bbe8350757c3b38ac025a553f7db8bdfaf9e16
 // software is freely granted, provided that this notice
 // is preserved.
 // ====================================================
-
-
-==============================================================================
-DOCUMENT 0d17b75c1867fd568bcbb735f329d0d4253846c4b756a65e4d440c1e4bd59187
-==============================================================================
-Copyright (c) Ferrous Systems
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
 
 
 ==============================================================================
