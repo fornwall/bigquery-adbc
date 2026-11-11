@@ -103,6 +103,9 @@ changes.
   `INVALID_DATA` as "over the driver's fixed 67108864-byte limit", when its JSON exceeds 64 MiB:
   BigQuery spells each control character, `<` or `>` in six bytes, so such a row can arrive as a
   120 MB response. The limit on a buffered response is now 128 MiB.
+- A large partition of a `bigquery.query.destination_table` query, read through Storage Read,
+  returns the table as its job left it, as a small one read over REST does, instead of the table
+  as it is when read, with rows later jobs appended and without those a later truncation removed.
 - A partition stream that fails, or is cancelled, before its first results read no longer asks
   BigQuery to cancel the partition's already finished job. That request could fail for a reader
   without permission to cancel the job, making `AdbcConnectionCancel` return `UNKNOWN`.
@@ -170,9 +173,6 @@ changes.
 - The dbt installer takes no option or temporary path from the environment. A `td` variable named
   a directory it deleted on exit, even when the installed dbt was already current, and `prefix`,
   `dest`, `version`, `target` or `package` changed what it installed where.
-- A large partition of a `bigquery.query.destination_table` query, read through Storage Read,
-  returns the table as its job left it, as a small one read over REST does, instead of the table
-  as it is when read, with rows later jobs appended and without those a later truncation removed.
 
 ## [0.5.0] - 2026-11-09
 
