@@ -140,8 +140,7 @@ class bdist_wheel(_bdist_wheel):
 
     def get_tag(self) -> tuple[str, str, str]:
         if "editable_wheel" in self.distribution.commands:
-            # A development install only points at Python sources; it uses
-            # BIGQUERY_ADBC_LIBRARY for the separately built native driver.
+            # An editable wheel carries no native library (see build_backend.build_editable).
             return "py3", "none", "any"
         _python, _abi, platform_tag = super().get_tag()
         assert self.bdist_dir is not None

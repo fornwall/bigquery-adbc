@@ -68,7 +68,7 @@ def _dataset_exists(project: str, dataset: str) -> bool:
     """Asks the dataset itself: INFORMATION_SCHEMA can lag a CREATE that landed late."""
     with _connect(project) as connection:
         try:
-            connection.adbc_connection.set_options(**{driver.ConnectionOptions.CURRENT_DB_SCHEMA.value: dataset})
+            connection.adbc_connection.set_options(**{driver.ConnectionOptions.CURRENT_DB_SCHEMA: dataset})
         except adbc_driver_manager.ProgrammingError as error:
             if error.status_code == adbc_driver_manager.AdbcStatusCode.NOT_FOUND:
                 return False
