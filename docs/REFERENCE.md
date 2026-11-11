@@ -369,8 +369,8 @@ BigQuery keeps it.
 Messages say which step failed: `BigQuery rejected the query` for a submission BigQuery refused,
 `BigQuery stopped the query` for one it stopped while answering the submission (such as at the job
 timeout), and `failed to submit` for one that got no verdict. When `jobs.query` submission retries
-end that way after an attempt that may have reached BigQuery, the message adds that BigQuery may
-still have run the statement; a new submission would be a new execution, so check first. Attempts
+end that way after an attempt that may have run the statement, the message adds that BigQuery may
+still have run it; a new submission would be a new execution, so check first. Attempts
 that could not connect (DNS, TCP, TLS) reached nothing. A job that fails after acceptance is named as
 `<project>:<location>.<id>`, and its message ends with the job's console link. BigQuery's errors
 follow as `<reason>: <message>`. `AdbcErrorGetDetail` exposes these keys when available:

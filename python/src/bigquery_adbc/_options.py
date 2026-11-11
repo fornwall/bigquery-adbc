@@ -297,8 +297,8 @@ class StatementOptions(enum.StrEnum):
     #: string, is rejected. Reading the option back returns canonical JSON sorted by key.
     QUERY_LABELS = "bigquery.query.labels"
 
-    #: Boolean string accepted for Go-driver compatibility, but a no-op: a failed job's error
-    #: message ends with its console link either way.
+    #: Boolean string accepted for compatibility with the dbt-labs fork of the Go driver, but a
+    #: no-op: a failed job's error message ends with its console link either way.
     QUERY_LINK_FAILED_JOB = "bigquery.query.link_failed_job"
 
     #: Recognized but returns `NOT_IMPLEMENTED`, because Google deprecated the field. Use

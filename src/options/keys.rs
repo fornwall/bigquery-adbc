@@ -433,8 +433,8 @@ string_enum! {
             ["adbc.bigquery.sql.query.labels"],
             String
         ),
-        /// Boolean string accepted for Go-driver compatibility, but a no-op: a failed job's error
-        /// message ends with its console link either way.
+        /// Boolean string accepted for compatibility with the dbt-labs fork of the Go driver, but a
+        /// no-op: a failed job's error message ends with its console link either way.
         LinkFailedJob => (
             "bigquery.query.link_failed_job",
             ["adbc.bigquery.sql.query.link_failed_job"],

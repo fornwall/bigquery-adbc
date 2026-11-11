@@ -151,8 +151,9 @@ impl BigQueryStatement {
         self.active_option_only_operation()
     }
 
-    /// The SQL an execute runs and the binding it consumes, after the checks every execute makes
-    /// before reading a row. A dry run reads no row, so it leaves the binding in place.
+    /// The SQL a query, update or partitioned execute runs and the binding it consumes, after the
+    /// checks they make before reading a row. A dry run reads no row, so it leaves the binding in
+    /// place.
     fn take_query(&mut self) -> Result<(Arc<str>, Option<BoundStream>)> {
         let sql = require_sql(self.sql.as_ref(), "execute")?.clone();
         self.parameters.require_available()?;

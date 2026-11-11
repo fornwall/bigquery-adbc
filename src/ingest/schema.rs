@@ -649,7 +649,7 @@ pub(super) fn validate_ingestible_target(table: TableId<'_>, table_type: &str) -
     )))
 }
 
-/// Reports whether an existing table can accept the bound data, naming every column that cannot.
+/// Reports whether an existing table can accept the bound data, naming the columns that cannot.
 ///
 /// The status is `ALREADY_EXISTS`, as adbc.h requires for a target that exists "but the schema
 /// does not match the schema of the data to append"; the message names the columns at fault and
