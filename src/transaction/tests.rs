@@ -142,7 +142,7 @@ fn enabling_autocommit_distinguishes_idle_and_active_transactions() {
     let idle = TransactionState::default();
     assert!(matches!(
         idle.begin_enable_autocommit().unwrap(),
-        EnableAutocommit::AlreadyEnabled
+        EnableAutocommit::Idle(None)
     ));
     idle.disable_autocommit().unwrap();
     assert!(matches!(

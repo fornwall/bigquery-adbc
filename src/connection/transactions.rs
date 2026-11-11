@@ -16,7 +16,6 @@ impl BigQueryConnection {
             return self.transaction.disable_autocommit();
         }
         match self.transaction.begin_enable_autocommit()? {
-            EnableAutocommit::AlreadyEnabled => Ok(()),
             EnableAutocommit::Idle(session_id) => {
                 if let Some(session_id) = session_id {
                     self.transaction_context().abort(&session_id);

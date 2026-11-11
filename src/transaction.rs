@@ -68,7 +68,7 @@ pub(crate) enum FinishTransaction<'a> {
 
 #[derive(Debug)]
 pub(crate) enum EnableAutocommit<'a> {
-    AlreadyEnabled,
+    /// Autocommit is enabled, leaving the caller the idle session to end, if any.
     Idle(Option<Arc<str>>),
     Active(Arc<str>, Finish<'a>),
 }
@@ -354,7 +354,7 @@ impl TransactionState {
     pub(crate) fn begin_enable_autocommit(&self) -> Result<EnableAutocommit<'_>> {
         let mut state = self.state();
         match &*state {
-            State::Autocommit => Ok(EnableAutocommit::AlreadyEnabled),
+            State::Autocommit => Ok(EnableAutocommit::Idle(None)),
             State::ManualIdle { session_id } => {
                 let session_id = session_id.clone();
                 *state = State::Autocommit;
