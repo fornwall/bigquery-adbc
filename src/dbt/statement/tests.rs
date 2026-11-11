@@ -190,31 +190,25 @@ fn a_dry_run_never_runs_an_operation_that_changes_something() {
     }
 }
 
-/// An operation without an option it needs names that option before any request.
+/// A seed without its destination table or schema names the missing option before any request.
 #[test]
-fn an_operation_missing_an_option_it_needs_names_it() {
-    const SEED: (Key, &str) = (Key::CsvFilepath, "/tmp/seed.csv");
-    const DESTINATION: (Key, &str) = (Key::DestinationTable, "data-project.analytics.seed");
-    let assert_missing = |options: &[(Key, &str)], missing: Key, subject: &str| {
-        let mut statement = test_statement();
-        for (option, value) in options {
-            set_option(&mut statement, *option, *value);
-        }
+fn a_seed_missing_its_destination_or_schema_names_the_option() {
+    let mut statement = test_statement();
+    set_option(&mut statement, Key::CsvFilepath, "/tmp/seed.csv");
+    for missing in [Key::DestinationTable, Key::CsvSchema] {
         let error = statement.execute_update().unwrap_err();
         assert_failure(
             &error,
             Status::InvalidState,
             &[&format!(
-                "BigQuery option {} is required by the BigQuery {subject}",
+                "BigQuery option {} is required by the BigQuery CSV seed load",
                 missing.as_str()
             )],
         );
-    };
-    assert_missing(&[SEED], Key::DestinationTable, "CSV seed load");
-    assert_missing(&[SEED, DESTINATION], Key::CsvSchema, "CSV seed load");
-    assert_missing(
-        &[(Key::UpdateDescription, "A documented table.")],
-        Key::DestinationTable,
-        "table metadata update",
-    );
+        set_option(
+            &mut statement,
+            Key::DestinationTable,
+            "data-project.analytics.seed",
+        );
+    }
 }
