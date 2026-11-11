@@ -45,6 +45,10 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
   AdbcDriverInitFunc init = (AdbcDriverInitFunc)dlsym(library, "AdbcDriverInit");
+  if (!init) {
+    fprintf(stderr, "%s\n", dlerror());
+    return EXIT_FAILURE;
+  }
 
   struct AdbcError error = ADBC_ERROR_INIT;
   struct AdbcDriver driver = {0};
