@@ -376,8 +376,10 @@ follow as `<reason>: <message>`. `AdbcErrorGetDetail` exposes these keys when av
 | A protobuf type name, such as `google.rpc.ErrorInfo` | A structured `google.rpc.Status` detail as UTF-8 ProtoJSON, including `@type`. Repeated types keep the service's order; untyped details are skipped. |
 
 ADBC 1.0 callers also receive the numeric status in `AdbcError::vendor_code`; ADBC 1.1 reserves that
-field for its layout sentinel. Credential failures do not forward structured `google.rpc.Status`
-details.
+field for its layout sentinel. Structured `google.rpc.Status` details come from gRPC calls and dbt
+long-running operations. Of a REST rejection's error document only the first entry's `reason` and
+`location` are forwarded, since the rest can echo the request.
+Credential failures forward no `google.rpc.Status` details.
 
 | Condition | Status |
 | --- | --- |
