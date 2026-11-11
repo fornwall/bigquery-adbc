@@ -1,8 +1,7 @@
 //! Database settings and validated Google Cloud client configuration.
 //!
 //! [`DatabaseConfig`] holds the caller's options; [`ClientConfiguration`] validates them and
-//! pairs credentials with trusted endpoints. Secret-bearing fields use [`secret::Secret`] to
-//! redact derived `Debug` output.
+//! pairs credentials with trusted endpoints.
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -382,15 +382,10 @@ mod tests {
 
     const KEY: &str = BigQueryDatabaseOption::Endpoint.as_str();
 
-    /// `idna` runs on its stub back end (`Cargo.toml`), so URL hosts are ASCII: a non-ASCII host,
-    /// a fullwidth spelling of a Google host included, is refused rather than mapped, and an
-    /// internationalized name passes only in Punycode. ASCII case still folds before the trust rule.
-    ///
-    /// In a debug build the stub asserts that an ASCII letter it normalizes is lower case, which
-    /// fails for an upper-case letter just before a non-ASCII one (`Bü`), so such a host must be
-    /// refused before parsing rather than panic. That holds through the spellings the parser
-    /// accepts: percent-encoded, after a removed tab, without slashes. A percent-encoded ASCII
-    /// host is refused with them, since no endpoint is spelled that way.
+    /// A non-ASCII or percent-encoded host, a fullwidth spelling of a Google host included, is
+    /// refused rather than mapped, in every spelling the parser accepts
+    /// ([`super::unsafe_url_authority`]). An internationalized name passes only in Punycode, and
+    /// ASCII case still folds before the trust rule.
     #[test]
     fn credential_url_hosts_must_be_ascii() {
         for refused in [

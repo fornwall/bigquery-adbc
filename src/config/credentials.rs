@@ -317,13 +317,13 @@ const DOCUMENT_DESTINATIONS: [(&str, &str, bool); 3] = [
 
 /// Refuses a credential document that would send a credential outside Google's API hosts, unless
 /// `bigquery.allow_untrusted_endpoint` is set. Google warns against accepting these documents from
-/// an untrusted source, and a URI can carry one in `AuthCredentials`. The opt-in lifts only the
-/// trust rule: the auth library parses these URLs either way, so they must parse here first, which
-/// also keeps a host that would panic a debug build's parser out (UP-103).
+/// an untrusted source, and a URI can carry one in `AuthCredentials`. As for the options
+/// `DatabaseConfig::validate_credential_urls` checks, the opt-in lifts only the trust rule
+/// (UP-103).
 ///
 /// `credential_source` names the customer's own identity provider, which supplies the subject
-/// token that leaves at `token_url`, so it is no destination; [`check_credential_sources`] holds
-/// it to what holds whoever supplied the document.
+/// token that leaves at `token_url`, so it is no destination; [`check_credential_sources`] checks
+/// it instead.
 ///
 /// `universe_domain` selects a destination only under `bigquery.impersonate.*`, whose
 /// `generateAccessToken` call goes to `iamcredentials.{universe_domain}` with the source token.
