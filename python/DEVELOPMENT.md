@@ -48,8 +48,9 @@ uv run --project python --locked pytest -q python/tests/test_api.py  # one test 
 uv run --project python --locked ruff format python
 ```
 
-Ruff is configured in `python/ruff.toml` and Pyrefly in `python/pyproject.toml`. An editable
-install does not compile Rust; to use a native driver from it:
+`tests/test_installed_wheel.py` needs an installed wheel: CI installs one built from the sdist, and
+the live runner below runs it too. Ruff is configured in `python/ruff.toml` and Pyrefly in
+`python/pyproject.toml`. An editable install does not compile Rust; to use a native driver from it:
 
 ```sh
 cargo rustc --release --locked --lib --crate-type cdylib
@@ -82,5 +83,5 @@ scripts/run-python-tests.sh -k select_through_low_level_and_dbapi
 
 A partial or invalid configuration fails before the build. The runner then skips ADC checks and
 sends all requests to the emulator with anonymous authentication; the package itself does not read
-these variables. Cleanup still checks ownership labels. Without `-k` the complete suite runs, and
-emulator incompatibilities stay test failures.
+these variables. Without `-k` the complete suite runs, and emulator incompatibilities stay test
+failures.
