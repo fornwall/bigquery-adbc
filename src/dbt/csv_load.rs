@@ -16,8 +16,7 @@ use crate::error::job_name;
 use crate::query::{ExecutionContext, QualifiedTableName, StatementQueryOptions};
 use crate::rest::client::RestClient;
 use crate::rest::jobs::{
-    JobClient, JobReference, JobRequest, existing_job, may_have_created, may_still_run,
-    settle_submission,
+    JobClient, JobReference, JobRequest, may_have_created, may_still_run, settle_submission,
 };
 use crate::rest::metadata::TableId;
 use crate::rest::model::TableSchema;
@@ -99,7 +98,7 @@ pub(crate) fn execute_csv_load(
 ///
 /// A replay resends the whole seed, so `requested` carries a regional identity from
 /// [`in_job_location`], and an outcome that may have created the job (a transport failure after
-/// sending, a 5xx, or a 409) is reconciled by fetching it. Only an upload that created nothing
+/// sending, a 5xx or a 408) is reconciled by fetching it. Only an upload that created nothing
 /// and may yet succeed, because it could not connect or was rate-limited, is sent again, as
 /// `jobs.insert` would, each time from a fresh `upload_request`.
 async fn submit_csv_load<'r>(
@@ -130,19 +129,18 @@ async fn submit_csv_load<'r>(
             request.with_start_signal(&start),
         )
         .await;
-        let may_exist = may_have_created(&start, &answer);
-        let (class, failure) = match answer {
-            // The job ID is new, so a 409 says this upload created the job, as a replay's would.
-            Ok((reqwest::StatusCode::CONFLICT, body)) => {
-                (RetryClass::Final, existing_job(context, &body))
+        // Unlike `jobs.insert`'s, this 409 creates no job: BigQuery refuses a `WRITE_EMPTY` load
+        // into a table with rows with `duplicate: Already Exists: Table` before creating one.
+        // Nor can it name this upload's job, since only an attempt that created nothing is resent.
+        let refused =
+            matches!(&answer, Ok((status, _)) if *status == reqwest::StatusCode::CONFLICT);
+        let may_exist = may_have_created(&start, &answer) && !refused;
+        let (class, failure) = match classify(answer, &format!("failed to {context}")) {
+            Ok(body) => {
+                operation.register_job(requested)?;
+                return wait_for_submitted(jobs, operation, requested, &body, WHAT).await;
             }
-            answer => match classify(answer, &format!("failed to {context}")) {
-                Ok(body) => {
-                    operation.register_job(requested)?;
-                    return wait_for_submitted(jobs, operation, requested, &body, WHAT).await;
-                }
-                Err(rejected) => rejected,
-            },
+            Err(rejected) => rejected,
         };
         let resend = !may_exist
             && class != RetryClass::Final

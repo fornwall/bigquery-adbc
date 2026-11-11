@@ -235,10 +235,15 @@ fn loads_dbt_csv_seeds_atomically_with_bigquery_csv_semantics() {
     assert_eq!(strings(3), [Some("4869"), Some("0001")]);
     assert_eq!(strings(4), [Some("NULL"), Some("")]);
 
-    // The extension defaults to WRITE_EMPTY, unlike the Go fork's implicit WRITE_APPEND.
-    assert_eq!(
-        seed.execute_update().unwrap_err().status,
-        Status::AlreadyExists
+    // The extension defaults to WRITE_EMPTY, unlike the Go fork's implicit WRITE_APPEND. BigQuery
+    // refuses the upload with a 409 before creating a job, so no job may still run.
+    let refused = seed.execute_update().unwrap_err();
+    assert_eq!(refused.status, Status::AlreadyExists, "{}", refused.message);
+    assert!(
+        refused.message.contains("duplicate: Already Exists: Table")
+            && !refused.message.contains("may still run"),
+        "{}",
+        refused.message
     );
 
     // A truncating reload, of a CRLF seed whose quoted fields hold newlines and quotes.

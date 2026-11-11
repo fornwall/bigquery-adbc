@@ -92,10 +92,12 @@ changes.
   that ends without an answer may have committed every row, so it says to check the table first.
 - When looking for a job submitted without `bigquery.location` fails partway, for example on a
   transient `jobs.get` failure, the error now says the job may still run and names it in
-  `bigquery.job_id`, as it does when the job is found nowhere. So do a submission with a location
-  and a dbt seed load or copy whose job a 409 or a lost answer leaves unfetched. Such a failure
-  reads `failed to submit`, not `BigQuery rejected`, and when the job a 409 names cannot be
-  fetched it is `UNKNOWN` instead of `ALREADY_EXISTS`.
+  `bigquery.job_id`, as it does when the job is found nowhere. So do a submission with a location,
+  including a dbt table copy, whose job a 409 or a lost answer leaves unfetched, and a dbt seed
+  load whose job a lost answer leaves unfetched. Such a failure reads `failed to submit`, not
+  `BigQuery rejected`, and when the job a 409 names cannot be fetched it is `UNKNOWN` instead of
+  `ALREADY_EXISTS`. A seed's 409, as for a `WRITE_EMPTY` load into a table with rows, still
+  reports `ALREADY_EXISTS`: BigQuery creates no job for it.
 - A dbt 2.0 seed load or table copy whose wait for its job ends on failed polls links the job and
   names it in `bigquery.job_id`, as a query's wait does.
 - A dbt 2.0 seed upload that could not connect, or that BigQuery refused as rate-limited, is sent
