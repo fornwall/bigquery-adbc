@@ -31,8 +31,8 @@ behavior, and [ARCHITECTURE.md](docs/ARCHITECTURE.md) for code structure.
 - Live tests require `BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT` (no default) and ADC. Run focused
   Rust cases with `scripts/run-one-live-test.sh <name>` (rejects zero matches); scratch-resource
   defaults are in `tests/bigquery/support.rs`.
-- Documentation-only changes need link checks and `git diff --check`, not code tests. Report
-  checks run, distinguishing mock coverage from live validation.
+- Documentation-only changes need `scripts/check-doc-links.py` and `git diff --check`, not code
+  tests. Report checks run, distinguishing mock coverage from live validation.
 
 ## References and documentation
 

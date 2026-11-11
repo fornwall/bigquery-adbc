@@ -107,8 +107,9 @@ Workflows, with [actionlint](https://github.com/rhysd/actionlint):
 go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 ```
 
-Documentation-only changes need link checks and `git diff --check`. Report validation,
-distinguishing offline tests from live BigQuery tests.
+Documentation-only changes need `scripts/check-doc-links.py`, which checks relative links and
+anchors, and `git diff --check`. Report validation, distinguishing offline tests from live BigQuery
+tests.
 
 The Python option enums in `python/src/bigquery_adbc/_options.py` are generated, and `cargo test`
 checks that they are current. After changing an option key, value or Python exposure, regenerate
