@@ -398,3 +398,75 @@ fn an_upload_that_created_no_job_is_resent() {
     }
     assert!(requests[2].line.starts_with("GET "), "{}", requests[2].line);
 }
+
+/// A 400 job failure may come from a job the upload created, so the resend under the same ID can
+/// meet a 409 naming that job. That is no refusal: the job is fetched, and its own failure is
+/// reported with its link. When it never shows, the error says it may still run, and ending the
+/// operation cancels it.
+#[test]
+fn a_resend_that_finds_its_job_reports_that_job() {
+    let attempts = crate::rest::jobs::MAX_RECONCILIATION_ATTEMPTS as usize;
+    let failed = ok(json!({
+        "jobReference": job_reference("example-project", "csv-job"),
+        "status": {
+            "state": "DONE",
+            "errorResult": {"reason": "jobInternalError", "message": "internal"},
+        },
+    }));
+    let mut invisible = vec![(404, error_body("notFound", "Not found: Job")); attempts];
+    invisible.push(ok(json!({})));
+    for (fetched, status, reported) in [
+        (
+            vec![failed],
+            Status::IO,
+            "BigQuery CSV load job failed (job example-project:EU.csv-job): jobInternalError: \
+             internal",
+        ),
+        (
+            invisible,
+            Status::Unknown,
+            "failed to submit the BigQuery CSV load job: duplicate: Already Exists: Job \
+             example-project:EU.csv-job (HTTP 409); BigQuery may still run job \
+             example-project:EU.csv-job",
+        ),
+    ] {
+        let fetches = fetched.len();
+        let mut responses = vec![
+            (400, error_body("jobInternalError", "internal")),
+            (
+                409,
+                error_body(
+                    "duplicate",
+                    "Already Exists: Job example-project:EU.csv-job",
+                ),
+            ),
+        ];
+        responses.extend(fetched);
+        let (endpoint, server) = capture_requests_until_stopped(responses);
+        let (runtime, cancellation, operation) = cancellable_at(&endpoint);
+        let url = format!("{endpoint}/upload");
+
+        let failure = submit_each(
+            &runtime,
+            &operation,
+            &JobClient::for_test(&endpoint),
+            &mut || Ok(upload(&url, bytes::Bytes::from_static(b"media").into())),
+        )
+        .unwrap_err();
+
+        crate::test_support::errors::assert_failure(
+            &failure,
+            status,
+            &[reported, "j=bq:EU:csv-job"],
+        );
+        assert!(failure.details.unwrap().contains(&(
+            crate::error::DETAIL_JOB_ID.to_owned(),
+            b"example-project:EU.csv-job".to_vec(),
+        )));
+        OperationCancelHandle(cancellation).try_cancel().unwrap();
+        operation.finish();
+        let requests = server.stop();
+        assert_eq!(requests.len(), 2 + fetches);
+        assert!(requests[2].line.starts_with("GET "), "{}", requests[2].line);
+    }
+}

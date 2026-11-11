@@ -140,12 +140,14 @@ changes.
   including a dbt table copy, whose job a 409 or a lost answer leaves unfetched, and a dbt seed
   load whose job a lost answer leaves unfetched. Such a failure reads `failed to submit`, not
   `BigQuery rejected`, and when the job a 409 names cannot be fetched it is `UNKNOWN` instead of
-  `ALREADY_EXISTS`. A seed's 409, as for a `WRITE_EMPTY` load into a table with rows, still
-  reports `ALREADY_EXISTS`: BigQuery creates no job for it.
+  `ALREADY_EXISTS`. A seed's 409 that names no job, as for a `WRITE_EMPTY` load into a table
+  with rows, still reports `ALREADY_EXISTS`: BigQuery creates no job for it.
 - A dbt 2.0 seed load or table copy whose wait for its job ends on failed polls links the job and
   names it in `bigquery.job_id`, as a query's wait does.
-- A dbt 2.0 seed upload that could not connect, or that BigQuery refused as rate-limited, is sent
-  again from the start of its file, as other job submissions are, instead of failing the seed.
+- A dbt 2.0 seed upload that sent nothing, because it could not connect or obtain a token, or that
+  BigQuery refused with a retryable reason such as a rate limit, is sent again from the start of
+  its file under the same job ID, as other job submissions are, instead of failing the seed. A 409
+  naming that job then recovers it.
 - An append to a view, snapshot or other object that is not a table reports that, rather than
   what one of its columns makes of a bound all-null field.
 - A Storage Read stream that BigQuery fails with `OUT_OF_RANGE`, for a value Arrow cannot hold

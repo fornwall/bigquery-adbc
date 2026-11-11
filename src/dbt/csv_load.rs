@@ -16,7 +16,8 @@ use crate::error::job_name;
 use crate::query::{ExecutionContext, QualifiedTableName, StatementQueryOptions};
 use crate::rest::client::RestClient;
 use crate::rest::jobs::{
-    JobClient, JobReference, JobRequest, may_have_created, may_still_run, settle_submission,
+    JobClient, JobReference, JobRequest, duplicate, existing_job, may_have_created, may_still_run,
+    settle_submission,
 };
 use crate::rest::metadata::TableId;
 use crate::rest::model::TableSchema;
@@ -98,9 +99,11 @@ pub(crate) fn execute_csv_load(
 ///
 /// A replay resends the whole seed, so `requested` carries a regional identity from
 /// [`in_job_location`], and an outcome that may have created the job (a transport failure after
-/// sending, a 5xx or a 408) is reconciled by fetching it. Only an upload that created nothing
-/// and may yet succeed, because it could not connect or was rate-limited, is sent again, as
-/// `jobs.insert` would, each time from a fresh `upload_request`.
+/// sending, a 5xx or a 408) is reconciled by fetching it. As `jobs.insert` does, an upload that
+/// sent nothing (it could not connect or mint a token) or that BigQuery refused with a retryable
+/// reason (a rate limit, or a 400 such as `jobInternalError`) is sent again under the same job
+/// ID, each time from a fresh `upload_request`. A 400 job failure may come from a job it created,
+/// which the resend's 409 then names.
 async fn submit_csv_load<'r>(
     operation: &Operation,
     credentials: &google_cloud_auth::credentials::Credentials,
@@ -129,17 +132,26 @@ async fn submit_csv_load<'r>(
             request.with_start_signal(&start),
         )
         .await;
-        // Unlike `jobs.insert`'s, this 409 creates no job: BigQuery refuses a `WRITE_EMPTY` load
-        // into a table with rows with `duplicate: Already Exists: Table` before creating one.
-        // Nor can it name this upload's job, since only an attempt that created nothing is resent.
-        let refused = matches!(answer, Ok((reqwest::StatusCode::CONFLICT, _)));
-        let may_exist = may_have_created(&start, &answer) && !refused;
-        let (class, failure) = match classify(answer, &format!("failed to {context}")) {
-            Ok(body) => {
-                operation.register_job(requested)?;
-                return wait_for_submitted(jobs, operation, requested, &body, WHAT).await;
+        // A 409 naming this job says an earlier attempt created it. Any other creates no job:
+        // BigQuery refuses a `WRITE_EMPTY` load into a table with rows with `duplicate: Already
+        // Exists: Table` before creating one.
+        let (existing, refused) = match &answer {
+            Ok((reqwest::StatusCode::CONFLICT, body)) => {
+                let existing = duplicate(body, requested).is_some();
+                (existing, !existing)
             }
-            Err(rejected) => rejected,
+            _ => (false, false),
+        };
+        let may_exist = may_have_created(&start, &answer) && !refused;
+        let (class, failure) = match answer {
+            Ok((_, body)) if existing => (RetryClass::Final, existing_job(context, &body)),
+            answer => match classify(answer, &format!("failed to {context}")) {
+                Ok(body) => {
+                    operation.register_job(requested)?;
+                    return wait_for_submitted(jobs, operation, requested, &body, WHAT).await;
+                }
+                Err(rejected) => rejected,
+            },
         };
         let resend = !may_exist
             && class != RetryClass::Final
