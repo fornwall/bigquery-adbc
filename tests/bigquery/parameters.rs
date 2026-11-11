@@ -878,3 +878,40 @@ fn unreferenced_parameters_are_ignored_and_unbound_placeholders_refused() {
         assert!(failure.message.contains(refusal), "{}", failure.message);
     }
 }
+
+/// The parameter schema a dry run infers binds back: a NULL of each inferred field's Arrow type is
+/// a parameter of the type BigQuery inferred, so the query that typed them type-checks again.
+#[test]
+#[ignore = "requires Google Cloud ADC and access to the integration project"]
+fn inferred_parameter_schemas_bind_back_as_typed_nulls() {
+    let mut connection = connect(project());
+    let mut statement = named_parameter_query(
+        &mut connection,
+        "SELECT [@integer = 1, @float = 1.5, @boolean = TRUE, @text = 'x', @bytes = b'x', \
+        @date = DATE '2020-01-01', @time = TIME '00:00:00', \
+        @civil = DATETIME '2020-01-01 00:00:00', @instant = TIMESTAMP '2020-01-01 00:00:00+00', \
+        @numeric = NUMERIC '1.5', @bignumeric = BIGNUMERIC '1.5', @interval = INTERVAL 1 DAY, \
+        @period = RANGE(DATE '2020-01-01', NULL), JSON_TYPE(@document) = 'null', \
+        ST_X(@place) = 1, @record = STRUCT(1 AS a, 'x' AS b), \
+        ARRAY_LENGTH(IF(TRUE, @records, [STRUCT(1 AS a)])) = 1, \
+        ARRAY_LENGTH(IF(TRUE, @integers, [1])) = 1] AS comparisons",
+    );
+    statement.prepare().unwrap();
+    let schema = Arc::new(statement.get_parameter_schema().unwrap());
+    assert_eq!(schema.fields().len(), 18, "{schema:?}");
+    let nulls = schema
+        .fields()
+        .iter()
+        .map(|field| arrow_array::new_null_array(field.data_type(), 1))
+        .collect();
+    statement
+        .bind(RecordBatch::try_new(schema.clone(), nulls).unwrap())
+        .unwrap();
+    let batch = single_batch(&mut statement);
+    let comparisons = list_at(&batch, 0).value(0);
+    assert_eq!(
+        typed::<BooleanArray>(comparisons.as_ref()).null_count(),
+        comparisons.len(),
+        "{schema:?}"
+    );
+}
