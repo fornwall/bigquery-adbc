@@ -394,13 +394,16 @@ exposes it as `cursor.rowcount`, with `-1` meaning unknown.
 
 | Statement | `rows_affected` |
 | --- | --- |
-| Query, or a script whose last statement returns rows | BigQuery's `totalRows` for the result: the rows the stream will yield, `0` when empty |
+| Query, or a script with a result | BigQuery's `totalRows` for the result: the rows the stream will yield, `0` when empty |
 | DML (`INSERT`, `UPDATE`, `DELETE`, `MERGE`) | Rows affected, `0` included |
-| DDL, a script whose last statement returns no rows (even DML, which BigQuery reports no count for in a script), a dry run | `-1` |
+| DDL, a script without a result (even one ending in DML, which BigQuery reports no count for in a script), a dry run | `-1` |
 | A query with `bigquery.query.destination_table` | `-1`: BigQuery's `totalRows` counts the whole destination table |
 | Bound parameters | One row: that row's count, as above. Several rows of DML, DDL or a destination-table query: every row runs before the call returns, and the counts sum (`-1` if any is unknown). Several rows of a query returning results: `-1`, since rows after the first run while the stream is read. No row: `0` |
 | Bulk ingest | Rows written; `0` for a dry run |
 | `bigquery.dataset.get_location` | The rows returned: `1`, or `0` for a missing dataset |
+
+A script's result is its last query's, unless DML, DDL or `ASSERT` ran after that query; procedural
+statements such as `SET` and `IF` do not discard it.
 
 `AdbcStatementExecutePartitions` runs every job before it returns and reports the same counts,
 summed across parameter rows (`-1` if any is unknown). `AdbcStatementExecuteQuery` with a `NULL`
@@ -444,7 +447,7 @@ execute run all bound rows before returning; closing their empty result stream d
 
 ### Reading large results through the Storage Read API
 
-A completed query job's results, including a script's last statement's, are read through the
+A completed query job's results, including a script's, are read through the
 Storage Read API when the first response has a continuation token, or at any size when BigQuery
 refuses the first page because a row exceeds its 20 MiB response limit. A complete first response
 stays on REST. The path is chosen before the schema or any row is reported, and both return the

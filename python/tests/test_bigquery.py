@@ -409,9 +409,12 @@ def test_script_without_results_returns_empty_arrow_result(bigquery_dataset: tup
     table_name = f"script_no_results_{secrets.token_hex(8)}"
     with _cursor(project, dataset) as cursor:
         cursor.execute(f"CREATE TABLE {_identifier(table_name)} (idx INT64, val INT64)")
+        # The MERGE and DROP discard the standalone SELECT's result, though its child job still
+        # names a result table, which is what Go's SDK falls back to reading.
         cursor.execute(
             f"""
                 CREATE TEMP TABLE staging AS SELECT 1 AS idx, 2 AS val;
+                SELECT * FROM staging;
                 MERGE INTO {_identifier(table_name)} AS destination
                 USING (SELECT * FROM staging) AS source
                 ON destination.idx = source.idx

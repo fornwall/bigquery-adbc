@@ -242,8 +242,10 @@ query and destination-table queries also report `-1`, where Go reports a dry run
 
 ### G45. Scripts use the ordinary result path instead of interpreting an SDK failure
 
-A script returns its final result set, or an empty schema and zero rows, with `SCRIPT` metadata; Go
-resolves the child result table and matches an SDK error message for scripts without one. A denied
+A script returns BigQuery's result for it, or an empty schema and zero rows, with `SCRIPT` metadata.
+For a script without a result, Go's SDK reads the newest child query's table instead: Go and the
+fork hang on a query followed by DML, DDL or `ASSERT`, and Go matches the SDK's error message when
+no child query ran. A denied
 Storage Read (`PERMISSION_DENIED`) falls back to REST and is remembered for the billing project,
 where Go returns `UNAUTHORIZED`, and an `INVALID_ARGUMENT` refusal falls back for that result only,
 where Go errors.
