@@ -43,18 +43,47 @@ impl ClientConfiguration {
             }
             _ => None,
         };
-        let (credentials, execution_principal) = credential_stack(settings, document.as_deref())?;
-        // Without an exchange there is no failure to recover from.
-        let credentials = if exchanges_tokens(settings.authentication_type)
-            || settings.impersonation.is_configured()
-        {
-            let settings = settings.clone();
-            recovering_credentials(credentials, move || {
-                credential_stack(&settings, document.as_deref()).map(|(credentials, _)| credentials)
-            })
-        } else {
-            credentials
-        };
+        let (mut credentials, mut execution_principal) = base_layer(settings, document.as_deref())?;
+        // Each layer that mints tokens recovers from its own refusal, so a refused impersonation
+        // reuses the source token beneath it. Without an exchange there is nothing to recover.
+        if exchanges_tokens(settings.authentication_type) {
+            let rebuilt = settings.clone();
+            let adc_file = is_application_default(settings.authentication_type)
+                .then(application_default_credentials_file);
+            credentials = recovering_credentials(credentials, move || {
+                if let Some(file) = adc_file
+                    && application_default_credentials_file() != file
+                {
+                    return Err(application_default_credentials_moved(file));
+                }
+                base_layer(&rebuilt, document.as_deref()).map(|(credentials, _)| credentials)
+            });
+        }
+        if settings.impersonation.is_configured() {
+            let target = settings
+                .impersonation
+                .target_principal
+                .clone()
+                .ok_or_else(|| {
+                    invalid_argument(format!(
+                        "BigQuery option {} is required once any of {} or {} is set; set it to \
+                         the service account to impersonate, or clear the other impersonation \
+                         options",
+                        BigQueryDatabaseOption::ImpersonationTargetPrincipal.as_str(),
+                        BigQueryDatabaseOption::ImpersonationDelegates.as_str(),
+                        BigQueryDatabaseOption::ImpersonationLifetime.as_str(),
+                    ))
+                })?;
+            let source = credentials;
+            let layer = impersonation_layer(source.clone(), settings, &target)?;
+            let rebuilt = settings.clone();
+            let rebuilt_target = target.clone();
+            credentials = recovering_credentials(layer, move || {
+                impersonation_layer(source.clone(), &rebuilt, &rebuilt_target)
+            });
+            // Impersonation overrides the source key's principal.
+            execution_principal = Some(target);
+        }
         Ok(Self {
             credentials,
             execution_principal,
@@ -63,14 +92,13 @@ impl ClientConfiguration {
     }
 }
 
-/// The credentials `settings` select, with their redaction and impersonation layers, and the
-/// principal they act as, if known. `document` is the JSON credential document of the two types
-/// that take one.
-fn credential_stack(
+/// The credentials `settings` select, with their redaction layer, and the principal they act as,
+/// if known. `document` is the JSON credential document of the two types that take one.
+fn base_layer(
     settings: &DatabaseConfig,
     document: Option<&str>,
 ) -> Result<(Credentials, Option<Arc<str>>)> {
-    let (mut credentials, mut execution_principal) = match settings.authentication_type {
+    let (mut credentials, execution_principal) = match settings.authentication_type {
         BigQueryAuthenticationType::Default | BigQueryAuthenticationType::ApplicationDefault => {
             let builder = with_quota_and_scopes!(
                 DefaultCredentialsBuilder::default(),
@@ -127,29 +155,63 @@ fn credential_stack(
             CredentialLayer::Authentication(settings.authentication_type),
         );
     }
-    if settings.impersonation.is_configured() {
-        let target = settings
-            .impersonation
-            .target_principal
-            .as_deref()
-            .ok_or_else(|| {
-                invalid_argument(format!(
-                    "BigQuery option {} is required once any of {} or {} is set; set it to the \
-                     service account to impersonate, or clear the other impersonation options",
-                    BigQueryDatabaseOption::ImpersonationTargetPrincipal.as_str(),
-                    BigQueryDatabaseOption::ImpersonationDelegates.as_str(),
-                    BigQueryDatabaseOption::ImpersonationLifetime.as_str(),
-                ))
-            })?;
-        credentials = impersonated_credentials(credentials, settings, target)?;
-        // Impersonation overrides the source key's principal.
-        execution_principal = Some(Arc::from(target));
-        // Wrapped for every source: upstream puts the `generateAccessToken` response body into
-        // its error, and a refused grant or lifetime is impersonation's failure. A source failure
-        // keeps its own attribution.
-        credentials = redacted_credentials(credentials, CredentialLayer::Impersonation);
-    }
     Ok((credentials, execution_principal))
+}
+
+/// Impersonation of `target` over `source`, with its redaction layer.
+fn impersonation_layer(
+    source: Credentials,
+    settings: &DatabaseConfig,
+    target: &str,
+) -> Result<Credentials> {
+    // Wrapped for every source: upstream puts the `generateAccessToken` response body into its
+    // error, and a refused grant or lifetime is impersonation's failure. A source failure keeps
+    // its own attribution.
+    Ok(redacted_credentials(
+        impersonated_credentials(source, settings, target)?,
+        CredentialLayer::Impersonation,
+    ))
+}
+
+fn is_application_default(authentication_type: BigQueryAuthenticationType) -> bool {
+    matches!(
+        authentication_type,
+        BigQueryAuthenticationType::Default | BigQueryAuthenticationType::ApplicationDefault
+    )
+}
+
+/// Whether Application Default Credentials come from a file rather than the metadata server, as
+/// the auth library decides: `GOOGLE_APPLICATION_CREDENTIALS` names one whether or not it exists,
+/// and otherwise only the file `gcloud` writes counts if it exists.
+///
+/// A rebuild after a refusal discovers ADC again, so a new `gcloud auth application-default
+/// login` takes effect, but it must not switch source: once `gcloud auth application-default
+/// revoke` removes the file, the metadata server would answer off Google Cloud with a transient
+/// failure the token cache retries for the database's life, in place of the refusal.
+fn application_default_credentials_file() -> bool {
+    if std::env::var_os("GOOGLE_APPLICATION_CREDENTIALS").is_some() {
+        return true;
+    }
+    let root = if cfg!(windows) { "APPDATA" } else { "HOME" };
+    let file = if cfg!(windows) {
+        "gcloud/application_default_credentials.json"
+    } else {
+        ".config/gcloud/application_default_credentials.json"
+    };
+    std::env::var_os(root).is_some_and(|root| std::path::Path::new(&root).join(file).exists())
+}
+
+/// Why a refused ADC credential is kept rather than rebuilt from another source.
+fn application_default_credentials_moved(file: bool) -> adbc_core::error::Error {
+    let (was, now) = if file {
+        ("a credential file", "the metadata server")
+    } else {
+        ("the metadata server", "a credential file")
+    };
+    invalid_argument(format!(
+        "Application Default Credentials came from {was} but now come from {now}, so the refused \
+         credential is kept; open a new database to use {now}"
+    ))
 }
 
 /// Whether the authentication type obtains its token from an exchange; a static token and

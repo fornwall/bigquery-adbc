@@ -6,8 +6,8 @@ use crate::test_support::http::ok;
 
 /// The driver must use the selected source credential even when it fails. A refused OAuth
 /// refresh stops before IAM and retains the source's remedy without falling back to ADC. Each
-/// configuration refreshes twice: once as it is built, and once more for the request, from a
-/// rebuilt credential.
+/// configuration refreshes three times: as it is built, when the impersonation layer first asks
+/// for the source token, and for the request; the last two from a rebuilt source.
 #[test]
 fn impersonation_uses_the_configured_source_and_preserves_its_failure() {
     use crate::test_support::errors::{assert_failure, assert_message_omits};
@@ -19,7 +19,7 @@ fn impersonation_uses_the_configured_source_and_preserves_its_failure() {
                 "error": "invalid_grant", "error_description": "source-secret-sentinel"
             }),
         );
-        6
+        9
     ]);
     let mut document = authorized_user_json();
     document["token_uri"] = serde_json::json!(format!("{endpoint}/token"));
@@ -65,7 +65,7 @@ fn impersonation_uses_the_configured_source_and_preserves_its_failure() {
             ],
         );
     }
-    let requests = server.served(6);
+    let requests = server.served(9);
     for request in requests {
         assert_eq!(request.path(), "/token");
         for (field, expected) in [

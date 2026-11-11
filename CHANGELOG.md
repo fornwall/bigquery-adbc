@@ -84,10 +84,12 @@ changes.
   `INVALID_DATA` as "over the driver's fixed 67108864-byte limit", when its JSON exceeds 64 MiB:
   BigQuery spells each control character, `<` or `>` in six bytes, so such a row can arrive as a
   120 MB response. The limit on a buffered response is now 128 MiB.
-- A token exchange refused permanently, such as an impersonation before its IAM grant propagates or
-  a revoked OAuth refresh token, no longer fails every later request from the database: each
-  request asks again with a rebuilt credential, as the Go driver does, so a refusal resolved after
-  the connection opened lets the next request through.
+- A token exchange refused permanently, such as an impersonation before its IAM grant propagates,
+  no longer fails every later request from the database: each request asks the refused layer
+  again, rebuilt from the same configuration, as Go's token sources ask again, so a refusal
+  resolved after the connection opened lets the next request through. An impersonation is asked
+  again over the source token it already has. Under Application Default Credentials the rebuild
+  reads ADC again, so a new `gcloud auth application-default login` takes effect (G135).
 - A process forked while another thread was in a C API call no longer hangs in the child: the
   child could inherit the driver's handle lock held, so creating or releasing any handle there,
   including a new database, waited forever.

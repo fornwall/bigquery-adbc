@@ -873,3 +873,70 @@ fn an_unavailable_token_endpoint_is_an_io_failure_and_a_refusal_is_not() {
     );
     assert_message_omits(&failure, &["refresh token", "127.0.0.1"]);
 }
+
+/// A refused ADC credential is rebuilt from ADC discovered again, but not once the file it came
+/// from is gone: off Google Cloud the metadata server would then fail transiently, a failure the
+/// token cache retries for the database's life, in place of the refusal. The child process owns
+/// `HOME` and points the metadata server at a closed port.
+#[test]
+fn a_refused_adc_credential_is_not_rebuilt_from_the_metadata_server() {
+    const CHILD: &str = "BIGQUERY_ADBC_ADC_SOURCE_TEST_CHILD";
+
+    if std::env::var_os(CHILD).is_some() {
+        let file = std::path::Path::new(&std::env::var_os("HOME").unwrap())
+            .join(".config/gcloud/application_default_credentials.json");
+        let runtime = crate::runtime::new_runtime().unwrap();
+        let configuration = {
+            let _guard = runtime.enter();
+            ClientConfiguration::build(&DatabaseConfig::default()).unwrap()
+        };
+        // The refusal is permanent; the metadata server's closed port would be transient.
+        let refused = |configuration: &ClientConfiguration| {
+            let failure = runtime
+                .block_on(configuration.credentials.headers(http::Extensions::new()))
+                .unwrap_err();
+            !failure.is_transient()
+        };
+        assert!(refused(&configuration));
+        std::fs::remove_file(&file).unwrap();
+        assert!(refused(&configuration));
+        return;
+    }
+
+    let (endpoint, server) = crate::test_support::http::capture_requests_until_stopped(vec![
+        (
+            400,
+            serde_json::json!({"error": "invalid_grant"})
+        );
+        4
+    ]);
+    let home = std::env::temp_dir().join(format!("bigquery-adbc-adc-home-{}", std::process::id()));
+    let gcloud = home.join(".config/gcloud");
+    std::fs::create_dir_all(&gcloud).unwrap();
+    let mut document = crate::test_support::credentials::authorized_user_json();
+    document["token_uri"] = serde_json::json!(format!("{endpoint}/token"));
+    let _file = TemporaryFile(gcloud.join("application_default_credentials.json"));
+    std::fs::write(&_file.0, document.to_string()).unwrap();
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "config::tests::credentials::\
+             a_refused_adc_credential_is_not_rebuilt_from_the_metadata_server",
+        ])
+        .env(CHILD, "1")
+        .env("HOME", &home)
+        .env("GCE_METADATA_HOST", "127.0.0.1:1")
+        .env_remove("GOOGLE_APPLICATION_CREDENTIALS")
+        .env_remove("GOOGLE_CLOUD_QUOTA_PROJECT")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&child.stdout);
+    let _ = std::fs::remove_dir_all(&home);
+    assert!(
+        child.status.success() && stdout.contains("1 passed"),
+        "{stdout}{}",
+        String::from_utf8_lossy(&child.stderr)
+    );
+    // Once as the credential was built, once more from the rebuilt one, and never after.
+    assert_eq!(server.stop().len(), 2);
+}

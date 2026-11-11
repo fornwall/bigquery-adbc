@@ -678,6 +678,19 @@ user credentials `gcloud auth application-default login --login-config` writes. 
 works only as Application Default Credentials, where the bundled SDK ignores
 `bigquery.auth.scopes`.
 
+### G135. A refused token exchange is asked again of a rebuilt layer
+
+After a token exchange the auth library treats as permanent, such as an IAM refusal or
+`invalid_grant`, the next request rebuilds the refused layer from the same configuration and asks
+again; Go's token sources ask again on each request too. A rebuilt impersonation reuses the source
+token, as Go's does. A credential the library builds whole, such as an
+`impersonated_service_account` document or an external account with
+`service_account_impersonation_url`, repeats all of its exchanges. Refresh tokens and documents set
+as options are sent again unchanged, so a revoked one keeps failing. Application Default
+Credentials are read again, so a new `gcloud auth application-default login` reaches the open
+database, where Go reads them once per connection; they are not rebuilt when they would switch
+between a file and the metadata server, as removing the file would off Google Cloud.
+
 ## C interface and object lifecycle
 
 ### G14. Only the driver-manager entrypoint is exported

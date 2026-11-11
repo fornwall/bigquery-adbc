@@ -401,8 +401,10 @@ ends its refresh task at the first failure classified as permanent, such as an I
 `invalid_grant`, and returns it for the rest of the credential's life without asking again. Its
 first fetch starts when the credential is built, as a connection opens, so a refusal at that
 moment would fail every later request from the database's clients. On a permanent failure the
-driver builds the credential again from the same configuration and asks the new one once
-(`src/config/recovery.rs`), so each request makes at most one fresh exchange.
+driver rebuilds the refused layer from the same configuration, over the layer beneath it, and asks
+it once (`src/config/recovery.rs`). Each failing request so repeats that layer's exchange, and a
+credential the library builds whole, such as an `impersonated_service_account` document or an
+external account with `service_account_impersonation_url`, repeats every exchange it makes.
 
 ## UP-141: each token exchange builds a new HTTP client
 
