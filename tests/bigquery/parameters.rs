@@ -949,9 +949,10 @@ fn named_parameters_match_ignoring_ascii_case_only() {
     assert_eq!(values, [1, 2, 3, 4, 5]);
 }
 
-/// A DB-API `execute(sql, (1, None))` binds `None` as an Arrow `Null` field, which binds as a
-/// STRING NULL, and BigQuery refuses to insert a STRING parameter into an INT64 column. The refusal
-/// names the field, and the CAST it suggests inserts the NULL.
+/// A DB-API `execute(sql, (None, None))` binds each `None` as an Arrow `Null` field, which binds
+/// as a STRING NULL, and BigQuery refuses to insert a STRING parameter into an INT64 column,
+/// placing it only by its position in the SQL. The refusal names every such field, ahead of the
+/// console link a failed job's error ends with, and the CAST it suggests inserts the NULL.
 #[test]
 #[ignore = "requires Google Cloud ADC and access to the integration project"]
 fn an_untyped_null_refused_as_a_string_names_its_field() {
@@ -960,41 +961,51 @@ fn an_untyped_null_refused_as_a_string_names_its_field() {
     let _drop_table = DropTable::table(&table);
     execute_sql(
         &mut connection,
-        &format!("CREATE TABLE `{table}` (a INT64, b INT64)"),
+        &format!("CREATE TABLE `{table}` (s STRING, n INT64)"),
     );
-    let row = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![
-            Field::new("0", DataType::Int64, true),
-            Field::new("1", DataType::Null, true),
-        ])),
-        vec![
-            Arc::new(Int64Array::from(vec![1])) as ArrayRef,
-            Arc::new(NullArray::new(1)) as ArrayRef,
-        ],
-    )
-    .unwrap();
-    let mut insert = prepare_query(
-        &mut connection,
-        &format!("INSERT INTO `{table}` (a, b) VALUES (?, ?)"),
-    );
-    insert.bind(row.clone()).unwrap();
-    let failure = insert.execute_update().unwrap_err();
-    assert_eq!(failure.status, Status::InvalidArguments);
-    assert!(
-        failure
-            .message
-            .contains("Value has type STRING which cannot be inserted into column b")
-            && failure.message.contains(
-                "; bound parameter 1 \"1\" is an Arrow Null field, which binds as a STRING NULL"
-            ),
-        "message: {}",
-        failure.message
-    );
+    let nulls = || {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("0", DataType::Null, true),
+                Field::new("1", DataType::Null, true),
+            ])),
+            vec![
+                Arc::new(NullArray::new(1)) as ArrayRef,
+                Arc::new(NullArray::new(1)) as ArrayRef,
+            ],
+        )
+        .unwrap()
+    };
+    let hint = "; bound parameters 0 \"0\", 1 \"1\" are Arrow Null fields, which bind as STRING \
+                NULLs";
+    // A batch query is a job, so its failure carries the job's console link.
+    for priority in [
+        BigQueryQueryPriority::Interactive,
+        BigQueryQueryPriority::Batch,
+    ] {
+        let mut insert = prepare_query(
+            &mut connection,
+            &format!("INSERT INTO `{table}` (s, n) VALUES (?, ?)"),
+        );
+        set_option(&mut insert, BigQueryStatementOption::Priority, priority);
+        insert.bind(nulls()).unwrap();
+        let failure = insert.execute_update().unwrap_err();
+        assert_eq!(failure.status, Status::InvalidArguments);
+        let message = &failure.message;
+        assert!(
+            message.contains("Value has type STRING which cannot be inserted into column n")
+                && message.contains(hint),
+            "{priority:?}: {message}"
+        );
+        if priority == BigQueryQueryPriority::Batch {
+            assert!(message.ends_with("&page=queryresults)"), "{message}");
+        }
+    }
 
     let mut cast = prepare_query(
         &mut connection,
-        &format!("INSERT INTO `{table}` (a, b) VALUES (?, CAST(? AS INT64))"),
+        &format!("INSERT INTO `{table}` (s, n) VALUES (?, CAST(? AS INT64))"),
     );
-    cast.bind(row).unwrap();
+    cast.bind(nulls()).unwrap();
     assert_eq!(cast.execute_update().unwrap(), Some(1));
 }

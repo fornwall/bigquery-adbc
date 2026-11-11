@@ -72,11 +72,14 @@ changes.
   `INVALID_ARGUMENT` "Positional parameters are not supported", but the error now says to bind
   the parameters, since positional parameters are the default.
 - When BigQuery refuses a query because of a `STRING`, such as inserting into an `INT64` column,
-  and a bound parameter came from an unannotated Arrow `Null` field (a DB-API `None`), the error
-  names that field and says to `CAST` its placeholder, since such a field binds as a `STRING` NULL.
+  and bound parameters came from unannotated Arrow `Null` fields (a DB-API `None`), the error
+  names every such field and says to `CAST` its placeholder, since such a field binds as a `STRING`
+  NULL.
 
 ### Fixed
 
+- The hint to set `bigquery.query.parameter_mode` when BigQuery refuses a placeholder style goes
+  before a failed job's console link, which stays last in the message.
 - A REST result row of up to BigQuery's 20 MiB limit is read, rather than failing with
   `INVALID_DATA` as "over the driver's fixed 67108864-byte limit", when its JSON exceeds 64 MiB:
   BigQuery spells each control character, `<` or `>` in six bytes, so such a row can arrive as a

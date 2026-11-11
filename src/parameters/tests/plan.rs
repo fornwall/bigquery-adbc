@@ -107,6 +107,15 @@ fn rejects_deeply_nested_parameter_schemas() {
     ParameterPlan::try_new(&schema, ParameterMode::Positional).unwrap();
 }
 
+/// The console link a failed job's error ends with, as `with_link` appends it.
+const LINK: &str =
+    " (Query: https://console.cloud.google.com/bigquery?project=p&j=bq:EU:j&page=queryresults)";
+
+fn with_link(failure: adbc_core::error::Error) -> adbc_core::error::Error {
+    let reference = crate::rest::jobs::JobReference::new("p", Some("EU"), "j".to_owned());
+    crate::error::with_job_link(failure, Some(&reference))
+}
+
 /// BigQuery refuses placeholders of the other style with a bare message that never names the
 /// driver's option; only the mode that sent the parameters knows which value to suggest. Sent
 /// without parameters, a `?` draws the same refusal, which only binding answers.
@@ -136,6 +145,9 @@ fn a_refused_placeholder_style_names_the_parameter_mode_to_set() {
         let explained = ParameterMode::explain_refusal(sent, refused(message));
         assert_eq!(explained.status, Status::InvalidArguments);
         assert_eq!(explained.message, format!("{message}; {hint}"));
+        // A failed job's console link stays last.
+        let linked = ParameterMode::explain_refusal(sent, with_link(refused(message)));
+        assert_eq!(linked.message, format!("{message}; {hint}{LINK}"));
     }
     // Any other failure, and a refusal the mode cannot have caused, pass through untouched.
     for (sent, message) in [
@@ -172,12 +184,26 @@ fn a_type_refusal_names_the_untyped_null_field_it_came_from() {
     ]);
     let explained = explain_untyped_null(&untyped, failure(Status::InvalidArguments));
     assert_eq!(explained.status, Status::InvalidArguments);
+    let hint = "bound parameter 1 \"1\" is an Arrow Null field, which binds as a STRING NULL: \
+                where the query needs another type, CAST its placeholder to that type or give the \
+                field BIGQUERY:type metadata";
+    assert_eq!(explained.message, format!("{refusal}; {hint}"));
+    // A failed job's console link stays last.
+    let linked = explain_untyped_null(&untyped, with_link(failure(Status::InvalidArguments)));
+    assert_eq!(linked.message, format!("{refusal}; {hint}{LINK}"));
+    // BigQuery's message places the refused value only by its position in the SQL, so every
+    // untyped field is named.
+    let several = schema(vec![
+        Field::new("s", DataType::Null, true),
+        Field::new("i", DataType::Int64, true),
+        Field::new("n", DataType::Null, true),
+    ]);
     assert_eq!(
-        explained.message,
+        explain_untyped_null(&several, failure(Status::InvalidArguments)).message,
         format!(
-            "{refusal}; bound parameter 1 \"1\" is an Arrow Null field, which binds as a STRING \
-             NULL: where the query needs another type, CAST its placeholder to that type or give \
-             the field BIGQUERY:type metadata"
+            "{refusal}; bound parameters 0 \"s\", 2 \"n\" are Arrow Null fields, which bind as \
+             STRING NULLs: where the query needs another type, CAST their placeholders to that \
+             type or give the fields BIGQUERY:type metadata"
         )
     );
     // An annotated Null field already says what it is, a refusal without a STRING is about

@@ -12,7 +12,7 @@ use adbc_core::error::{Error, Result, Status};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Fields, Schema};
 
-use crate::error::invalid_argument;
+use crate::error::{append_remedy, invalid_argument};
 use crate::options::string_enum;
 use crate::rest::model::{QueryParameter, QueryParameterType, QueryParameterValue};
 use crate::types::{BIGQUERY_TYPE_METADATA_KEY, ValueAt, case_duplicate, validate_schema_nesting};
@@ -73,19 +73,17 @@ impl ParameterMode {
             None => ("Positional parameters are not supported", None),
         };
         if failure.message.contains(refusal) {
-            failure.message = match remedy {
+            let remedy = match remedy {
                 Some(remedy) => format!(
-                    "{}; set {} to \"{}\"",
-                    failure.message,
+                    "set {} to \"{}\"",
                     crate::BigQueryStatementOption::ParameterMode.as_str(),
                     remedy.as_str()
                 ),
-                None => format!(
-                    "{}; no parameters are bound to the statement: bind a value for each ? \
-                     placeholder with AdbcStatementBind or AdbcStatementBindStream",
-                    failure.message
-                ),
+                None => "no parameters are bound to the statement: bind a value for each ? \
+                         placeholder with AdbcStatementBind or AdbcStatementBindStream"
+                    .to_owned(),
             };
+            append_remedy(&mut failure, &remedy);
         }
         failure
     }
@@ -175,27 +173,40 @@ pub(crate) fn parameters_for_schema(
         .collect())
 }
 
-/// Names the bound field a STRING NULL came from when BigQuery refused a query over a STRING: an
+/// Names the bound fields a STRING NULL came from when BigQuery refused a query over a STRING: an
 /// unannotated Arrow `Null` field, which pyarrow infers for a `None` parameter, binds as one, and
 /// BigQuery coerces a STRING parameter to few other types (an INT64 column refuses it), so the
-/// caller cannot tell from BigQuery's message where the STRING came from.
+/// caller cannot tell from BigQuery's message where the STRING came from. Every such field is
+/// named, since BigQuery's message identifies the refused one only by its place in the SQL.
 pub(crate) fn explain_untyped_null(schema: &Schema, mut failure: Error) -> Error {
     if failure.status != Status::InvalidArguments || !failure.message.contains("STRING") {
         return failure;
     }
-    let untyped = schema.fields().iter().enumerate().find(|(_, field)| {
-        field.data_type() == &DataType::Null
-            && !field.metadata().contains_key(BIGQUERY_TYPE_METADATA_KEY)
-    });
-    if let Some((index, field)) = untyped {
-        failure.message = format!(
-            "{}; bound parameter {index} {:?} is an Arrow Null field, which binds as a STRING \
-             NULL: where the query needs another type, CAST its placeholder to that type or give \
-             the field {BIGQUERY_TYPE_METADATA_KEY} metadata",
-            failure.message,
-            field.name()
-        );
-    }
+    let untyped: Vec<String> = schema
+        .fields()
+        .iter()
+        .enumerate()
+        .filter(|(_, field)| {
+            field.data_type() == &DataType::Null
+                && !field.metadata().contains_key(BIGQUERY_TYPE_METADATA_KEY)
+        })
+        .map(|(index, field)| format!("{index} {:?}", field.name()))
+        .collect();
+    let remedy = match untyped.as_slice() {
+        [] => return failure,
+        [field] => format!(
+            "bound parameter {field} is an Arrow Null field, which binds as a STRING NULL: where \
+             the query needs another type, CAST its placeholder to that type or give the field \
+             {BIGQUERY_TYPE_METADATA_KEY} metadata"
+        ),
+        fields => format!(
+            "bound parameters {} are Arrow Null fields, which bind as STRING NULLs: where the \
+             query needs another type, CAST their placeholders to that type or give the fields \
+             {BIGQUERY_TYPE_METADATA_KEY} metadata",
+            fields.join(", ")
+        ),
+    };
+    append_remedy(&mut failure, &remedy);
     failure
 }
 

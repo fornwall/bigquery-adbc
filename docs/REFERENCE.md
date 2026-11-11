@@ -455,7 +455,7 @@ returning; closing their empty result stream does not skip writes.
 | `Timestamp` with a time zone, or without | `TIMESTAMP`, or `DATETIME` |
 | `Decimal32` to `Decimal256` | `NUMERIC` or `BIGNUMERIC`, as in the conversion rules above |
 | `Interval`, `Duration` (a duration's whole span is the time part) | `INTERVAL` |
-| `Null`, as pyarrow infers for an all-`None` column | A NULL of the scalar type its `BIGQUERY:type` names, else a `STRING` NULL; where the SQL needs another type, annotate the field or write `CAST(? AS INT64)`. BigQuery's refusal of such a `STRING` names the field |
+| `Null`, as pyarrow infers for an all-`None` column | A NULL of the scalar type its `BIGQUERY:type` names, else a `STRING` NULL; where the SQL needs another type, annotate the field or write `CAST(? AS INT64)`. BigQuery's refusal of such a `STRING` names every such field |
 | `List`, `LargeList`, `FixedSizeList`, `ListView`, `LargeListView` | `ARRAY`; a directly nested array or a NULL element is rejected |
 | `Struct` | `STRUCT`, or `RANGE<T>` with that metadata and `start` and `end` fields |
 | `Dictionary` with integer keys | Its value type |
