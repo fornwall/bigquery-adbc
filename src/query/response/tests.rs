@@ -38,7 +38,6 @@ fn metadata_keeps_submission_fields_missing_from_poll_response() {
         br#"{
             "jobComplete": false,
             "queryId": "query-id",
-            "location": "EU",
             "jobReference": {"projectId":"p","jobId":"j"},
             "statementType": "SCRIPT",
             "totalBytesBilled": "11",
@@ -64,10 +63,7 @@ fn metadata_keeps_submission_fields_missing_from_poll_response() {
     metadata.absorb_query(&mut final_response);
     assert_eq!(metadata.query_id, "query-id");
     assert_eq!(metadata.statement_type, "SCRIPT");
-    assert_eq!(
-        metadata.job_reference.unwrap().location.as_deref(),
-        Some("EU")
-    );
+    assert_eq!(metadata.job_reference.unwrap().job_id, "j");
     assert_eq!(metadata.total_bytes_billed, Some(11));
     assert_eq!(metadata.total_slot_ms, Some(12));
     assert_eq!(metadata.total_bytes_processed, Some(10));

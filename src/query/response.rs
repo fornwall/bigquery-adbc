@@ -283,15 +283,9 @@ pub(super) struct QueryMetadata {
 
 impl QueryMetadata {
     /// Takes owned metadata, leaving completion status, errors, cost and rows for the caller.
+    /// Callers canonicalize the job reference, location included, before absorbing it.
     pub(super) fn absorb_query(&mut self, response: &mut QueryResponse) {
-        if let Some(mut reference) = response.job_reference.take() {
-            if reference.location.as_deref().is_none_or(str::is_empty)
-                && !response.location.is_empty()
-            {
-                reference.location = Some(std::mem::take(&mut response.location));
-            }
-            self.job_reference = Some(reference);
-        }
+        absorb(&mut self.job_reference, response.job_reference.take());
         if !response.query_id.is_empty() {
             self.query_id = std::mem::take(&mut response.query_id);
         }
