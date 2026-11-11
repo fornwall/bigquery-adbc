@@ -84,7 +84,7 @@ const MAX_DURATION_HOURS: i64 = i64::MAX / (3_600 * 1_000_000_000);
 /// The whole span goes in the time component. A duration is exact elapsed time, and BigQuery
 /// spells it that way too: `INTERVAL 172800 SECOND` and a TIMESTAMP difference both report 48 for
 /// `EXTRACT(HOUR)` and 0 for `EXTRACT(DAY)`. This also matches `format_interval`
-/// (`src/parameters.rs`) for the same Arrow value bound as a parameter.
+/// (`src/parameters/values.rs`) for the same Arrow value bound as a parameter.
 ///
 /// The span is therefore bounded by the `i64` nanoseconds of a month-day-nano interval
 /// ([`MAX_DURATION_HOURS`], narrower than BigQuery's +/-10,000 years); a longer duration is refused
