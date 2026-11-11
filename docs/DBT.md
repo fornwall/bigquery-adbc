@@ -19,7 +19,7 @@ and configures your shell's `PATH`. It preserves your normal `dbt` binary, alias
 The first BigQuery connection downloads and verifies the matching driver.
 
 The script follows [dbt's installer](https://public.cdn.getdbt.com/fs/install/install.sh): add
-`--prefix /path/to/prefix` to change the location, or `--version 0.5.0` to select a bigquery-adbc
+`--prefix /path/to/prefix` to change the location, or `--version 0.6.0` to select a bigquery-adbc
 release. Rerun it to update, or use `dbt-bigquery-adbc system update`.
 Windows users can extract the `dbt-bigquery-adbc-…-windows-x86_64.zip` from
 [GitHub releases](https://github.com/fornwall/bigquery-adbc/releases).
