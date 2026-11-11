@@ -18,13 +18,6 @@ from sql import Session
 LOCATION = "US"
 
 
-def _columns(session: Session, project: str, dataset: str, table: str) -> list[tuple]:
-    return session.query(
-        f"SELECT column_name, data_type FROM {sql.qualified(project, dataset)}.INFORMATION_SCHEMA.COLUMNS "
-        f"WHERE table_name = {sql.string_literal(table)} ORDER BY ordinal_position"
-    )
-
-
 def _table_type(session: Session, project: str, dataset: str, table: str) -> str | None:
     """Return the object's INFORMATION_SCHEMA.TABLES type, or None if it does not exist."""
     rows = session.query(
@@ -59,11 +52,11 @@ def test_create_alter_and_drop_a_table(
     path = sql.qualified(project, dataset, table)
 
     session.execute(f"CREATE TABLE {path} (id INT64, label STRING)")
-    assert _columns(session, project, dataset, table) == [("id", "INT64"), ("label", "STRING")]
+    assert session.columns(project, dataset, table) == [("id", "INT64"), ("label", "STRING")]
 
     session.execute(f"ALTER TABLE {path} ADD COLUMN score FLOAT64")
     session.execute(f"ALTER TABLE {path} RENAME COLUMN label TO title")
-    assert _columns(session, project, dataset, table) == [("id", "INT64"), ("title", "STRING"), ("score", "FLOAT64")]
+    assert session.columns(project, dataset, table) == [("id", "INT64"), ("title", "STRING"), ("score", "FLOAT64")]
 
     session.execute(f"DROP TABLE {path}")
     assert _table_type(session, project, dataset, table) is None
@@ -83,8 +76,6 @@ def test_create_table_as_select_replace_and_if_not_exists(
     session.execute(f"CREATE TABLE IF NOT EXISTS {path} (id INT64, label STRING)")
     session.execute(f"CREATE TABLE IF NOT EXISTS {path} (id INT64, label STRING)")
     assert session.query(f"SELECT id, label FROM {path}") == [(2, "second")]
-
-    session.execute(f"DROP TABLE {path}")
 
 
 def test_drop_table_if_exists_on_a_missing_table_succeeds(
@@ -109,7 +100,6 @@ def test_view_lifecycle(session: Session, project: str, dataset: str, name: Call
 
     session.execute(f"DROP VIEW {view_path}")
     assert _table_type(session, project, dataset, view) is None
-    session.execute(f"DROP TABLE {table_path}")
 
 
 def test_materialized_view_lifecycle(session: Session, project: str, dataset: str, name: Callable[[str], str]) -> None:
@@ -130,7 +120,6 @@ def test_materialized_view_lifecycle(session: Session, project: str, dataset: st
 
     session.execute(f"DROP MATERIALIZED VIEW {view_path}")
     assert _table_type(session, project, dataset, view) is None
-    session.execute(f"DROP TABLE {table_path}")
 
 
 def test_insert_update_and_delete(session: Session, project: str, dataset: str, name: Callable[[str], str]) -> None:
@@ -147,8 +136,6 @@ def test_insert_update_and_delete(session: Session, project: str, dataset: str, 
     session.execute(f"DELETE FROM {path} WHERE id = 1")
     assert session.query(f"SELECT id FROM {path}") == [(2,)]
 
-    session.execute(f"DROP TABLE {path}")
-
 
 def test_merge_updates_and_inserts(session: Session, project: str, dataset: str, name: Callable[[str], str]) -> None:
     path = sql.qualified(project, dataset, name("merge"))
@@ -163,7 +150,6 @@ def test_merge_updates_and_inserts(session: Session, project: str, dataset: str,
     )
 
     assert session.query(f"SELECT id, label FROM {path} ORDER BY id") == [(1, "one"), (2, "TWO"), (3, "three")]
-    session.execute(f"DROP TABLE {path}")
 
 
 def test_truncate_table_empties_it(session: Session, project: str, dataset: str, name: Callable[[str], str]) -> None:
@@ -176,7 +162,6 @@ def test_truncate_table_empties_it(session: Session, project: str, dataset: str,
 
     assert session.scalar(f"SELECT COUNT(*) AS n FROM {path}") == 0
     assert _table_type(session, project, dataset, table) == "BASE TABLE"
-    session.execute(f"DROP TABLE {path}")
 
 
 def test_multi_statement_script(session: Session, project: str, dataset: str, name: Callable[[str], str]) -> None:
@@ -187,7 +172,6 @@ def test_multi_statement_script(session: Session, project: str, dataset: str, na
     session.execute(f"BEGIN\n  INSERT INTO {path} (id) VALUES (1);\n  INSERT INTO {path} (id) VALUES (2);\nEND")
 
     assert session.query(f"SELECT id FROM {path} ORDER BY id") == [(1,), (2,)]
-    session.execute(f"DROP TABLE {path}")
 
 
 def test_script_with_declared_variables(
@@ -204,7 +188,6 @@ def test_script_with_declared_variables(
     )
 
     assert session.query(f"SELECT id FROM {path}") == [(3,)]
-    session.execute(f"DROP TABLE {path}")
 
 
 def test_a_failing_script_keeps_what_ran_before_it(
@@ -221,7 +204,6 @@ def test_a_failing_script_keeps_what_ran_before_it(
         )
 
     assert session.query(f"SELECT id FROM {path}") == [(1,)]
-    session.execute(f"DROP TABLE {path}")
 
 
 def test_create_and_drop_a_schema(session: Session, project: str, name: Callable[[str], str]) -> None:
@@ -249,12 +231,9 @@ def test_ddl_in_the_secondary_dataset(
     path = sql.qualified(project, secondary_dataset, table)
 
     session.execute(f"CREATE TABLE {path} AS SELECT 1 AS id")
-    try:
-        assert _table_type(session, project, secondary_dataset, table) == "BASE TABLE"
-        assert _table_type(session, project, dataset, table) is None
-        assert session.query(f"SELECT id FROM {path}") == [(1,)]
-    finally:
-        session.execute(f"DROP TABLE {path}")
+    assert _table_type(session, project, secondary_dataset, table) == "BASE TABLE"
+    assert _table_type(session, project, dataset, table) is None
+    assert session.query(f"SELECT id FROM {path}") == [(1,)]
 
 
 def test_sql_udf_created_by_execute_and_called_by_a_scan(
@@ -264,17 +243,14 @@ def test_sql_udf_created_by_execute_and_called_by_a_scan(
     path = sql.qualified(project, dataset, function)
 
     session.execute(f"CREATE FUNCTION {path}(value INT64) AS (value + 1)")
-    try:
-        assert session.scalar(f"SELECT {path}(41) AS answer") == 42
-        assert (
-            session.scalar(
-                f"SELECT routine_type FROM {sql.qualified(project, dataset)}.INFORMATION_SCHEMA.ROUTINES "
-                f"WHERE routine_name = {sql.string_literal(function)}"
-            )
-            == "FUNCTION"
+    assert session.scalar(f"SELECT {path}(41) AS answer") == 42
+    assert (
+        session.scalar(
+            f"SELECT routine_type FROM {sql.qualified(project, dataset)}.INFORMATION_SCHEMA.ROUTINES "
+            f"WHERE routine_name = {sql.string_literal(function)}"
         )
-    finally:
-        session.execute(f"DROP FUNCTION {path}")
+        == "FUNCTION"
+    )
 
 
 def test_stored_procedure_created_and_called_by_execute(
@@ -287,12 +263,8 @@ def test_stored_procedure_created_and_called_by_execute(
     session.execute(
         f"CREATE PROCEDURE {procedure_path}(IN id INT64) BEGIN INSERT INTO {table_path} (id) VALUES (id); END"
     )
-    try:
-        session.execute(f"CALL {procedure_path}(7)")
-        assert session.query(f"SELECT id FROM {table_path}") == [(7,)]
-    finally:
-        session.execute(f"DROP PROCEDURE {procedure_path}")
-        session.execute(f"DROP TABLE {table_path}")
+    session.execute(f"CALL {procedure_path}(7)")
+    assert session.query(f"SELECT id FROM {table_path}") == [(7,)]
 
 
 def test_table_options_are_set_and_altered(
@@ -315,8 +287,6 @@ def test_table_options_are_set_and_altered(
     # SET OPTIONS replaces only the options it names.
     assert _table_option(session, project, dataset, table, "labels") == labels
 
-    session.execute(f"DROP TABLE {path}")
-
 
 def test_partitioned_and_clustered_table(
     session: Session, project: str, dataset: str, name: Callable[[str], str]
@@ -335,8 +305,6 @@ def test_partitioned_and_clustered_table(
         f"INSERT INTO {path} (day, region, value) VALUES (DATE '2024-01-01', 'eu', 1), (DATE '2024-02-01', 'us', 2)"
     )
     assert session.query(f"SELECT value FROM {path} WHERE day = DATE '2024-02-01' AND region = 'us'") == [(2,)]
-
-    session.execute(f"DROP TABLE {path}")
 
 
 @pytest.mark.parametrize(
@@ -390,5 +358,3 @@ def test_execute_and_read_do_not_share_an_adbc_connection(
         session.query(f"SELECT id FROM {sql.identifier(temporary)}")
     assert "notFound" in str(caught.value)
     assert temporary in str(caught.value)
-
-    session.execute(f"DROP TABLE {path}")

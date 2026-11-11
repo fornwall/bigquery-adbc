@@ -21,18 +21,6 @@ from tests.conftest import ATTACHED_CATALOG
 DUCKDB_CHUNK_ROWS = 2048
 
 
-def _bigquery_schema(
-    bigquery: Session, project: str, dataset: str, table: str
-) -> list[tuple[str, str]]:
-    """Return `(column, type)` for one BigQuery table, in ordinal order."""
-
-    return bigquery.query(
-        "SELECT column_name, data_type FROM "
-        f"{sql.identifier(project)}.{sql.identifier(dataset)}.INFORMATION_SCHEMA.COLUMNS "
-        f"WHERE table_name = {sql.string_literal(table)} ORDER BY ordinal_position"
-    )
-
-
 def _create_outside_attachment(
     bigquery: Session,
     attached: duckdb.DuckDBPyConnection,
@@ -139,7 +127,7 @@ def test_ingest_type_fidelity(
         """
     )
 
-    assert _bigquery_schema(bigquery, project, dataset, table) == [
+    assert bigquery.columns(project, dataset, table) == [
         ("i64", "INT64"),
         ("i32", "INT64"),
         ("i16", "INT64"),
@@ -241,7 +229,7 @@ def test_ingest_nested_list_and_struct(
         """
     )
 
-    assert _bigquery_schema(bigquery, project, dataset, table) == [
+    assert bigquery.columns(project, dataset, table) == [
         ("k", "INT64"),
         ("numbers", "ARRAY<INT64>"),
         ("record", "STRUCT<a INT64, b STRING>"),
@@ -369,7 +357,7 @@ def test_ctas_creates_the_table_and_fills_it(
     ).fetchall()
 
     assert created == [(2,)]
-    assert _bigquery_schema(bigquery, project, dataset, table) == [
+    assert bigquery.columns(project, dataset, table) == [
         ("i", "INT64"),
         ("s", "STRING"),
         ("d", "DATE"),
@@ -396,7 +384,7 @@ def test_ctas_with_zero_rows_still_creates_the_table(
     ).fetchall()
 
     assert created == [(0,)]
-    assert _bigquery_schema(bigquery, project, dataset, table) == [
+    assert bigquery.columns(project, dataset, table) == [
         ("i", "INT64"),
         ("s", "STRING"),
     ]
@@ -421,7 +409,7 @@ def test_create_table_with_an_explicit_column_list(
     # Unlike CTAS, this reports no row count.
     assert attached.execute(f"CREATE TABLE {target} (i BIGINT, s VARCHAR)").fetchall() == []
 
-    assert _bigquery_schema(bigquery, project, dataset, table) == [
+    assert bigquery.columns(project, dataset, table) == [
         ("i", "INT64"),
         ("s", "STRING"),
     ]

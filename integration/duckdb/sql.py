@@ -82,3 +82,10 @@ class Session:
     def scalar(self, query: str) -> Any:
         [(value,)] = self.query(query)
         return value
+
+    def columns(self, project: str, dataset: str, table: str) -> list[tuple]:
+        """Return a table's `(column_name, data_type)` pairs in ordinal order."""
+        return self.query(
+            f"SELECT column_name, data_type FROM {qualified(project, dataset)}.INFORMATION_SCHEMA.COLUMNS "
+            f"WHERE table_name = {string_literal(table)} ORDER BY ordinal_position"
+        )
