@@ -117,7 +117,7 @@ pub(crate) fn parse_bigquery_uri(uri: &str) -> Result<Vec<(O, String)>> {
         .map_err(|problem| decoding_failure(format_args!("project path"), problem))?;
     ProjectIdentifier::try_new_from("the URI path", project_id.as_str())?;
     let endpoint = endpoint_from_authority(authority)?;
-    let parameters = parse_query(query)?;
+    let mut parameters = parse_query(query)?;
     validate_impersonation(&parameters)?;
     let authentication_type = authentication_type(&parameters)?;
 
@@ -132,9 +132,9 @@ pub(crate) fn parse_bigquery_uri(uri: &str) -> Result<Vec<(O, String)>> {
     // Validated by their options when applied, which marks a rejection as coming from the URI.
     options.extend(QUERY_PARAMETERS.iter().filter_map(|parameter| {
         let value = parameters
-            .get(parameter.name)
+            .remove(parameter.name)
             .filter(|value| !value.is_empty())?;
-        Some((parameter.option?, value.clone()))
+        Some((parameter.option?, value))
     }));
     Ok(options)
 }
