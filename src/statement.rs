@@ -38,7 +38,7 @@ use crate::{
 
 use binding::ParameterBinding;
 pub(crate) use operations::OptionOnlyOutcome;
-use operations::StatementMode;
+use operations::{OptionOnlyOperation, StatementMode};
 use parameter_stream::{
     ParameterRows, ParameterizedRecordBatchReader, add_rows_affected, require_same_result_schema,
 };
@@ -142,6 +142,27 @@ impl BigQueryStatement {
         context
     }
 
+    /// Begins every execute entry point: the previous execution's progress no longer applies, and
+    /// names resolve in the connection's current namespace. Returns the option-only operation that
+    /// runs instead of SQL, if any.
+    fn start_execution(&mut self) -> Option<OptionOnlyOperation> {
+        self.progress.reset();
+        self.refresh_namespace();
+        self.active_option_only_operation()
+    }
+
+    /// The SQL an execute runs and the binding it consumes, after the checks every execute makes
+    /// before reading a row. A dry run reads no row, so it leaves the binding in place.
+    fn take_query(&mut self) -> Result<(Arc<str>, Option<Box<dyn RecordBatchReader + Send>>)> {
+        let sql = require_sql(self.sql.as_ref(), "execute")?.clone();
+        self.parameters.require_available()?;
+        self.refuse_session_creation()?;
+        let stream = (!self.query_options.dry_run)
+            .then(|| self.parameters.take())
+            .flatten();
+        Ok((sql, stream))
+    }
+
     /// Refuses `bigquery.query.create_session` in manual-commit mode, where every query runs in
     /// the transaction's session. BigQuery rejects a job that names a session and asks for a new
     /// one, but only after the driver has begun the transaction. Query entry points check this
@@ -205,27 +226,19 @@ impl BigQueryStatement {
         &mut self,
     ) -> Result<(Box<dyn RecordBatchReader + Send + 'static>, i64)> {
         const UNKNOWN_ROWS_AFFECTED: i64 = -1;
-        self.progress.reset();
-        self.refresh_namespace();
-        if let Some(operation) = self.active_option_only_operation() {
+        if let Some(operation) = self.start_execution() {
             return self
                 .execute_option_only_operation(operation)
                 .map(OptionOnlyOutcome::into_result);
         }
-        let sql = require_sql(self.sql.as_ref(), "execute")?;
-        self.parameters.require_available()?;
-        self.refuse_session_creation()?;
-        // A dry run reads no row, so the binding stays for the execution it validates.
-        let stream = (!self.query_options.dry_run)
-            .then(|| self.parameters.take())
-            .flatten();
+        let (sql, stream) = self.take_query()?;
         let Some(stream) = stream else {
             let parameters = self.typed_nulls()?;
             let operation = self.cancellation.begin();
             // The query completes before this returns, and the completing response carries
             // `totalRows` for a result and `numDmlAffectedRows` for DML.
             let (reader, rows_affected) =
-                self.run_query(&operation, sql, parameters, execute_query)?;
+                self.run_query(&operation, &sql, parameters, execute_query)?;
             // Draining still issues requests (`jobs.getQueryResults` pages, Storage Read
             // `ReadRows`), so the reader takes prompt cancellation: a cancelled drain must
             // report itself, not end cleanly over a partial result.
@@ -239,13 +252,13 @@ impl BigQueryStatement {
         let Some(parameters) = rows.next(&operation)? else {
             // No parameter row means nothing executed, so the count is known: none, as
             // `execute_update` and `execute_partitions` report it.
-            let schema = self.empty_binding_schema(&rows, &operation, sql)?;
+            let schema = self.empty_binding_schema(&rows, &operation, &sql)?;
             operation.finish();
             return Ok((empty_reader(Arc::new(schema)), 0));
         };
 
         let (current, rows_affected) = self
-            .run_query(&operation, sql, Some(parameters), execute_query)
+            .run_query(&operation, &sql, Some(parameters), execute_query)
             .map_err(|failure| rows.failed_row(failure))?;
         // A one-row binding, such as a DB-API `execute(sql, parameters)`, ran in full, so its
         // count is the statement's.
@@ -262,7 +275,7 @@ impl BigQueryStatement {
             let mut total = rows_affected;
             rows.for_each(&operation, |parameters| {
                 let (reader, affected) =
-                    self.run_query(&operation, sql, Some(parameters), execute_query)?;
+                    self.run_query(&operation, &sql, Some(parameters), execute_query)?;
                 require_same_result_schema(&schema, &reader.schema())?;
                 total = add_rows_affected(total, affected);
                 Ok(())
@@ -278,7 +291,7 @@ impl BigQueryStatement {
             context: self.context.clone(),
             query_options: self.query_options.clone(),
             transaction: Arc::clone(&self.transaction),
-            sql: sql.clone(),
+            sql,
             parameter_mode: self.parameter_mode,
             rows,
             current,
@@ -389,31 +402,23 @@ impl Statement for BigQueryStatement {
     }
 
     fn execute_update(&mut self) -> Result<Option<i64>> {
-        self.progress.reset();
-        self.refresh_namespace();
-        if let Some(operation) = self.active_option_only_operation() {
+        if let Some(operation) = self.start_execution() {
             return self
                 .execute_option_only_operation(operation)
                 .map(|outcome| outcome.rows_affected);
         }
-        let sql = require_sql(self.sql.as_ref(), "execute")?;
-        self.parameters.require_available()?;
-        self.refuse_session_creation()?;
-        // A dry run reads no row, so the binding stays for the execution it validates.
-        let stream = (!self.query_options.dry_run)
-            .then(|| self.parameters.take())
-            .flatten();
+        let (sql, stream) = self.take_query()?;
         let parameters = self.typed_nulls()?;
         self.cancellation.run(|operation| {
             let Some(stream) = stream else {
-                return self.run_query(operation, sql, parameters, execute_update_with_parameters);
+                return self.run_query(operation, &sql, parameters, execute_update_with_parameters);
             };
             // An empty binding runs nothing, so it affects no row and opens no transaction.
             let mut total = Some(0_i64);
             ParameterRows::new(stream, self.parameter_mode)?.for_each(operation, |parameters| {
                 let affected = self.run_query(
                     operation,
-                    sql,
+                    &sql,
                     Some(parameters),
                     execute_update_with_parameters,
                 )?;
@@ -425,10 +430,7 @@ impl Statement for BigQueryStatement {
     }
 
     fn execute_schema(&mut self) -> Result<Schema> {
-        // Describing executes nothing, so the last execute's progress no longer applies.
-        self.progress.reset();
-        self.refresh_namespace();
-        if let Some(operation) = self.active_option_only_operation() {
+        if let Some(operation) = self.start_execution() {
             let schema = operation.result_schema().ok_or_else(|| {
                 invalid_state(format!(
                     "a BigQuery {} statement returns no rows, so it has no result schema; clear \
@@ -451,9 +453,7 @@ impl Statement for BigQueryStatement {
     }
 
     fn execute_partitions(&mut self) -> Result<PartitionedResult> {
-        self.progress.reset();
-        self.refresh_namespace();
-        if let Some(operation) = self.active_option_only_operation() {
+        if let Some(operation) = self.start_execution() {
             // Refused rather than run: its rows have no job for a partition to read back.
             if operation.result_schema().is_some() {
                 return Err(invalid_state(format!(
@@ -470,8 +470,7 @@ impl Statement for BigQueryStatement {
                 rows_affected: outcome.rows_affected.unwrap_or(-1),
             });
         }
-        let sql = require_sql(self.sql.as_ref(), "execute")?;
-        // Reject before reading parameters, including an empty stream's schema dry run.
+        // Refused before the binding is read, including an empty stream's schema dry run.
         if self.query_options.dry_run {
             return Err(invalid_state(format!(
                 "BigQuery option {} is set, and a dry run creates no job to partition; unset it, or \
@@ -479,14 +478,12 @@ impl Statement for BigQueryStatement {
                 BigQueryStatementOption::DryRun.as_str()
             )));
         }
-        self.parameters.require_available()?;
-        self.refuse_session_creation()?;
-        let stream = self.parameters.take();
+        let (sql, stream) = self.take_query()?;
         self.cancellation.run(|operation| {
             let Some(stream) = stream else {
                 let partition = self.run_query(
                     operation,
-                    sql,
+                    &sql,
                     None,
                     execute_query_partition_with_parameters,
                 )?;
@@ -504,7 +501,7 @@ impl Statement for BigQueryStatement {
             rows.for_each(operation, |parameters| {
                 let partition = self.run_query(
                     operation,
-                    sql,
+                    &sql,
                     Some(parameters),
                     execute_query_partition_with_parameters,
                 )?;
@@ -520,7 +517,7 @@ impl Statement for BigQueryStatement {
             // the result.
             let schema = match schema {
                 Some(schema) => schema,
-                None => self.empty_binding_schema(&rows, operation, sql)?,
+                None => self.empty_binding_schema(&rows, operation, &sql)?,
             };
             Ok(PartitionedResult {
                 partitions,
