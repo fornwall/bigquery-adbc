@@ -1,7 +1,9 @@
 //! The wrapper that rebuilds a credential its token cache has given up on.
 
 use std::fmt;
-use std::sync::{Mutex, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use adbc_core::error::Result;
 use google_cloud_auth::credentials::{CacheableResource, Credentials, CredentialsProvider};
@@ -10,19 +12,33 @@ use http::{Extensions, HeaderMap};
 
 use crate::diag::diag;
 
-/// Wraps a credential stack that mints tokens so a permanent failure is not served forever.
+/// Bounds one rebuild and the wait for another request's. Building is local work, but it can open
+/// files a machine's environment names, and one of them can be a pipe that never answers.
+const REBUILD_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_secs(2)
+} else {
+    Duration::from_secs(30)
+};
+
+/// Wraps one token-minting layer of a credential stack so a permanent failure is not served
+/// forever.
 ///
 /// The auth library's token cache ends its refresh task at the first failure it classifies as
 /// permanent and returns that failure for the life of the credential (UP-140). Tokens are first
 /// requested when the credential is built, as a connection opens, so one refused exchange, such as
-/// an IAM grant that had not yet propagated or a reauthentication `gcloud` has since completed,
-/// would fail every later request from the database's clients. Go's `oauth2` token sources ask
-/// again on the next request.
+/// an IAM grant that had not yet propagated, would fail every later request from the database's
+/// clients. Go's `oauth2` token sources ask again on the next request.
 ///
-/// On a permanent failure this replaces the stack with one `rebuild` makes from the same
-/// validated configuration, and asks the new one once. So each request makes at most one fresh
-/// exchange, and requests that fail together share the one replacement. A transient failure is
-/// returned as is: the token cache keeps retrying it.
+/// On a permanent failure this replaces the layer with one `rebuild` makes from the same validated
+/// configuration, over the same layer beneath, and asks the new one once. So each failing request
+/// repeats the failing layer's exchanges once, reusing a token the layer beneath still holds; a
+/// credential the auth library builds whole is one layer, all of whose exchanges repeat. Requests
+/// that fail together share one rebuild. A transient failure is returned as is: the token cache
+/// keeps retrying it.
+///
+/// The rebuild runs on the blocking pool, under [`REBUILD_TIMEOUT`], so no request waits on a lock
+/// a build holds. One that outlives the timeout fails its request with the original failure, and
+/// no other starts while it runs.
 pub(super) fn recovering_credentials(
     credentials: Credentials,
     rebuild: impl Fn() -> Result<Credentials> + Send + Sync + 'static,
@@ -32,19 +48,35 @@ pub(super) fn recovering_credentials(
             generation: 0,
             credentials,
         }),
-        rebuild,
+        rebuilding: tokio::sync::Mutex::new(()),
+        running: Arc::new(AtomicBool::new(false)),
+        rebuild: Arc::new(rebuild),
     })
 }
 
 struct RecoveringCredentials<F> {
+    /// Held only to read or replace the layer, never across a build or an exchange.
     current: Mutex<Current>,
-    rebuild: F,
+    /// Taken by the request that rebuilds; the others that failed wait for it, then use its layer.
+    rebuilding: tokio::sync::Mutex<()>,
+    /// Whether a rebuild is still running on the blocking pool, as one past its timeout may be.
+    running: Arc<AtomicBool>,
+    rebuild: Arc<F>,
 }
 
-/// The stack in use, and how many times it has been replaced.
+/// The layer in use, and how many times it has been replaced.
 struct Current {
     generation: u64,
     credentials: Credentials,
+}
+
+/// Clears [`RecoveringCredentials::running`] when a rebuild ends, panicking or not.
+struct Running(Arc<AtomicBool>);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 impl<F> fmt::Debug for RecoveringCredentials<F> {
@@ -63,33 +95,45 @@ where
         (current.generation, current.credentials.clone())
     }
 
-    /// The stack to ask again after generation `failed` failed permanently: a new one, unless
-    /// another request has replaced it already. `None` if the configuration no longer builds,
-    /// which leaves the failed stack in place for the next request to try again.
-    ///
-    /// The rebuild runs under the lock, so concurrent failures build once. It is brief: a JSON
-    /// credential file's document was read once, before the first build, and only Application
-    /// Default Credentials discovery reads the small files it finds again, so a new `gcloud`
-    /// login takes effect.
-    fn replacement(&self, failed: u64) -> Option<Credentials> {
-        let mut current = self.current.lock().unwrap_or_else(PoisonError::into_inner);
-        if current.generation == failed {
-            match (self.rebuild)() {
-                Ok(credentials) => {
-                    current.generation += 1;
-                    current.credentials = credentials;
-                }
-                Err(error) => {
-                    diag!(
-                        Warn,
-                        "could not rebuild the credential after a refused token exchange: {}",
-                        error.message
-                    );
-                    return None;
-                }
-            }
+    /// The layer to ask again after generation `failed` failed permanently: a new one, unless
+    /// another request has replaced it already. `None` keeps the failed layer for the next request
+    /// to try again: the configuration no longer builds, or a build is still running.
+    async fn replacement(&self, failed: u64) -> Option<Credentials> {
+        let _turn = tokio::time::timeout(REBUILD_TIMEOUT, self.rebuilding.lock())
+            .await
+            .ok()?;
+        let (generation, credentials) = self.current();
+        if generation != failed {
+            return Some(credentials);
         }
-        Some(current.credentials.clone())
+        if self.running.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        let running = Running(self.running.clone());
+        let rebuild = self.rebuild.clone();
+        let build = tokio::task::spawn_blocking(move || {
+            let _running = running;
+            rebuild()
+        });
+        let failure = match tokio::time::timeout(REBUILD_TIMEOUT, build).await {
+            Ok(Ok(Ok(credentials))) => {
+                let mut current = self.current.lock().unwrap_or_else(PoisonError::into_inner);
+                current.generation += 1;
+                current.credentials = credentials.clone();
+                return Some(credentials);
+            }
+            Ok(Ok(Err(error))) => error.message,
+            Ok(Err(_)) => "the rebuild panicked".to_owned(),
+            Err(_) => format!(
+                "the rebuild did not finish within {} s",
+                REBUILD_TIMEOUT.as_secs()
+            ),
+        };
+        diag!(
+            Warn,
+            "could not rebuild the credential after a refused token exchange: {failure}"
+        );
+        None
     }
 }
 
@@ -106,8 +150,8 @@ where
             Err(failure) if !failure.is_transient() => failure,
             headers => return headers,
         };
-        match self.replacement(generation) {
-            // The tag in `extensions` names the failed stack's headers, so the new stack answers
+        match self.replacement(generation).await {
+            // The tag in `extensions` names the failed layer's headers, so the new layer answers
             // with new ones.
             Some(replacement) => replacement.headers(extensions).await,
             None => Err(failure),
@@ -207,6 +251,7 @@ mod tests {
 
     fn block_on<T>(future: impl Future<Output = T>) -> T {
         tokio::runtime::Builder::new_current_thread()
+            .enable_all()
             .build()
             .unwrap()
             .block_on(future)
@@ -304,5 +349,51 @@ mod tests {
             }
         });
         assert_eq!(attempts.load(Ordering::Relaxed), 2);
+    }
+
+    /// A rebuild that never finishes, as one reading a pipe could, holds no lock a request needs:
+    /// requests keep reaching the layer, the stuck one fails its request after the timeout, and no
+    /// second starts behind it. Once it ends, the next failure rebuilds again.
+    #[test]
+    fn a_stuck_rebuild_stalls_no_request_and_starts_no_other() {
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let released = Mutex::new(released);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counted = attempts.clone();
+        let credentials = recovering_credentials(
+            Credentials::from(Refusing {
+                refusals: AtomicUsize::new(usize::MAX),
+                transient: false,
+                token: "first",
+                requests: Arc::default(),
+            }),
+            move || {
+                if counted.fetch_add(1, Ordering::Relaxed) == 0 {
+                    let _ = released.lock().unwrap().recv();
+                }
+                Err(crate::error::invalid_argument("no longer builds"))
+            },
+        );
+        block_on(async {
+            let started = tokio::time::Instant::now();
+            let (stuck, universe) = tokio::join!(credentials.headers(Extensions::new()), async {
+                tokio::time::sleep(REBUILD_TIMEOUT / 4).await;
+                credentials.universe_domain().await
+            });
+            assert!(stuck.is_err());
+            assert!(started.elapsed() >= REBUILD_TIMEOUT);
+            assert_eq!(universe.as_deref(), Some("first"));
+
+            let started = tokio::time::Instant::now();
+            assert!(credentials.headers(Extensions::new()).await.is_err());
+            assert!(started.elapsed() < REBUILD_TIMEOUT);
+            assert_eq!(attempts.load(Ordering::Relaxed), 1);
+
+            release.send(()).unwrap();
+            while attempts.load(Ordering::Relaxed) < 2 {
+                assert!(credentials.headers(Extensions::new()).await.is_err());
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
     }
 }
