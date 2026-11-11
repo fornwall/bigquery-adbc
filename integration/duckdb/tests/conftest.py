@@ -57,7 +57,11 @@ def secondary_dataset() -> str:
 
 @pytest.fixture(scope="session")
 def driver_library() -> str:
-    return profiles.driver_library()
+    """The built cdylib; the extension loads the driver by absolute path."""
+    path = Path(_required("ADBC_BIGQUERY_LIBRARY"))
+    if not path.is_file():
+        raise RuntimeError(f"ADBC_BIGQUERY_LIBRARY is not a file: {path}")
+    return str(path.resolve())
 
 
 @pytest.fixture(scope="session")

@@ -10,7 +10,6 @@ supports, so the built library's path cannot be written statically.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 # A profile name is both a URI component and a file name.
@@ -37,16 +36,3 @@ def write_profile(directory: Path, name: str, *, driver: str, options: dict[str,
     directory.mkdir(parents=True, exist_ok=True)
     (directory / f"{name}.toml").write_text(render_profile(driver=driver, options=options), encoding="utf-8")
     return f"profile://{name}"
-
-
-def driver_library() -> str:
-    library = os.environ.get("ADBC_BIGQUERY_LIBRARY")
-    if not library:
-        raise RuntimeError(
-            "ADBC_BIGQUERY_LIBRARY must point at the built bigquery-adbc cdylib; "
-            "run the suite through cargo test --test clients duckdb -- --ignored"
-        )
-    path = Path(library)
-    if not path.is_file():
-        raise RuntimeError(f"ADBC_BIGQUERY_LIBRARY is not a file: {library}")
-    return str(path.resolve())
