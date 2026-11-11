@@ -56,18 +56,24 @@ static RELEASE: unsafe extern "C" fn(*mut FFI_ArrowArrayStream) = release;
 struct PrivateData {
     reader: Box<dyn RecordBatchReader + Send>,
     last_error: Option<LastError>,
-    /// Backing store for the `AdbcError` that [`error_from_array_stream`] returns, which must stay
-    /// valid until the stream is released.
-    exported_error: AdbcError,
+    /// The boxed `AdbcError` that [`error_from_array_stream`] returns, which must stay valid until
+    /// the stream is released. Callers keep that pointer and write through it (the C driver
+    /// manager sets `private_driver`, Python releases the error) while later callbacks borrow
+    /// this struct mutably, so the error lives outside it and is reached only through this
+    /// pointer: a field would share the borrow and invalidate the caller's pointer.
+    exported_error: *mut AdbcError,
     panicked: bool,
 }
 
 impl Drop for PrivateData {
     fn drop(&mut self) {
-        if let Some(release) = self.exported_error.release {
-            // SAFETY: export_error populated this owned error; its matching release runs once
-            // before drop.
-            unsafe { release(&raw mut self.exported_error) };
+        // SAFETY: export_reader boxed this error and only this drop frees it, after releasing any
+        // payload once through its own callback. Callers' pointers to it end with the stream.
+        unsafe {
+            if let Some(release) = (*self.exported_error).release {
+                release(self.exported_error);
+            }
+            drop(Box::from_raw(self.exported_error));
         }
     }
 }
@@ -77,7 +83,7 @@ pub(super) fn export_reader(reader: Box<dyn RecordBatchReader + Send>) -> FFI_Ar
     let private_data = Box::new(PrivateData {
         reader,
         last_error: None,
-        exported_error: ADBC_ERROR_INIT,
+        exported_error: Box::into_raw(Box::new(ADBC_ERROR_INIT)),
         panicked: false,
     });
     // SAFETY: each callback reads `private_data` as the `PrivateData` boxed here, which `release`
@@ -200,8 +206,9 @@ pub(super) unsafe extern "C" fn error_from_array_stream(
         let Some(private) = (unsafe { private_data(stream) }) else {
             return std::ptr::null();
         };
-        // The error lives in `PrivateData` to outlive this call.
-        let exported = &raw mut private.exported_error;
+        // The stream owns this error, so it outlives this call. Every call returns this same
+        // pointer.
+        let exported = private.exported_error;
         let code = if let Some(last) = private.last_error.as_mut() {
             // Exporting releases the previous export, which the caller may still be reading, so
             // export only an error that is new or that the caller released.

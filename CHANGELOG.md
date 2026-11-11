@@ -34,6 +34,8 @@ changes.
 - A partition stream that fails, or is cancelled, before its first results read no longer asks
   BigQuery to cancel the partition's already finished job. That request could fail for a reader
   without permission to cancel the job, making `AdbcConnectionCancel` return `UNKNOWN`.
+- The `AdbcError` that `AdbcErrorFromArrayStream` returns stays valid when other stream callbacks
+  run before the caller reads it; Rust's aliasing rules had invalidated the pointer.
 
 ## [0.5.0] - 2026-11-09
 

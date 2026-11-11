@@ -492,3 +492,30 @@ fn reading_the_schema_after_a_failed_read_keeps_the_failure() {
     assert!(message_of(exported).is_some());
     release(&mut stream);
 }
+
+/// The error `AdbcErrorFromArrayStream` returns stays valid until the stream is released, so a
+/// later callback that leaves it alone must not invalidate the caller's pointer. Miri checks the
+/// pointer's provenance across the `get_schema` in between.
+#[test]
+fn an_exported_error_survives_a_later_callback_that_leaves_it_alone() {
+    let mut failure = Error::with_message_and_status("the query was cancelled", Status::Cancelled);
+    failure.details = Some(vec![("grpc-status".to_owned(), b"1".to_vec())]);
+    let mut stream = error_stream(ArrowError::ExternalError(Box::new(failure)));
+    assert_eq!(next(&mut stream), ECANCELED);
+    let (_, exported) = error_from(&mut stream);
+
+    assert_eq!(schema_of(&mut stream), 0);
+    // SAFETY: The stream is live, so the error it owns is too; the C driver manager writes this
+    // field through the pointer it was returned.
+    unsafe { (*exported.cast_mut()).private_driver = std::ptr::null() };
+    assert_eq!(
+        message_of(exported).as_deref(),
+        Some("the query was cancelled")
+    );
+    // SAFETY: As above; the stream still owns the error and its details.
+    assert_eq!(unsafe { error_get_detail_count(exported) }, 1);
+
+    let (_, again) = error_from(&mut stream);
+    assert_eq!(again, exported, "every call returns the same error");
+    release(&mut stream);
+}
