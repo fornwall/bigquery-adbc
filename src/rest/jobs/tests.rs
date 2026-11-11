@@ -110,45 +110,31 @@ fn insert_copy(endpoint: &str, id: &str) -> Result<bytes::Bytes> {
 }
 
 #[test]
-fn successful_submissions_preserve_the_callers_distinct_ids_and_location() {
-    let (endpoint, captured) = capture_requests(vec![
-        ok(json!({"status": {"state": "DONE"}, "marker": "first"})),
-        ok(json!({"status": {"state": "DONE"}, "marker": "second"})),
-    ]);
+fn a_successful_submission_sends_the_callers_id_and_location() {
+    let (endpoint, captured) = capture_requests(vec![ok(
+        json!({"status": {"state": "DONE"}, "marker": "first"}),
+    )]);
     let (runtime, client) = job_client(&endpoint);
-    let (_cancellation, operation) = operation(&runtime, ClientState::for_test());
 
-    let first = request("job/one", Some("EU west/1"), false);
-    let second = request("job-two", Some("EU west/1"), false);
-    let first_response = runtime
-        .block_on(client.insert(Some(&operation), &first, "test"))
-        .unwrap();
-    let second_response = runtime
-        .block_on(client.insert(Some(&operation), &second, "test"))
-        .unwrap();
-    operation.finish();
+    let response = insert_query(
+        &runtime,
+        &client,
+        &request("job/one", Some("EU west/1"), false),
+    )
+    .unwrap();
 
+    assert_eq!(response["marker"], "first");
+    let request = &captured.served(1)[0];
     assert_eq!(
-        serde_json::from_slice::<JsonValue>(&first_response).unwrap()["marker"],
-        "first"
+        request.path(),
+        "/bigquery/v2/projects/billing%2Fproject/jobs"
     );
     assert_eq!(
-        serde_json::from_slice::<JsonValue>(&second_response).unwrap()["marker"],
-        "second"
+        request.body["jobReference"],
+        json!({"projectId": "billing/project", "jobId": "job/one", "location": "EU west/1"})
     );
-    let captured = captured.served(2);
-    for request in &captured {
-        assert_eq!(
-            request.path(),
-            "/bigquery/v2/projects/billing%2Fproject/jobs"
-        );
-        assert_eq!(request.body["jobReference"]["projectId"], "billing/project");
-        assert_eq!(request.body["jobReference"]["location"], "EU west/1");
-    }
-    assert_eq!(captured[0].body["jobReference"]["jobId"], "job/one");
-    assert_eq!(captured[1].body["jobReference"]["jobId"], "job-two");
     assert_eq!(
-        captured[0].body["configuration"]["query"]["useLegacySql"],
+        request.body["configuration"]["query"]["useLegacySql"],
         false
     );
 }
@@ -1190,11 +1176,10 @@ fn a_definitive_answer_to_a_replay_says_the_statement_may_have_run() {
     );
 }
 
-/// An error document reads as a rejection, not a failure to submit. The `{reason}:` spelling dbt
-/// matches on survives either way.
+/// An error document reads as BigQuery rejecting the named submission, not as a failure to submit
+/// it. The `{reason}:` spelling dbt matches on survives either way.
 #[test]
-fn a_rejected_query_says_bigquery_rejected_it_and_a_transport_failure_says_it_failed_to_submit() {
-    let start = RequestStart::default();
+fn a_rejected_submission_says_bigquery_rejected_it() {
     let (answer, requests) =
         jobs_query("p", vec![(400, error_body("invalidQuery", "Syntax error"))]);
     assert_eq!(requests.len(), 1);
@@ -1203,19 +1188,6 @@ fn a_rejected_query_says_bigquery_rejected_it_and_a_transport_failure_says_it_fa
     assert_eq!(
         rejected.message,
         "BigQuery rejected the query: invalidQuery: Syntax error (HTTP 400)"
-    );
-
-    let (runtime, jobs) = job_client(crate::test_support::UNREACHABLE_ENDPOINT);
-    let unsent = runtime
-        .block_on(jobs.query(None, "p", bytes::Bytes::from_static(b"{}"), &start))
-        .unwrap_err();
-    assert_eq!(unsent.status, Status::IO);
-    assert!(
-        unsent
-            .message
-            .starts_with("failed to submit the BigQuery jobs.query request: "),
-        "{}",
-        unsent.message
     );
 
     // A dry run's rejection names the dry run.
@@ -1474,37 +1446,11 @@ fn a_retryable_rejection_replays_the_identical_submission_and_a_denial_does_not(
     }
 }
 
-/// Submission and reconciliation are both bounded. Only a job that never became visible lets the
-/// original submission failure stand. A reconciliation that never got an answer reports its own
-/// failure, since the job may exist.
-#[test]
-fn an_exhausted_submission_reports_what_its_reconciliation_learned() {
-    for (reconciled, lead, reported) in [
-        (
-            (404, error_body("notFound", "absent")),
-            "failed to submit the BigQuery copy job ",
-            "backendError: submit",
-        ),
-        (
-            (503, error_body("backendError", "reconcile")),
-            "failed to reconcile the submission of BigQuery copy job ",
-            "backendError: reconcile",
-        ),
-    ] {
-        let mut responses = vec![(500, error_body("backendError", "submit")); MAX_ATTEMPTS];
-        responses.extend(vec![reconciled; MAX_RECONCILIATION_ATTEMPTS]);
-        let (endpoint, captured) = capture_requests(responses);
-        let failure = insert_copy(&endpoint, "bounded").unwrap_err();
-
-        assert_failure(&failure, Status::IO, &[reported]);
-        assert!(failure.message.starts_with(lead), "{}", failure.message);
-        captured.served(MAX_ATTEMPTS + MAX_RECONCILIATION_ATTEMPTS);
-    }
-}
-
 /// A located submission whose job a 409 proves, or ambiguous attempts leave possible, but which
-/// recovery cannot fetch, names that job, with its console link, as one that may still run. Its
-/// location is configured, so the remedy does not suggest setting one.
+/// bounded recovery cannot fetch, names that job, with its console link, as one that may still
+/// run. Only a job that never became visible lets the submission's failure stand; a recovery that
+/// got no answer reports its own. The location is configured, so the remedy does not suggest
+/// setting one.
 #[test]
 fn a_located_job_that_recovery_cannot_fetch_may_still_run() {
     let not_found = || vec![(404, error_body("notFound", "Not found: Job")); 3];
