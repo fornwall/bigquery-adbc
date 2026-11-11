@@ -9,8 +9,8 @@
 //! use separate fields so they remain available during execution.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use adbc_core::CancelHandle;
 use adbc_core::error::{Error, Result, Status};
@@ -122,91 +122,135 @@ fn poisoned(kind: &str) -> Error {
 /// Orders every read of a handle's `private_data` with the writes of `New` and `Release`. Readers
 /// hold it only while taking their reference, and `Release` only while emptying the slot, so the
 /// object a slot names cannot be freed between a reader loading the pointer and counting itself.
-/// No holder waits on anything but the allocator, which lets [`track_forks`] hold it across `fork`.
-static SLOTS: RwLock<()> = RwLock::new(());
+static SLOTS: SlotLock = SlotLock::new();
 
-/// Register the `fork` handlers: they keep a child from inheriting [`SLOTS`] held by a thread the
-/// child lacks, which would block every later call, and refresh the cached process ID the fork
+/// A reader/writer lock in one word, which a `fork` child can reset (see [`track_forks`]).
+/// `std::sync::RwLock` cannot be reset, and unlocking one for a thread the child lacks is not
+/// async-signal-safe everywhere: on Apple targets it wakes queued waiters through libdispatch.
+///
+/// Holders only load or store one slot and increment one reference count, never allocating or
+/// waiting, so waiters spin and then yield instead of parking.
+struct SlotLock(AtomicUsize);
+
+/// Set while a writer holds the lock or waits for its readers to leave; the other bits count
+/// readers. Claiming it holds off new readers, so a stream of them cannot starve a writer.
+const WRITER: usize = !(usize::MAX >> 1);
+
+impl SlotLock {
+    const fn new() -> Self {
+        Self(AtomicUsize::new(0))
+    }
+
+    fn read(&self) -> SlotGuard<'_> {
+        let mut waits = 0;
+        loop {
+            let state = self.0.load(Ordering::Relaxed);
+            if state & WRITER == 0
+                && self
+                    .0
+                    .compare_exchange_weak(state, state + 1, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+            {
+                return SlotGuard {
+                    lock: self,
+                    held: 1,
+                };
+            }
+            pause(&mut waits);
+        }
+    }
+
+    fn write(&self) -> SlotGuard<'_> {
+        let mut waits = 0;
+        while self.0.load(Ordering::Relaxed) & WRITER != 0
+            || self.0.fetch_or(WRITER, Ordering::Acquire) & WRITER != 0
+        {
+            pause(&mut waits);
+        }
+        while self.0.load(Ordering::Acquire) != WRITER {
+            pause(&mut waits);
+        }
+        SlotGuard {
+            lock: self,
+            held: WRITER,
+        }
+    }
+
+    /// Forget every holder. Async-signal-safe. Sound only where no holder can still run, as in a
+    /// `fork` child, unless the forking thread was itself a holder interrupted by a signal handler
+    /// that called `fork`.
+    #[cfg(unix)]
+    fn reset(&self) {
+        self.0.store(0, Ordering::Relaxed);
+    }
+}
+
+/// Spin briefly, as a holder leaves within a few instructions unless it is descheduled, then
+/// yield to it.
+fn pause(waits: &mut u32) {
+    if *waits < 64 {
+        *waits += 1;
+        std::hint::spin_loop();
+    } else {
+        std::thread::yield_now();
+    }
+}
+
+/// One hold on [`SlotLock`]: a reader's 1, or [`WRITER`], released on drop.
+struct SlotGuard<'a> {
+    lock: &'a SlotLock,
+    held: usize,
+}
+
+impl Drop for SlotGuard<'_> {
+    fn drop(&mut self) {
+        self.lock.0.fetch_sub(self.held, Ordering::Release);
+    }
+}
+
+/// Register the `fork` child handler: it resets [`SLOTS`], which a thread the child lacks may
+/// have held, and would then block every later call, and refreshes the cached process ID the fork
 /// checks read instead of calling `getpid` (see [`crate::runtime::process_id`]). `AdbcDriverInit`
 /// calls this before any handle exists.
 ///
+/// The reset abandons the parent threads' critical sections midway, which is sound. Each is one
+/// aligned load or store of a slot and at most one reference-count increment, which the child sees
+/// either done or not, and every object they touched belongs to the parent: the child refuses it
+/// before use and leaks it on release, so an abandoned section can only leak. Nothing runs before
+/// `fork` or in the parent, so no other library's handler can be made to wait on this driver.
+///
 /// It never waits, so a `fork` racing it cannot leave the child blocked; a child forked before
 /// the cache is filled keeps calling `getpid`. A child that bypasses `pthread_atfork` (`_Fork`, a
-/// raw `clone`) keeps its parent's ID. If the parent was multithreaded, as the runtime makes it,
-/// such a child may make only async-signal-safe calls, which excludes this driver; a
-/// single-threaded parent leaves it no runtime or held lock that a stale ID could hide.
+/// raw `clone`) keeps its parent's ID and lock. If the parent was multithreaded, as the runtime
+/// makes it, such a child may make only async-signal-safe calls, which excludes this driver; a
+/// single-threaded parent leaves it no runtime or held lock that a stale state could hide.
 pub(crate) fn track_forks() {
     static REGISTERED: AtomicBool = AtomicBool::new(false);
 
-    if !REGISTERED.swap(true, Ordering::Relaxed) && fork_handlers::register() {
+    if !REGISTERED.swap(true, Ordering::Relaxed) && register_fork_handler() {
         crate::runtime::cache_process_id();
     }
 }
 
-/// [`track_forks`]'s handlers.
+/// Register [`track_forks`]'s handler, reporting whether it will run.
 #[cfg(unix)]
-mod fork_handlers {
-    use std::cell::Cell;
-    use std::mem::ManuallyDrop;
-    use std::sync::{PoisonError, RwLockWriteGuard};
-
-    use super::SLOTS;
-
-    thread_local! {
-        /// [`SLOTS`] as the prepare handler took it, until the parent or child handler, which run
-        /// on the same thread, releases it. `ManuallyDrop` spares the slot a thread-exit
-        /// destructor, whose registration could allocate and lock inside the handlers.
-        static HELD_ACROSS_FORK: Cell<Option<ManuallyDrop<RwLockWriteGuard<'static, ()>>>> =
-            const { Cell::new(None) };
-    }
-
-    /// Waits for the current holders of [`SLOTS`], as glibc's own prepare handler does for the
-    /// allocator's locks. This runs in the parent, where waiting is allowed.
-    extern "C" fn before_fork() {
-        // Locks inside the slot access: a thread's first one can allocate its thread-local
-        // storage, which takes the loader's lock, and a thread loading a library can be waiting
-        // for `SLOTS` while holding that.
-        HELD_ACROSS_FORK.with(|slot| {
-            let held = SLOTS.write().unwrap_or_else(PoisonError::into_inner);
-            slot.set(Some(ManuallyDrop::new(held)));
-        });
-    }
-
-    extern "C" fn after_fork_in_parent() {
-        if let Some(held) = HELD_ACROSS_FORK.with(Cell::take) {
-            drop(ManuallyDrop::into_inner(held));
-        }
-    }
-
+fn register_fork_handler() -> bool {
     /// Runs in the child before `fork` returns there, which permits only async-signal-safe work:
-    /// unlocking (atomics, and a futex wake for waiters the child lacks), `getpid` and an atomic
-    /// store. The prepare handler already reached the thread's storage.
+    /// atomic stores and `getpid`.
     extern "C" fn after_fork_in_child() {
-        after_fork_in_parent();
+        SLOTS.reset();
         crate::runtime::cache_process_id();
     }
-
-    /// Register the handlers, reporting whether they will run.
-    pub(super) fn register() -> bool {
-        // SAFETY: the handlers cannot unwind, and the child's is async-signal-safe. They stay
-        // mapped because the library must never be unloaded (see `AdbcDriverBigqueryInit`);
-        // glibc also unregisters them if the library is.
-        unsafe {
-            libc::pthread_atfork(
-                Some(before_fork),
-                Some(after_fork_in_parent),
-                Some(after_fork_in_child),
-            ) == 0
-        }
-    }
+    // SAFETY: the handler is async-signal-safe and cannot unwind. It stays mapped because the
+    // library must never be unloaded (see `AdbcDriverBigqueryInit`); glibc also unregisters it if
+    // the library is.
+    unsafe { libc::pthread_atfork(None, None, Some(after_fork_in_child)) == 0 }
 }
 
 /// Without `fork` (Windows), a cached process ID never goes stale.
 #[cfg(not(unix))]
-mod fork_handlers {
-    pub(super) fn register() -> bool {
-        true
-    }
+fn register_fork_handler() -> bool {
+    true
 }
 
 /// Install `exported` in an empty slot, as `New` does.
@@ -221,16 +265,24 @@ pub(crate) unsafe fn install<S: Send>(
     kind: &str,
     exported: Exported<S>,
 ) -> Result<()> {
-    let _writing = SLOTS.write().unwrap_or_else(PoisonError::into_inner);
-    // SAFETY: The caller supplies a live field or null, and the write lock excludes other
-    // accesses.
-    let Some(object) = (unsafe { slot.as_mut() }) else {
+    if slot.is_null() {
         return Err(missing_argument(kind));
-    };
-    if !object.is_null() {
+    }
+    let mut exported = Some(Arc::new(exported));
+    {
+        let _writing = SLOTS.write();
+        // SAFETY: The caller supplies a live field, and the write lock excludes other accesses.
+        let object = unsafe { &mut *slot };
+        if object.is_null()
+            && let Some(exported) = exported.take()
+        {
+            *object = Arc::into_raw(exported).cast_mut().cast();
+        }
+    }
+    // An object left here found the slot taken, and is dropped outside the lock.
+    if exported.is_some() {
         return Err(already_populated(kind));
     }
-    *object = Arc::into_raw(Arc::new(exported)).cast_mut().cast();
     Ok(())
 }
 
@@ -240,12 +292,18 @@ pub(crate) unsafe fn install<S: Send>(
 /// `slot` must be null or point to a handle's live, aligned, initialized `private_data` field,
 /// with concurrent access synchronized as required by [`install`].
 pub(crate) unsafe fn check_empty(slot: *const *mut c_void, kind: &str) -> Result<()> {
-    let _reading = SLOTS.read().unwrap_or_else(PoisonError::into_inner);
-    // SAFETY: The caller supplies a live field or null, and writers hold the write lock.
-    match unsafe { slot.as_ref() } {
-        None => Err(missing_argument(kind)),
-        Some(object) if !object.is_null() => Err(already_populated(kind)),
-        Some(_) => Ok(()),
+    if slot.is_null() {
+        return Err(missing_argument(kind));
+    }
+    let empty = {
+        let _reading = SLOTS.read();
+        // SAFETY: The caller supplies a live field, and writers hold the write lock.
+        unsafe { slot.read() }.is_null()
+    };
+    if empty {
+        Ok(())
+    } else {
+        Err(already_populated(kind))
     }
 }
 
@@ -267,21 +325,26 @@ fn already_populated(kind: &str) -> Error {
 /// a pointer [`install`] stored for this `S`. Concurrent access must be synchronized as required
 /// by [`install`].
 unsafe fn acquire<S>(slot: *const *mut c_void, kind: &str) -> Result<Arc<Exported<S>>> {
-    let _reading = SLOTS.read().unwrap_or_else(PoisonError::into_inner);
-    // SAFETY: The caller supplies a live field or null, and writers hold the write lock.
-    let Some(object) = (unsafe { slot.as_ref() }) else {
+    if slot.is_null() {
         return Err(missing_argument(kind));
+    }
+    let pointer = {
+        let _reading = SLOTS.read();
+        // SAFETY: The caller supplies a live field, and writers hold the write lock.
+        let pointer = unsafe { slot.read() }.cast_const().cast::<Exported<S>>();
+        if !pointer.is_null() {
+            // SAFETY: A non-null slot holds the handle's own `Arc::into_raw` reference, which
+            // `release` gives up only under the write lock, so the count cannot reach zero before
+            // this increment.
+            unsafe { Arc::increment_strong_count(pointer) };
+        }
+        pointer
     };
-    let pointer = object.cast_const().cast::<Exported<S>>();
     if pointer.is_null() {
         return Err(uninitialized(kind));
     }
-    // SAFETY: A non-null slot holds the handle's own `Arc::into_raw` reference, which `release`
-    // gives up only under the write lock, so the count cannot reach zero before this increment.
-    let exported = unsafe {
-        Arc::increment_strong_count(pointer);
-        Arc::from_raw(pointer)
-    };
+    // SAFETY: The increment above gave this call a reference of its own to the object.
+    let exported = unsafe { Arc::from_raw(pointer) };
     if exported.process != process_id() {
         return Err(invalid_state(INHERITED_ACROSS_FORK));
     }
@@ -430,14 +493,14 @@ pub(crate) unsafe fn release<S>(
     // Dropping driver state can run arbitrary code (closing clients, joining tasks), so it is
     // contained like any other call.
     let outcome = catch(|| {
+        if slot.is_null() {
+            return Err(missing_argument(kind));
+        }
         let taken = {
-            let _writing = SLOTS.write().unwrap_or_else(PoisonError::into_inner);
-            // SAFETY: The caller supplies a live field or null, and the write lock excludes other
+            let _writing = SLOTS.write();
+            // SAFETY: The caller supplies a live field, and the write lock excludes other
             // accesses.
-            let Some(object) = (unsafe { slot.as_mut() }) else {
-                return Err(missing_argument(kind));
-            };
-            std::mem::replace(object, std::ptr::null_mut())
+            unsafe { slot.replace(std::ptr::null_mut()) }
         };
         if taken.is_null() {
             return Err(uninitialized(kind));

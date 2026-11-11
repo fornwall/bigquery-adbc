@@ -411,33 +411,37 @@ fn a_fork_child_sees_its_own_process_id() {
 }
 
 /// A child must not inherit the slot lock from a thread it lacks: every later call, even on a new
-/// handle, would wait on it forever. A thread here holds the lock most of the time, so without the
-/// prepare handler nearly every child would.
+/// handle, would wait on it forever. Threads here hold it, shared and exclusive, most of the time,
+/// so without the child handler nearly every child would.
 #[test]
 #[cfg(unix)]
 #[cfg_attr(miri, ignore = "Miri cannot fork")]
 fn a_fork_child_never_inherits_the_slot_lock() {
     track_forks();
     let stop = Arc::new(AtomicBool::new(false));
-    let holder = std::thread::spawn({
+    let holders = [false, true].map(|exclusive| {
         let stop = Arc::clone(&stop);
-        move || {
+        std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
-                let held = SLOTS.write().unwrap_or_else(PoisonError::into_inner);
+                let held = if exclusive {
+                    SLOTS.write()
+                } else {
+                    SLOTS.read()
+                };
                 for _ in 0..1_000 {
                     std::hint::spin_loop();
                 }
                 drop(held);
                 std::thread::yield_now();
             }
-        }
+        })
     });
     for _ in 0..20 {
-        // SAFETY: The child makes only async-signal-safe calls (atomics, a futex wake and
-        // `_exit`), which is all a child of this multithreaded test process may do.
+        // SAFETY: The child makes only async-signal-safe calls (an atomic load and `_exit`), which
+        // is all a child of this multithreaded test process may do.
         let child = unsafe { libc::fork() };
         if child == 0 {
-            let free = SLOTS.try_write().is_ok();
+            let free = SLOTS.0.load(Ordering::Relaxed) == 0;
             // SAFETY: `_exit` ends the child without running exit handlers or the parent's
             // destructors.
             unsafe { libc::_exit(i32::from(!free)) };
@@ -452,5 +456,49 @@ fn a_fork_child_never_inherits_the_slot_lock() {
         );
     }
     stop.store(true, Ordering::Relaxed);
-    holder.join().unwrap();
+    for holder in holders {
+        holder.join().unwrap();
+    }
+}
+
+/// The slot lock is hand-written, so Miri's race detector checks its exclusion here: writers
+/// exclude each other and readers, and readers see every completed write.
+#[test]
+fn the_slot_lock_excludes_writers_from_readers_and_each_other() {
+    struct Guarded(std::cell::UnsafeCell<u64>);
+    // SAFETY: Every access below holds `lock`, shared to read and exclusive to write.
+    unsafe impl Sync for Guarded {}
+    impl Guarded {
+        // A method, so that closures capture the whole `Sync` wrapper rather than its field.
+        fn cell(&self) -> *mut u64 {
+            self.0.get()
+        }
+    }
+
+    let lock = SlotLock::new();
+    let value = Guarded(std::cell::UnsafeCell::new(0));
+    let rounds = if cfg!(miri) { 20 } else { 10_000 };
+    std::thread::scope(|scope| {
+        for _ in 0..2 {
+            scope.spawn(|| {
+                for _ in 0..rounds {
+                    let _writing = lock.write();
+                    // SAFETY: The write lock excludes every other access.
+                    unsafe { *value.cell() += 1 };
+                }
+            });
+            scope.spawn(|| {
+                let mut last = 0;
+                for _ in 0..rounds {
+                    let _reading = lock.read();
+                    // SAFETY: The read lock excludes writers.
+                    let seen = unsafe { *value.cell() };
+                    assert!(last <= seen && seen <= 2 * rounds, "{last} then {seen}");
+                    last = seen;
+                }
+            });
+        }
+    });
+    assert_eq!(value.0.into_inner(), 2 * rounds);
+    assert_eq!(lock.0.into_inner(), 0, "every hold was released");
 }
