@@ -46,14 +46,15 @@ BigQuery sends and accepts. It replaces `arrow-ipc` to keep the library small
 
 ## Bulk ingest
 
-1. `src/ingest/target.rs` and `src/ingest/schema` resolve the table and check that the bound schema
-   fits it, and the table is prepared for the ingest mode.
+1. `src/ingest/target.rs` resolves the table, `src/ingest/schema` checks that the bound schema fits
+   it, and `src/ingest.rs` prepares the table for the ingest mode.
 2. `src/ingest/align` fills in an append's unspecified types and limits from the destination table;
    `src/ingest/normalize` converts Arrow input to the shapes BigQuery accepts, in request-sized
    windows.
 3. `src/ingest/write` appends the batches, encoded by `src/arrow_ipc_bigquery`, to a Storage Write
-   pending stream and commits it, so the rows become visible together. Table preparation is a
-   separate operation, so a failed `replace` can already have removed the old rows.
+   pending stream and commits it, so the rows become visible together. Creating, recreating or
+   truncating the table happens in separate requests, so a failed `replace` can already have
+   removed the old rows.
 
 ## Other modules
 
@@ -85,7 +86,7 @@ BigQuery sends and accepts. It replaces `arrow-ipc` to keep the library small
 
 | Path | Contents |
 | --- | --- |
-| `src/**/tests.rs` | Offline unit and mock-server tests, beside the code. |
+| `src/**/tests.rs`, `src/**/tests/` | Offline unit and mock-server tests, beside the code. |
 | `tests/bigquery/` | Rust tests against real BigQuery, ignored by default. |
 | `tests/clients/` | Drivers for the client suites in `integration/`: ADBC C++ validation, Driver Foundry, DuckDB and dbt. |
 | `python/tests/` | The Python package, its build backend and the installed wheel. |
