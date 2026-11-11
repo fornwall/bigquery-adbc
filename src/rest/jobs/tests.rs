@@ -1493,6 +1493,53 @@ fn only_a_submission_with_no_ambiguous_attempt_proves_its_job_was_not_created() 
     }
 }
 
+/// A submission none of whose attempts could connect reached nothing: it proves no job exists
+/// without looking for one, and a `jobs.query` does not warn that its statement may have run.
+#[test]
+fn a_submission_that_never_connected_proves_its_job_was_not_created() {
+    let (runtime, client) = job_client(crate::test_support::UNREACHABLE_ENDPOINT);
+    for location in [Some("EU"), None] {
+        let failure = runtime
+            .block_on(client.insert(None, &request("unconnected", location, false), "copy"))
+            .unwrap_err();
+        assert_eq!(failure.status, Status::IO, "{}", failure.message);
+        assert!(
+            has_job_verdict(&failure),
+            "{location:?}: {}",
+            failure.message
+        );
+        assert!(
+            failure
+                .message
+                .starts_with("failed to submit the BigQuery copy job billing/project:"),
+            "{location:?}: {}",
+            failure.message
+        );
+    }
+
+    let failure = runtime
+        .block_on(client.query(
+            None,
+            "p",
+            bytes::Bytes::from_static(b"{}"),
+            &RequestStart::default(),
+        ))
+        .unwrap_err();
+    assert_eq!(failure.status, Status::IO, "{}", failure.message);
+    assert!(
+        failure
+            .message
+            .starts_with("failed to submit the BigQuery jobs.query request: "),
+        "{}",
+        failure.message
+    );
+    assert!(
+        !failure.message.contains("may still have run"),
+        "{}",
+        failure.message
+    );
+}
+
 #[test]
 fn an_accepted_insert_transitions_its_requested_identity_to_confirmed() {
     let runtime = new_runtime().unwrap();

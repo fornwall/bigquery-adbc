@@ -908,11 +908,11 @@ fn confirm_submission(operation: Option<&Operation>, reference: &JobReference) -
 
 /// Whether the submission attempt answered by `response` may have created the job.
 ///
-/// It did not if no attempt reached BigQuery, which one still minting its token has not, or if
-/// BigQuery refused it outright: a 4xx other than 409 (the job exists) and 408 (the request may
-/// have been read whole), including the 401 `send` turns into an error to add its remedy. A 5xx
-/// is ambiguous. `start` spans the submission's attempts, so a later attempt that fails before
-/// reaching BigQuery errs towards the job existing.
+/// It did not if no attempt reached BigQuery, which one still minting its token or failing to
+/// connect has not, or if BigQuery refused it outright: a 4xx other than 409 (the job exists)
+/// and 408 (the request may have been read whole), including the 401 `send` turns into an error
+/// to add its remedy. A 5xx is ambiguous. `start` spans the submission's attempts, so a later
+/// attempt that fails before reaching BigQuery errs towards the job existing.
 pub(crate) fn may_have_created(
     start: &RequestStart,
     response: &Result<(reqwest::StatusCode, bytes::Bytes)>,

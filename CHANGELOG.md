@@ -42,6 +42,9 @@ changes.
 - A python-model upload refuses a Cloud Storage bucket of `.` or `..`, which addressed a
   different resource, and one containing `/`, `?`, `#`, `%`, `\` or whitespace, which no bucket
   name has.
+- A job submission none of whose attempts could connect (DNS, TCP or TLS) reports
+  `bigquery.job.verdict` `not_created` instead of failing to look for its job, and such a
+  `jobs.query` no longer says BigQuery may have run the statement.
 
 ## [0.5.0] - 2026-11-09
 

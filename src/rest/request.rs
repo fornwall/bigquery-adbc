@@ -229,6 +229,9 @@ pub(crate) struct Request<'a> {
 }
 
 /// Whether a request reached the first poll that may put bytes on the network.
+///
+/// One signal spans every attempt of a submission. An attempt whose connection could not be
+/// established sent nothing, so it clears the signal it set, but never one an earlier attempt set.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RequestStart(Arc<AtomicBool>);
 
@@ -388,16 +391,28 @@ pub(crate) async fn send(
     }
     let network_send = builder.send();
     tokio::pin!(network_send);
-    let network_send = std::future::poll_fn(move |task| {
-        if let Some(start) = start.as_ref() {
-            start.0.store(true, Ordering::Release);
+    // Whether this attempt set `start`, rather than finding it set by an earlier one.
+    let set_start = AtomicBool::new(false);
+    let network_send = std::future::poll_fn(|task| {
+        if let Some(start) = start.as_ref()
+            && !start.0.swap(true, Ordering::AcqRel)
+        {
+            set_start.store(true, Ordering::Relaxed);
         }
         network_send.as_mut().poll(task)
     });
     let sent = async {
-        network_send
-            .await
-            .map_err(|source| transport_error(context, &source, timeout))
+        network_send.await.map_err(|source| {
+            // reqwest reports a connect error only for a connection it could not establish
+            // (DNS, TCP, TLS or a proxy tunnel), before any byte of the request was written.
+            if source.is_connect()
+                && set_start.load(Ordering::Relaxed)
+                && let Some(start) = start.as_ref()
+            {
+                start.0.store(false, Ordering::Release);
+            }
+            transport_error(context, &source, timeout)
+        })
     };
     let response = gate(operation, async {
         let Some(progress) = progress else {
@@ -578,8 +593,43 @@ mod tests {
     use http::header::HeaderMap;
     use http_body::Body as _;
 
-    use super::{Request, send};
+    use super::{Request, RequestStart, send};
     use crate::rest::client::rest_client;
+
+    /// A request whose connection was never established reached nothing, so it leaves the start
+    /// signal unset; one that was sent sets it, and a later unconnected attempt on the same signal
+    /// cannot clear what the earlier one may have started.
+    #[test]
+    fn only_a_request_that_may_have_left_sets_the_start_signal() {
+        let runtime = crate::runtime::new_runtime().unwrap();
+        let client = rest_client("test").unwrap();
+        let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
+        let unreachable = format!("{}/unused", crate::test_support::UNREACHABLE_ENDPOINT);
+        let attempt = |url: &str, start: &RequestStart| {
+            runtime
+                .block_on(send(
+                    None,
+                    &credentials,
+                    &client,
+                    Request::post_json(url, "{}", "submit it").with_start_signal(start),
+                ))
+                .unwrap_err()
+        };
+
+        let start = RequestStart::default();
+        let refused = attempt(&unreachable, &start);
+        assert_eq!(refused.status, Status::IO, "{}", refused.message);
+        assert!(!start.started(), "{}", refused.message);
+
+        // Read whole, then dropped unanswered: the request may have been acted on.
+        let (endpoint, server) =
+            crate::test_support::http::capture_requests_responding(1, |_| None);
+        attempt(&format!("{endpoint}/submitted"), &start);
+        server.served(1);
+        assert!(start.started());
+        attempt(&unreachable, &start);
+        assert!(start.started());
+    }
 
     #[test]
     fn a_truncated_csv_stops_before_the_closing_boundary_with_a_clear_error() {
