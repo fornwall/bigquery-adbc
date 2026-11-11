@@ -31,6 +31,16 @@ pub(super) fn unreadable_credential_file(source: &std::io::Error) -> adbc_core::
     )
 }
 
+/// Reports a `bigquery.auth.credentials` file too large to be a credential document, which is
+/// read only up to that size. Takes no path, for the reason [`unreadable_credential_file`] gives.
+pub(super) fn oversized_credential_file() -> adbc_core::error::Error {
+    invalid_argument(format!(
+        "BigQuery option {} names a file larger than 1 MiB (value not echoed), too large for a \
+         JSON credential document; set it to the path of a Google Cloud JSON credential file",
+        BigQueryDatabaseOption::AuthenticationCredentials.as_str(),
+    ))
+}
+
 /// Reject likely credential documents before interpreting the option as a file path.
 ///
 /// The option is a path under `json_credential_file` and the document itself under

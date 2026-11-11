@@ -293,6 +293,42 @@ fn a_credential_file_failure_is_retryable_only_when_trying_again_could_help() {
     );
 }
 
+/// A credential file path can arrive in a URI, so it can name a log file or `/dev/zero`. No
+/// credential document comes near 1 MiB, so a file that does is refused after reading only that
+/// much instead of being read into memory whole, and the path is not echoed.
+#[test]
+fn a_credential_file_over_one_mebibyte_is_refused_after_a_bounded_read() {
+    const LIMIT: usize = 1024 * 1024;
+
+    let runtime = crate::runtime::new_runtime().unwrap();
+    let _guard = runtime.enter();
+    let file_settings = |file: &TemporaryFile| {
+        settings(|config| {
+            config.authentication_type = BigQueryAuthenticationType::JsonCredentialFile;
+            config.credentials = Some(Secret::from(file.path()));
+        })
+    };
+    // JSON allows leading whitespace, so padding keeps the document valid at any size.
+    let padded = |size: usize| {
+        let document = service_account_key("padded@data-project.iam.gserviceaccount.com");
+        format!("{}{document}", " ".repeat(size - document.len()))
+    };
+
+    let at_limit = TemporaryFile::new("credential-at-limit", padded(LIMIT));
+    ClientConfiguration::build(&file_settings(&at_limit)).unwrap();
+
+    let oversized = TemporaryFile::new("credential-over-limit", padded(LIMIT + 1));
+    let error = ClientConfiguration::build(&file_settings(&oversized)).unwrap_err();
+    assert_eq!(error.status, Status::InvalidArguments, "{}", error.message);
+    assert_eq!(
+        error.message,
+        "BigQuery option bigquery.auth.credentials names a file larger than 1 MiB (value not \
+         echoed), too large for a JSON credential document; set it to the path of a Google \
+         Cloud JSON credential file"
+    );
+    assert_message_omits(&error, &[oversized.path()]);
+}
+
 /// Both halves of a credential-type rejection are type names rather than secrets: the assertion
 /// the operator made, what the document turned out to be, and the set that exists at all. The auth
 /// library's own error is dropped because it can quote the document, so a document it could not

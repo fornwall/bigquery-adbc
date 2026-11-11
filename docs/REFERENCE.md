@@ -118,7 +118,7 @@ during initialization, because driver managers can reorder options.
 | `bigquery.dataset_id` | Initial dataset for unqualified table names. |
 | `bigquery.location` | Default location for every query, transaction session, and dbt 2.0 seed load and table copy. Without it, BigQuery infers each query's location, and a manual-commit transaction's session, a seed load and a table copy run in the default or destination dataset's location, cached per database for up to 32 datasets. |
 | `bigquery.auth_type` | `auth_bigquery` (default), `app_default_credentials`, `json_credential_file`, `json_credential_string`, `user_authentication`, `external_account`, `temporary_access_token`, or `anonymous`. The first two both use ADC. |
-| `bigquery.auth.credentials` | JSON credential file path or document, as selected by `auth_type`. Write-only. File mode rejects JSON documents, control characters and paths over 4,096 bytes; use `json_credential_string` for inline JSON. Destinations in the document follow the [endpoint rules](#endpoint-overrides). |
+| `bigquery.auth.credentials` | JSON credential file path or document, as selected by `auth_type`. Write-only. File mode rejects JSON documents, control characters, paths over 4,096 bytes and files over 1 MiB; use `json_credential_string` for inline JSON. Destinations in the document follow the [endpoint rules](#endpoint-overrides). |
 | `bigquery.auth.credentials_type` | Optional check of the JSON credential type: `service_account`, `authorized_user`, `impersonated_service_account`, or `external_account`. |
 | `bigquery.auth.client_id` | OAuth client ID; required by `user_authentication`. |
 | `bigquery.auth.client_secret` | OAuth client secret; required by `user_authentication`. Write-only. |

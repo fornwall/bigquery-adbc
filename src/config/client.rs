@@ -11,14 +11,12 @@ use google_cloud_auth::credentials::impersonated::Builder as ImpersonatedCredent
 
 use super::credentials::{
     build_json_credentials, build_static_access_token_credentials,
-    build_user_authentication_credentials, override_quota_project, require_credentials,
-    with_quota_and_scopes,
+    build_user_authentication_credentials, override_quota_project, read_credential_file,
+    require_credentials, with_quota_and_scopes,
 };
 use super::external_account::build_external_account_credentials;
 use super::redaction::redacted_credentials;
-use super::rejections::{
-    application_default_credentials_failure, credential_file_path, unreadable_credential_file,
-};
+use super::rejections::{application_default_credentials_failure, credential_file_path};
 use super::{ClientConfiguration, DatabaseConfig};
 use crate::error::{CredentialLayer, invalid_argument};
 use crate::{BigQueryAuthenticationType, BigQueryDatabaseOption};
@@ -48,9 +46,7 @@ impl ClientConfiguration {
             }
             BigQueryAuthenticationType::JsonCredentialFile => {
                 let path = credential_file_path(require_credentials(settings)?)?;
-                let json = std::fs::read_to_string(path)
-                    .map_err(|source| unreadable_credential_file(&source))?;
-                build_json_credentials(settings, &json)?
+                build_json_credentials(settings, &read_credential_file(path)?)?
             }
             BigQueryAuthenticationType::JsonCredentialString => {
                 build_json_credentials(settings, require_credentials(settings)?)?

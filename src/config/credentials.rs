@@ -26,7 +26,8 @@ use crate::{BigQueryAuthenticationType, BigQueryCredentialsType, BigQueryDatabas
 use super::DatabaseConfig;
 use super::endpoints::{is_trusted_credential_url, parse_credential_url};
 use super::rejections::{
-    malformed_document_destination, required_option, untrusted_document_destination,
+    malformed_document_destination, oversized_credential_file, required_option,
+    unreadable_credential_file, untrusted_document_destination,
 };
 
 /// Applies the quota project and effective base scopes to a credential builder.
@@ -225,6 +226,33 @@ pub(super) fn require_credentials(settings: &DatabaseConfig) -> Result<&str> {
             settings.authentication_type.as_str(),
             BigQueryAuthenticationType::JsonCredentialFile.as_str(),
             BigQueryAuthenticationType::JsonCredentialString.as_str(),
+        ))
+    })
+}
+
+/// Reads the JSON credential file at `path`, refusing one larger than 1 MiB after reading only
+/// that much.
+///
+/// The bound matters because the path can come from a URI's `AuthCredentials`: `/dev/zero` or a
+/// log file would otherwise be read into memory whole. A pipe still works, since it ends at its
+/// writer's EOF. Credential documents are a few KiB.
+pub(super) fn read_credential_file(path: &str) -> Result<String> {
+    use std::io::{Error, ErrorKind, Read as _};
+    const LIMIT: usize = 1024 * 1024;
+
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|file| file.take(LIMIT as u64 + 1).read_to_end(&mut bytes))
+        .map_err(|source| unreadable_credential_file(&source))?;
+    if bytes.len() > LIMIT {
+        return Err(oversized_credential_file());
+    }
+    // Decoded after the bound, so a cut through a multi-byte character cannot pass for a
+    // non-UTF-8 file; the cause is the one `fs::read_to_string` reports.
+    String::from_utf8(bytes).map_err(|_| {
+        unreadable_credential_file(&Error::new(
+            ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
         ))
     })
 }

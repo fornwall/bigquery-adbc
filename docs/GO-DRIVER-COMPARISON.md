@@ -638,10 +638,12 @@ or impersonation under `anonymous`, return `INVALID_ARGUMENT`; Go ignores them.
 `bigquery.user_agent` is appended on REST and Storage Read requests but not Storage Write (UP-93).
 Go also accepts it per connection and sends it on every request.
 
-### G96. Credential file errors do not quote the path
+### G96. Credential file errors do not quote the path, and reads are bounded
 
 Credential file errors name the option or variable, the OS cause and the remedy, but not the value,
-which may be a misplaced key or token. Go's client library errors name the path.
+which may be a misplaced key or token. Go's client library errors name the path. A
+`bigquery.auth.credentials` file over 1 MiB is refused after reading that much; Go reads any file
+whole, so a URI that names `/dev/zero` exhausts Go's memory.
 
 ### G97. URL hosts in credential documents must be ASCII
 
