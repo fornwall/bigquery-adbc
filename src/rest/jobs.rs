@@ -500,8 +500,7 @@ impl JobClient {
             may_exist |= may_have_created(&start, &response);
             let (class, failure) = match response {
                 Ok((reqwest::StatusCode::CONFLICT, body)) => {
-                    let failure =
-                        service_error(&error_context, reqwest::StatusCode::CONFLICT, &body);
+                    let failure = existing_job(&send_context, &body);
                     confirm_submission(operation, &request.reference)?;
                     return self
                         .reconcile_submission(operation, &request.reference, what, Some(failure))
@@ -535,7 +534,15 @@ impl JobClient {
                 return self
                     .reconcile_submission(operation, &request.reference, what, Some(failure))
                     .await
-                    .map_err(|failure| may_still_run(failure, &request.reference, false));
+                    .map_err(|mut failure| {
+                        // The last attempt's rejection is no verdict on the earlier ones.
+                        relead(
+                            &mut failure,
+                            &error_context,
+                            &format!("failed to {send_context}"),
+                        );
+                        may_still_run(failure, &request.reference, false)
+                    });
             }
             diag!(
                 Debug,
@@ -934,6 +941,19 @@ pub(crate) fn may_have_created(
 /// and which may still run, so the failure says so and links the job. `set_location` adds that a
 /// configured location avoids the search. A cancellation is returned as is: it stopped the
 /// recovery, and the operation cancels the job.
+/// A submission's 409: BigQuery says the job exists, created by an earlier attempt whose answer
+/// was lost. That is no rejection, and what became of the job is unknown until it is fetched, so
+/// it reads as a failure to submit, with [`Status::Unknown`]. `send_context` names the attempt.
+fn existing_job(send_context: &str, body: &[u8]) -> adbc_core::error::Error {
+    let mut failure = service_error(
+        &format!("failed to {send_context}"),
+        reqwest::StatusCode::CONFLICT,
+        body,
+    );
+    failure.status = Status::Unknown;
+    failure
+}
+
 pub(crate) fn may_still_run(
     mut failure: adbc_core::error::Error,
     reference: &JobReference,
@@ -1100,8 +1120,8 @@ impl InferredSubmission {
 
     async fn run(self) -> Located {
         let url = self.client.jobs_url(&self.reference);
-        let send_context = format!("submit the BigQuery {}", self.job);
-        let error_context = format!("BigQuery rejected the {}", self.job);
+        let send_context = self.send_context();
+        let error_context = self.error_context();
         let mut attempt = 0;
         let mut may_exist = false;
         let ambiguous = loop {
@@ -1112,8 +1132,7 @@ impl InferredSubmission {
             may_exist |= may_have_created(&self.start, &response);
             let (class, failure) = match response {
                 Ok((reqwest::StatusCode::CONFLICT, body)) => {
-                    let failure =
-                        service_error(&error_context, reqwest::StatusCode::CONFLICT, &body);
+                    let failure = existing_job(&send_context, &body);
                     let Some(located) = duplicate(&body, &self.reference) else {
                         break failure;
                     };
@@ -1188,8 +1207,28 @@ impl InferredSubmission {
 
     /// `failure` ended recovery of the job, which `reference` names as far as it is known and
     /// which may still run.
-    fn unrecovered(&self, failure: adbc_core::error::Error, reference: &JobReference) -> Unlocated {
+    fn unrecovered(
+        &self,
+        mut failure: adbc_core::error::Error,
+        reference: &JobReference,
+    ) -> Unlocated {
+        // The last attempt's rejection is no verdict on the earlier ones.
+        relead(
+            &mut failure,
+            &self.error_context(),
+            &format!("failed to {}", self.send_context()),
+        );
         Unlocated::unknown(may_still_run(failure, reference, true))
+    }
+
+    /// How a submission attempt is named in its transport failures. See [`JobClient::insert`].
+    fn send_context(&self) -> String {
+        format!("submit the BigQuery {}", self.job)
+    }
+
+    /// How BigQuery refusing a submission attempt is named.
+    fn error_context(&self) -> String {
+        format!("BigQuery rejected the {}", self.job)
     }
 
     /// Steps 2–4: the job with its location and resource, `None` if no step found it, or the

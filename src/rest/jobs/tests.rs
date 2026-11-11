@@ -278,14 +278,19 @@ fn a_conflict_whose_job_cannot_be_fetched_names_the_job_that_may_run() {
             "Already Exists: Job billing/project:asia-northeast1.job-f",
         ),
     );
-    for (fetched, reported) in [
+    for (fetched, lead, status) in [
         (
             (503, error_body("backendError", "fetch failed")),
-            "backendError: fetch failed (HTTP 503)",
+            "failed to reconcile the submission of BigQuery query job \
+             billing/project:asia-northeast1.job-f: backendError: fetch failed (HTTP 503)",
+            Status::IO,
         ),
+        // The 409 is no rejection: the job exists, and its outcome is unknown.
         (
             (404, error_body("notFound", "Not found: Job")),
-            "duplicate: Already Exists: Job billing/project:asia-northeast1.job-f (HTTP 409)",
+            "failed to submit the BigQuery query job billing/project:job-f: duplicate: Already \
+             Exists: Job billing/project:asia-northeast1.job-f (HTTP 409)",
+            Status::Unknown,
         ),
     ] {
         let mut responses = vec![conflict.clone()];
@@ -295,10 +300,11 @@ fn a_conflict_whose_job_cannot_be_fetched_names_the_job_that_may_run() {
 
         let failure = insert_query(&runtime, &client, &request("job-f", None, false)).unwrap_err();
 
+        assert_eq!(failure.status, status, "{}", failure.message);
+        assert!(failure.message.starts_with(lead), "{}", failure.message);
         assert_message(
             &failure,
             &[
-                reported,
                 "; BigQuery may still run job billing/project:asia-northeast1.job-f; recovery did \
                  not complete",
                 "j=bq:asia-northeast1:job-f",
@@ -1429,7 +1435,7 @@ fn an_exhausted_submission_reports_what_its_reconciliation_learned() {
     for (reconciled, lead, reported) in [
         (
             (404, error_body("notFound", "absent")),
-            "BigQuery rejected the copy job ",
+            "failed to submit the BigQuery copy job ",
             "backendError: submit",
         ),
         (
@@ -1455,6 +1461,7 @@ fn an_exhausted_submission_reports_what_its_reconciliation_learned() {
 #[test]
 fn a_located_job_that_recovery_cannot_fetch_may_still_run() {
     let not_found = || vec![(404, error_body("notFound", "Not found: Job")); 3];
+    let submit = "failed to submit the BigQuery copy job billing/project:EU.unfetched: ";
     let mut conflict = vec![(
         409,
         error_body(
@@ -1468,17 +1475,36 @@ fn a_located_job_that_recovery_cannot_fetch_may_still_run() {
         (503, error_body("backendError", "reconcile"));
         MAX_RECONCILIATION_ATTEMPTS
     ]);
-    for (responses, reported) in [
+    // The last attempt's rejection is no verdict on the attempts whose answers were lost.
+    let mut refused_last = vec![(500, error_body("backendError", "submit")); MAX_ATTEMPTS - 1];
+    refused_last.push((429, error_body("rateLimitExceeded", "slow down")));
+    refused_last.extend(not_found());
+    for (responses, lead, reported, status) in [
         (
             conflict,
+            submit,
             "duplicate: Already Exists: Job billing/project:EU.unfetched (HTTP 409)",
+            Status::Unknown,
         ),
-        (exhausted, "backendError: reconcile (HTTP 503)"),
+        (
+            exhausted,
+            "failed to reconcile the submission of BigQuery copy job ",
+            "backendError: reconcile (HTTP 503)",
+            Status::IO,
+        ),
+        (
+            refused_last,
+            submit,
+            "rateLimitExceeded: slow down (HTTP 429)",
+            Status::IO,
+        ),
     ] {
         let count = responses.len();
         let (endpoint, captured) = capture_requests(responses);
         let failure = insert_copy(&endpoint, "unfetched").unwrap_err();
 
+        assert_eq!(failure.status, status, "{}", failure.message);
+        assert!(failure.message.starts_with(lead), "{}", failure.message);
         assert_message(
             &failure,
             &[
