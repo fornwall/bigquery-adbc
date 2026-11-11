@@ -103,7 +103,7 @@ rewriting, not a driver dry run.
 | CSV seeds | `adbc.bigquery.ingest.csv_*`; see [below](#csv-seeds). |
 | Column descriptions and policy tags | `adbc.bigquery.table.update_columns_description` / `.update_columns_policy_tags`; JSON maps keyed by column path. |
 | Table descriptions | `adbc.bigquery.table.update_description`; may run together with a column update. |
-| Partition copies | `adbc.bigquery.copy_table.*`; source, destination and write disposition, including partition decorators. Dry runs are refused. |
+| Partition copies | `adbc.bigquery.copy_table.*`; source, destination and write disposition, including partition decorators. |
 | Authorized views | `adbc.bigquery.dataset.authorize_view_to_datasets`; see [below](#authorized-views). |
 | Dataset location | `bigquery.dataset.get_location`; see [below](#dataset-location). |
 | Python-model upload | `adbc.bigquery.write_gcs.*`. |
@@ -111,8 +111,17 @@ rewriting, not a driver dry run.
 
 Mutating option-only operations require autocommit and replace ordinary SQL. The driver discards
 dbt's placeholder SQL, preserves service error statuses, and rejects `execute_schema` for them.
+Under `bigquery.query.dry_run` they return `NOT_IMPLEMENTED`; a seed only checks its file and
+schema.
+
 Python models retain dbt's `pooling_timeout`, `gsc_path` and `gsc_bucket` spellings; the timeout is
 in seconds and covers submission, polling and retries. Failed terminal job states are errors.
+Unlike the fork, a zero timeout means no deadline, a Cloud Storage write needs both bucket and
+object name, and a bigframes notebook needs `adbc.bigquery.create_batch.batch_id` and an existing
+`ONE_CLICK` runtime template unless `adbc.bigquery.notebook_execute_job.template_id` names one. The
+notebook runs as `adbc.bigquery.notebook_execute_job.service_account`, else the service account or
+impersonation target the credentials name, else as its template decides; it never guesses an
+`executionUser`.
 
 ### CSV seeds
 
