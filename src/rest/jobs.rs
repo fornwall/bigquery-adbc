@@ -937,10 +937,6 @@ pub(crate) fn may_have_created(
     start.started() && !refused
 }
 
-/// `failure` ended the recovery of a submitted job, which `reference` names as far as it is known
-/// and which may still run, so the failure says so and links the job. `set_location` adds that a
-/// configured location avoids the search. A cancellation is returned as is: it stopped the
-/// recovery, and the operation cancels the job.
 /// A submission's 409: BigQuery says the job exists, created by an earlier attempt whose answer
 /// was lost. That is no rejection, and what became of the job is unknown until it is fetched, so
 /// it reads as a failure to submit, with [`Status::Unknown`]. `send_context` names the attempt.
@@ -954,6 +950,10 @@ fn existing_job(send_context: &str, body: &[u8]) -> adbc_core::error::Error {
     failure
 }
 
+/// `failure` ended the recovery of a submitted job, which `reference` names as far as it is known
+/// and which may still run, so the failure says so and links the job. `set_location` adds that a
+/// configured location avoids the search. A cancellation is returned as is: it stopped the
+/// recovery, and the operation cancels the job.
 pub(crate) fn may_still_run(
     mut failure: adbc_core::error::Error,
     reference: &JobReference,
