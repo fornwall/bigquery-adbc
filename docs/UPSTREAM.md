@@ -62,6 +62,7 @@ cannot show whether the service is fixed.
 | UP-103 | Mixed-case non-ASCII hosts panic in debug builds | `idna_adapter` | Local finding; driver guards the URLs it hands on | None |
 | UP-104 | Subject-token reads are unbounded | `google-cloud-auth` | Local finding; driver bounds URI-supplied files | None |
 | UP-140 | A permanent token failure is served for good | `google-cloud-auth` | Local finding; driver rebuilds the credential | None |
+| UP-141 | Each token exchange builds a new HTTP client | `google-cloud-auth` | Local finding; no workaround | None |
 | UP-150 | A second `AdbcStatement.close()` miscounts open statements | ADBC Python driver manager | Local finding; DB-API cursors close once | None |
 
 ## Git snapshot candidates
@@ -402,6 +403,16 @@ first fetch starts when the credential is built, as a connection opens, so a ref
 moment would fail every later request from the database's clients. On a permanent failure the
 driver builds the credential again from the same configuration and asks the new one once
 (`src/config/recovery.rs`), so each request makes at most one fresh exchange.
+
+## UP-141: each token exchange builds a new HTTP client
+
+The pinned auth library's [user OAuth refresh](https://github.com/googleapis/google-cloud-rust/blob/9ba338718561739ab257e87502516d4be42dd5d1/src/auth/src/credentials/user_account.rs#L453),
+[`generateAccessToken` call](https://github.com/googleapis/google-cloud-rust/blob/9ba338718561739ab257e87502516d4be42dd5d1/src/auth/src/credentials/impersonated.rs#L989)
+and [STS exchange](https://github.com/googleapis/google-cloud-rust/blob/9ba338718561739ab257e87502516d4be42dd5d1/src/auth/src/credentials/internal/sts_exchange.rs#L107)
+build a `reqwest::Client` for every token they mint, so each mint reloads the system's root
+certificates (about 16 M instructions on Linux, [Sequential databases](PERFORMANCE.md#sequential-databases))
+and opens a new TCP and TLS connection. No builder option supplies a client. A new database's first
+token, which most of a short query's remaining start-up time waits for, pays both.
 
 ## UP-150: a second `AdbcStatement.close()` miscounts open statements
 
