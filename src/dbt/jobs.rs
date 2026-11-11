@@ -21,9 +21,9 @@ use crate::rest::model::{JobOptions, JobStatus};
 /// Submits a fresh job billed to the connection's billing project, or the destination's project.
 ///
 /// Without `bigquery.location`, look up and cache the destination dataset's location: polling,
-/// reconciliation and cancellation need it outside US/EU (G48). Any failure invalidates the
-/// cache entry in case the dataset was recreated elsewhere. Do not resubmit the failed job:
-/// CSV uploads cannot be replayed.
+/// reconciliation and cancellation need it outside US/EU (G48). Any failure forgets the cached
+/// location, in case the dataset was recreated elsewhere: the failed job is not resubmitted, but
+/// the next one looks the location up again.
 pub(super) fn in_job_location<T>(
     context: &ExecutionContext,
     operation: &Operation,
