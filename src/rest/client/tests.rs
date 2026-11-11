@@ -345,18 +345,22 @@ fn an_oversized_response_body_is_refused_by_the_requests_budget() {
     });
 }
 
-/// The request ceiling is far above BigQuery's 10 MB result-page cap; the upload ceiling, for one
-/// small resource document, is the tighter of the two.
+/// The request ceiling clears BigQuery's largest result page: one row at its 20 MiB limit, every
+/// byte of which JSON may spell in six, with room for the rest of the response. The upload
+/// ceiling, for one small resource document, is the tighter of the two.
 #[test]
 fn the_response_ceilings_clear_every_documented_bigquery_response() {
-    const BIGQUERY_MAXIMUM_RESPONSE: usize = 10_000_000;
+    const BIGQUERY_MAXIMUM_ROW: usize = 20 << 20;
+    const JSON_ESCAPE_GROWTH: usize = "\\u0001".len();
     assert!(TimeoutBudget::MediaUpload.response_limit() < TimeoutBudget::Request.response_limit());
     assert_eq!(
         TimeoutBudget::Request.response_limit(),
         REQUEST_RESPONSE_LIMIT
     );
-    const { assert!(MEDIA_RESPONSE_LIMIT < BIGQUERY_MAXIMUM_RESPONSE) };
-    const { assert!(REQUEST_RESPONSE_LIMIT > BIGQUERY_MAXIMUM_RESPONSE * 6) };
+    const { assert!(MEDIA_RESPONSE_LIMIT < BIGQUERY_MAXIMUM_ROW) };
+    const {
+        assert!(REQUEST_RESPONSE_LIMIT - BIGQUERY_MAXIMUM_ROW * JSON_ESCAPE_GROWTH > 4 << 20);
+    };
     assert!(TimeoutBudget::Request.response_body_timeout().is_none());
     assert!(TimeoutBudget::MediaUpload.response_body_timeout().is_some());
 }

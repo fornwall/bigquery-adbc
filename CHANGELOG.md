@@ -50,6 +50,10 @@ changes.
 
 ### Fixed
 
+- A REST result row of up to BigQuery's 20 MiB limit is read, rather than failing with
+  `INVALID_DATA` as "over the driver's fixed 67108864-byte limit", when its JSON exceeds 64 MiB:
+  BigQuery spells each control character, `<` or `>` in six bytes, so such a row can arrive as a
+  120 MB response. The limit on a buffered response is now 128 MiB.
 - A credential document that a URI supplies through `AuthCredentials`, inline or by path, can no
   longer name a `credential_source.executable`, which the auth library runs when
   `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`, nor a `credential_source.file` other than a
