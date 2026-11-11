@@ -9,7 +9,7 @@ use crate::test_support::http::{capture_statements, capture_statements_gated};
 
 const INSERT: &str = "INSERT dataset.table VALUES (42)";
 
-/// The staged answer to the query that creates `mock-session`.
+/// The staged answer to the `BEGIN TRANSACTION` that creates `mock-session`.
 fn session_created() -> (u16, serde_json::Value) {
     completed_job(
         "session-job",
@@ -58,13 +58,8 @@ fn capture_statements_held(
 
 #[test]
 fn enabling_autocommit_commits_pending_manual_work() {
-    let (endpoint, requests) = capture_statements(vec![
-        session_created(),
-        finished(),
-        finished(),
-        finished(),
-        finished(),
-    ]);
+    let (endpoint, requests) =
+        capture_statements(vec![session_created(), finished(), finished(), finished()]);
     let (mut connection, mut statement) = manual_insert_at(&endpoint);
     assert_eq!(statement.execute_update().unwrap(), None);
 
@@ -74,25 +69,32 @@ fn enabling_autocommit_commits_pending_manual_work() {
         ADBC_OPTION_VALUE_ENABLED
     );
 
+    let requests = requests.join().unwrap();
     assert_eq!(
-        sql_of(&requests.join().unwrap()),
+        sql_of(&requests),
         [
-            "SELECT 1",
             "BEGIN TRANSACTION",
             INSERT,
             "COMMIT TRANSACTION",
             "CALL BQ.ABORT_SESSION('mock-session')",
         ]
     );
+    // One job creates the session and begins the transaction in it.
+    assert_eq!(
+        requests[0].body["configuration"]["query"]["createSession"],
+        true
+    );
+    assert!(requests[0].connection_properties().is_null());
 }
 
+/// A `BEGIN` refused in the session it created leaves no transaction and no session to reuse:
+/// the caller's query does not run, and the next statement begins in a new session.
 #[test]
 fn failed_lazy_begin_does_not_execute_the_caller_query_or_enable_autocommit() {
-    let (endpoint, requests) = capture_statements(vec![
-        session_created(),
-        google_rejection(400, "INVALID_ARGUMENT", "", "injected BEGIN failure"),
-        finished(),
-    ]);
+    let (status, mut refusal) =
+        google_rejection(400, "INVALID_ARGUMENT", "", "injected BEGIN failure");
+    refusal["sessionInfo"] = json!({"sessionId": "mock-session"});
+    let (endpoint, requests) = capture_statements(vec![(status, refusal)]);
     let (connection, mut statement) = manual_insert_at(&endpoint);
 
     assert!(statement.execute_update().is_err());
@@ -100,17 +102,14 @@ fn failed_lazy_begin_does_not_execute_the_caller_query_or_enable_autocommit() {
         option_string(&connection, OptionConnection::AutoCommit),
         ADBC_OPTION_VALUE_DISABLED
     );
-    assert_eq!(
-        sql_of(&requests.join().unwrap()),
-        [
-            "SELECT 1",
-            "BEGIN TRANSACTION",
-            "CALL BQ.ABORT_SESSION('mock-session')",
-        ]
-    );
+    assert_eq!(sql_of(&requests.join().unwrap()), ["BEGIN TRANSACTION"]);
+    assert!(matches!(
+        statement.transaction.begin_query().unwrap(),
+        QueryTransaction::Start(None, _)
+    ));
 }
 
-/// A cancel that lands while the session-creating `jobs.query` is in flight still ends the
+/// A cancel that lands while the `BEGIN` creating the session is in flight still ends the
 /// session BigQuery creates, and leaves the next statement to open a fresh one.
 #[test]
 fn cancelling_while_the_session_is_created_still_ends_the_session() {
@@ -131,7 +130,7 @@ fn cancelling_while_the_session_is_created_still_ends_the_session() {
     let requests = requests.join().unwrap();
     assert_eq!(
         sql_of(&requests),
-        ["SELECT 1", "CALL BQ.ABORT_SESSION('mock-session')"]
+        ["BEGIN TRANSACTION", "CALL BQ.ABORT_SESSION('mock-session')"]
     );
     assert_eq!(
         *requests[1].connection_properties(),
@@ -148,7 +147,7 @@ fn cancelling_while_the_session_is_created_still_ends_the_session() {
 #[test]
 fn releasing_the_connection_while_a_statement_opens_its_transaction_ends_the_session() {
     let (endpoint, requests, wait_for_request, release_response) =
-        capture_statements_held(vec![session_created(), finished(), finished()]);
+        capture_statements_held(vec![session_created(), finished()]);
     let (connection, mut statement) = manual_insert_at(&endpoint);
     let releaser = std::thread::spawn(move || {
         wait_for_request.recv().unwrap();
@@ -163,14 +162,10 @@ fn releasing_the_connection_while_a_statement_opens_its_transaction_ends_the_ses
     let requests = requests.join().unwrap();
     assert_eq!(
         sql_of(&requests),
-        [
-            "SELECT 1",
-            "BEGIN TRANSACTION",
-            "CALL BQ.ABORT_SESSION('mock-session')"
-        ]
+        ["BEGIN TRANSACTION", "CALL BQ.ABORT_SESSION('mock-session')"]
     );
     assert_eq!(
-        *requests[2].connection_properties(),
+        *requests[1].connection_properties(),
         json!([{"key": "session_id", "value": "mock-session"}])
     );
     // The mock has finished, so a request would fail with an I/O error rather than this one.

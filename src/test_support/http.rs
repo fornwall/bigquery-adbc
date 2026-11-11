@@ -273,8 +273,9 @@ pub(crate) fn capture_statements_responding(
 }
 
 /// What BigQuery answers a real `jobs.insert` with, given the answer staged for its statement: a
-/// 200 is the finished job, and a statement it refuses is a finished job with an `errorResult`. A
-/// 409, a 5xx, a dry run and any other request keep the staged answer.
+/// 200 is the finished job, naming the session a staged `sessionInfo` names as a job that creates
+/// one does, and a statement it refuses is a finished job with an `errorResult`. A 409, a 5xx, a
+/// dry run and any other request keep the staged answer.
 fn job_answer(request: &CapturedRequest, status: u16, answer: JsonValue) -> (u16, JsonValue) {
     let mut reference = request.body["jobReference"].clone();
     if reference.is_null()
@@ -288,6 +289,9 @@ fn job_answer(request: &CapturedRequest, status: u16, answer: JsonValue) -> (u16
         reference["location"] = json!("EU");
     }
     let mut job = json!({"jobReference": reference, "status": {"state": "DONE"}});
+    if !answer["sessionInfo"].is_null() {
+        job["statistics"] = json!({"sessionInfo": answer["sessionInfo"]});
+    }
     if status != 200 {
         let error = &answer["error"];
         job["status"]["errorResult"] = error["errors"]

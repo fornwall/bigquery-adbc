@@ -39,6 +39,7 @@ mod poll;
 mod progress;
 mod reference;
 mod reissue;
+mod session;
 mod unnamed;
 
 #[allow(

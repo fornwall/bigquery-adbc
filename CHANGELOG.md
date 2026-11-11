@@ -21,6 +21,11 @@ changes.
   value, still returns `INVALID_ARGUMENT`, but the message now names the cap after
   "Payload Too Large (HTTP 413)" and says to shorten the SQL, bind smaller values, or bulk-ingest
   large values.
+- A manual-commit transaction that needs a new session creates it with its `BEGIN TRANSACTION`
+  instead of a separate query, so the first statement on a connection with autocommit disabled
+  (the Python DB-API default) makes one request fewer: about 0.65 s faster in measurements
+  (median 1.24 s instead of 1.90 s for `SELECT 1`). A cancel during that `BEGIN` now returns
+  `CANCELLED` at once and ends the session.
 - A credential URL option or a URL in a credential document, `credential_source` included,
   naming a non-ASCII or percent-encoded host is refused; write an internationalized host in
   Punycode (`xn--`). `bigquery.allow_untrusted_endpoint` no longer skips parsing those options and

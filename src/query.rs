@@ -329,8 +329,14 @@ fn dry_run_schema(
         .map(|schema| schema_with_rest_metadata(schema, metadata))
 }
 
-/// Creates a BigQuery session, outside any cancellation, and returns its ID.
-pub(crate) fn create_session(
+/// Creates a BigQuery session with `BEGIN TRANSACTION` as its first statement, outside any
+/// cancellation, and returns the session's ID: one job both creates the session and begins the
+/// transaction in it.
+///
+/// The job is named, as the driver's other session control is (see [`execute_driver_statement`]),
+/// so a lost answer recovers this job and its session rather than creating another. Its response
+/// names the session while the job still runs, and a recovered job resource names it too.
+pub(crate) fn begin_in_new_session(
     runtime: &SharedRuntime,
     state: &Arc<ClientState>,
     billing_project_id: Option<&ProjectIdentifier>,
@@ -338,6 +344,7 @@ pub(crate) fn create_session(
 ) -> Result<Arc<str>> {
     let options = StatementQueryOptions {
         create_session: true,
+        named_job: true,
         ..StatementQueryOptions::default()
     };
     let complete = direct::complete_context_query(
@@ -350,9 +357,9 @@ pub(crate) fn create_session(
             session_id: None,
             operation: None,
         },
-        "SELECT 1",
+        "BEGIN TRANSACTION",
         &options,
-        "creating BigQuery transaction session failed",
+        "beginning a BigQuery transaction in a new session failed",
     )?;
     complete
         .metadata
@@ -362,7 +369,7 @@ pub(crate) fn create_session(
         .map(Arc::from)
         .ok_or_else(|| {
             error(
-                "BigQuery created a transaction session without returning a session ID",
+                "BigQuery began a transaction in a new session without returning the session's ID",
                 Status::InvalidData,
             )
         })

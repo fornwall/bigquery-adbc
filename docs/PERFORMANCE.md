@@ -475,6 +475,23 @@ thirty 800,000-byte strings (24 MB, beyond REST) and checks every row and string
 scripts/run-one-live-test.sh reads_a_later_row_too_large_for_rest_through_storage_read
 ```
 
+### Transaction start
+
+A transaction in a new session used to send `jobs.query` `SELECT 1` with `createSession`, then
+`BEGIN TRANSACTION` as a named `jobs.insert` and its `getQueryResults`; one `jobs.insert` of
+`BEGIN TRANSACTION` with `createSession` now does both (its RUNNING answer already names the
+session). 2026-11-11, `example-project` with `bigquery.location=US`, release Rust builds, one warmed
+database, then five fresh connections per run with autocommit disabled, timing the first
+`SELECT 1` through `execute_update`; two alternating runs per build:
+
+| Build | Median | Range |
+| --- | ---: | ---: |
+| Separate session query | 1.90 s | 1.68–2.37 s |
+| Session created by `BEGIN` | 1.24 s | 1.16–1.44 s |
+
+The mock tests in `src/connection/tests/lifecycle.rs` pin the request sequence; check them with
+`cargo test --locked --lib connection::tests::lifecycle::`.
+
 ### Foundry validation build cache
 
 The [Foundry suite](../integration/foundry-validation/README.md) builds a new wheel each run,

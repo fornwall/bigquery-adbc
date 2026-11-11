@@ -133,24 +133,3 @@ fn an_inserted_commit_ends_the_transaction_from_its_running_answer() {
     captured.served(2);
     assert!(!still_active(&transaction));
 }
-
-/// Only the lost answer carried `sessionInfo`, so the replayed session creation reads it from the
-/// job.
-#[test]
-fn a_replayed_session_creation_returns_its_session() {
-    let (endpoint, captured) = capture_requests(replayed(vec![job_first(&json!({
-        "query": {"statementType": "SELECT"},
-        "sessionInfo": {"sessionId": "session-created"}
-    }))]));
-    let runtime = new_runtime().unwrap();
-    let state = ClientState::for_test_at(ServiceEndpointKind::BigQuery, &endpoint);
-    let session = crate::query::create_session(
-        &runtime,
-        &state,
-        Some(&ProjectIdentifier::try_new_from("test", "project").unwrap()),
-        Some("EU"),
-    )
-    .unwrap();
-    assert_eq!(&*session, "session-created");
-    captured.served(4);
-}

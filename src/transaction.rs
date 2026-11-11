@@ -13,7 +13,7 @@ use crate::clients::DatasetKey;
 use crate::diag::diag;
 use crate::error::{driver_defect, error, has_job_verdict, invalid_state};
 use crate::query::{
-    ExecutionContext, QueryContext, QueryDefaults, create_session, execute_driver_statement,
+    ExecutionContext, QueryContext, QueryDefaults, begin_in_new_session, execute_driver_statement,
 };
 use crate::rest::retry::retryable_failure;
 
@@ -459,8 +459,9 @@ fn dataset_location(context: &ExecutionContext, dataset: &DatasetKey) -> Option<
         .ok()
 }
 
-/// How long a `BEGIN`, `COMMIT` or `ROLLBACK` may take, retries included. It runs outside caller
-/// cancellation, so this also bounds how long a cancel waits for it.
+/// How long a caller waits for a `BEGIN`, `COMMIT` or `ROLLBACK`, retries included. Except for a
+/// `BEGIN` that creates its session, they run outside caller cancellation, so this also bounds how
+/// long a cancel waits for one.
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How long a caller waits for its session to end. The job keeps running after that, but no caller
@@ -474,6 +475,26 @@ const ABORT_WAIT: Duration = Duration::from_secs(if cfg!(test) { 3 } else { 10 }
 /// job's own transient failure ([`retryable_failure`]) is no refusal either.
 pub(crate) fn outcome_unknown(failure: &adbc_core::error::Error) -> bool {
     !has_job_verdict(failure) || retryable_failure(failure.status)
+}
+
+/// A failed control statement's error, as its callers branch on it: a status from a job lookup
+/// says nothing of the statement, so a failure without a verdict reports `IO`.
+fn settled_control_failure(mut failure: adbc_core::error::Error) -> adbc_core::error::Error {
+    if outcome_unknown(&failure) && !retryable_failure(failure.status) {
+        failure.status = Status::IO;
+    }
+    failure
+}
+
+/// The failure of a caller that stopped waiting for control statement `sql` after `timeout`.
+fn control_timeout(sql: &str, timeout: Duration) -> adbc_core::error::Error {
+    error(
+        format!(
+            "BigQuery did not finish {sql} within {} s",
+            timeout.as_secs()
+        ),
+        Status::Timeout,
+    )
 }
 
 /// Whether BigQuery answered that its session has no transaction, which proves it whatever the
@@ -589,15 +610,16 @@ impl<'a> TransactionContext<'a> {
         }
     }
 
-    /// Begins a transaction in the session the previous one ended in, or in a new session. A
-    /// failure returns the session to keep for the next statement, if any.
+    /// Begins a transaction in the session the previous one ended in, or in a new session (see
+    /// [`Self::begin_in_new_session`]). A failure returns the session to keep for the next
+    /// statement, if any.
     ///
-    /// `BEGIN TRANSACTION` runs to a verdict like a commit (see [`Self::run_to_verdict`]): once
-    /// sent it can land, and a session with a transaction the driver does not know about would
-    /// fail the next `BEGIN`. A previous session BigQuery has since ended (after 24 idle hours,
-    /// or through `BQ.ABORT_SESSION`) took its temporary tables and variables with it, so the
-    /// transaction begins in a new session. One BigQuery refused to begin in keeps them; only
-    /// when the outcome is unknown is it ended, and the error says so.
+    /// In a previous session, `BEGIN TRANSACTION` runs to a verdict like a commit (see
+    /// [`Self::run_to_verdict`]): once sent it can land, and a session with a transaction the
+    /// driver does not know about would fail the next `BEGIN`. A previous session BigQuery has
+    /// since ended (after 24 idle hours, or through `BQ.ABORT_SESSION`) took its temporary tables
+    /// and variables with it, so the transaction begins in a new session. One BigQuery refused to
+    /// begin in keeps them; only when the outcome is unknown is it ended, and the error says so.
     fn start(
         &self,
         operation: &Operation,
@@ -624,22 +646,20 @@ impl<'a> TransactionContext<'a> {
                 }
             }
         }
-        let session_id = self
-            .create_session(operation)
-            .map_err(|source| (source, None))?;
-        if let Err(source) = self.run_to_verdict(&session_id, "BEGIN TRANSACTION") {
-            self.abort(&session_id);
-            return Err((source, None));
-        }
-        Ok(session_id)
+        self.begin_in_new_session(operation)
+            .map_err(|source| (source, None))
     }
 
-    /// Creates a session for the caller, or ends it if the caller is cancelled first.
+    /// Begins the transaction in a new session, with one job that creates the session, and
+    /// returns the session for the caller, or ends it if the caller stops waiting first.
     ///
-    /// Cancelling the request could drop the only response that names the session, so creation
-    /// runs to completion on the blocking pool and cancellation ends only the caller's wait.
-    /// Whichever side holds the session ID once the caller stops waiting ends the session.
-    fn create_session(&self, operation: &Operation) -> Result<Arc<str>> {
+    /// Cancelling the request could drop the only response that names the session, so the job
+    /// runs to completion on the blocking pool, and cancellation or [`CONTROL_TIMEOUT`] ends only
+    /// the caller's wait. Whichever side holds the session ID once the caller stops waiting ends
+    /// the session, and with it the transaction. A `BEGIN` that fails, or whose outcome is
+    /// unknown, returns no session to keep or end: BigQuery expires the session it may have
+    /// created, which holds at most an empty transaction and so no locks.
+    fn begin_in_new_session(&self, operation: &Operation) -> Result<Arc<str>> {
         operation.check()?;
         let context = self.context.clone();
         let default_dataset = self
@@ -655,7 +675,7 @@ impl<'a> TransactionContext<'a> {
                     .location
                     .clone()
                     .or_else(|| dataset_location(&context, &default_dataset?));
-                let session = create_session(
+                let session = begin_in_new_session(
                     &context.runtime,
                     &context.state,
                     context.billing_project_id.as_ref(),
@@ -665,21 +685,27 @@ impl<'a> TransactionContext<'a> {
                     TransactionContext::new(&context, context.defaults()).abort(&session_id);
                 }
             }));
-        match self.context.runtime.block_on(operation.wait(&mut receiver)) {
-            Ok(Ok(session)) => session,
-            Ok(Err(_)) => Err(driver_defect(format_args!(
-                "creating a BigQuery transaction session ended without a result"
-            ))),
-            Err(cancelled) => {
-                // A session sent before `close` is the caller's to end; a later one fails to
-                // send and the creating task ends it.
-                receiver.close();
-                if let Ok(Ok(session_id)) = receiver.try_recv() {
-                    self.abort(&session_id);
-                }
-                Err(cancelled)
+        // The timer is created inside the runtime, which it needs.
+        let waited = self.context.runtime.block_on(async {
+            tokio::time::timeout(CONTROL_TIMEOUT, operation.wait(&mut receiver)).await
+        });
+        let stopped = match waited {
+            Ok(Ok(Ok(outcome))) => return outcome.map_err(settled_control_failure),
+            Ok(Ok(Err(_))) => {
+                return Err(driver_defect(format_args!(
+                    "beginning a BigQuery transaction in a new session ended without a result"
+                )));
             }
+            Ok(Err(cancelled)) => cancelled,
+            Err(_) => control_timeout("BEGIN TRANSACTION", CONTROL_TIMEOUT),
+        };
+        // A session sent before `close` is the caller's to end; a later one fails to send and the
+        // creating task ends it.
+        receiver.close();
+        if let Ok(Ok(session_id)) = receiver.try_recv() {
+            self.abort(&session_id);
         }
+        Err(stopped)
     }
 
     /// Runs `BEGIN`, `COMMIT` or `ROLLBACK TRANSACTION` in `session_id` until BigQuery answers,
@@ -724,23 +750,11 @@ impl<'a> TransactionContext<'a> {
             .runtime
             .block_on(async { tokio::time::timeout(timeout, receiver).await })
         {
-            // Callers branch on the status, and one from a job lookup says nothing of `sql`.
-            Ok(Ok(outcome)) => outcome.map_err(|mut failure| {
-                if outcome_unknown(&failure) && !retryable_failure(failure.status) {
-                    failure.status = Status::IO;
-                }
-                failure
-            }),
+            Ok(Ok(outcome)) => outcome.map_err(settled_control_failure),
             Ok(Err(_)) => Err(driver_defect(format_args!(
                 "BigQuery {sql} ended without a result"
             ))),
-            Err(_) => Err(error(
-                format!(
-                    "BigQuery did not finish {sql} within {} s",
-                    timeout.as_secs()
-                ),
-                Status::Timeout,
-            )),
+            Err(_) => Err(control_timeout(sql, timeout)),
         }
     }
 
