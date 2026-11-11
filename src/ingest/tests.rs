@@ -290,6 +290,33 @@ fn a_failed_create_retains_the_table_and_reports_how_to_retry() {
     assert!(!storage.finalized().1);
 }
 
+/// A `create` whose commit ended without BigQuery's verdict may have committed every row, so
+/// it names the table it kept but suggests no append, which could write each row twice.
+#[test]
+fn a_create_whose_commit_outcome_is_unknown_suggests_no_append() {
+    let (outcome, _requests, storage) = ingest_against_mocks(
+        vec![ok(json!({})), ddl_answer()],
+        MockPlan {
+            commit_errors: Some(vec![]),
+            ..MockPlan::default()
+        },
+        IngestMode::Create,
+        reading(one_id_batch()),
+    );
+    let failure = outcome.unwrap_err();
+    assert_failure(
+        &failure,
+        Status::IO,
+        &[
+            "whether its 1 rows were committed is unknown",
+            "kept the table it created, project.dataset.events",
+            "check its rows before any retry",
+        ],
+    );
+    assert_message_omits(&failure, &["retry with adbc.ingest.mode", "drop the table"]);
+    assert!(!storage.finalized().1);
+}
+
 /// A `replace` whose schema differs recreates the target before uploading, so a failure after
 /// that, while uploading or at the commit, has to say the old table and its rows are gone.
 #[test]
@@ -1100,10 +1127,9 @@ fn ingest_from(
     let first = reader.next().unwrap().unwrap();
     let first = FirstBatch::new(normalized_schema, first, &operation).unwrap();
     let result = runtime.block_on(async {
-        write_batches(&client, TABLE, schema.clone(), first, reader, &operation)
-            .await?
-            .commit(TABLE)
-            .await
+        let stream =
+            write_batches(&client, TABLE, schema.clone(), first, reader, &operation).await?;
+        Ok(stream.commit(TABLE).await?)
     });
     operation.finish();
     result

@@ -36,7 +36,7 @@ use schema::{
     validate_existing_schema, validate_ingestible_target,
 };
 use target::resolve_target;
-use write::{FirstBatch, check_append_schema, read_batch, write_batches};
+use write::{CommitFailure, FirstBatch, check_append_schema, read_batch, write_batches};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct IngestOptions {
@@ -204,6 +204,7 @@ pub(crate) fn execute_ingest(
                 failure,
                 table,
                 "committed no rows but kept",
+                false,
             ));
         }
         Err(failure) if plan == TablePlan::Recreate => return Err(recreated(failure, table)),
@@ -226,34 +227,53 @@ pub(crate) fn execute_ingest(
     context
         .runtime
         .block_on(stream.commit(&table_path))
-        .map_err(|mut failure| match plan {
-            TablePlan::Truncate => {
-                failure.message = format!(
-                    "{}; this replace had already emptied {table}",
-                    failure.message
-                );
-                failure
+        .map_err(|failure| {
+            let CommitFailure {
+                error: mut failure,
+                outcome_unknown,
+            } = failure;
+            match plan {
+                TablePlan::Truncate => {
+                    failure.message = format!(
+                        "{}; this replace had already emptied {table}",
+                        failure.message
+                    );
+                    failure
+                }
+                TablePlan::Recreate => recreated(failure, table),
+                // The commit says whether its rows can be retried, but not that a `create`
+                // retry would only meet the table this one created.
+                TablePlan::Create if options.mode == IngestMode::Create => {
+                    kept_created_table(failure, table, "kept", outcome_unknown)
+                }
+                TablePlan::Reuse | TablePlan::Create => failure,
             }
-            TablePlan::Recreate => recreated(failure, table),
-            // The commit says whether its rows can be retried, but not that a `create` retry
-            // would only meet the table this one created.
-            TablePlan::Create if options.mode == IngestMode::Create => {
-                kept_created_table(failure, table, "kept")
-            }
-            TablePlan::Reuse | TablePlan::Create => failure,
         })
 }
 
 /// Tells the caller of a failed `create` that the table it created remains, so a retry in that
 /// mode would only meet it. `outcome` is what the ingest did, ending in the table being kept.
+///
+/// Appending is the retry only when none of the rows can have been committed: after a commit that
+/// ended without BigQuery's verdict, every row may already be in the table, and appending them
+/// again would write each twice.
 fn kept_created_table(
     mut failure: adbc_core::error::Error,
     table: TableId<'_>,
     outcome: &str,
+    rows_may_be_committed: bool,
 ) -> adbc_core::error::Error {
+    let remedy = if rows_may_be_committed {
+        "check its rows before any retry, since appending them again could duplicate them"
+            .to_owned()
+    } else {
+        format!(
+            "retry with {ADBC_INGEST_OPTION_MODE}={ADBC_INGEST_OPTION_MODE_APPEND:?}, or drop the \
+             table and retry"
+        )
+    };
     failure.message = format!(
-        "{}; the ingest {outcome} the table it created, {table}; retry with \
-         {ADBC_INGEST_OPTION_MODE}={ADBC_INGEST_OPTION_MODE_APPEND:?}, or drop the table and retry",
+        "{}; the ingest {outcome} the table it created, {table}; {remedy}",
         failure.message
     );
     failure

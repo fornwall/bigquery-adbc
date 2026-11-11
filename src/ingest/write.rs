@@ -270,10 +270,40 @@ pub(super) struct FinalizedStream {
     total_rows: i64,
 }
 
+/// A commit that did not succeed, and whether its rows may have been committed anyway.
+pub(super) struct CommitFailure {
+    pub(super) error: adbc_core::error::Error,
+    /// The commit ended without BigQuery's verdict, so every row may be committed. A caller must
+    /// then not suggest writing the rows again.
+    pub(super) outcome_unknown: bool,
+}
+
+impl CommitFailure {
+    fn refused(error: adbc_core::error::Error) -> Self {
+        Self {
+            error,
+            outcome_unknown: false,
+        }
+    }
+
+    fn unknown(error: adbc_core::error::Error) -> Self {
+        Self {
+            error,
+            outcome_unknown: true,
+        }
+    }
+}
+
+impl From<CommitFailure> for adbc_core::error::Error {
+    fn from(failure: CommitFailure) -> Self {
+        failure.error
+    }
+}
+
 impl FinalizedStream {
     /// Commits all rows atomically and returns their count. Callers check cancellation before
     /// entering; an in-flight commit completes independently (see [`close_stream_call`]).
-    pub(super) async fn commit(&self, table_path: &str) -> Result<i64> {
+    pub(super) async fn commit(&self, table_path: &str) -> std::result::Result<i64, CommitFailure> {
         let Self { writer, total_rows } = self;
         let total_rows = *total_rows;
         let stream = writer.write_stream();
@@ -299,42 +329,42 @@ impl FinalizedStream {
         .await
         .map_err(|mut source| {
             source.message = format!("{}; {unknown}", source.message);
-            source
+            CommitFailure::unknown(source)
         })?;
         let stream_errors = match outcome {
             Ok(_) => return Ok(total_rows),
             Err(CommitError::FailedTransaction { stream_errors, .. }) => stream_errors,
             Err(source) => {
-                return Err(error(
+                return Err(CommitFailure::unknown(error(
                     format!(
                         "failed to commit BigQuery ingest stream {stream} for {table_path}: \
                          {source}; {unknown}"
                     ),
                     Status::Unknown,
-                ));
+                )));
             }
         };
         if commit_already_landed(&stream_errors) {
             return Ok(total_rows);
         }
         let Some(first) = stream_errors.first() else {
-            return Err(error(
+            return Err(CommitFailure::unknown(error(
                 format!(
                     "BigQuery reported no commit time for ingest stream {stream} on \
                      {table_path}, so {unknown}"
                 ),
                 Status::IO,
-            ));
+            )));
         };
         // Cap the service-supplied list before crossing the FFI boundary.
         let messages = summarize_errors(stream_errors.iter().map(format_storage_error));
-        Err(error(
+        Err(CommitFailure::refused(error(
             format!(
                 "BigQuery refused to commit ingest stream {stream} for {table_path}: {messages}; \
                  none of its {total_rows} rows were written, so the ingest can be retried"
             ),
             storage_error_status(&first.code),
-        ))
+        )))
     }
 }
 

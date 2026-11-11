@@ -74,8 +74,9 @@ changes.
 - A dbt 2.0 Dataproc or Vertex AI submission cancelled while it was connecting, whose connection
   then failed, reports `CANCELLED` instead of the connect failure and no longer says the work may
   have started.
-- A `create` bulk ingest whose commit fails says it kept the table it created and suggests
-  retrying with `append`, rather than suggesting a retry that would fail on that table.
+- A `create` bulk ingest whose commit is refused says it kept the table it created and suggests
+  retrying with `append`, rather than suggesting a retry that would fail on that table. A commit
+  that ends without an answer may have committed every row, so it says to check the table first.
 - When looking for a job submitted without `bigquery.location` fails partway, for example on a
   transient `jobs.get` failure, the error now says the job may still run and names it in
   `bigquery.job_id`, as it does when the job is found nowhere. So does a submission with a
