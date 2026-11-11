@@ -80,9 +80,7 @@ def release_suffix(root: Path, binary: NativeBinaryInfo) -> str:
         ("windows", "x86_64"),
     }
     if (platform, binary.architecture) not in supported:
-        raise RuntimeError(
-            f"No reviewed license bundle for {platform}/{binary.architecture}"
-        )
+        raise RuntimeError(f"No reviewed license bundle for {platform}/{binary.architecture}")
     return f"{cargo_version(root / 'Cargo.toml')}-{platform}-{binary.architecture}"
 
 
@@ -118,36 +116,23 @@ def package_library(root: Path, library: Path, output: Path) -> Path:
     name = f"bigquery-adbc-{release_suffix(root, binary)}"
     filename = name + (".zip" if binary.format == "pe" else ".tar.gz")
     files = {native_library_name(): library}
-    files.update(
-        (path, root / "python" / path)
-        for path in (*LICENSE_FILES, "licenses/manifest.json")
-    )
+    files.update((path, root / "python" / path) for path in (*LICENSE_FILES, "licenses/manifest.json"))
     output.mkdir(parents=True, exist_ok=True)
     # Keep the temporary archive on the destination filesystem for atomic replacement.
-    with tempfile.TemporaryDirectory(
-        prefix="bigquery-adbc-native-", dir=output
-    ) as directory:
+    with tempfile.TemporaryDirectory(prefix="bigquery-adbc-native-", dir=output) as directory:
         manifest = Path(directory) / MANIFEST_NAME
-        manifest.write_text(
-            MANIFEST.format(version=version), encoding="utf-8", newline="\n"
-        )
+        manifest.write_text(MANIFEST.format(version=version), encoding="utf-8", newline="\n")
         files[MANIFEST_NAME] = manifest
         temporary = Path(directory) / filename
         if binary.format == "pe":
-            with zipfile.ZipFile(
-                temporary, "w", compression=zipfile.ZIP_DEFLATED
-            ) as archive:
+            with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 for relative, path in files.items():
                     archive.write(path, f"{name}/{relative}")
         else:
             with tarfile.open(temporary, "w:gz") as archive:
                 for relative, path in files.items():
                     mode = 0o755 if relative == native_library_name() else 0o644
-                    archive.add(
-                        path,
-                        arcname=f"{name}/{relative}",
-                        filter=partial(_release_member, mode=mode),
-                    )
+                    archive.add(path, arcname=f"{name}/{relative}", filter=partial(_release_member, mode=mode))
         temporary.replace(output / filename)
     return output / filename
 
@@ -155,16 +140,8 @@ def package_library(root: Path, library: Path, output: Path) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group()
-    source.add_argument(
-        "--library",
-        type=Path,
-        help="package a library built from this checkout instead of building",
-    )
-    source.add_argument(
-        "--wheel",
-        type=Path,
-        help="package the library in a wheel built from this checkout",
-    )
+    source.add_argument("--library", type=Path, help="package a library built from this checkout instead of building")
+    source.add_argument("--wheel", type=Path, help="package the library in a wheel built from this checkout")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist")
     parser.add_argument(
         "--compressed-library",
