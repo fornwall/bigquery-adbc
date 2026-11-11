@@ -526,6 +526,44 @@ fn a_copy_without_a_location_runs_where_the_destination_dataset_is() {
     assert_job_in(&captured[1], &captured[2], DATASET_LOCATION);
 }
 
+/// A seed upload that BigQuery refused as rate-limited is resent whole, from a fresh read of the
+/// file, under the same job ID.
+#[test]
+fn a_rate_limited_seed_is_resent_from_the_start_of_its_file() {
+    let mut uploads = 0;
+    let mut submitted = JsonValue::Null;
+    let (endpoint, server) = capture_requests_responding(3, move |request| {
+        if request.line.starts_with("GET ") {
+            return Some(ok(json!({"jobReference": submitted, "status": done()})));
+        }
+        uploads += 1;
+        if uploads == 1 {
+            return Some((429, error_body("rateLimitExceeded", "slow down")));
+        }
+        submitted = submitted_reference(request);
+        Some(ok(
+            json!({"jobReference": submitted, "status": {"state": "RUNNING"}}),
+        ))
+    });
+    let mut connection = test_connection_at(&endpoint);
+    let csv = csv_file("rate-limited-seed");
+
+    let seeded = seed(&mut connection, &csv, "data_set.seed", false);
+    std::fs::remove_file(csv).unwrap();
+    seeded.unwrap();
+
+    let captured = server.served(3);
+    for upload in &captured[..2] {
+        let body = String::from_utf8_lossy(&upload.raw_body);
+        assert!(body.contains("\r\n\r\nid\n1\n\r\n--"), "{body}");
+    }
+    assert_eq!(
+        submitted_reference(&captured[0]),
+        submitted_reference(&captured[1])
+    );
+    assert_job_in(&captured[1], &captured[2], "EU");
+}
+
 /// A configured location always wins, so no dataset is looked up. Each job's ID is reported the
 /// way a query result reports its job, which dbt 2.0 records as the statement's query ID.
 #[test]

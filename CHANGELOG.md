@@ -98,6 +98,8 @@ changes.
   fetched it is `UNKNOWN` instead of `ALREADY_EXISTS`.
 - A dbt 2.0 seed load or table copy whose wait for its job ends on failed polls links the job and
   names it in `bigquery.job_id`, as a query's wait does.
+- A dbt 2.0 seed upload that could not connect, or that BigQuery refused as rate-limited, is sent
+  again from the start of its file, as other job submissions are, instead of failing the seed.
 - An append to a view, snapshot or other object that is not a table reports that, rather than
   what one of its columns makes of a bound all-null field.
 - A Storage Read stream that BigQuery fails with `OUT_OF_RANGE`, for a value Arrow cannot hold

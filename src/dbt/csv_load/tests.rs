@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use adbc_core::CancelHandle as _;
 use adbc_core::error::Status;
@@ -15,6 +16,7 @@ use crate::rest::client::rest_client;
 use crate::rest::jobs::{JobClient, JobReference};
 use crate::rest::model::{TableFieldSchema, TableSchema};
 use crate::rest::request::{Request, RequestBody, multipart_related, multipart_related_file};
+use crate::rest::retry::{MAX_ATTEMPTS, RetryDelays};
 use crate::runtime::{SharedRuntime, new_runtime};
 use crate::test_support::http::{
     capture_requests, capture_requests_gated, capture_requests_until_stopped, error_body,
@@ -56,7 +58,8 @@ fn cancellable_at(endpoint: &str) -> (SharedRuntime, Arc<Cancellation>, Operatio
     (runtime, cancellation, operation)
 }
 
-/// Sends one media upload through `submit_csv_load`, as `execute_csv_load` does.
+/// Sends one media upload through `submit_csv_load`, as `execute_csv_load` does, failing the test
+/// if it is resent.
 fn submit(
     runtime: &SharedRuntime,
     operation: &Operation,
@@ -64,21 +67,39 @@ fn submit(
     url: &str,
     body: RequestBody,
 ) -> adbc_core::error::Result<LoadOrCopyJob> {
+    let mut body = Some(body);
+    submit_each(runtime, operation, jobs, &mut || {
+        Ok(upload(url, body.take().expect("the upload is not resent")))
+    })
+}
+
+/// Sends the uploads `uploads` makes, one per attempt, through `submit_csv_load`.
+fn submit_each<'r>(
+    runtime: &SharedRuntime,
+    operation: &Operation,
+    jobs: &JobClient,
+    uploads: &mut dyn FnMut() -> adbc_core::error::Result<Request<'r>>,
+) -> adbc_core::error::Result<LoadOrCopyJob> {
     let credentials = google_cloud_auth::credentials::anonymous::Builder::new().build();
-    let upload = rest_client("CSV load test").unwrap();
+    let client = rest_client("CSV load test").unwrap();
     runtime.block_on(submit_csv_load(
         operation,
         &credentials,
-        &upload,
+        &client,
         jobs,
-        Request::post_media(
-            url,
-            "multipart/related; boundary=test",
-            body,
-            "submit the BigQuery CSV load job",
-        ),
+        uploads,
         &reference(),
+        RetryDelays::flat(Duration::from_millis(1)),
     ))
+}
+
+fn upload(url: &str, body: RequestBody) -> Request<'_> {
+    Request::post_media(
+        url,
+        "multipart/related; boundary=test",
+        body,
+        "submit the BigQuery CSV load job",
+    )
 }
 
 #[test]
@@ -325,29 +346,70 @@ fn an_unrecovered_upload_says_its_job_may_still_run() {
     }
 }
 
-/// A refused upload is never replayed, and created no job, so a later cancel has nothing to
-/// address: it would answer 404 and warn that the job may keep running.
+/// A refused upload created no job, so a later cancel has nothing to address: it would answer 404
+/// and warn that the job may keep running. A rate-limited upload applied nothing either, so it is
+/// resent until the attempts run out.
 #[test]
 fn a_refused_upload_leaves_no_job_to_cancel() {
-    for (code, reason, status) in [
-        (400, "invalid", Status::InvalidArguments),
-        (429, "rateLimitExceeded", Status::IO),
+    for (code, reason, status, uploads) in [
+        (400, "invalid", Status::InvalidArguments, 1),
+        (429, "rateLimitExceeded", Status::IO, MAX_ATTEMPTS as usize),
     ] {
         let (endpoint, server) =
-            capture_requests_until_stopped(vec![(code, error_body(reason, "refused"))]);
+            capture_requests_until_stopped(vec![(code, error_body(reason, "refused")); uploads]);
         let (runtime, cancellation, operation) = cancellable_at(&endpoint);
+        let url = format!("{endpoint}/upload");
 
-        let failure = submit(
+        let failure = submit_each(
             &runtime,
             &operation,
             &JobClient::for_test(&endpoint),
-            &format!("{endpoint}/upload"),
-            bytes::Bytes::new().into(),
+            &mut || Ok(upload(&url, bytes::Bytes::new().into())),
         )
         .unwrap_err();
         assert_eq!(failure.status, status);
         OperationCancelHandle(cancellation).try_cancel().unwrap();
 
-        assert_eq!(server.stop().len(), 1, "only the upload reached the mock");
+        assert_eq!(
+            server.stop().len(),
+            uploads,
+            "only the uploads reached the mock"
+        );
     }
+}
+
+/// An upload that could not connect, or that BigQuery refused as rate-limited, created no job, so
+/// it is sent again, and the job a later upload creates is the one waited for.
+#[test]
+fn an_upload_that_created_no_job_is_resent() {
+    let (endpoint, server) = capture_requests(vec![
+        (429, error_body("rateLimitExceeded", "slow down")),
+        job("RUNNING", &json!({})),
+        job("DONE", &json!({"load": {"outputRows": "3"}})),
+    ]);
+    let (runtime, _cancellation, operation) = cancellable_at(&endpoint);
+    let unreachable = format!("{}/upload", crate::test_support::UNREACHABLE_ENDPOINT);
+    let reachable = format!("{endpoint}/upload");
+    let mut urls = [&unreachable, &reachable, &reachable].into_iter();
+
+    let rows = submit_each(
+        &runtime,
+        &operation,
+        &JobClient::for_test(&endpoint),
+        &mut || {
+            let url = urls.next().expect("no third upload");
+            Ok(upload(url, bytes::Bytes::from_static(b"media").into()))
+        },
+    )
+    .unwrap()
+    .output_rows();
+    operation.finish();
+    assert_eq!(rows, Some(3));
+
+    let requests = server.served(3);
+    for upload in &requests[..2] {
+        assert!(upload.line.starts_with("POST /upload "), "{}", upload.line);
+        assert_eq!(upload.raw_body, b"media");
+    }
+    assert!(requests[2].line.starts_with("GET "), "{}", requests[2].line);
 }

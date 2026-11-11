@@ -10,7 +10,8 @@ use super::csv_seed::CsvSeedFile;
 use super::jobs::{
     FinishedJob, JobConfiguration, JobOperation, LoadOrCopyJob, in_job_location, wait_for_submitted,
 };
-use crate::cancellation::Operation;
+use crate::cancellation::{self, Operation};
+use crate::diag::diag;
 use crate::error::job_name;
 use crate::query::{ExecutionContext, QualifiedTableName, StatementQueryOptions};
 use crate::rest::client::RestClient;
@@ -20,8 +21,8 @@ use crate::rest::jobs::{
 };
 use crate::rest::metadata::TableId;
 use crate::rest::model::TableSchema;
-use crate::rest::rejection::service_error;
 use crate::rest::request::{Request, RequestStart, multipart_related_file, send};
+use crate::rest::retry::{MAX_ATTEMPTS, RetryClass, RetryDelays, classify};
 use crate::rest::url::escape_url_component;
 
 /// The job's name in error messages.
@@ -32,7 +33,7 @@ pub(crate) fn execute_csv_load(
     options: &StatementQueryOptions,
     destination: &QualifiedTableName,
     operation: &Operation,
-    csv: CsvSeedFile,
+    csv: CsvSeedFile<'_>,
     schema: &TableSchema,
     delimiter: &str,
 ) -> Result<FinishedJob> {
@@ -51,19 +52,28 @@ pub(crate) fn execute_csv_load(
                 escape_url_component(&request.reference().project_id)
             );
             let boundary = format!("adbc_csv_boundary_{}", request.reference().job_id);
-            let body = multipart_related_file(
-                &boundary,
-                request.body(),
-                csv.file,
-                csv.length,
-                "text/csv",
-            )?;
             let content_type = format!("multipart/related; boundary={boundary}");
             let context = format!(
                 "submit the BigQuery CSV load job {} into {}",
                 job_name(request.reference()),
                 destination.id()
             );
+            let path = csv.path;
+            let mut opened = Some(csv);
+            let mut upload_request = || {
+                let csv = match opened.take() {
+                    Some(csv) => csv,
+                    None => CsvSeedFile::open(path)?,
+                };
+                let body = multipart_related_file(
+                    &boundary,
+                    request.body(),
+                    csv.file,
+                    csv.length,
+                    "text/csv",
+                )?;
+                Ok(Request::post_media(&url, &content_type, body, &context))
+            };
 
             // A seed can be gigabytes, so the upload has no whole-request deadline.
             let upload = execution.state.rest_client()?;
@@ -73,8 +83,9 @@ pub(crate) fn execute_csv_load(
                 &configuration.credentials,
                 &upload,
                 &jobs,
-                Request::post_media(&url, &content_type, body, &context),
+                &mut upload_request,
                 request.reference(),
+                RetryDelays::SERVICE,
             ))?;
             Ok(FinishedJob {
                 rows: job.output_rows(),
@@ -84,36 +95,73 @@ pub(crate) fn execute_csv_load(
     )
 }
 
-/// Sends the one-shot media `jobs.insert` and waits for the load it submitted.
+/// Sends the media `jobs.insert` and waits for the load it submitted.
 ///
-/// The media upload is never replayed, so `requested` carries a regional identity from
-/// [`in_job_location`], and an outcome that may have created the job (a transport failure, a 5xx,
-/// or a 409) is reconciled by fetching it.
-async fn submit_csv_load(
+/// A replay resends the whole seed, so `requested` carries a regional identity from
+/// [`in_job_location`], and an outcome that may have created the job (a transport failure after
+/// sending, a 5xx, or a 409) is reconciled by fetching it. Only an upload that created nothing
+/// and may yet succeed, because it could not connect or was rate-limited, is sent again, as
+/// `jobs.insert` would, each time from a fresh `upload_request`.
+async fn submit_csv_load<'r>(
     operation: &Operation,
     credentials: &google_cloud_auth::credentials::Credentials,
     upload: &RestClient,
     jobs: &JobClient,
-    upload_request: Request<'_>,
+    upload_request: &mut dyn FnMut() -> Result<Request<'r>>,
     requested: &JobReference,
+    delays: RetryDelays,
 ) -> Result<LoadOrCopyJob> {
-    let context = upload_request.context;
     // Register before the upload so cancellation can address the job if the response is lost or
     // the caller cancels mid-upload.
     operation.register_provisional_job(requested)?;
-    let start = RequestStart::default();
-    let upload_request = upload_request.with_start_signal(&start);
-    let answer = send(Some(operation), credentials, upload, upload_request).await;
-    let may_exist = may_have_created(&start, &answer);
-    let failure = match answer {
-        Ok((status, body)) if status.is_success() => {
-            operation.register_job(requested)?;
-            return wait_for_submitted(jobs, operation, requested, &body, WHAT).await;
+    let mut attempt = 0;
+    let (failure, may_exist) = loop {
+        attempt += 1;
+        let request = match upload_request() {
+            Ok(request) => request,
+            Err(failure) => break (failure, false),
+        };
+        let context = request.context;
+        let start = RequestStart::default();
+        let answer = send(
+            Some(operation),
+            credentials,
+            upload,
+            request.with_start_signal(&start),
+        )
+        .await;
+        let may_exist = may_have_created(&start, &answer);
+        let (class, failure) = match answer {
+            // The job ID is new, so a 409 says this upload created the job, as a replay's would.
+            Ok((reqwest::StatusCode::CONFLICT, body)) => {
+                (RetryClass::Final, existing_job(context, &body))
+            }
+            answer => match classify(answer, &format!("failed to {context}")) {
+                Ok(body) => {
+                    operation.register_job(requested)?;
+                    return wait_for_submitted(jobs, operation, requested, &body, WHAT).await;
+                }
+                Err(rejected) => rejected,
+            },
+        };
+        let resend = !may_exist
+            && class != RetryClass::Final
+            && failure.status != Status::Cancelled
+            && attempt < MAX_ATTEMPTS;
+        if !resend {
+            break (failure, may_exist);
         }
-        // The job ID is new, so a 409 says this upload created the job, as a replay's would.
-        Ok((reqwest::StatusCode::CONFLICT, body)) => existing_job(context, &body),
-        Ok((status, body)) => service_error(&format!("failed to {context}"), status, &body),
-        Err(failure) => failure,
+        diag!(
+            Debug,
+            "resending a BigQuery CSV load upload that created no job after attempt {attempt} \
+             ({:?})",
+            failure.status
+        );
+        if let Err(cancelled) =
+            cancellation::sleep(Some(operation), delays.delay(class, attempt)).await
+        {
+            break (cancelled, false);
+        }
     };
     // Either the job cannot exist and no cancel should address it, or a cancel that raced its
     // visibility gets its post-confirm retry, during the recovery GET too.

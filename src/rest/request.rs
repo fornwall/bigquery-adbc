@@ -29,7 +29,7 @@ use crate::rest::rejection::service_error;
 /// An HTTP request body and its exact wire length.
 ///
 /// The body may be reusable bytes or a one-shot stream. Retrying callers build a fresh [`Request`]
-/// per attempt from their own bytes; a streamed CSV upload is never replayed.
+/// per attempt from their own bytes; a streamed CSV upload reopens its file for each attempt.
 pub(crate) struct RequestBody {
     body: reqwest::Body,
     content_length: u64,

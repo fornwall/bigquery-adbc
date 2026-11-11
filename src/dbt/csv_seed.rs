@@ -14,9 +14,43 @@ const DEFAULT_DELIMITER: u8 = b',';
 
 /// An opened seed and the length snapshotted for its streamed multipart framing.
 #[derive(Debug)]
-pub(crate) struct CsvSeedFile {
+pub(crate) struct CsvSeedFile<'a> {
     pub(super) file: std::fs::File,
     pub(super) length: u64,
+    /// Where it was opened, so that a resent upload reads it from the start through a file
+    /// description of its own.
+    pub(super) path: &'a str,
+}
+
+impl<'a> CsvSeedFile<'a> {
+    /// Opens the seed at `path` without reading it, recording the length that frames the streamed
+    /// upload. The bytes are sent unmodified; BigQuery owns CSV parsing (quoting, nulls, numbers,
+    /// temporals, malformed rows). A path naming something other than a regular file is refused
+    /// here rather than failing mid-upload.
+    pub(super) fn open(path: &'a str) -> Result<Self> {
+        let unreadable = |source: std::io::Error| {
+            unreadable_file(
+                format!("failed to read BigQuery CSV seed file {path:?}: {source}"),
+                &source,
+            )
+        };
+        let mut options = std::fs::File::options();
+        // Opening a FIFO must not wait for a writer before the regular-file check.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
+        let file = options.read(true).open(path).map_err(unreadable)?;
+        let metadata = file.metadata().map_err(unreadable)?;
+        if !metadata.is_file() {
+            return Err(invalid_argument(format!(
+                "BigQuery CSV seed file {path:?} is not a regular file"
+            )));
+        }
+        Ok(Self {
+            file,
+            length: metadata.len(),
+            path,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -95,36 +129,15 @@ impl CsvSeedOptions {
         self.encoded_schema.as_deref()
     }
 
-    /// Opens the seed without reading it, recording the length that frames the streamed upload,
-    /// and answers it with the load job's schema. The bytes are sent unmodified; BigQuery owns CSV
-    /// parsing (quoting, nulls, numbers, temporals, malformed rows). A path naming something other
-    /// than a regular file is refused here rather than failing mid-upload.
-    pub(crate) fn open_seed(&self) -> Result<(CsvSeedFile, &TableSchema)> {
+    /// Opens the seed (see [`CsvSeedFile::open`]) and answers it with the load job's schema.
+    pub(crate) fn open_seed(&self) -> Result<(CsvSeedFile<'_>, &TableSchema)> {
         let filepath = self.filepath.as_deref().ok_or_else(|| {
             invalid_state("cannot execute a BigQuery CSV seed ingest without a file path")
         })?;
         let schema = self.schema.as_ref().ok_or_else(|| {
             invalid_state("cannot execute a BigQuery CSV seed ingest without an Arrow IPC schema")
         })?;
-        let unreadable = |source: std::io::Error| {
-            unreadable_file(
-                format!("failed to read BigQuery CSV seed file {filepath:?}: {source}"),
-                &source,
-            )
-        };
-        let mut options = std::fs::File::options();
-        // Opening a FIFO must not wait for a writer before the regular-file check.
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NONBLOCK);
-        let file = options.read(true).open(filepath).map_err(unreadable)?;
-        let metadata = file.metadata().map_err(unreadable)?;
-        if !metadata.is_file() {
-            return Err(invalid_argument(format!(
-                "BigQuery CSV seed file {filepath:?} is not a regular file"
-            )));
-        }
-        let length = metadata.len();
-        Ok((CsvSeedFile { file, length }, schema))
+        Ok((CsvSeedFile::open(filepath)?, schema))
     }
 }
 
