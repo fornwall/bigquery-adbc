@@ -45,7 +45,7 @@ The offline checks CI runs need neither credentials nor a native build:
 scripts/run-python-lint.sh
 scripts/run-offline-python-tests.sh
 uv run --project python --locked pytest -q python/tests/test_api.py  # one test file
-uv run --project python --locked ruff format python
+uv run --project python --locked ruff format --config python/ruff.toml python integration scripts tests tools
 ```
 
 `tests/test_installed_wheel.py` needs an installed wheel: CI installs one built from the sdist, and
