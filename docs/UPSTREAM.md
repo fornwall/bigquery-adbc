@@ -13,6 +13,7 @@ The findings apply to these revisions:
 | Apache Arrow ADBC | [`5565c52`](https://github.com/apache/arrow-adbc/commit/5565c52cb71006e3f6322c8821de6955775f631d) | Rust, C++ validation and Python integration pins. Python packaging allows `adbc-driver-manager>=1.13,<2`. |
 | [Driver Foundry](https://github.com/adbc-drivers) validation | [`f063165`](https://github.com/adbc-drivers/validation/commit/f0631651f79bd01b67c5776be6fe3b7fbfbe083b) | Integration pin. |
 | `h2` | 0.4.20 and [`e64c166`](https://github.com/hyperium/h2/commit/e64c1662ebb14794fc19cbcbb5b5dd0f67925f27) | Cargo uses 0.4.20; upstream `master` at this commit has UP-94. |
+| `idna_adapter` | 1.0.0 | Cargo pin selecting the stub back end of `idna` 1.1.0. |
 | dbt | [`b601ffe`](https://github.com/dbt-labs/dbt/commit/b601ffe469be8404e70b5e20f0ea0babc35ba6a8) | External client, not a Cargo dependency. |
 
 Service findings come from observed failures; a driver test that normalizes or rejects the input
@@ -58,6 +59,7 @@ cannot show whether the service is fixed.
 | UP-100 | Token exchanges follow redirects | `google-cloud-auth` | Local finding; no SDK policy option | None |
 | UP-101 | Token exchanges have no timeout | `google-cloud-auth` | Local finding; driver bounds the caller's wait | None |
 | UP-102 | gRPC server streams have no deadline or keepalive | `google-cloud-gax-internal` | Local finding; driver bounds `ReadRows` silence and Storage Write waits | None |
+| UP-103 | Mixed-case non-ASCII hosts panic in debug builds | `idna_adapter` | Local finding; driver guards the URLs it parses | None |
 
 ## Git snapshot candidates
 
@@ -366,3 +368,14 @@ doubling a stream's limit because it sees only complete messages; a resume reuse
 dead connection fails after about 10 minutes and a stream that opens and then stays silent after
 up to 62. `AppendRows` has the same gap, so the driver bounds every Storage Write wait
 (`src/ingest/write/retry.rs`); a keepalive and connect timeout would make these limits backstops.
+
+## UP-103: the `idna` stub back end panics on mixed-case non-ASCII hosts in debug builds
+
+The stub refuses every non-ASCII host, but in a debug build its `map_normalize` asserts that each
+ASCII character it receives is lower case. `idna` hands it the character just before a label's
+first non-ASCII one without lowercasing it, so `reqwest::Url::parse("https://Bü/")` panics instead
+of failing; release builds return the parse error. The driver refuses a non-ASCII or
+percent-encoded authority before parsing a URL itself (`src/config/endpoints.rs`). URLs the auth
+library parses still panic in a debug build: an ADC file's `token_uri`, and an external-account
+document's `credential_source.url`, which the driver does not read. Lowercasing ASCII in the
+stub's `map_normalize` would fix it.

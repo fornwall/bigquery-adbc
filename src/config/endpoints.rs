@@ -167,10 +167,10 @@ pub(crate) fn endpoint_scheme_and_host(endpoint: &str) -> Option<(&'static str, 
 ///
 /// `idna` runs on its stub back end (`Cargo.toml`), which refuses every non-ASCII host anyway, but
 /// in a debug build it asserts that an ASCII letter it normalizes is lower case, and an upper-case
-/// letter just before a non-ASCII one (`https://Bü/`) is handed to it as is. Refusing such a host
-/// here keeps that a parse failure instead of a panic. The scan reads the authority as the parser
-/// does for HTTP: after any run of `/` and `\` following the scheme, ignoring tabs and newlines,
-/// up to `/`, `\`, `?` or `#`. No endpoint spells its host with percent-escapes.
+/// letter just before a non-ASCII one (`https://Bü/`) is handed to it as is (UP-103). Refusing such
+/// a host here keeps that a parse failure instead of a panic. The scan reads the authority as the
+/// parser does for HTTP: after any run of `/` and `\` following the scheme, ignoring tabs and
+/// newlines, up to `/`, `\`, `?` or `#`. No endpoint spells its host with percent-escapes.
 pub(crate) fn parse_url(value: &str) -> Option<reqwest::Url> {
     let (_, after_scheme) = value.split_once(':')?;
     let unsafe_authority = after_scheme
