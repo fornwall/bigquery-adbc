@@ -1,14 +1,6 @@
 """PEP 249 facade for the BigQuery ADBC driver.
 
-``autocommit=False`` (the PEP 249 default) opens a BigQuery session per connection.
-Pass ``autocommit=True`` for independent queries.
-
-Leaving ``with connect(...) as connection:`` closes the connection and rolls
-back uncommitted work. Call ``connection.commit()`` before leaving the block,
-or connect with ``autocommit=True``.
-
-This facade requires PyArrow; the low-level :func:`bigquery_adbc.connect` API
-does not.
+It requires PyArrow; the low-level :func:`bigquery_adbc.connect` API does not.
 """
 
 from __future__ import annotations
@@ -20,7 +12,7 @@ from typing import TYPE_CHECKING
 try:
     # Match the driver manager's PyArrow availability check.
     import pyarrow.dataset
-except ImportError as _error:  # pragma: no cover - depends on the installed extras
+except ImportError as _error:
     raise ImportError(
         "bigquery_adbc.dbapi requires PyArrow. Install it with: "
         "pip install 'bigquery-adbc[dbapi]'. The low-level "
@@ -111,9 +103,11 @@ def connect(
 ) -> Connection:
     """Connect to BigQuery through the ADBC DB-API facade.
 
-    ``uri`` and ``db_kwargs`` configure the database, ``conn_kwargs`` the
-    connection, and ``autocommit`` the transaction mode. Leaving a ``with`` block
-    closes the connection without committing. ``backend`` is passed to
+    ``uri`` and ``db_kwargs`` configure the database and ``conn_kwargs`` the
+    connection. With ``autocommit=False``, the PEP 249 default, the first query
+    that needs a transaction opens a BigQuery session; pass ``autocommit=True``
+    for independent queries. Leaving a ``with`` block closes the connection and
+    rolls back uncommitted work. ``backend`` is passed to
     :class:`adbc_driver_manager.dbapi.Connection`, whose default converts with PyArrow.
     """
 
