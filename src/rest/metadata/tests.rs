@@ -1,9 +1,7 @@
 use adbc_core::error::Status;
 use std::collections::BTreeMap;
 
-use super::{
-    Dataset, DatasetId, ListedTable, MetadataClient, Page, Table, TableId, TableView, listing_query,
-};
+use super::{Dataset, DatasetId, MetadataClient, Page, Table, TableId, TableView, listing_query};
 use crate::rest::request::RequestStart;
 use crate::test_support::errors::assert_message_omits;
 use crate::test_support::http::{capture_requests, capture_requests_responding, error_body, ok};
@@ -295,46 +293,41 @@ fn a_dataset_access_entry_round_trips_the_fields_the_driver_does_not_know() {
 
 #[test]
 fn a_listing_page_decodes_its_entries_and_its_continuation() {
-    let page = Page::<String>::decode(
-        br#"{
+    let runtime = crate::runtime::new_runtime().unwrap();
+    let (endpoint, captured) = capture_requests(vec![
+        ok(serde_json::json!({
             "kind": "bigquery#datasetList",
             "nextPageToken": "page-2",
             "datasets": [
                 {"datasetReference": {"projectId": "p", "datasetId": "first"}},
                 {"id": "p:second"}
             ]
-        }"#,
-        "BigQuery dataset listing",
-        "datasets",
-        |entry| {
-            Ok(entry
-                .value::<crate::rest::model::DatasetReference>("datasetReference")?
-                .map(|reference| reference.dataset_id)
-                .unwrap_or_default())
-        },
-    )
-    .unwrap();
+        })),
+        ok(serde_json::json!({"tables": [
+            {"tableReference": {"datasetId": "d", "tableId": "events"}, "type": "VIEW"}
+        ]})),
+    ]);
+    let client = client_at(&endpoint);
+
+    let page = runtime
+        .block_on(client.list_datasets(None, "p", None, ""))
+        .ok()
+        .unwrap();
     assert_eq!(page.items, ["first".to_owned(), String::new()]);
     assert_eq!(page.next_page_token, "page-2");
 
-    let page = Page::<ListedTable>::decode(
-        br#"{"tables": [{"tableReference": {"datasetId": "d", "tableId": "events"}, "type": "VIEW"}]}"#,
-        "BigQuery table listing",
-        "tables",
-        |entry| {
-            Ok(ListedTable {
-                reference: entry.value("tableReference")?,
-                table_type: entry.value_or_default("type")?,
-            })
-        },
-    )
-    .unwrap();
+    let page = runtime
+        .block_on(client.list_tables(None, DATASET, ""))
+        .ok()
+        .unwrap();
     let reference = page.items[0].reference.as_ref().unwrap();
     assert_eq!(
         (reference.dataset_id.as_str(), reference.table_id.as_str()),
         ("d", "events")
     );
     assert_eq!(page.items[0].table_type, "VIEW");
+    assert!(page.next_page_token.is_empty());
+    captured.served(2);
 }
 
 /// `datasets.get` names the dataset BigQuery resolved the request to, which an exact metadata
