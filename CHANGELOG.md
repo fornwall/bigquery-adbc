@@ -54,6 +54,9 @@ changes.
 - An append that omits a `REQUIRED` column with a default value says that Storage Write does not
   fill it in. The reference now says that omitted nullable and repeated columns take their default
   values.
+- A bulk-ingest append into an existing table converts each row of its first batch once, as it is
+  sent, instead of also checking the whole batch first; a refused value still fails the ingest
+  with nothing committed. `create` and `replace` still check it before changing the target.
 - The patched dbt is built from dbt's `main` at `ef0aa4db3a` (2026-11-11).
 - The driver uses `google-cloud-bigquery` 1.0.0 for Storage Read and Write, which
   `ADBC_INFO_VENDOR_VERSION` reports.

@@ -17,6 +17,7 @@ use serde_json::{Value as JsonValue, json};
 use tokio::sync::Notify;
 
 use super::schema::normalize_schema;
+use super::write::NORMALIZED_ROWS;
 use super::{FirstBatch, parse_ingest_method, write_batches};
 use crate::BigQueryBulkIngestMethod;
 use crate::cancellation::{Cancellation, Operation, OperationCancelHandle};
@@ -917,6 +918,78 @@ fn an_append_into_a_mismatched_table_reads_no_rows() {
     assert_eq!(storage.write_streams(), (0, 0));
 }
 
+/// Only an ingest that creates or replaces its target normalizes its first batch whole before
+/// preparing the target. An append into an existing table changes nothing before its commit, so
+/// it normalizes each row once, as it is sent.
+#[test]
+fn only_an_ingest_that_changes_its_target_checks_its_first_batch_first() {
+    let existing = table(&json!([{"name": "id", "type": "INTEGER", "mode": "REQUIRED"}]));
+    for (mode, responses, normalized_rows) in [
+        (IngestMode::Append, vec![ok(existing.clone())], 1),
+        (IngestMode::CreateAppend, vec![ok(existing.clone())], 1),
+        (
+            IngestMode::CreateAppend,
+            vec![missing_table(), ok(json!({}))],
+            2,
+        ),
+        (IngestMode::Create, vec![ok(json!({}))], 2),
+        (IngestMode::Replace, vec![ok(existing), ddl_answer()], 2),
+    ] {
+        NORMALIZED_ROWS.with(|rows| rows.set(0));
+        let (outcome, _, storage) = ingest_against_mocks(
+            responses,
+            MockPlan::default(),
+            mode,
+            reading(one_id_batch()),
+        );
+        assert_eq!(outcome.unwrap(), 1, "{mode:?}");
+        assert_eq!(
+            NORMALIZED_ROWS.with(std::cell::Cell::get),
+            normalized_rows,
+            "{mode:?}"
+        );
+        assert_eq!(storage.finalized(), (Some(1), true), "{mode:?}");
+    }
+}
+
+/// An append finds a refused value as it sends the row, after the rows before it are on the
+/// stream, and abandons the stream without committing or touching the table.
+#[test]
+fn an_append_refuses_a_value_past_its_first_request_without_committing() {
+    let existing = table(&json!([
+        {"name": "label", "type": "STRING", "mode": "NULLABLE"},
+        {"name": "day", "type": "DATE", "mode": "NULLABLE"},
+    ]));
+    let batch = RecordBatch::try_from_iter([
+        (
+            "label",
+            Arc::new(StringArray::from(vec![
+                "x".repeat(1_500_000),
+                "y".to_owned(),
+            ])) as ArrayRef,
+        ),
+        (
+            "day",
+            Arc::new(Date32Array::from(vec![0, 3_000_000])) as ArrayRef,
+        ),
+    ])
+    .unwrap();
+    let (outcome, requests, storage) = ingest_against_mocks(
+        vec![ok(existing)],
+        MockPlan::default(),
+        IngestMode::Append,
+        reading(batch),
+    );
+    assert_failure(
+        &outcome.unwrap_err(),
+        Status::InvalidData,
+        &["\"day\"", "out-of-range value at row 1"],
+    );
+    assert_eq!(methods(&requests), ["GET"]);
+    assert_eq!(storage.append_offsets(), [0]);
+    assert_eq!(storage.finalized(), (Some(1), false));
+}
+
 /// Create mode skips the preflight read, so the insert's conflict has to give the remedy the
 /// preflight would have, while keeping the service's reason and HTTP status as details.
 #[test]
@@ -1142,10 +1215,10 @@ fn ingest_from(
     let (_cancellation, operation) = operation(runtime, clients.clone());
     let client = clients.write_client(runtime, None).unwrap();
     let normalized_schema = Arc::new(normalize_schema(schema).unwrap());
-    // `write_batches` takes the first batch already checked, because the real path checks
-    // it before the target table is created or truncated.
+    // The first batch is checked whole, as the real path checks it before the target table is
+    // created or replaced.
     let first = reader.next().unwrap().unwrap();
-    let first = FirstBatch::new(normalized_schema, first, &operation).unwrap();
+    let first = FirstBatch::new(normalized_schema, first, true, &operation).unwrap();
     let result = runtime.block_on(async {
         let stream =
             write_batches(&client, TABLE, schema.clone(), first, reader, &operation).await?;

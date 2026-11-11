@@ -22,14 +22,15 @@ mod retry;
 mod stream;
 mod window;
 
+#[cfg(test)]
+pub(super) use encode::NORMALIZED_ROWS;
 pub(super) use encode::read_batch;
 
 use encode::ChunkEncoder;
 use retry::{AppendPipeline, control_plane_retry, format_storage_error, storage_error_status};
 use stream::{finalize_abandoned_writer, pending_writer};
 
-/// An ingest's first non-empty batch, checked to normalize and to fit AppendRows requests, with
-/// the encoder that will send it.
+/// An ingest's first non-empty batch, with the encoder that will send it.
 pub(super) struct FirstBatch {
     batch: RecordBatch,
     encoder: ChunkEncoder,
@@ -37,18 +38,19 @@ pub(super) struct FirstBatch {
 }
 
 impl FirstBatch {
-    /// Normalizes every chunk of `batch` and sizes it, and the schema, against the request limit,
-    /// so data BigQuery would refuse or no request can carry fails before the target is created
-    /// or replaced. The chunks are normalized again when they are sent rather than kept, so
-    /// memory stays bounded by a chunk however large the batch.
+    /// Sizes the schema against the request limit and, with `check_rows`, normalizes and sizes
+    /// every chunk of `batch` too, so data BigQuery would refuse or no request can carry fails
+    /// before the target is created or replaced. The chunks are normalized again when they are
+    /// sent rather than kept, so memory stays bounded by a chunk however large the batch.
     pub(super) fn new(
         normalized_schema: SchemaRef,
         batch: RecordBatch,
+        check_rows: bool,
         operation: &Operation,
     ) -> Result<Self> {
         let (mut encoder, schema) = ChunkEncoder::new(normalized_schema)?;
         let mut offset = 0;
-        while offset < batch.num_rows() {
+        while check_rows && offset < batch.num_rows() {
             operation.check()?;
             let window = encoder.window(&batch, offset, offset, encoder.target_batch_bytes)?;
             offset += encoder.plan(&window, offset)?;

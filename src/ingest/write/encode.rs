@@ -76,6 +76,9 @@ fn admitted_batch_bytes(
 std::thread_local! {
     static RECORD_BATCH_SERIALIZATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static REJECTED_CANDIDATE_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The input rows [`ChunkEncoder::window`] has normalized on this thread.
+    pub(in crate::ingest) static NORMALIZED_ROWS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 #[derive(Debug)]
@@ -153,6 +156,8 @@ impl ChunkEncoder {
             .last_chunk
             .map(|(rows, size)| scaled(rows, target_size, size));
         let rows = window_rows(input, &self.schema, offset, suggested, target_size);
+        #[cfg(test)]
+        NORMALIZED_ROWS.with(|count| count.set(count.get() + rows));
         let window = if rows == input.num_rows() {
             input.clone()
         } else {

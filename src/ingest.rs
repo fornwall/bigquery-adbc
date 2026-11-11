@@ -133,16 +133,20 @@ pub(crate) fn execute_ingest(
         &input_schema,
     )?;
     let normalized_schema = Arc::new(storage_write_schema(&settled.normalized_schema));
+    // Check the first batch whole before CREATE or REPLACE can mutate the target. An append into
+    // an existing table changes nothing before its commit, so it checks each row once, as it is
+    // sent.
+    let check_first_rows = settled.plan != Some(TablePlan::Reuse);
     let first = loop {
         context.operation.check()?;
         match reader.next() {
             Some(batch) => {
                 let batch = read_batch(batch, &input_schema)?;
                 if batch.num_rows() != 0 {
-                    // Validate the first data before CREATE or REPLACE can mutate the target.
                     break Some(FirstBatch::new(
                         normalized_schema,
                         batch,
+                        check_first_rows,
                         context.operation,
                     )?);
                 }

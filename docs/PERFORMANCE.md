@@ -270,6 +270,14 @@ Controls, unchanged within 0.002%: `decimal-scale/wide/encode` at 65,536 rows (o
 target), `dictionary-scattered/narrow/encode` and `large-offsets/narrow/encode` at 65,536 rows
 (under the target), `canonical/wide/encode` at 1,024 rows.
 
+**First batch of an append.** `create` and `replace` normalize and size the whole first batch
+before changing the target, then normalize it again as it is sent. An append into an existing
+table skips that first pass. For one 1,000,000-row batch shaped like a pandas frame (INT64,
+FLOAT64, STRING, nanosecond TIMESTAMP and a three-value `Dictionary<Int8, Utf8>`), in a release
+build, the skipped pass cost 238.0 million user instructions and sending's own pass 241.1 million
+(five passes each, two runs, fixture construction subtracted), so local conversion work is
+halved. Check with `cargo test --locked --lib ingest::tests::only_an`.
+
 ### Storage Write encoding
 
 `encode-sliced` rows of `ipc`, identical fixtures. Two successive changes:
