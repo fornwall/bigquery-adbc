@@ -66,6 +66,7 @@ cannot show whether the service is fixed.
 | UP-140 | A permanent token failure is served for good | `google-cloud-auth` | Local finding; driver rebuilds the credential | None |
 | UP-141 | Each token exchange builds a new HTTP client | `google-cloud-auth` | Local finding; no workaround | None |
 | UP-150 | A second `AdbcStatement.close()` miscounts open statements | ADBC Python driver manager | Local finding; DB-API cursors close once | None |
+| UP-151 | A boolean connection option is set twice | ADBC Python driver manager | Local finding; pass `"true"` or `"false"` | None |
 
 ## UP-19: BigQuery Storage Write corrupts Arrow day-time intervals
 
@@ -415,3 +416,13 @@ raises `RuntimeError: Underflow in closing this AdbcStatement`. With another sta
 second close succeeds instead and lets `AdbcConnection.close()` release the connection under that
 statement, whose own close then raises. This driver keeps such a statement usable; DB-API cursors
 close their statement once.
+
+## UP-151: the Python manager sets a boolean connection option twice
+
+[`AdbcConnection.__init__`](https://github.com/apache/arrow-adbc/blob/5565c52cb71006e3f6322c8821de6955775f631d/python/adbc_driver_manager/adbc_driver_manager/_lib.pyx#L897)
+converts a `bool` value to `"true"` or `"false"` and sets it, then falls through an `if` that
+should be `elif` and sets the converted bytes again with `AdbcConnectionSetOptionBytes` (1.13.0
+too). This driver refuses bytes for a string option, so `dbapi.connect(conn_kwargs={key: True})`
+fails with `INVALID_ARGUMENT`. Database and statement options are unaffected; pass connection
+options as the strings `"true"` and `"false"`, as the `bigquery_adbc` option types already
+require.
