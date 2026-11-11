@@ -9,6 +9,7 @@ use super::*;
 use crate::ingest::normalize::normalize_batch;
 use crate::ingest::schema::{arrow_schema_to_bigquery, normalize_schema, validate_existing_schema};
 use crate::rest::metadata::TableId;
+use crate::test_support::errors::assert_message;
 use crate::test_support::schema::{decimal, field, field_mode, record, table_schema};
 use crate::types::{ARROW_EXTENSION_NAME_KEY, BIGQUERY_TYPE_METADATA_KEY};
 
@@ -93,8 +94,9 @@ fn a_null_field_takes_the_type_of_the_column_it_fills() {
     assert_eq!(normalized.column(2).null_count(), 2);
 }
 
-/// A field the table lacks is left for the comparison to report as missing, so one holding a
-/// `Null` stands in as a string; and a REQUIRED column cannot be filled with NULLs.
+/// A `Null` in a field the table lacks, or in one whose column has another shape, stands in as a
+/// string, so the comparison reports the schema mismatch adbc.h asks for; and a REQUIRED column
+/// cannot be filled with NULLs.
 #[test]
 fn a_null_field_is_refused_where_the_table_cannot_take_nulls() {
     let bound = Schema::new(vec![
@@ -104,10 +106,32 @@ fn a_null_field_is_refused_where_the_table_cannot_take_nulls() {
             vec![Field::new("note", DataType::Null, true)],
             true,
         ),
+        Field::new_list("tags", Field::new("item", DataType::Null, true), true),
+        Field::new_struct(
+            "detail",
+            vec![Field::new("note", DataType::Null, true)],
+            true,
+        ),
     ]);
-    let aligned = align_with_table(&bound, &table_schema([field("id", "INTEGER")])).unwrap();
+    let table = table_schema([
+        field("id", "INTEGER"),
+        field("tags", "STRING"),
+        field("detail", "INTEGER"),
+    ]);
+    let aligned = align_with_table(&bound, &table).unwrap();
     assert!(!has_null_field(aligned.fields()));
-    assert_eq!(aligned.field(1).data_type(), &DataType::Utf8);
+    let checked = arrow_schema_to_bigquery(&aligned).unwrap();
+    let failure = validate_existing_schema(TARGET, Some(&table), &checked).unwrap_err();
+    assert_eq!(failure.status, Status::AlreadyExists);
+    assert_message(
+        &failure,
+        &[
+            "bound column \"extra\" is not in the table",
+            "bound column \"nested\" is not in the table",
+            "column \"tags\" is STRING NULLABLE in the table but STRING REPEATED in the bound data",
+            "column \"detail\" is INT64 NULLABLE in the table but STRUCT NULLABLE in the bound data",
+        ],
+    );
 
     let bound = Schema::new(vec![Field::new("extra", DataType::Null, true)]);
 

@@ -3,7 +3,7 @@
 //! Null fields and empty list elements inherit the column's type. Decimals inherit its type and
 //! shape; STRING and BYTES fields without `BIGQUERY:max_length` inherit its length limit.
 //! Normalization enforces these constraints because Storage Write can round decimals and accept
-//! overlong strings. Schema comparison reports fields missing from the table.
+//! overlong strings. Schema comparison reports fields missing from the table or of another shape.
 
 use std::sync::Arc;
 
@@ -48,18 +48,35 @@ fn align_fields(fields: &Fields, columns: &[TableFieldSchema]) -> Result<Fields>
     fields
         .iter()
         .enumerate()
-        .map(
-            |(index, field)| match resolve_column(columns, index, field.name()) {
-                Some(column) => align_field(field, column),
-                // Use a placeholder so schema comparison reports the missing column before
-                // attempting to resolve its Null type.
-                None if has_null_type(field.data_type()) => {
-                    Ok(Field::new(field.name(), DataType::Utf8, true))
-                }
-                None => Ok(field.as_ref().clone()),
-            },
-        )
+        .map(|(index, field)| {
+            let aligned = match resolve_column(columns, index, field.name()) {
+                Some(column) => align_field(field, column)?,
+                None => field.as_ref().clone(),
+            };
+            // A `Null` the table left untyped, in a field it lacks or one whose column has
+            // another shape, stands in as a string, so schema comparison reports the difference
+            // rather than conversion refusing the type.
+            Ok(if has_null_type(aligned.data_type()) {
+                let data_type = null_as_string(aligned.data_type());
+                aligned.with_data_type(data_type)
+            } else {
+                aligned
+            })
+        })
         .collect()
+}
+
+fn null_as_string(data_type: &DataType) -> DataType {
+    let retyped = |field: &Arc<Field>| {
+        let data_type = null_as_string(field.data_type());
+        field.as_ref().clone().with_data_type(data_type)
+    };
+    match data_type {
+        DataType::Null => DataType::Utf8,
+        DataType::Struct(children) => DataType::Struct(children.iter().map(retyped).collect()),
+        DataType::List(item) => DataType::List(Arc::new(retyped(item))),
+        data_type => data_type.clone(),
+    }
 }
 
 fn align_field(field: &Field, column: &TableFieldSchema) -> Result<Field> {
