@@ -12,7 +12,7 @@ use super::jobs::{
 };
 use crate::cancellation::{self, Operation};
 use crate::diag::diag;
-use crate::error::job_name;
+use crate::error::{job_name, with_job_verdict};
 use crate::query::{ExecutionContext, QualifiedTableName, StatementQueryOptions};
 use crate::rest::client::RestClient;
 use crate::rest::jobs::{
@@ -53,11 +53,12 @@ pub(crate) fn execute_csv_load(
             );
             let boundary = format!("adbc_csv_boundary_{}", request.reference().job_id);
             let content_type = format!("multipart/related; boundary={boundary}");
-            let context = format!(
-                "submit the BigQuery CSV load job {} into {}",
+            let job = format!(
+                "CSV load job {} into {}",
                 job_name(request.reference()),
                 destination.id()
             );
+            let context = format!("submit the BigQuery {job}");
             let path = csv.path;
             let mut opened = Some(csv);
             let mut upload_request = || {
@@ -75,20 +76,20 @@ pub(crate) fn execute_csv_load(
                 Ok(Request::post_media(&url, &content_type, body, &context))
             };
 
-            // A seed can be gigabytes, so the upload has no whole-request deadline.
             let upload = execution.state.rest_client()?;
             let jobs = execution.state.rest_job_client(&execution.runtime)?;
-            let job = execution.runtime.block_on(submit_csv_load(
+            let loaded = execution.runtime.block_on(submit_csv_load(
                 operation,
                 &configuration.credentials,
                 &upload,
                 &jobs,
                 &mut upload_request,
                 request.reference(),
+                &job,
                 RetryDelays::SERVICE,
             ))?;
             Ok(FinishedJob {
-                rows: job.output_rows(),
+                rows: loaded.output_rows(),
                 job_id: request.reference().job_id.clone(),
             })
         },
@@ -103,7 +104,12 @@ pub(crate) fn execute_csv_load(
 /// sent nothing (it could not connect or mint a token) or that BigQuery refused with a retryable
 /// reason (a rate limit, or a 400 such as `jobInternalError`) is sent again under the same job
 /// ID, each time from a fresh `upload_request`. A 400 job failure may come from a job it created,
-/// which the resend's 409 then names.
+/// which the resend's 409 then names. `job` names the job in a refusal's message, as `jobs.insert`
+/// names it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "tests substitute the clients, the uploads and the backoff"
+)]
 async fn submit_csv_load<'r>(
     operation: &Operation,
     credentials: &google_cloud_auth::credentials::Credentials,
@@ -111,11 +117,13 @@ async fn submit_csv_load<'r>(
     jobs: &JobClient,
     upload_request: &mut dyn FnMut() -> Result<Request<'r>>,
     requested: &JobReference,
+    job: &str,
     delays: RetryDelays,
 ) -> Result<LoadOrCopyJob> {
     // Register before the upload so cancellation can address the job if the response is lost or
     // the caller cancels mid-upload.
     operation.register_provisional_job(requested)?;
+    let rejected = format!("BigQuery rejected the {job}");
     let mut attempt = 0;
     let (failure, may_exist) = loop {
         attempt += 1;
@@ -143,9 +151,12 @@ async fn submit_csv_load<'r>(
             _ => (false, false),
         };
         let may_exist = may_have_created(&start, &answer) && !refused;
+        // A refusal is BigQuery's verdict on the job; an answer that may come from a job it
+        // created is only a failure to submit.
+        let failed = format!("failed to {context}");
         let (class, failure) = match answer {
             Ok((_, body)) if existing => (RetryClass::Final, existing_job(context, &body)),
-            answer => match classify(answer, &format!("failed to {context}")) {
+            answer => match classify(answer, if may_exist { &failed } else { &rejected }) {
                 Ok(body) => {
                     operation.register_job(requested)?;
                     return wait_for_submitted(jobs, operation, requested, &body, WHAT).await;
@@ -175,8 +186,11 @@ async fn submit_csv_load<'r>(
     // Either the job cannot exist and no cancel should address it, or a cancel that raced its
     // visibility gets its post-confirm retry, during the recovery GET too.
     settle_submission(Some(operation), requested, may_exist);
-    if !may_exist || failure.status == Status::Cancelled {
+    if failure.status == Status::Cancelled {
         return Err(failure);
+    }
+    if !may_exist {
+        return Err(with_job_verdict(failure, "not_created"));
     }
     let recovered = jobs
         .reconcile_submission(Some(operation), requested, WHAT, Some(failure))

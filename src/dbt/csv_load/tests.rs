@@ -89,6 +89,7 @@ fn submit_each<'r>(
         jobs,
         uploads,
         &reference(),
+        "CSV load job",
         RetryDelays::flat(Duration::from_millis(1)),
     ))
 }
@@ -329,9 +330,10 @@ fn an_unrecovered_upload_says_its_job_may_still_run() {
 }
 
 /// A refused upload created no job, so a later cancel has nothing to address: it would answer 404
-/// and warn that the job may keep running, and the error does not say it may. That includes the
-/// 409 BigQuery answers a `WRITE_EMPTY` load into a table with rows with. A rate-limited upload
-/// applied nothing either, so it is resent until the attempts run out.
+/// and warn that the job may keep running. The error says BigQuery rejected the job and that it
+/// was not created, as a refused `jobs.insert` does. That includes the 409 BigQuery answers a
+/// `WRITE_EMPTY` load into a table with rows with. A rate-limited upload applied nothing either,
+/// so it is resent until the attempts run out.
 #[test]
 fn a_refused_upload_leaves_no_job_to_cancel() {
     for (code, reason, status, uploads) in [
@@ -351,8 +353,18 @@ fn a_refused_upload_leaves_no_job_to_cancel() {
             &mut || Ok(upload(&url, bytes::Bytes::new().into())),
         )
         .unwrap_err();
-        assert_eq!(failure.status, status);
+        crate::test_support::errors::assert_failure(
+            &failure,
+            status,
+            &[&format!(
+                "BigQuery rejected the CSV load job: {reason}: refused (HTTP {code})"
+            )],
+        );
         crate::test_support::errors::assert_message_omits(&failure, &["may still run"]);
+        assert!(failure.details.as_ref().unwrap().contains(&(
+            crate::error::DETAIL_JOB_VERDICT.to_owned(),
+            b"not_created".to_vec(),
+        )));
         OperationCancelHandle(cancellation).try_cancel().unwrap();
 
         assert_eq!(

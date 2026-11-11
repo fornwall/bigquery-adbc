@@ -13,6 +13,8 @@ changes.
 - `BIGQUERY:type` metadata naming an `ARRAY<...>`, `STRUCT<...>` or `RANGE<...>` type on a scalar
   parameter, ingest or seed field returns `INVALID_ARGUMENT` as a mismatch with the Arrow type,
   instead of `NOT_IMPLEMENTED` claiming the driver lacks the type.
+- A CSV seed upload that BigQuery refuses reports `BigQuery rejected the CSV load job` and the
+  `bigquery.job.verdict` detail `not_created`, as other refused job submissions do.
 
 ## [0.6.0] - 2026-11-11
 
