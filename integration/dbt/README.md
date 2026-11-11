@@ -66,9 +66,9 @@ because dbt's default Drive scope makes ordinary ADC refresh fail with `invalid_
 the driver file's hash and dbt's resolution log, and run from the project directory for relative
 seed paths.
 
-Successful runs delete their datasets, including the `_authorized_source` companion and the
-`run-operation` parity datasets, unless given `--keep-datasets`; failed and interrupted runs keep
-them, and the next run drops them first. Logs go to `integration/dbt/logs/` and dbt artifacts to
+Successful runs delete their datasets, including the `_authorized_source` companion, unless given
+`--keep-datasets`, and the `run-operation` parity datasets once their comparison passes. Failed and
+interrupted runs keep them; the next run drops them, or replaces the parity table, first. Logs go to `integration/dbt/logs/` and dbt artifacts to
 `integration/dbt/target/`, with each phase's saved under `target/<mode>/phases/<phase>/`, even on
 failure. For an intended selection change, review missing or unexpected IDs against those artifacts
 and update `coverage.json` in the same commit; do not remove tests merely to pass the baseline.
