@@ -438,7 +438,9 @@ returning; closing their empty result stream does not skip writes.
 - A value its parameter type cannot hold, such as a date after year 9999, returns `INVALID_DATA`
   naming the parameter and row.
 - BigQuery ignores bound parameters the SQL never references, so binding too many columns is not
-  an error; a placeholder nothing binds returns `INVALID_ARGUMENT`.
+  an error; a placeholder nothing binds returns `INVALID_ARGUMENT`. Without any binding, BigQuery
+  refuses `?` as "Positional parameters are not supported", and the error adds that the statement
+  has no bound parameters.
 
 | Arrow input | Parameter type |
 | --- | --- |

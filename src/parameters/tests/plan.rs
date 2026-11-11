@@ -108,33 +108,52 @@ fn rejects_deeply_nested_parameter_schemas() {
 }
 
 /// BigQuery refuses placeholders of the other style with a bare message that never names the
-/// driver's option; only the mode that sent the parameters knows which value to suggest.
+/// driver's option; only the mode that sent the parameters knows which value to suggest. Sent
+/// without parameters, a `?` draws the same refusal, which only binding answers.
 #[test]
 fn a_refused_placeholder_style_names_the_parameter_mode_to_set() {
     let refused = |message: &str| crate::error::error(message, Status::InvalidArguments);
     let named = "invalidQuery: Named parameters are not supported at [1:8] (HTTP 400)";
     let positional = "invalidQuery: Positional parameters are not supported at [1:8] (HTTP 400)";
-    assert_eq!(
-        ParameterMode::Positional
-            .explain_refusal(refused(named))
-            .message,
-        format!("{named}; set bigquery.query.parameter_mode to \"named\"")
-    );
-    assert_eq!(
-        ParameterMode::Named
-            .explain_refusal(refused(positional))
-            .message,
-        format!("{positional}; set bigquery.query.parameter_mode to \"positional\"")
-    );
-    // Any other failure, and a refusal the mode cannot have caused, pass through untouched.
-    for (mode, message) in [
-        (ParameterMode::Named, named),
-        (ParameterMode::Positional, positional),
+    for (sent, message, hint) in [
         (
-            ParameterMode::Positional,
+            Some(ParameterMode::Positional),
+            named,
+            "set bigquery.query.parameter_mode to \"named\"",
+        ),
+        (
+            Some(ParameterMode::Named),
+            positional,
+            "set bigquery.query.parameter_mode to \"positional\"",
+        ),
+        (
+            None,
+            positional,
+            "no parameters are bound to the statement: bind a value for each ? placeholder with \
+             AdbcStatementBind or AdbcStatementBindStream",
+        ),
+    ] {
+        let explained = ParameterMode::explain_refusal(sent, refused(message));
+        assert_eq!(explained.status, Status::InvalidArguments);
+        assert_eq!(explained.message, format!("{message}; {hint}"));
+    }
+    // Any other failure, and a refusal the mode cannot have caused, pass through untouched.
+    for (sent, message) in [
+        (Some(ParameterMode::Named), named),
+        (Some(ParameterMode::Positional), positional),
+        (None, named),
+        (
+            Some(ParameterMode::Positional),
+            "invalidQuery: Query parameter 'x' not found at [1:8] (HTTP 400)",
+        ),
+        (
+            None,
             "invalidQuery: Query parameter 'x' not found at [1:8] (HTTP 400)",
         ),
     ] {
-        assert_eq!(mode.explain_refusal(refused(message)).message, message);
+        assert_eq!(
+            ParameterMode::explain_refusal(sent, refused(message)).message,
+            message
+        );
     }
 }

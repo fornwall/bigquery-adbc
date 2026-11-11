@@ -168,34 +168,42 @@ fn executes_named_parameters_for_each_bound_row() {
 }
 
 /// BigQuery answers placeholders of the other style than the parameter mode with a bare
-/// "Named/Positional parameters are not supported"; the driver adds which option to set.
+/// "Named/Positional parameters are not supported"; the driver adds which option to set. A `?`
+/// sent without parameters draws the positional refusal too, which binding answers instead.
 #[test]
 #[ignore = "requires Google Cloud ADC and access to the integration project"]
 fn a_placeholder_style_mismatch_names_the_parameter_mode_to_set() {
     let mut connection = connect(project());
-    for (mut statement, remedy) in [
+    let set_mode = |mode: &str| format!("; set bigquery.query.parameter_mode to \"{mode}\"");
+    for (mut statement, bound, refusal, remedy) in [
         (
             prepare_query(&mut connection, "SELECT @x + 1"),
+            true,
             "Named parameters are not supported at [1:8]",
+            set_mode("named"),
         ),
         (
             named_parameter_query(&mut connection, "SELECT ? + 1"),
+            true,
             "Positional parameters are not supported at [1:8]",
+            set_mode("positional"),
+        ),
+        (
+            prepare_query(&mut connection, "SELECT ? + 1"),
+            false,
+            "Positional parameters are not supported at [1:8]",
+            "; no parameters are bound to the statement: bind a value for each ? placeholder \
+             with AdbcStatementBind or AdbcStatementBindStream"
+                .to_owned(),
         ),
     ] {
-        statement.bind(int64_batch("x", vec![1])).unwrap();
+        if bound {
+            statement.bind(int64_batch("x", vec![1])).unwrap();
+        }
         let failure = statement.execute().err().unwrap();
         assert_eq!(failure.status, Status::InvalidArguments);
-        let expected_mode = if remedy.starts_with("Named") {
-            "named"
-        } else {
-            "positional"
-        };
         assert!(
-            failure.message.contains(remedy)
-                && failure.message.ends_with(&format!(
-                    "; set bigquery.query.parameter_mode to \"{expected_mode}\""
-                )),
+            failure.message.contains(refusal) && failure.message.ends_with(&remedy),
             "message: {}",
             failure.message
         );

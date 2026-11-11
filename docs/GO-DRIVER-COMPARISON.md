@@ -711,6 +711,7 @@ or lose null rows.
 | Executing again after the binding was consumed | `INVALID_STATE` until rebound | Reuses the last row's parameters after a bound `ExecuteUpdate` (bug) |
 | A dry run with bound parameters | Types them from the bound schema and keeps the binding | Consumes the binding |
 | `ExecuteSchema` without a binding | Dry run that types `?` placeholders | BigQuery refuses `?` |
+| Executing `?` without a binding | BigQuery's "Positional parameters are not supported", plus a hint to bind | BigQuery's message alone |
 | `SetSqlQuery` | Clears the `adbc.ingest.target_*` options | Clears only `target_table` |
 | Reading `adbc.ingest.target_*` and `mode` | The value set (`NOT_FOUND` while unset); `mode` defaults to `create` | `NOT_FOUND` |
 | Invalid `adbc.ingest.target_*` value | `INVALID_ARGUMENT` from `SetOption` | Fails when writing |

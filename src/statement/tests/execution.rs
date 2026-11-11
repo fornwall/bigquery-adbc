@@ -551,6 +551,40 @@ fn parameters_reach_the_request_as_bigquery_spells_them() {
     }
 }
 
+/// An unbound statement sends no parameter mode, which BigQuery answers for a `?` with
+/// "Positional parameters are not supported", as if the driver lacked them; every execute entry
+/// point says the statement is missing its parameters instead.
+#[test]
+fn an_unbound_positional_placeholder_is_refused_as_missing_its_parameters() {
+    let refusal = "Positional parameters are not supported at [1:8]";
+    let rejection = || google_rejection(400, "INVALID_ARGUMENT", "invalidQuery", refusal);
+    let (endpoint, requests) = capture_requests(vec![rejection(), rejection(), rejection()]);
+    let mut statement = test_query_at(&endpoint, "SELECT ?");
+    let failures = [
+        statement.execute().err().unwrap(),
+        statement.execute_update().unwrap_err(),
+        statement.execute_partitions().unwrap_err(),
+    ];
+    for failure in failures {
+        assert_failure(
+            &failure,
+            Status::InvalidArguments,
+            &[
+                refusal,
+                "no parameters are bound to the statement: bind a value for each ? placeholder \
+                 with AdbcStatementBind or AdbcStatementBindStream",
+            ],
+        );
+    }
+    for request in requests.served(3) {
+        assert!(
+            request.body.get("parameterMode").is_none(),
+            "{:?}",
+            request.body
+        );
+    }
+}
+
 /// The completing response carries `totalRows`, so `AdbcStatementExecuteQuery` reports the
 /// result size up front, as PEP 249's `cursor.rowcount` expects. A script counts its final
 /// result; one ending in anything else reports -1, as does a count too large for `int64_t`.

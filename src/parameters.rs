@@ -56,23 +56,36 @@ impl ParameterMode {
         }
     }
 
-    /// Names the option to change when BigQuery refused the query's placeholders for being the
-    /// other style than the parameters sent: `SELECT @x` bound in the default positional mode gets
-    /// a bare "Named parameters are not supported", and only the driver knows which mode it sent.
-    /// The match is on BigQuery's exact wording, so a changed wording loses the hint, not the
-    /// error.
-    pub(crate) fn explain_refusal(self, mut failure: Error) -> Error {
-        let (refusal, remedy) = match self {
-            Self::Positional => ("Named parameters are not supported", Self::Named),
-            Self::Named => ("Positional parameters are not supported", Self::Positional),
+    /// Says what to change when BigQuery refused the query's placeholders, given the mode of the
+    /// parameters `sent`, `None` when the query was sent without any: `SELECT @x` bound in the
+    /// default positional mode gets a bare "Named parameters are not supported", and only the
+    /// driver knows which mode it sent. Without a parameter mode BigQuery refuses `?` the same way
+    /// ("Positional parameters are not supported"), though the statement only lacks its
+    /// parameters. The match is on BigQuery's exact wording, so a changed wording loses the hint,
+    /// not the error.
+    pub(crate) fn explain_refusal(sent: Option<Self>, mut failure: Error) -> Error {
+        let (refusal, remedy) = match sent {
+            Some(Self::Positional) => ("Named parameters are not supported", Some(Self::Named)),
+            Some(Self::Named) => (
+                "Positional parameters are not supported",
+                Some(Self::Positional),
+            ),
+            None => ("Positional parameters are not supported", None),
         };
         if failure.message.contains(refusal) {
-            failure.message = format!(
-                "{}; set {} to \"{}\"",
-                failure.message,
-                crate::BigQueryStatementOption::ParameterMode.as_str(),
-                remedy.as_str()
-            );
+            failure.message = match remedy {
+                Some(remedy) => format!(
+                    "{}; set {} to \"{}\"",
+                    failure.message,
+                    crate::BigQueryStatementOption::ParameterMode.as_str(),
+                    remedy.as_str()
+                ),
+                None => format!(
+                    "{}; no parameters are bound to the statement: bind a value for each ? \
+                     placeholder with AdbcStatementBind or AdbcStatementBindStream",
+                    failure.message
+                ),
+            };
         }
         failure
     }

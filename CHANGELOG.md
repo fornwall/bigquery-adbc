@@ -44,6 +44,9 @@ changes.
 - `GetObjects` and `GetStatistics` with a catalog filter naming another project no longer check
   that the project exists before walking it, saving a request whenever the walk finds a dataset.
   A walk that finds nothing still checks, so a missing project still yields no catalog row.
+- Executing a `?` placeholder with no parameters bound still returns BigQuery's
+  `INVALID_ARGUMENT` "Positional parameters are not supported", but the error now says to bind
+  the parameters, since positional parameters are the default.
 
 ### Fixed
 

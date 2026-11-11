@@ -308,10 +308,7 @@ impl BigQueryStatement {
             sql,
             parameters.map(|parameters| (self.parameter_mode.as_bigquery_value(), parameters)),
         )
-        .map_err(|failure| match mode {
-            Some(mode) => mode.explain_refusal(failure),
-            None => failure,
-        })
+        .map_err(|failure| ParameterMode::explain_refusal(mode, failure))
     }
 
     /// Typed nulls from the bound stream's schema, which is all a dry run or a description of the
@@ -336,7 +333,7 @@ impl BigQueryStatement {
             sql,
             Some((self.parameter_mode.as_bigquery_value(), parameters)),
         )
-        .map_err(|failure| self.parameter_mode.explain_refusal(failure))
+        .map_err(|failure| ParameterMode::explain_refusal(Some(self.parameter_mode), failure))
     }
 
     /// The result schema of a statement whose bound parameter stream holds no rows: nothing
@@ -543,7 +540,9 @@ impl Statement for BigQueryStatement {
         };
         let result =
             execute_parameter_schema(context, sql, self.parameter_mode.as_bigquery_value())
-                .map_err(|failure| self.parameter_mode.explain_refusal(failure));
+                .map_err(|failure| {
+                    ParameterMode::explain_refusal(Some(self.parameter_mode), failure)
+                });
         operation.finish();
         let schema = result?;
         *self.parameter_schema.borrow_mut() = Some(CachedParameterSchema {
