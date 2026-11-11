@@ -57,8 +57,7 @@ fn align_fields(fields: &Fields, columns: &[TableFieldSchema]) -> Result<Fields>
             // another shape, stands in as a string, so schema comparison reports the difference
             // rather than conversion refusing the type.
             Ok(if has_null_type(aligned.data_type()) {
-                let data_type = null_as_string(aligned.data_type());
-                aligned.with_data_type(data_type)
+                null_stand_in(&aligned)
             } else {
                 aligned
             })
@@ -66,17 +65,23 @@ fn align_fields(fields: &Fields, columns: &[TableFieldSchema]) -> Result<Fields>
         .collect()
 }
 
-fn null_as_string(data_type: &DataType) -> DataType {
-    let retyped = |field: &Arc<Field>| {
-        let data_type = null_as_string(field.data_type());
-        field.as_ref().clone().with_data_type(data_type)
+/// `field` with each `Null` in it a string. Every field on the way to a `Null` drops its metadata,
+/// such as a typed NULL's `BIGQUERY:type`, which describes a type the stand-in no longer has.
+fn null_stand_in(field: &Field) -> Field {
+    let child = |child: &Arc<Field>| {
+        if has_null_type(child.data_type()) {
+            Arc::new(null_stand_in(child))
+        } else {
+            child.clone()
+        }
     };
-    match data_type {
+    let data_type = match field.data_type() {
         DataType::Null => DataType::Utf8,
-        DataType::Struct(children) => DataType::Struct(children.iter().map(retyped).collect()),
-        DataType::List(item) => DataType::List(Arc::new(retyped(item))),
+        DataType::Struct(children) => DataType::Struct(children.iter().map(child).collect()),
+        DataType::List(item) => DataType::List(child(item)),
         data_type => data_type.clone(),
-    }
+    };
+    Field::new(field.name(), data_type, field.is_nullable())
 }
 
 fn align_field(field: &Field, column: &TableFieldSchema) -> Result<Field> {

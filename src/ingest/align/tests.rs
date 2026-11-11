@@ -9,6 +9,7 @@ use super::*;
 use crate::ingest::normalize::normalize_batch;
 use crate::ingest::schema::{arrow_schema_to_bigquery, normalize_schema, validate_existing_schema};
 use crate::rest::metadata::TableId;
+use crate::test_support::arrow::bigquery_typed;
 use crate::test_support::errors::assert_message;
 use crate::test_support::schema::{decimal, field, field_mode, record, table_schema};
 use crate::types::{ARROW_EXTENSION_NAME_KEY, BIGQUERY_TYPE_METADATA_KEY};
@@ -95,30 +96,27 @@ fn a_null_field_takes_the_type_of_the_column_it_fills() {
 }
 
 /// A `Null` in a field the table lacks, or in one whose column has another shape, stands in as a
-/// string, so the comparison reports the schema mismatch adbc.h asks for; and a REQUIRED column
-/// cannot be filled with NULLs.
+/// string, without the type metadata a typed NULL carries, so the comparison reports the schema
+/// mismatch adbc.h asks for; and a REQUIRED column cannot be filled with NULLs.
 #[test]
 fn a_null_field_is_refused_where_the_table_cannot_take_nulls() {
+    let typed_null = |name: &str| bigquery_typed(Field::new(name, DataType::Null, true), "INT64");
     let bound = Schema::new(vec![
-        Field::new("extra", DataType::Null, true),
-        Field::new_struct(
-            "nested",
-            vec![Field::new("note", DataType::Null, true)],
-            true,
+        typed_null("extra"),
+        Field::new_struct("nested", vec![typed_null("note")], true),
+        bigquery_typed(
+            Field::new_list("tags", Field::new("item", DataType::Null, true), true),
+            "ARRAY<INT64>",
         ),
-        Field::new_list("tags", Field::new("item", DataType::Null, true), true),
-        Field::new_struct(
-            "detail",
-            vec![Field::new("note", DataType::Null, true)],
-            true,
-        ),
+        Field::new_struct("detail", vec![typed_null("note")], true),
     ]);
     let table = table_schema([
         field("id", "INTEGER"),
         field("tags", "STRING"),
         field("detail", "INTEGER"),
     ]);
-    let aligned = align_with_table(&bound, &table).unwrap();
+    let normalized = normalize_schema(&bound).unwrap();
+    let aligned = align_with_table(&normalized, &table).unwrap();
     assert!(!has_null_field(aligned.fields()));
     let checked = arrow_schema_to_bigquery(&aligned).unwrap();
     let failure = validate_existing_schema(TARGET, Some(&table), &checked).unwrap_err();
