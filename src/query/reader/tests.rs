@@ -167,9 +167,13 @@ fn a_resident_result_reports_a_closed_conversion_pipeline_once() {
         .expect("creating a resident reader must not acquire its conversion permit");
     runtime.result_conversion_permits().close();
 
-    let failure = reader.next().unwrap().unwrap_err().to_string();
+    let ArrowError::ExternalError(source) = reader.next().unwrap().unwrap_err() else {
+        panic!("a closed conversion pipeline must report an embedded driver error");
+    };
+    let failure = source.downcast_ref::<adbc_core::error::Error>().unwrap();
+    assert_eq!(failure.status, Status::Internal);
     assert!(
-        failure.contains("conversion pipeline shut down"),
+        failure.message.contains("conversion pipeline shut down"),
         "{failure}"
     );
     assert!(reader.next().is_none());

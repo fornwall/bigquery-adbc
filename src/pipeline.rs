@@ -15,7 +15,7 @@ use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::cancellation::{CancelFlag, Operation};
-use crate::error::{DRIVER_DEFECT, driver_defect, invalid_argument};
+use crate::error::{driver_defect, invalid_argument};
 use crate::runtime::{SharedRuntime, block_in_place};
 
 /// Result delivery options shared by REST and Storage Read.
@@ -373,12 +373,12 @@ impl ResultPipelineCancellation {
             () = self.cancelled() => return Ok(None),
             permit = semaphore.clone().acquire_owned() => permit,
         };
+        // Nothing closes these semaphores.
         permit.map(Some).map_err(|_| {
-            // Nothing closes these semaphores, so this is a driver defect, and the message says so.
-            ArrowError::ComputeError(format!(
+            ArrowError::ExternalError(Box::new(driver_defect(format_args!(
                 "BigQuery result conversion stopped because the driver's conversion pipeline \
-                 shut down; {DRIVER_DEFECT}"
-            ))
+                 shut down"
+            ))))
         })
     }
 }
