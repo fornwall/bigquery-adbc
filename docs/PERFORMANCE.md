@@ -68,7 +68,8 @@ Measuring a change:
 ## Results
 
 Each figure compares builds of one change and need not match this checkout; to reproduce one, build
-both source versions on one machine. Unless stated otherwise: Rust 1.99.1, locked release builds,
+both source versions on one machine, and record CPU and toolchain with new measurements. Unless
+stated otherwise: Rust 1.99.1, locked release builds,
 Linux x86-64, AMD Ryzen 9 7950X3D pinned to CPU 3 (other host activity not excluded), median of
 three alternating before/after runs of seven samples each. Native results exclude network and
 BigQuery work, so they establish no live speedup. Requested bytes include freed intermediates;
@@ -90,7 +91,8 @@ three reports:
 | Inline decode and resident reader | 3.43 µs (3.24–5.36) | 94 | 10,040 |
 
 Responses are 335, 380, 1,807 and 47,441 JSON bytes at 0, 1, 32 and 1,024 rows. The 32-row case
-fell from 33.16 to 10.79 µs; the buffered 1,024-row control showed no established change. The
+fell from 33.16 to 10.79 µs; the buffered 1,024-row control ranged 270–276 µs before and 273–436 µs
+after (final sample 273 µs), so no large-result change is established. The
 one-row saving is about 0.6 ms across 26 data tests before concurrency. Three alternating pairs of
 dbt `2.0.9` rebuilding existing relations (eight threads) establish no whole-build speedup: median
 wall 8.86 s before and 8.61 s after, paired ratio `0.963` (`0.783`–`0.982`).
@@ -470,8 +472,8 @@ cache hits and the expected signature, without establishing a whole-build speedu
 dataset still needs `datasets.get` after `tables.list`, which has no table to report the name
 BigQuery resolved the filter to. A catalog filter naming another project, as with a separate
 execution project, sends its one-dataset existence probe only when a one-dataset lookup finds
-nothing or fails as missing, so a lookup that finds the dataset takes one request instead of two
-and a listing one request fewer. Mock tests:
+nothing, or a lookup or listing fails as missing, so a lookup that finds the dataset takes one
+request instead of two and a successful listing one request fewer. Mock tests:
 
 ```sh
 cargo test --locked --all-features disabling_wildcards_keeps_unfiltered_dataset_and_table_listings
@@ -483,16 +485,32 @@ enables literal filters best-effort on dbt `main`; the `2.0.9` binary lacks it. 
 [canonical](DBT.md#installing) `0.21.0.dev+dbt0.21.19` and opt-in Foundry `0.21.0.dev+dbt0.1.5`
 drivers return `NOT_IMPLEMENTED` for `disable_wildcards` and `skip_table_metadata`.
 
-### REST page size
+### REST pages and Storage Read setup
 
-`jobs.query` and later REST pages request 100,000 rows. In one Rust process against
-`example-project` with `bigquery.query.disable_query_cache`, two alternating rounds per build,
-reading 600,000 rows of
-`SELECT n FROM UNNEST(GENERATE_ARRAY(1, N)) AS n ORDER BY n` over REST alone took 13.57–14.49 s,
-against 19.89–20.42 s with no `maxResults` (a first response of up to 350,000 rows) and
-10,000-row pages after it. The first response took 3.1–3.2 s holding 100,000 rows and 8.4–8.5 s
-holding 350,000: a REST page costs a round trip plus about 20 µs per narrow row. Storage Read's
-`jobs.get` and session setup cost about a second before rows arrive.
+Seconds to read a whole result in one Rust process against `example-project` with
+`bigquery.query.disable_query_cache`, two alternating rounds per build. Narrow rows are
+`SELECT n FROM UNNEST(GENERATE_ARRAY(1, N)) AS n ORDER BY n`; padded rows add
+`REPEAT('x', 500) AS padding` (about 20,000 per 10 MB page).
+
+`jobs.query` and later REST pages request 100,000 rows. Reading 600,000 narrow rows over REST alone
+took 13.57–14.49 s, against 19.89–20.42 s with no `maxResults` (a first response of up to 350,000
+rows) and 10,000-row pages after it. The first response took 3.1–3.2 s holding 100,000 rows and
+8.4–8.5 s holding 350,000: a REST page costs a round trip plus about 20 µs per narrow row.
+
+With 100,000-row pages, Storage Read forced at any size versus
+`bigquery.query.use_storage_api_disabled_client=true`:
+
+| Result | Pages after the first | Storage Read | REST |
+| --- | ---: | ---: | ---: |
+| 120,000 narrow rows | 1 (20,000 rows) | 4.35–4.97 | 3.25–3.29 |
+| 160,000 narrow rows | 1 (60,000 rows) | 4.50–4.56 | 4.02–4.20 |
+| 200,000 narrow rows | 1 (100,000 rows) | 4.08–4.12 | 4.72–4.80 |
+| 40,000 padded rows | 1 | 3.24–3.47 | 3.03–3.12 |
+| 50,000 padded rows | 2 | 3.45–3.71 | 3.88–4.09 |
+| 6,000 rows of 3,000 bytes | 1 | 2.67–3.33 | 2.23–2.42 |
+| 10,000 rows of 3,000 bytes | 2 | 3.08–4.61 | 2.89–2.99 |
+
+Storage Read's `jobs.get` and session setup took about a second before rereading the whole result.
 
 ### Choosing Storage Read for every paginated result
 
