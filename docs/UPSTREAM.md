@@ -2,8 +2,10 @@
 
 Issues in dependencies, services and test suites that affect this driver or need a local
 workaround. An entry stays until the driver, or the client environments it supports, adopt an
-upstream fix; entries without an issue or PR are local findings. Go driver differences are in
-[GO-DRIVER-COMPARISON.md](GO-DRIVER-COMPARISON.md) and dbt behavior in [DBT.md](DBT.md).
+upstream fix; entries without an issue or PR are local findings. To try an open fix, port its patch
+onto the pinned revision rather than switching to the PR branch, which may lack changes the pin
+has. Go driver differences are in [GO-DRIVER-COMPARISON.md](GO-DRIVER-COMPARISON.md) and dbt
+behavior in [DBT.md](DBT.md).
 
 The findings apply to these revisions:
 
@@ -14,7 +16,7 @@ The findings apply to these revisions:
 | [Driver Foundry](https://github.com/adbc-drivers) validation | [`f063165`](https://github.com/adbc-drivers/validation/commit/f0631651f79bd01b67c5776be6fe3b7fbfbe083b) | Integration pin. |
 | `h2` | 0.4.20 and [`e64c166`](https://github.com/hyperium/h2/commit/e64c1662ebb14794fc19cbcbb5b5dd0f67925f27) | Cargo uses 0.4.20; upstream `master` at this commit has UP-94. |
 | `idna_adapter` | 1.0.0 | Cargo pin selecting the stub back end of `idna` 1.1.0. |
-| dbt | [`b601ffe`](https://github.com/dbt-labs/dbt/commit/b601ffe469be8404e70b5e20f0ea0babc35ba6a8) | External client, not a Cargo dependency. |
+| dbt | [`ef0aa4d`](https://github.com/dbt-labs/dbt/commit/ef0aa4db3a70a7a5df5c4f008686e95f4fbab5e0) | `tools/dbt-build` pin; an external client, not a Cargo dependency. |
 
 Service findings come from observed failures; a driver test that normalizes or rejects the input
 cannot show whether the service is fixed.
@@ -64,20 +66,6 @@ cannot show whether the service is fixed.
 | UP-140 | A permanent token failure is served for good | `google-cloud-auth` | Local finding; driver rebuilds the credential | None |
 | UP-141 | Each token exchange builds a new HTTP client | `google-cloud-auth` | Local finding; no workaround | None |
 | UP-150 | A second `AdbcStatement.close()` miscounts open statements | ADBC Python driver manager | Local finding; DB-API cursors close once | None |
-
-## Git snapshot candidates
-
-These unmerged fixes are not adopted or integration-tested. PR branches may omit changes already
-in our pins, so port their patches onto the current revision rather than downgrading wholesale. No
-client snapshot fix is known for the BigQuery service failures.
-
-| Issue | Snapshot | What adopting it would address |
-| --- | --- | --- |
-| UP-84 | [ADBC PR #4814, `3237467`](https://github.com/fornwall/arrow-adbc/commit/3237467b86536a008042beb2c64f696c2c6ba9b7) (open) | Cancellation target for Python partition reads, including result consumption. Build and install `python/adbc_driver_manager`; changing the Rust ADBC pin does not update it. |
-| UP-94 | [`h2` PR #972, `1050775`](https://github.com/Elrendio/h2/commit/1050775ac348f9ebe7e3e9d0c7e4875f7a2a1c82) (open) | Replenishes the empty-frame budget with non-final payload frames, covering the observed interleaved padding; small payloads or payloads only in final frames can still exhaust it. Validate compressed BigQuery responses before enabling gzip. |
-| UP-77 | [dbt PR #16488](https://github.com/dbt-labs/dbt/pull/16488) (open) | Preserves dotted description and policy-tag paths; needs a rebuilt dbt and a driver with nested updates, as this one has. Does not fix removed policy tags (UP-91). |
-| UP-78 | [dbt `7f68444`](https://github.com/dbt-labs/dbt/commit/7f6844449b13b920dc9ea4da49806d1d835f718b) or later `main` | Requests literal dataset filters from supporting drivers, mitigating the overmatching with this driver; relation attribution itself is unchanged. |
-| UP-31 | [ADBC fork PR #43, `f11ad98`](https://github.com/fornwall/arrow-adbc/commit/f11ad988c6ae70fbed96bd8d8ce8ec68c6040024) (not an Apache PR) | Adds `NullListForm` to C++ validation, replacing an existing workaround; requires adapting the local quirks patch. |
 
 ## UP-19: BigQuery Storage Write corrupts Arrow day-time intervals
 
@@ -132,7 +120,7 @@ Write also checks the packed integer against the `TIMESTAMP` range, so a bound a
 ADBC's list ingest tests require null lists to read back as null, but BigQuery
 [stores null arrays as empty](https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/data-types#nulls_and_the_array_type).
 `validation-quirks.patch` adds `ingest_null_lists_as_empty()`; the fork PR proposes a
-`NullListForm` quirk instead.
+`NullListForm` quirk instead, which would mean adapting that patch.
 
 ## UP-38: Driver Foundry assumes approximate statistics are immediately current
 
@@ -172,7 +160,7 @@ hold a dynamic stub that links every RPC, including `FlushRows`, `SplitReadStrea
 generated `AppendRows`, which the driver never calls ([size](BINARY-SIZE.md#upstream-only-weights)).
 `PendingWriter` and `Read::builder()` offer no way around them.
 
-## UP-61: Rust BigQuery's pending-stream appends still have no timeout
+## UP-61: Rust BigQuery's pending-stream appends have no timeout
 
 In `google-cloud-bigquery` 1.0.0, attempt timeouts and retry policies are configurable only on the
 default-stream `WriterBuilder`, so nothing upstream bounds a pending-stream append. The driver
@@ -202,10 +190,10 @@ real AWS federation.
 
 ## UP-77: dbt 2.0 re-nests dotted `persist_docs` paths before sending them
 
-[`update_columns_descriptions`](https://github.com/dbt-labs/dbt/blob/b601ffe469be8404e70b5e20f0ea0babc35ba6a8/crates/dbt-adapter/src/adapter/adapter_impl.rs#L2708)
+[`update_columns_descriptions`](https://github.com/dbt-labs/dbt/blob/ef0aa4db3a70a7a5df5c4f008686e95f4fbab5e0/crates/dbt-adapter/src/adapter/adapter_impl.rs#L2756)
 re-nests dotted column paths to their top-level column, so nested descriptions and policy tags are
 silently never sent. The driver applies dotted paths at any depth; `integration/dbt/run.py` fails
-once they arrive.
+once they arrive. The open PR preserves the paths but does not clear removed policy tags (UP-91).
 
 ## UP-78: `list_relations_via_adbc` attributes every listed relation to the requested schema
 
@@ -216,13 +204,14 @@ must keep ADBC wildcard semantics, so its opt-in `bigquery.get_objects.disable_w
 names literal. [dbt `7f6844449`](https://github.com/dbt-labs/dbt/commit/7f6844449b13b920dc9ea4da49806d1d835f718b)
 enables it best-effort on `main` (not in `2.0.11`;
 [measurements](PERFORMANCE.md#repeated-dataset-discovery)), but the
-[adapter](https://github.com/dbt-labs/dbt/blob/b601ffe469be8404e70b5e20f0ea0babc35ba6a8/crates/dbt-adapter/src/engine/adbc.rs#L614)
+[adapter](https://github.com/dbt-labs/dbt/blob/ef0aa4db3a70a7a5df5c4f008686e95f4fbab5e0/crates/dbt-adapter/src/engine/adbc.rs#L618)
 skips it with dbt Cloud credentials and ignores option errors, so it applies only when both the
-adapter and the driver support it.
+adapter and the driver support it. The patched dbt from `tools/dbt-build` includes it; relation
+attribution itself is unchanged.
 
 ## UP-79: an unrecognized BigQuery table type panics the dbt process
 
-[`RelationType::from_adapter_type`](https://github.com/dbt-labs/dbt/blob/b601ffe469be8404e70b5e20f0ea0babc35ba6a8/crates/dbt-schemas/src/dbt_types.rs#L43)
+[`RelationType::from_adapter_type`](https://github.com/dbt-labs/dbt/blob/ef0aa4db3a70a7a5df5c4f008686e95f4fbab5e0/crates/dbt-schemas/src/dbt_types.rs#L43)
 panics on an unrecognized BigQuery table type, under an upstream `TODO` to return an error. The
 driver reports any type outside the five `GetTableTypes` advertises as `TABLE`
 (`src/connection/table_metadata.rs`).
@@ -253,7 +242,8 @@ to three attempts with 200 ms doubling backoff on transport failures and transie
 
 `Cursor.adbc_read_partition` uses the statement's `cancel` as its SIGINT hook, so Ctrl-C gets
 `INVALID_STATE` from this driver and the partition read keeps running. The driver cannot work
-around it.
+around it. Adopting the fix means building and installing the PR's `python/adbc_driver_manager`;
+the Rust ADBC pin does not update it.
 
 ## UP-86: dbt 2.0 drops a seed's and a table copy's job ID
 
@@ -323,7 +313,9 @@ excluded, toward a per-connection limit of 100 (`MAX_RECV_EMPTY_DATA_FRAMES`); t
 slowly produced gzip responses, such as large `jobs.query` answers, so two of them can end the
 shared connection. REST requests therefore omit `Accept-Encoding: gzip` (`src/rest/client.rs`);
 uncompressed responses carry no padding-only frames. Upgrading to current `master` does not fix
-it; the open PR's [snapshot](#git-snapshot-candidates) could remove the workaround after validation.
+it. The open PR replenishes the budget with non-final payload frames, which covers the observed
+interleaved padding, though small payloads or payloads only in final frames can still exhaust it;
+compressed BigQuery responses need validating before gzip is enabled.
 
 ## UP-95: `Cursor.adbc_ingest` keeps an earlier call's catalog and schema
 
@@ -370,7 +362,7 @@ connection, a stalled TLS handshake outlasts even a unary deadline.
 The driver limits `CreateReadSession` and `ReadRows` silence itself (`src/storage_read.rs`),
 doubling a stream's limit because it sees only complete messages; a resume reuses the channel, so a
 dead connection fails after about 10 minutes and a stream that opens and then stays silent after
-up to 62. `AppendRows` has the same gap, so the driver bounds every Storage Write wait
+up to 62 minutes. `AppendRows` has the same gap, so the driver bounds every Storage Write wait
 (`src/ingest/write/retry.rs`); a keepalive and connect timeout would make these limits backstops.
 
 ## UP-103: the `idna` stub back end panics on mixed-case non-ASCII hosts in debug builds
