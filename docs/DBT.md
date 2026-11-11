@@ -128,12 +128,14 @@ impersonation target the credentials name, else as its template decides; it neve
 A non-empty seed uses `adbc.bigquery.sql.query.destination_table` and
 `adbc.bigquery.ingest.csv_filepath`, `.csv_delimiter` and `.csv_schema` (Arrow IPC). The driver
 streams the CSV to a load job with the supplied schema, one header row and quoted newlines enabled.
+Defaults are `CREATE_IF_NEEDED` and `WRITE_EMPTY`; this path is separate from ADBC bulk ingestion.
+Declared `BIGQUERY:type` metadata retains type parameters; unsupported types are rejected.
+
 An upload that may have created the job is recovered by fetching it, never resent. One that sent
 nothing (it could not connect or obtain a token), or that BigQuery refused with a retryable reason
 such as a rate limit, is resent from the start of the file under the same job ID; a 409 naming that
-job then recovers it.
-Defaults are `CREATE_IF_NEEDED` and `WRITE_EMPTY`; this path is separate from ADBC bulk ingestion.
-Declared `BIGQUERY:type` metadata retains type parameters; unsupported types are rejected.
+job then recovers it. A 409 naming no job, as for a `WRITE_EMPTY` load into a table with rows,
+returns `ALREADY_EXISTS`.
 
 ### Authorized views
 

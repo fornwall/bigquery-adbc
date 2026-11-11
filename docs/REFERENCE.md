@@ -340,16 +340,18 @@ Conversion rules:
 the next query that needs one, with one `BEGIN TRANSACTION` job that creates it. A cancel stops
 waiting for that job at once (`CANCELLED`), and a job unanswered after a minute returns `TIMEOUT`;
 the driver ends the session once BigQuery's answer names it. A failed or unanswered `BEGIN` leaves
-any session it created for BigQuery to expire.
+any session it created for BigQuery to expire. Later transactions begin in the same session while
+BigQuery keeps it.
 
 - A `COMMIT TRANSACTION` or `ROLLBACK TRANSACTION` in SQL, alone or in a script, ends the
   transaction, and the next statement starts a new one. A statement that fails leaves the
   transaction and its earlier work open, including one BigQuery aborts for a concurrent update and
   DDL, which BigQuery refuses in a transaction except on temporary tables and functions.
-- Commit and rollback ignore cancellation for up to a minute, plus ten seconds to end the session
-  after a failure. Releasing a connection with a transaction open rolls it back and ends the
-  session, which the release waits for within the same limits, except inside a Tokio runtime (a
-  Rust host's async code or blocking pool), where both run in the background.
+- Commit, rollback and a `BEGIN` in an existing session ignore cancellation for up to a minute,
+  plus ten seconds to end the session after a failure. Releasing a connection with a transaction
+  open rolls it back and ends the session, which the release waits for within the same limits,
+  except inside a Tokio runtime (a Rust host's async code or blocking pool), where both run in the
+  background.
 - A commit keeps the transaction open only when BigQuery provably refused it, which
   `bigquery.job.verdict` shows. Any other commit or rollback failure ends the session, or says that
   could not be done or confirmed; a commit without a verdict returns `IO` or `TIMEOUT` and says
