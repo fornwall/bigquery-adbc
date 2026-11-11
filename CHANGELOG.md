@@ -174,6 +174,9 @@ changes.
 - The dbt installer takes no option or temporary path from the environment. A `td` variable named
   a directory it deleted on exit, even when the installed dbt was already current, and `prefix`,
   `dest`, `version`, `target` or `package` changed what it installed where.
+- A large partition of a `bigquery.query.destination_table` query, read through Storage Read,
+  returns the table as its job left it, as a small one read over REST does, instead of the table
+  as it is when read, with rows later jobs appended and without those a later truncation removed.
 
 ## [0.5.0] - 2026-11-09
 

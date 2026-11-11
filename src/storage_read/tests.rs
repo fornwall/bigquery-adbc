@@ -460,7 +460,7 @@ mod mock_reads {
     use arrow_array::RecordBatchReader;
 
     use super::{
-        Opened, READ_ROWS_RESUME_ATTEMPTS, ReshapePlan, adbc_failure, assert_failure,
+        Opened, READ_ROWS_RESUME_ATTEMPTS, ReshapePlan, ResultTable, adbc_failure, assert_failure,
         create_read_session, decode_batches, reader, reshape_plans,
     };
     use crate::cancellation::{Cancellation, Operation, OperationCancelHandle, operation_reader};
@@ -532,12 +532,15 @@ mod mock_reads {
         ClientState::for_test_at(ServiceEndpointKind::Storage, mock.endpoint())
     }
 
-    /// The table a scripted session reads.
-    fn destination() -> TableReference {
-        TableReference {
-            project_id: "project".to_owned(),
-            dataset_id: "dataset".to_owned(),
-            table_id: "results".to_owned(),
+    /// The table a scripted session reads, as it is now.
+    fn destination() -> ResultTable {
+        ResultTable {
+            table: TableReference {
+                project_id: "project".to_owned(),
+                dataset_id: "dataset".to_owned(),
+                table_id: "results".to_owned(),
+            },
+            job_end: None,
         }
     }
 
@@ -596,7 +599,7 @@ mod mock_reads {
         fn open(
             &self,
             clients: &Arc<ClientState>,
-            table: TableReference,
+            table: ResultTable,
         ) -> adbc_core::error::Result<Opened> {
             reader(
                 &self.runtime,
@@ -760,10 +763,8 @@ mod mock_reads {
     fn a_destination_naming_one_partition_is_read_over_rest() {
         let fixture = Fixture::new();
         let mock = fixture.mock(|_| {});
-        let table = TableReference {
-            table_id: "results$20240101".to_owned(),
-            ..destination()
-        };
+        let mut table = destination();
+        table.table.table_id = "results$20240101".to_owned();
         let result = fixture.open(&clients(&mock), table);
         assert_eq!(fallback_status(result), Status::NotImplemented);
         assert!(mock.read_offsets().is_empty());

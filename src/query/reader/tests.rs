@@ -695,8 +695,12 @@ fn a_paginated_result_uses_storage_read_before_emitting_any_rest_rows() {
     );
 }
 
-#[test]
-fn a_result_read_through_storage_read_reports_it() {
+/// Reads a paginated result through a scripted read session serving three rows, after a job
+/// lookup that answers with `statistics`. Returns the rows read, the diagnostics, and the server
+/// that recorded the session request.
+fn read_through_storage_read(
+    statistics: &serde_json::Value,
+) -> (usize, Vec<String>, crate::test_support::grpc::StorageMock) {
     use arrow_array::{Int64Array, RecordBatch};
 
     use crate::test_support::grpc::{MockPlan, StorageMock, ipc_messages};
@@ -725,6 +729,7 @@ fn a_result_read_through_storage_read_reports_it() {
     let (endpoint, server) = capture_requests_until_stopped(vec![ok(json!({
         "jobReference":{"projectId":"project","jobId":"storage-diag","location":"US"},
         "status":{"state":"DONE"},
+        "statistics":statistics,
         "configuration":{"query":{"destinationTable":
             {"projectId":"project","datasetId":"_anon","tableId":"results"}}}
     }))]);
@@ -756,11 +761,35 @@ fn a_result_read_through_storage_read_reports_it() {
             .map(|batch| batch.unwrap().num_rows())
             .sum::<usize>()
     });
-    assert_eq!(rows, 3, "the rows came from the read session");
     server.stop();
+    (rows, events, storage)
+}
+
+#[test]
+fn a_result_read_through_storage_read_reports_it() {
+    let (rows, events, _) = read_through_storage_read(&json!({}));
+    assert_eq!(rows, 3, "the rows came from the read session");
     assert!(
         events.iter().any(|event| event
             == "DEBUG reading BigQuery job project:US.storage-diag through Storage Read"),
         "{events:?}"
     );
+}
+
+/// `jobs.getQueryResults` returns a destination table as its job left it, even after a later job
+/// appends to it or truncates it (verified live), so the read session reads the table as of the
+/// job's end. A job reporting no end reads the table as it is.
+#[test]
+fn a_storage_read_reads_the_result_table_as_of_the_jobs_end() {
+    for (statistics, snapshot) in [
+        (
+            json!({"endTime": "1794392829005"}),
+            Some((1_794_392_829, 5_000_000)),
+        ),
+        (json!({}), None),
+    ] {
+        let (rows, _, storage) = read_through_storage_read(&statistics);
+        assert_eq!(rows, 3);
+        assert_eq!(storage.session_snapshot_times(), [snapshot]);
+    }
 }

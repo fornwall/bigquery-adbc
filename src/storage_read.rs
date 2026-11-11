@@ -5,7 +5,7 @@
 //! its job metadata, avoiding a separate lookup here. See [`reshape`](mod@reshape).
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use adbc_core::error::{Result, Status};
 use arrow_array::RecordBatchReader;
@@ -15,8 +15,9 @@ use google_cloud_bigquery::builder::read::ReadRows;
 use google_cloud_bigquery::client::Read;
 use google_cloud_bigquery::model::{
     ArrowSerializationOptions, DataFormat, ReadRowsResponse, ReadSession,
-    arrow_serialization_options::CompressionCodec, read_rows_response::Rows,
-    read_session::TableReadOptions,
+    arrow_serialization_options::CompressionCodec,
+    read_rows_response::Rows,
+    read_session::{TableModifiers, TableReadOptions},
 };
 use google_cloud_gax::error::Error as GoogleError;
 use google_cloud_gax::error::rpc::Code;
@@ -89,6 +90,18 @@ pub(crate) fn eligible(
         && !clients.storage_read_disabled(&job_reference.project_id)
 }
 
+/// The table holding a completed query job's results, and when that job finished.
+pub(crate) struct ResultTable {
+    pub(crate) table: TableReference,
+    /// The instant the session reads the table at, or now when `None`. `jobs.getQueryResults`
+    /// returns an explicit destination as its job left it, even after later jobs append to it or
+    /// truncate it, and a job's write commits before the job ends, so reading at the end returns
+    /// the same rows. An anonymous result table never changes after its job. Once the end leaves
+    /// the table's time-travel window, `CreateReadSession` refuses the session with
+    /// `INVALID_ARGUMENT` and the result is read over REST.
+    pub(crate) job_end: Option<SystemTime>,
+}
+
 /// Reads a completed query's results as Arrow, or reports that REST must be used.
 ///
 /// Every fallback happens before the first batch reaches the caller, so REST can re-read the
@@ -100,7 +113,7 @@ pub(crate) fn reader(
     operation: Option<&Operation>,
     options: QueryResultOptions,
     job_reference: &JobReference,
-    destination: TableReference,
+    destination: ResultTable,
     schema: SchemaRef,
 ) -> Result<Opened> {
     runtime.block_on(open_reader(
@@ -130,12 +143,12 @@ async fn open_reader(
     operation: Option<&Operation>,
     options: QueryResultOptions,
     job_reference: &JobReference,
-    destination: TableReference,
+    destination: ResultTable,
     schema: SchemaRef,
 ) -> Result<Opened> {
     // `CreateReadSession` refuses table decorators, which a destination naming one partition
     // (`table$20240101`) carries; no table name may contain `$`.
-    if destination.table_id.contains('$') {
+    if destination.table.table_id.contains('$') {
         return Ok(Opened::Fallback(error(
             "the destination table names a partition, which Storage Read cannot read",
             Status::NotImplemented,
@@ -284,21 +297,28 @@ async fn create_read_session(
     clients: &Arc<ClientState>,
     operation: Option<&Operation>,
     job_reference: &JobReference,
-    destination: &TableReference,
+    destination: &ResultTable,
     max_streams: i32,
 ) -> Result<std::result::Result<ReadSession, adbc_core::error::Error>> {
     let table = TableId {
-        project_id: &destination.project_id,
-        dataset_id: &destination.dataset_id,
-        table_id: &destination.table_id,
+        project_id: &destination.table.project_id,
+        dataset_id: &destination.table.dataset_id,
+        table_id: &destination.table.table_id,
     }
     .storage_path();
     // LZ4 frame keeps the wire small without the C toolchain a ZSTD decoder would add.
     let serialization =
         ArrowSerializationOptions::new().set_buffer_compression(CompressionCodec::Lz4Frame);
+    let modifiers = destination.job_end.and_then(|job_end| {
+        let mut modifiers = TableModifiers::new();
+        // Conversion fails only past the year 9999.
+        modifiers.snapshot_time = Some(job_end.try_into().ok()?);
+        Some(modifiers)
+    });
     let session = ReadSession::new()
         .set_data_format(DataFormat::Arrow)
         .set_table(table)
+        .set_or_clear_table_modifiers(modifiers)
         .set_read_options(TableReadOptions::new().set_arrow_serialization_options(serialization));
     let request = client
         .create_read_session()

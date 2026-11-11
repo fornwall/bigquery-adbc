@@ -9,7 +9,7 @@ use crate::diag::diag;
 use crate::error::{error, job_name, with_job_link};
 use crate::pipeline::spawn_result_reader;
 use crate::rest::jobs::{JobClient, JobReference};
-use crate::storage_read::Opened;
+use crate::storage_read::{Opened, ResultTable};
 
 use super::job_metadata::{result_schema, schema_with_rest_metadata};
 use super::pager::QueryPager;
@@ -101,9 +101,12 @@ pub(super) fn reader_from_rest_query(
         return Ok(empty_reader(schema));
     }
 
-    let destination = job
-        .as_ref()
-        .and_then(response::JobResponse::destination_table);
+    let destination = job.as_ref().and_then(|job| {
+        Some(ResultTable {
+            table: job.destination_table()?.clone(),
+            job_end: job.end_time(),
+        })
+    });
     match (storage_read, rest_reference.as_ref(), destination) {
         (true, Some(reference), Some(destination)) => {
             match crate::storage_read::reader(
@@ -112,7 +115,7 @@ pub(super) fn reader_from_rest_query(
                 operation.as_ref(),
                 result_options,
                 reference,
-                destination.clone(),
+                destination,
                 schema.clone(),
             )
             .map_err(link)?

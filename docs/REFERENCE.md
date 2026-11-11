@@ -185,7 +185,7 @@ defaults in effect, including the connection's.
 | `bigquery.query.use_storage_api_disabled_client` | Connection, statement | Boolean, default `false`. `true` forces REST results; see [Storage Read](#reading-large-results-through-the-storage-read-api). |
 | `bigquery.query.default_project_id` | Statement | Project for the default dataset; empty restores the connection's current catalog. Clearing it returns `INVALID_STATE` while a statement default dataset is set and no connection catalog or database project can replace it. |
 | `bigquery.query.default_dataset_id` | Statement | Dataset for unqualified names; empty restores the connection's current schema. A non-empty value needs a project from the statement, connection or database, else `INVALID_STATE`. |
-| `bigquery.query.destination_table` | Statement | `table`, `dataset.table`, `project.dataset.table`, or `project.catalog.namespace.table` for a BigLake Iceberg table, completed from the statement and connection defaults; empty clears it. Execution writes the result there and returns its schema with no rows; partitions from `AdbcStatementExecutePartitions` read the table. |
+| `bigquery.query.destination_table` | Statement | `table`, `dataset.table`, `project.dataset.table`, or `project.catalog.namespace.table` for a BigLake Iceberg table, completed from the statement and connection defaults; empty clears it. Execution writes the result there and returns its schema with no rows; partitions from `AdbcStatementExecutePartitions` read the table as the job left it, as `jobs.getQueryResults` does: with `WRITE_APPEND` that includes earlier rows, and later writes change nothing. |
 | `bigquery.query.create_disposition` | Statement | `CREATE_IF_NEEDED` (default) or `CREATE_NEVER`. |
 | `bigquery.query.write_disposition` | Statement | `WRITE_EMPTY` (default), `WRITE_APPEND`, or `WRITE_TRUNCATE`. |
 | `bigquery.query.max_bytes_billed` | Statement | Integer maximum bytes billed. Zero clears the override; negative values are rejected. |
@@ -501,6 +501,8 @@ as configured, regardless of automatic fallback.
 Read sessions use one stream unless `bigquery.query.unordered_read` is `true` (G26). Reading a
 query's anonymous result table is free; a partition of a query with
 `bigquery.query.destination_table` reads that permanent table, billed at the data-extraction rate.
+A session reads the table as of the job's end, as REST does; once that is outside the table's
+time-travel window (at most seven days), BigQuery refuses the session and REST reads the result.
 A partition is read with the `prefetch_concurrency`, `unordered_read` and
 `use_storage_api_disabled_client` values of the statement that created it, whichever connection
 reads it. Pass partition descriptors from `AdbcStatementExecutePartitions` to

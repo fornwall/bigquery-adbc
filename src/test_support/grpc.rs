@@ -127,6 +127,8 @@ struct MockState {
     read_stream_calls: Vec<String>,
     /// The `user-agent` header of every `CreateReadSession` request.
     session_user_agents: Vec<String>,
+    /// The table snapshot every `CreateReadSession` request asked for, as seconds and nanos.
+    session_snapshot_times: Vec<Option<(u64, u64)>>,
     /// The `user-agent` header of every `ReadRows` request, including refused opens and resumes.
     read_user_agents: Vec<String>,
     /// The `offset` of every `AppendRows` request, in arrival order.
@@ -191,6 +193,12 @@ impl StorageMock {
     /// The `user-agent` every `CreateReadSession` call sent.
     pub(crate) fn session_user_agents(&self) -> Vec<String> {
         lock(&self.state).session_user_agents.clone()
+    }
+
+    /// The `table_modifiers.snapshot_time` every `CreateReadSession` call asked for, as seconds
+    /// and nanos; `None` reads the table as it is now.
+    pub(crate) fn session_snapshot_times(&self) -> Vec<Option<(u64, u64)>> {
+        lock(&self.state).session_snapshot_times.clone()
     }
 
     /// The `user-agent` every `ReadRows` call sent, including refused opens and resumes.
@@ -330,6 +338,16 @@ async fn serve_call(
         "CreateReadSession" => {
             let call = lock(&state).session_user_agents.len() - 1;
             unary(&mut body, &mut sender, |request| {
+                let snapshot_time = pb::field_bytes(&request, 2)
+                    .and_then(|session| pb::field_bytes(session, 7))
+                    .and_then(|modifiers| pb::field_bytes(modifiers, 1))
+                    .map(|time| {
+                        (
+                            pb::field_varint(time, 1).unwrap_or_default(),
+                            pb::field_varint(time, 2).unwrap_or_default(),
+                        )
+                    });
+                lock(&state).session_snapshot_times.push(snapshot_time);
                 match plan.session_refusals.get(call) {
                     Some(&status) => Err(status),
                     None => Ok(create_read_session(&plan, &request)),

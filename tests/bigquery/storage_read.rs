@@ -566,6 +566,74 @@ fn reads_a_partition_of_required_fields_and_flexible_names_through_storage_read(
     assert_eq!(values, ascending());
 }
 
+/// A destination query's partition holds the destination table as its job left it, as
+/// `jobs.getQueryResults` reports it: every earlier append included, but nothing written after
+/// the job. Storage Read, REST paging and a complete first REST page must all agree once later
+/// jobs append to the table and truncate it.
+#[test]
+#[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
+fn partitions_read_their_destination_table_as_their_job_left_it() {
+    let rows = i64::try_from(STORAGE_READ_ROWS).unwrap();
+    let mut connection = connect_with_dataset_at("US");
+    let table = scratch_table("storage_read_append");
+    let _drop_table = DropTable::table(&table);
+    let mut write = |first: i64, last: i64, disposition, storage_read: bool| {
+        let mut statement = prepare_query(
+            &mut connection,
+            &format!("SELECT n, {PADDING} FROM UNNEST(GENERATE_ARRAY({first}, {last})) AS n"),
+        );
+        set_option(
+            &mut statement,
+            BigQueryStatementOption::DestinationTable,
+            table.as_str(),
+        );
+        set_option(
+            &mut statement,
+            BigQueryStatementOption::WriteDisposition,
+            disposition,
+        );
+        if !storage_read {
+            set_option(
+                &mut statement,
+                BigQueryStatementOption::UseStorageApiDisabledClient,
+                ADBC_OPTION_VALUE_ENABLED,
+            );
+        }
+        let mut result = statement.execute_partitions().unwrap();
+        assert_eq!(result.partitions.len(), 1);
+        result.partitions.pop().unwrap()
+    };
+    let storage_read = write(1, rows, BigQueryWriteDisposition::WriteAppend, true);
+    let rest_pages = write(
+        rows + 1,
+        2 * rows,
+        BigQueryWriteDisposition::WriteAppend,
+        false,
+    );
+    let complete_page = write(-1, -1, BigQueryWriteDisposition::WriteTruncate, true);
+    write(-2, -2, BigQueryWriteDisposition::WriteAppend, true);
+
+    for (what, partition, expected, through_storage_read) in [
+        ("Storage Read", storage_read, (1..=rows).collect(), true),
+        ("REST paging", rest_pages, (1..=2 * rows).collect(), false),
+        ("a complete REST page", complete_page, vec![-1], false),
+    ] {
+        let batches = connection
+            .read_partition(&partition)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let mut values = int64_column(&batches);
+        values.sort_unstable();
+        assert_eq!(values, expected, "{what}");
+        assert_eq!(
+            batches.iter().any(|batch| batch.num_rows() > 1024),
+            through_storage_read,
+            "{what} read the wrong path"
+        );
+    }
+}
+
 /// Cost statistics survive into a Storage Read result schema of a stored table, which bills bytes
 /// where generated rows bill none. Padding pushes the result past one `jobs.query` response (about
 /// 10 MB of JSON), so `JOB_CREATION_OPTIONAL` still creates the job and destination table Storage

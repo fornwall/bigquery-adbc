@@ -1,5 +1,7 @@
 //! Query response projections limited to rows, job identity, schema and execution statistics.
 
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use adbc_core::error::{Result, Status};
 use bytes::Bytes;
 
@@ -194,6 +196,12 @@ impl JobResponse {
             .and_then(|configuration| configuration.query.as_ref())
             .and_then(|query| query.destination_table.as_ref())
     }
+
+    /// When the job finished, which every `DONE` job reports, to the millisecond.
+    pub(super) fn end_time(&self) -> Option<SystemTime> {
+        let millis = u64::try_from(self.statistics.as_ref()?.end_time?).ok()?;
+        UNIX_EPOCH.checked_add(Duration::from_millis(millis))
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -213,6 +221,8 @@ pub(super) struct JobQueryConfiguration {
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct JobStatistics {
+    #[serde(default, deserialize_with = "optional_json_int")]
+    end_time: Option<i64>,
     #[serde(default, deserialize_with = "optional_json_int")]
     total_bytes_processed: Option<i64>,
     #[serde(default, deserialize_with = "optional_json_int")]
