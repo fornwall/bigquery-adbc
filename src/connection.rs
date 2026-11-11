@@ -203,6 +203,8 @@ impl BigQueryConnection {
             Ok(_) => Ok(self
                 .catalog_exists(operation, &catalog.project_id)?
                 .then(Vec::new)),
+            // Only an answer that the project is absent replaces the walk's failure; a probe
+            // that fails too leaves the walk's own error to report.
             Err(failure)
                 if matches!(failure.status, Status::NotFound | Status::InvalidArguments)
                     && matches!(
