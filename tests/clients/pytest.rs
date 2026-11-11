@@ -35,10 +35,13 @@ impl PytestSuite {
             self.directory
         ));
         let root = self.root();
+        // A caller's UV_PROJECT_ENVIRONMENT would move the environment away from the returned
+        // path, and share one environment between suites.
         run_checked(
             Command::new("uv")
                 .args(["sync", "--locked", "--project"])
-                .arg(&root),
+                .arg(&root)
+                .env_remove("UV_PROJECT_ENVIRONMENT"),
         );
         root.join(".venv/bin/python")
     }
