@@ -33,14 +33,15 @@ FIELDS = (
 
 def create_relations(client: bigquery.Client, dataset: str, materialized: bool) -> list[str]:
     base = f"{dataset}.partitioned"
-    table = bigquery.Table(base, schema=[
-        bigquery.SchemaField("event_date", "DATE", description="Event partition day"),
-        bigquery.SchemaField("group_id", "INTEGER", description="Clustering key"),
-        bigquery.SchemaField("value", "INTEGER", description="Aggregated value"),
-    ])
-    table.time_partitioning = bigquery.TimePartitioning(
-        type_="DAY", field="event_date", expiration_ms=604_800_000
+    table = bigquery.Table(
+        base,
+        schema=[
+            bigquery.SchemaField("event_date", "DATE", description="Event partition day"),
+            bigquery.SchemaField("group_id", "INTEGER", description="Clustering key"),
+            bigquery.SchemaField("value", "INTEGER", description="Aggregated value"),
+        ],
     )
+    table.time_partitioning = bigquery.TimePartitioning(type_="DAY", field="event_date", expiration_ms=604_800_000)
     table.clustering_fields = ["group_id"]
     table.description = "Compare BASIC and FULL metadata with an identical field projection"
     table.labels = {"purpose": "adbc-metadata-benchmark", "environment": "scratch"}
@@ -55,8 +56,7 @@ def create_relations(client: bigquery.Client, dataset: str, materialized: bool) 
     if materialized:
         view = bigquery.Table(f"{dataset}.materialized_view")
         view.mview_query = (
-            f"SELECT event_date, group_id, SUM(value) AS total_value FROM `{base}` "
-            "GROUP BY event_date, group_id"
+            f"SELECT event_date, group_id, SUM(value) AS total_value FROM `{base}` GROUP BY event_date, group_id"
         )
         view.mview_enable_refresh = False
         view.description = "Metadata projection materialized view"
@@ -70,7 +70,8 @@ def fetch(session: AuthorizedSession, prefix: str, table: str, view: str) -> tup
     response = session.get(
         f"{prefix}/tables/{quote(table, safe='')}",
         params={"view": view, "fields": FIELDS, "prettyPrint": "false"},
-        headers={"Accept-Encoding": "identity"}, timeout=60,
+        headers={"Accept-Encoding": "identity"},
+        timeout=60,
     )
     elapsed = time.perf_counter() - start
     response.raise_for_status()
@@ -113,8 +114,13 @@ def main() -> None:
     client = bigquery.Client(project=project, credentials=credentials)
     samples: list[dict[str, Any]] = []
     result: dict[str, Any] = {
-        "run_id": run_id, "project": project, "location": location, "dataset": dataset_id,
-        "fields": FIELDS, "samples": samples, "projected_responses_equal": False,
+        "run_id": run_id,
+        "project": project,
+        "location": location,
+        "dataset": dataset_id,
+        "fields": FIELDS,
+        "samples": samples,
+        "projected_responses_equal": False,
         "cleanup_complete": False,
     }
     created = False
@@ -135,10 +141,16 @@ def main() -> None:
                 for position, view in enumerate(order):
                     response, elapsed, size = fetch(session, prefix, relation, view)
                     responses[view] = response
-                    samples.append({
-                        "relation": relation, "pair": pair, "position": position,
-                        "view": view, "seconds": elapsed, "bytes": size,
-                    })
+                    samples.append(
+                        {
+                            "relation": relation,
+                            "pair": pair,
+                            "position": position,
+                            "view": view,
+                            "seconds": elapsed,
+                            "bytes": size,
+                        }
+                    )
                 if responses["BASIC"] != responses["FULL"]:
                     raise AssertionError(f"Projected responses differ for {relation}, pair {pair}")
             print(f"Completed {pair + 1}/{args.pairs} pairs per relation", flush=True)
