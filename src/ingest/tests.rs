@@ -927,6 +927,75 @@ fn a_create_over_an_existing_table_names_the_modes_that_write_into_it() {
     assert_eq!(requests.len(), 1, "only the insert was sent");
 }
 
+/// A `tables.insert` that failed without a verdict, such as a 503 or a lost response, may still
+/// have created the target, after which a `create` retry would only meet it: the failure says so
+/// and names the mode that writes either way. A refusal created nothing and says nothing more.
+#[test]
+fn a_create_without_a_verdict_says_the_table_may_exist() {
+    let schema = table_schema([field_mode("id", "INTEGER", "NULLABLE")]);
+    for (mode, answer, remedies) in [
+        (
+            IngestMode::Create,
+            (503, error_body("backendError", "try again")),
+            &[
+                "BigQuery may still have created project.dataset.events",
+                "retry with adbc.ingest.mode=\"adbc.ingest.mode.create_append\"",
+            ][..],
+        ),
+        (
+            IngestMode::CreateAppend,
+            (503, error_body("backendError", "try again")),
+            &["BigQuery may still have created project.dataset.events"][..],
+        ),
+        (
+            IngestMode::Create,
+            (400, error_body("invalid", "Invalid table ID")),
+            &[][..],
+        ),
+    ] {
+        let (outcome, requests) = against_bigquery(vec![answer.clone()], |context| {
+            let client = context.state.metadata_client(context.runtime)?;
+            prepare_table(context, &client, TARGET, mode, &schema, TablePlan::Create)
+        });
+        let failure = outcome.unwrap_err();
+        assert_message(
+            &failure,
+            &["failed to create BigQuery ingest target project.dataset.events"],
+        );
+        if remedies.is_empty() {
+            assert_message_omits(&failure, &["may still have created"]);
+        } else {
+            assert_message(&failure, remedies);
+        }
+        if mode != IngestMode::Create {
+            assert_message_omits(&failure, &["create_append"]);
+        }
+        assert_eq!(requests.len(), 1, "{mode:?} {}", answer.0);
+    }
+
+    // The insert landed, but its answer never arrived.
+    let (endpoint, server) = capture_requests_gated(vec![ok(json!({}))], || false);
+    let outcome = at_bigquery(&endpoint, |context| {
+        let client = context.state.metadata_client(context.runtime)?;
+        prepare_table(
+            context,
+            &client,
+            TARGET,
+            IngestMode::Create,
+            &schema,
+            TablePlan::Create,
+        )
+    });
+    assert_message(
+        &outcome.unwrap_err(),
+        &[
+            "BigQuery may still have created project.dataset.events",
+            "retry with adbc.ingest.mode=\"adbc.ingest.mode.create_append\"",
+        ],
+    );
+    assert_eq!(server.join().unwrap().len(), 1, "the insert was not resent");
+}
+
 #[test]
 fn ingest_method_accepts_only_storage_write() {
     const KEY: &str = "bigquery.bulk_ingest.method";

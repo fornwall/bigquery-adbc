@@ -4,7 +4,8 @@
 use std::sync::Arc;
 
 use adbc_core::constants::{
-    ADBC_INGEST_OPTION_MODE, ADBC_INGEST_OPTION_MODE_APPEND, ADBC_INGEST_OPTION_MODE_REPLACE,
+    ADBC_INGEST_OPTION_MODE, ADBC_INGEST_OPTION_MODE_APPEND, ADBC_INGEST_OPTION_MODE_CREATE_APPEND,
+    ADBC_INGEST_OPTION_MODE_REPLACE,
 };
 use adbc_core::error::{Result, Status};
 use adbc_core::options::IngestMode;
@@ -541,10 +542,7 @@ fn run_ingest_ddl(
     )
     .map_err(|source| {
         let mut failure = labelled(source);
-        if matches!(
-            failure.status,
-            Status::Cancelled | Status::IO | Status::Timeout | Status::Unknown
-        ) {
+        if without_verdict(failure.status) {
             failure.message = format!(
                 "{}; BigQuery may still have {done} {table}, in which case its previous rows are \
                  gone",
@@ -564,6 +562,8 @@ fn create_table(
     mode: IngestMode,
     schema: &TableSchema,
 ) -> Result<bool> {
+    // A cancel that arrived before the insert was sent created nothing, and says nothing more.
+    context.operation.check()?;
     match context.runtime.block_on(metadata_client.insert_table(
         Some(context.operation),
         table,
@@ -583,9 +583,37 @@ fn create_table(
             Err(failure)
         }
         Err(source) => {
-            Err(source.into_error(&format!("failed to create BigQuery ingest target {table}")))
+            let mut failure =
+                source.into_error(&format!("failed to create BigQuery ingest target {table}"));
+            // The insert is resent only after a refusal that created nothing (see
+            // `send_with_retry`), so a rerun is the retry, and a `create` rerun would only meet
+            // the table if this one landed.
+            if without_verdict(failure.status) {
+                failure.message = format!(
+                    "{}; BigQuery may still have created {table}",
+                    failure.message
+                );
+                if mode == IngestMode::Create {
+                    failure.message = format!(
+                        "{}; retry with \
+                         {ADBC_INGEST_OPTION_MODE}={ADBC_INGEST_OPTION_MODE_CREATE_APPEND:?}, \
+                         which writes into it if it exists, or check for it before retrying",
+                        failure.message
+                    );
+                }
+            }
+            Err(failure)
         }
     }
+}
+
+/// Whether a request that failed with `status` may still have been carried out: BigQuery can
+/// finish a request it was asked to cancel, or whose answer was lost or never came.
+fn without_verdict(status: Status) -> bool {
+    matches!(
+        status,
+        Status::Cancelled | Status::IO | Status::Timeout | Status::Unknown
+    )
 }
 
 fn missing_target(table: TableId<'_>) -> adbc_core::error::Error {

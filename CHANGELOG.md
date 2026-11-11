@@ -86,6 +86,8 @@ changes.
   parameters BigQuery reads them as, instead of being refused as duplicates.
 - A bulk-ingest dry run refuses a schema that leaves an append request no room for rows, as the
   ingest it validates does.
+- When an ingest's table creation fails without BigQuery's verdict, such as a lost response, the
+  error says the table may exist, and in `create` mode suggests retrying with `create_append`.
 
 ## [0.5.0] - 2026-11-09
 
