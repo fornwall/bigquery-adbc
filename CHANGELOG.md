@@ -62,6 +62,9 @@ changes.
   its destructors, which could wait forever on locks held by threads the child does not have.
 - The `AdbcError` that `AdbcErrorFromArrayStream` returns stays valid when other stream callbacks
   run before the caller reads it; Rust's aliasing rules had invalidated the pointer.
+- A connection released and recreated on the same `AdbcConnection` while another thread's
+  `AdbcConnectionInit` waited on BigQuery can be cancelled; it had received the first connection's
+  cancellation handle, so `AdbcConnectionCancel` found nothing to cancel.
 - With `bigquery.query.dry_run`, the dbt authorized-view, table metadata and python-model
   operations return `NOT_IMPLEMENTED` before any request instead of making their change, as a
   table copy already did.
