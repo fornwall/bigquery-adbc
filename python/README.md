@@ -57,8 +57,8 @@ PyArrow or any library supporting the Arrow PyCapsule interface can read:
 
 ```python
 import adbc_driver_manager
-import pyarrow
 import bigquery_adbc as bigquery
+import pyarrow
 
 with (
     bigquery.connect(db_kwargs={bigquery.DatabaseOptions.PROJECT_ID: "my-gcp-project"}) as database,
