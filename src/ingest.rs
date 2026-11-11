@@ -615,7 +615,8 @@ fn create_table(
             // The insert is resent only after a refusal that created nothing (see
             // `send_with_retry`), so a rerun is the retry, and a `create` rerun would only meet
             // the table if this one landed. An insert that never reached BigQuery (cancelled
-            // before it was sent, or unable to connect) created nothing, and says nothing more.
+            // before it was sent, or unable to connect), or that BigQuery refused on every
+            // attempt, created nothing and says nothing more.
             if start.started() && without_verdict(failure.status) {
                 failure.message = format!(
                     "{}; BigQuery may still have created {table}",

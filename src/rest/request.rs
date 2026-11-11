@@ -230,8 +230,11 @@ pub(crate) struct Request<'a> {
 
 /// Whether a request reached the first poll that may put bytes on the network.
 ///
-/// One signal spans every attempt of a submission. An attempt whose connection could not be
-/// established sent nothing, so it clears the signal it set, but never one an earlier attempt set.
+/// A caller gives each attempt a signal of its own, or shares one across a submission's attempts
+/// to tell, while one is in flight, whether remote work may exist. A shared signal is cleared after
+/// each attempt while none may have created anything (see `crate::rest::jobs::may_have_created`).
+/// An attempt whose connection could not be established sent nothing, so it clears the signal it
+/// set, but never one an earlier attempt set.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RequestStart(Arc<AtomicBool>);
 
@@ -243,6 +246,12 @@ impl RequestStart {
     /// Sets the signal for a request that carried another, such as one per attempt.
     pub(super) fn set(&self) {
         self.0.store(true, Ordering::Release);
+    }
+
+    /// Clears a shared signal after attempts that created nothing, so the next attempt sets it
+    /// anew when it is sent.
+    pub(super) fn clear(&self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 

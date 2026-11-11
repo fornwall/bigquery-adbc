@@ -20,7 +20,7 @@ use crate::test_support::cancellation::{job_client, operation, operation_at};
 use crate::test_support::credentials::{authorized_user_json, token_grant};
 use crate::test_support::errors::{assert_failure, assert_message};
 use crate::test_support::http::{
-    CapturedRequest, StoppableServer, capture_requests, capture_requests_gated,
+    CapturedRequest, CapturedServer, StoppableServer, capture_requests, capture_requests_gated,
     capture_requests_responding, capture_requests_until_stopped, error_body, ok,
 };
 use crate::test_support::identifiers::project;
@@ -1627,7 +1627,8 @@ fn a_non_dry_run_is_registered_before_the_post_can_answer() {
 
 /// A refusal proves no job exists only if no earlier attempt could have created one, on both
 /// submission routes. A refusal of a replay is no verdict on the attempt whose answer was lost, so
-/// the job that attempt created is fetched: a replayed `COMMIT` can find no transaction.
+/// the job that attempt may have created is fetched, as when a replayed `COMMIT` would find no
+/// transaction.
 #[test]
 fn only_a_submission_with_no_ambiguous_attempt_proves_its_job_was_not_created() {
     let unavailable = (503, error_body("backendError", "unavailable"));
@@ -1956,9 +1957,14 @@ impl google_cloud_auth::credentials::CredentialsProvider for SlowCredentials {
     }
 }
 
-/// Credentials that mint one token, then fail as an expired refresh token does.
-#[derive(Debug, Default)]
-struct MintsOnce(std::sync::atomic::AtomicBool);
+/// Credentials that mint one token, then fail as an unavailable token service does, which the
+/// request loops retry. Each failure is counted, after cancelling `cancels` if it is set.
+#[derive(Debug)]
+struct MintsOnce {
+    minted: std::sync::atomic::AtomicBool,
+    failures: Arc<std::sync::atomic::AtomicUsize>,
+    cancels: Option<Arc<crate::cancellation::Cancellation>>,
+}
 
 impl google_cloud_auth::credentials::CredentialsProvider for MintsOnce {
     async fn headers(
@@ -1968,10 +1974,22 @@ impl google_cloud_auth::credentials::CredentialsProvider for MintsOnce {
         google_cloud_auth::credentials::CacheableResource<http::HeaderMap>,
         google_cloud_gax::error::CredentialsError,
     > {
-        if self.0.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            return Err(google_cloud_gax::error::CredentialsError::from_msg(
-                false,
-                "the refresh token expired",
+        if self.minted.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            if let Some(cancellation) = &self.cancels {
+                OperationCancelHandle(cancellation.clone())
+                    .try_cancel()
+                    .unwrap();
+            }
+            self.failures
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let unavailable = crate::error::CredentialFailure::new(
+                crate::error::CredentialLayer::Impersonation,
+                None,
+                Some(crate::error::TokenServiceFailure::Http(503)),
+            );
+            return Err(google_cloud_gax::error::CredentialsError::from_source(
+                true,
+                unavailable,
             ));
         }
         Ok(google_cloud_auth::credentials::CacheableResource::New {
@@ -1985,31 +2003,87 @@ impl google_cloud_auth::credentials::CredentialsProvider for MintsOnce {
     }
 }
 
-/// An attempt that never reached BigQuery says nothing about the job, even after one that did:
-/// a rate-limited submission whose retry cannot mint a token still proves no job was created.
-#[test]
-fn an_unsent_retry_after_a_refusal_proves_its_job_was_not_created() {
+/// A client with [`MintsOnce`] credentials on an endpoint that answers only the first attempt,
+/// with a rate limit, and the count of failed mints.
+fn refused_then_unsent(
+    cancels: Option<Arc<crate::cancellation::Cancellation>>,
+) -> (
+    JobClient,
+    CapturedServer,
+    Arc<std::sync::atomic::AtomicUsize>,
+) {
     let (endpoint, captured) =
         capture_requests(vec![(429, error_body("rateLimitExceeded", "slow down"))]);
-    let runtime = new_runtime().unwrap();
+    let failures = Arc::default();
+    let credentials = google_cloud_auth::credentials::Credentials::from(MintsOnce {
+        minted: Default::default(),
+        failures: Arc::clone(&failures),
+        cancels,
+    });
     let client = JobClient::new(
-        google_cloud_auth::credentials::Credentials::from(MintsOnce::default()),
+        credentials,
         Some(&endpoint),
         crate::rest::client::rest_client("job client test").unwrap(),
     )
     .with_flat_delays(Duration::from_millis(1));
+    (client, captured, failures)
+}
 
+/// An attempt that never reached BigQuery says nothing about the job, even after one that did: a
+/// rate-limited submission whose retries cannot mint a token proves no job was created, on both
+/// submission routes, without looking for one.
+#[test]
+fn an_unsent_retry_after_a_refusal_proves_its_job_was_not_created() {
+    for location in [Some("EU"), None] {
+        let runtime = new_runtime().unwrap();
+        let (client, captured, failures) = refused_then_unsent(None);
+
+        let failure = runtime
+            .block_on(client.insert(None, &request("unsent", location, false), "copy"))
+            .unwrap_err();
+
+        assert_eq!(failure.status, Status::IO, "{}", failure.message);
+        assert!(
+            has_job_verdict(&failure),
+            "{location:?}: {}",
+            failure.message
+        );
+        assert_message(&failure, &["token service answered HTTP 503"]);
+        captured.served(1);
+        let mints = failures.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(mints, MAX_ATTEMPTS - 1, "{location:?}");
+    }
+}
+
+/// Nor does such a retry make a `jobs.query` warn that its statement may have run, or keep
+/// resubmitting it once cancelled.
+#[test]
+fn an_unsent_jobs_query_retry_after_a_refusal_ran_nothing() {
+    let runtime = new_runtime().unwrap();
+    let body = || bytes::Bytes::from_static(b"{}");
+    let (client, captured, _failures) = refused_then_unsent(None);
+    let start = RequestStart::default();
     let failure = runtime
-        .block_on(client.insert(None, &request("unsent", Some("EU"), false), "copy"))
+        .block_on(client.query(None, "p", body(), &start))
         .unwrap_err();
-
-    assert_eq!(
-        failure.status,
-        Status::Unauthenticated,
+    assert_eq!(failure.status, Status::IO, "{}", failure.message);
+    assert!(
+        !failure.message.contains("may still have run"),
         "{}",
         failure.message
     );
-    assert!(has_job_verdict(&failure), "{}", failure.message);
+    assert!(!start.started());
+    captured.served(1);
+
+    // The second attempt's failed mint cancels the operation.
+    let (cancellation, operation) = operation(&runtime, ClientState::for_test());
+    let (client, captured, failures) = refused_then_unsent(Some(cancellation));
+    let failure = runtime
+        .block_on(client.query(Some(&operation), "p", body(), &RequestStart::default()))
+        .unwrap_err();
+    operation.finish();
+    assert_eq!(failure.status, Status::Cancelled, "{}", failure.message);
+    assert_eq!(failures.load(std::sync::atomic::Ordering::Relaxed), 1);
     captured.served(1);
 }
 

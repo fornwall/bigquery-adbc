@@ -624,6 +624,11 @@ impl JobClient {
                 may_exist = true;
                 continue;
             }
+            // Attempts that were refused or never sent ran nothing, so a cancel now must not keep
+            // the submission going, nor a later failure warn that the statement may have run.
+            if !may_exist {
+                start.clear();
+            }
             if class == RetryClass::Final {
                 // A stopped query (at its job timeout, for example) was accepted, not rejected.
                 if failure_reason(&failure) == Some("stopped") {
@@ -916,8 +921,9 @@ fn confirm_submission(operation: Option<&Operation>, reference: &JobReference) -
 /// It did not if no attempt reached BigQuery, which one still minting its token or failing to
 /// connect has not, or if BigQuery refused it outright: a 4xx other than 409 (the job exists)
 /// and 408 (the request may have been read whole), including the 401 `send` turns into an error
-/// to add its remedy. A 5xx is ambiguous. A `start` that spans a submission's attempts makes a
-/// later attempt that fails before reaching BigQuery err towards the job existing.
+/// to add its remedy. A 5xx is ambiguous. A `start` shared across attempts must be cleared while
+/// none may have created the job, or a later attempt that never reaches BigQuery reads as one
+/// that may have.
 pub(crate) fn may_have_created(
     start: &RequestStart,
     response: &Result<(reqwest::StatusCode, bytes::Bytes)>,
@@ -1046,7 +1052,7 @@ struct InferredSubmission {
     what: String,
     /// The job as [`JobClient::insert`] names it.
     job: String,
-    /// Set once a submission may have reached BigQuery.
+    /// Set while an attempt is being sent, and from the first that may have created the job.
     start: RequestStart,
     /// Bounds the jobs.list search even if submission retries take a long time.
     submitted_at: SystemTime,
@@ -1144,6 +1150,11 @@ impl InferredSubmission {
                 .with_start_signal(&self.start);
             let response = send(None, &self.client.credentials, &self.client.http, request).await;
             may_exist |= may_have_created(&self.start, &response);
+            // As in `JobClient::query`: until an attempt may have created the job, a cancel or a
+            // retry that is never sent finds nothing started.
+            if !may_exist {
+                self.start.clear();
+            }
             let (class, failure) = match response {
                 Ok((reqwest::StatusCode::CONFLICT, body)) => {
                     let failure = existing_job(&send_context, &body);
