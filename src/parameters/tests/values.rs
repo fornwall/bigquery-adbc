@@ -823,3 +823,62 @@ fn preserves_empty_non_null_composite_parameter_values() {
         );
     }
 }
+
+/// A sliced batch binds the rows it shows. Each composite layout addresses its children
+/// differently once sliced: list offsets and dictionary keys keep indexing the whole child, while
+/// fixed-size lists and structs slice their children too.
+#[test]
+fn a_sliced_batch_binds_the_rows_it_shows() {
+    let list = ListArray::from_iter_primitive::<Int64Type, _, _>(vec![
+        Some(vec![Some(1)]),
+        Some(vec![Some(2), Some(3)]),
+        None,
+    ]);
+    let fixed = FixedSizeListArray::from_iter_primitive::<Int64Type, _, _>(
+        vec![
+            Some(vec![Some(1), Some(2)]),
+            Some(vec![Some(3), Some(4)]),
+            None,
+        ],
+        2,
+    );
+    let view = ListViewArray::new(
+        Arc::new(Field::new("item", DataType::Int64, true)),
+        ScalarBuffer::from(vec![0, 1, 0]),
+        ScalarBuffer::from(vec![1, 2, 0]),
+        col(Int64Array::from(vec![1, 2, 3])),
+        Some(NullBuffer::from(vec![true, true, false])),
+    );
+    let labels: DictionaryArray<Int8Type> = vec![Some("a"), Some("b"), None].into_iter().collect();
+    let record = StructArray::new(
+        vec![Arc::new(Field::new("xs", list.data_type().clone(), true))].into(),
+        vec![col(list.clone())],
+        Some(NullBuffer::from(vec![true, true, false])),
+    );
+    let batch = RecordBatch::try_from_iter([
+        ("list", col(list)),
+        ("fixed", col(fixed)),
+        ("view", col(view)),
+        ("labels", col(labels)),
+        ("record", col(record)),
+    ])
+    .unwrap();
+
+    for start in 0..batch.num_rows() {
+        let sliced = batch.slice(start, batch.num_rows() - start);
+        for row in 0..sliced.num_rows() {
+            assert_eq!(
+                json!(parameters_for_row(&sliced, row, ParameterMode::Named).unwrap()),
+                json!(parameters_for_row(&batch, start + row, ParameterMode::Named).unwrap()),
+                "row {row} of the batch sliced at {start}"
+            );
+        }
+    }
+    let last = batch.slice(1, 1);
+    assert_eq!(
+        json!(value(
+            &parameters_for_row(&last, 0, ParameterMode::Named).unwrap()[1]
+        )),
+        json!({"arrayValues": [{"value": "3"}, {"value": "4"}]})
+    );
+}
