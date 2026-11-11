@@ -17,6 +17,10 @@ changes.
 - The native library is 3% smaller (250 KB on x86-64 Linux): IAM impersonation refusals decode
   without the SDK's generic `google.rpc.Status` parser, URL parsing links no Unicode host-name
   tables, and `adbc_core`, `tokio-util` and `flatbuffers` compile for size.
+- A query whose request exceeds BigQuery's 10 MB cap, such as very long SQL or a large bound
+  value, still returns `INVALID_ARGUMENT`, but the message now names the cap after
+  "Payload Too Large (HTTP 413)" and says to shorten the SQL, bind smaller values, or bulk-ingest
+  large values.
 - A credential URL option or a URL in a credential document, `credential_source` included,
   naming a non-ASCII or percent-encoded host is refused; write an internationalized host in
   Punycode (`xn--`). `bigquery.allow_untrusted_endpoint` no longer skips parsing those options and

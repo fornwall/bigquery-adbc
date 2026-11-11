@@ -479,7 +479,8 @@ impl JobClient {
                 .retrying(operation, plan, &mut || {
                     Request::post_json(&url, request.body.clone(), &send_context)
                 })
-                .await;
+                .await
+                .map_err(explain_oversized);
         }
         if let Some(operation) = operation {
             operation.register_provisional_job(&request.reference)?;
@@ -514,7 +515,7 @@ impl JobClient {
                     settle_submission(operation, &request.reference, may_exist);
                     return Err(failure);
                 }
-                answer => match classify(answer, &error_context) {
+                answer => match classify_submission(answer, &error_context) {
                     Ok(body) => {
                         confirm_submission(operation, &request.reference)?;
                         return Ok(body);
@@ -617,7 +618,7 @@ impl JobClient {
             {
                 return Ok(QueryAnswer::Replayed(job));
             }
-            let (class, mut failure) = match classify(response, error_context) {
+            let (class, mut failure) = match classify_submission(response, error_context) {
                 Ok(body) => return Ok(QueryAnswer::Response(body)),
                 Err(rejected) => rejected,
             };
@@ -950,6 +951,30 @@ fn existing_job(send_context: &str, body: &[u8]) -> adbc_core::error::Error {
     failure
 }
 
+/// [`classify`] for a `jobs.query` or `jobs.insert` submission. See [`explain_oversized`].
+fn classify_submission(
+    answer: Result<(reqwest::StatusCode, bytes::Bytes)>,
+    context: &str,
+) -> std::result::Result<bytes::Bytes, (RetryClass, adbc_core::error::Error)> {
+    classify(answer, context).map_err(|(class, failure)| (class, explain_oversized(failure)))
+}
+
+/// Says what to change about a submission over BigQuery's 10 MB cap on a query request, SQL and
+/// parameter values included. Google's front end refuses a larger body with an HTML 413 before
+/// BigQuery reads it, so the rejection has no message of its own. Other requests are capped
+/// differently, or cannot come near it, and keep the plain rejection.
+fn explain_oversized(mut failure: adbc_core::error::Error) -> adbc_core::error::Error {
+    if failure.vendor_code == i32::from(reqwest::StatusCode::PAYLOAD_TOO_LARGE.as_u16()) {
+        append_remedy(
+            &mut failure,
+            "BigQuery accepts at most 10 MB per query request, SQL and parameter values \
+             included; shorten the SQL, bind smaller values, or load large values with bulk \
+             ingest",
+        );
+    }
+    failure
+}
+
 /// `failure` ended the recovery of a submitted job, which `reference` names as far as it is known
 /// and which may still run, so the failure says so and links the job. `set_location` adds that a
 /// configured location avoids the search. A cancellation is returned as is: it stopped the
@@ -1149,7 +1174,7 @@ impl InferredSubmission {
                         Err(failure) => Err(self.unrecovered(failure, &located)),
                     };
                 }
-                answer => match classify(answer, &error_context) {
+                answer => match classify_submission(answer, &error_context) {
                     Ok(body) => {
                         return match located_by(&self.reference, &body, ACCEPTED) {
                             Ok(located) => Ok((located, body)),

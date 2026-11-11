@@ -140,6 +140,26 @@ fn a_failed_query_job_includes_its_console_link() {
     assert!(message.ends_with("&page=queryresults)"), "{message}");
 }
 
+/// Google's front end refuses a query request over BigQuery's 10 MB cap before BigQuery reads it,
+/// with an HTML 413 that names no cause, so the driver names the cap.
+#[test]
+#[ignore = "requires Google Cloud ADC and access to the integration project"]
+fn a_query_request_over_the_size_cap_names_the_cap() {
+    crate::backend::require_real_bigquery();
+    let mut connection = connect(project());
+    let sql = format!("SELECT LENGTH('{}')", "x".repeat(11_000_000));
+    let mut statement = prepare_query(&mut connection, &sql);
+    let (status, message) = execute_failure(&mut statement);
+    assert_eq!(status, Status::InvalidArguments, "{message}");
+    assert!(
+        message.starts_with(
+            "BigQuery rejected the query: Payload Too Large (HTTP 413); BigQuery accepts at most \
+             10 MB per query request"
+        ),
+        "{message}"
+    );
+}
+
 /// A permission failure keeps BigQuery's status. Nobody outside Google can create jobs in
 /// `bigquery-public-data`, so the denial costs nothing.
 #[test]

@@ -1251,6 +1251,58 @@ fn a_rejected_query_says_bigquery_rejected_it_and_a_transport_failure_says_it_fa
     );
 }
 
+/// Google's front end refuses a submission over BigQuery's 10 MB request cap with an HTML 413
+/// that names no cause, so every submission path names the cap and how to stay under it. BigQuery
+/// never read the request, so a real submission also proves it created no job.
+#[test]
+fn a_submission_over_the_request_cap_says_what_to_shorten() {
+    const CAP: &str = "; BigQuery accepts at most 10 MB per query request, SQL and parameter \
+        values included; shorten the SQL, bind smaller values, or load large values with bulk \
+        ingest";
+    let too_large = || {
+        (
+            413,
+            json!("<!DOCTYPE html><title>Error 413 (Request Entity Too Large)!!1</title>"),
+        )
+    };
+
+    let (answer, requests) = jobs_query("p", vec![too_large()]);
+    assert_eq!(requests.len(), 1);
+    let failure = answer.unwrap_err();
+    assert_eq!(failure.status, Status::InvalidArguments);
+    assert_eq!(
+        failure.message,
+        format!("BigQuery rejected the query: Payload Too Large (HTTP 413){CAP}")
+    );
+
+    for (id, location, dry_run, rejected) in [
+        (
+            "located",
+            Some("EU"),
+            false,
+            "BigQuery rejected the query job billing/project:EU.located",
+        ),
+        (
+            "unlocated",
+            None,
+            false,
+            "BigQuery rejected the query job billing/project:unlocated",
+        ),
+        ("dry", None, true, "BigQuery rejected the dry-run query job"),
+    ] {
+        let (endpoint, captured) = capture_requests(vec![too_large()]);
+        let (runtime, client) = job_client(&endpoint);
+        let failure = insert_query(&runtime, &client, &request(id, location, dry_run)).unwrap_err();
+        captured.served(1);
+        assert_eq!(failure.status, Status::InvalidArguments, "{id}");
+        assert_eq!(
+            failure.message,
+            format!("{rejected}: Payload Too Large (HTTP 413){CAP}")
+        );
+        assert_eq!(has_job_verdict(&failure), !dry_run, "{id}");
+    }
+}
+
 /// BigQuery maps a failed job's `errorResult` onto every read of its results, so a completion
 /// read rejected with a reason only a query can earn names the failed job. A reason that may be
 /// about the read itself keeps the read's wording. Either way the read is not repeated: the

@@ -710,3 +710,21 @@ fn a_table_insert_is_resent_only_after_a_rate_limit() {
         }
     }
 }
+
+/// BigQuery's 10 MB request cap is a query's, which `crate::rest::jobs` explains. A metadata
+/// write refused as too large keeps the plain rejection.
+#[test]
+fn a_metadata_write_refused_as_too_large_keeps_the_plain_rejection() {
+    let runtime = crate::runtime::new_runtime().unwrap();
+    let (endpoint, captured) = capture_requests(vec![(413, serde_json::json!("<!DOCTYPE html>"))]);
+    let failure = runtime
+        .block_on(client_at(&endpoint).patch_table_description(None, TABLE, "described"))
+        .map_err(|failure| failure.into_error("failed to describe p.d.t"))
+        .unwrap_err();
+    assert_eq!(captured.join().unwrap().len(), 1);
+    assert_eq!(failure.status, Status::InvalidArguments);
+    assert_eq!(
+        failure.message,
+        "failed to describe p.d.t: Payload Too Large (HTTP 413)"
+    );
+}
