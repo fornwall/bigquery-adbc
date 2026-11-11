@@ -134,6 +134,52 @@ fn a_conflict_is_final_whatever_its_body_says() {
     }
 }
 
+/// A body that is no Google error document (a proxy's HTML page, a document cut short, nothing)
+/// is classified by its HTTP status alone, which its message names without quoting the body.
+#[test]
+fn a_rejection_without_an_error_document_is_retried_by_its_status_alone() {
+    for (status, body, class, expected) in [
+        (
+            502,
+            "<html><body>502 Bad Gateway: secret-upstream</body></html>",
+            RetryClass::Transient,
+            "Bad Gateway",
+        ),
+        (
+            503,
+            r#"{"error":{"code":503,"errors":[{"reason":"accessDenied","message":"secret-"#,
+            RetryClass::Transient,
+            "Service Unavailable",
+        ),
+        (500, "", RetryClass::Transient, "Internal Server Error"),
+        (
+            429,
+            "<html>secret-throttle</html>",
+            RetryClass::RateLimited,
+            "Too Many Requests",
+        ),
+        // A cut-short rate limit is no rate limit: only a reason could make a 403 retryable.
+        (
+            403,
+            r#"{"error":{"code":403,"errors":[{"reason":"rateLimitExceeded","message":"secret-"#,
+            RetryClass::Final,
+            "Forbidden",
+        ),
+    ] {
+        let answer = Ok((
+            reqwest::StatusCode::from_u16(status).unwrap(),
+            bytes::Bytes::from(body),
+        ));
+        let (actual, failure) = super::classify(answer, "failed to read it").unwrap_err();
+        assert_eq!(actual, class, "{body}");
+        assert_eq!(
+            failure.message,
+            format!("failed to read it: {expected} (HTTP {status})")
+        );
+        assert_eq!(failure.vendor_code, i32::from(status));
+    }
+}
+
 /// Pins the documented schedule numbers. Each maximum must be reached within the four retries,
 /// or it bounds nothing, and the total window must stay bounded because the loops have an
 /// attempt count but no deadline.
