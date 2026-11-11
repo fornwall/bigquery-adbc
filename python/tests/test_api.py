@@ -240,7 +240,7 @@ def test_dbapi_connect_returns_manager_objects_directly(
     actual = dbapi.connect(
         db_kwargs=db_options,
         conn_kwargs=conn_options,
-        backend="arrow",
+        backend=factory.backend,
         **connect_options,
     )
 
@@ -255,9 +255,21 @@ def test_dbapi_connect_returns_manager_objects_directly(
             factory.connection.return_value,
             conn_kwargs=conn_options,
             autocommit=connect_options.get("autocommit", False),
-            backend="arrow",
+            backend=factory.backend,
         ),
     ]
+
+
+def test_dbapi_connect_rejects_unknown_keywords_before_loading_the_driver(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The manager's Connection would raise only after both handles were open, and its __del__
+    # then fails on the half-built object.
+    load = Mock()
+    monkeypatch.setattr(dbapi, "_driver_connect", load)
+    misspelled: dict[str, Any] = {"autocomit": True}
+
+    with pytest.raises(TypeError, match="autocomit"):
+        dbapi.connect("bigquery:///project", **misspelled)
+    load.assert_not_called()
 
 
 def test_connect_accepts_option_enum_mappings(monkeypatch: pytest.MonkeyPatch) -> None:

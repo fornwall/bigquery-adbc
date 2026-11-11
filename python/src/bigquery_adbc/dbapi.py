@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import suppress
-from typing import Any
+from typing import TYPE_CHECKING
 
 try:
     # Match the driver manager's PyArrow availability check.
@@ -33,6 +33,10 @@ from adbc_driver_manager import dbapi as _dbapi
 
 from . import ConnectionOptions, DatabaseOptions, _OptionValue
 from . import connect as _driver_connect
+
+if TYPE_CHECKING:
+    # The manager's Connection declares its backend parameter with this private type.
+    from adbc_driver_manager._dbapi_backend import DbapiBackend
 
 
 class _TypeSet(type(_dbapi.STRING)):
@@ -103,14 +107,14 @@ def connect(
     conn_kwargs: Mapping[str, str] | Mapping[ConnectionOptions, str] | None = None,
     *,
     autocommit: bool = False,
-    **kwargs: Any,
+    backend: DbapiBackend | None = None,
 ) -> Connection:
     """Connect to BigQuery through the ADBC DB-API facade.
 
     ``uri`` and ``db_kwargs`` configure the database, ``conn_kwargs`` the
     connection, and ``autocommit`` the transaction mode. Leaving a ``with`` block
-    closes the connection without committing. Other keywords, such as
-    ``backend``, are passed to :class:`adbc_driver_manager.dbapi.Connection`.
+    closes the connection without committing. ``backend`` is passed to
+    :class:`adbc_driver_manager.dbapi.Connection`, whose default converts with PyArrow.
     """
 
     connection_options: dict[str, str] = dict(conn_kwargs.items()) if conn_kwargs else {}
@@ -129,7 +133,7 @@ def connect(
             conn,
             conn_kwargs=connection_options,
             autocommit=autocommit,
-            **kwargs,
+            backend=backend,
         )
     except BaseException:
         # Close every handle opened so far, and re-raise the original failure

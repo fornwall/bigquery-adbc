@@ -43,7 +43,7 @@ def test_public_function_signatures() -> None:
         ("db_kwargs", None),
         ("conn_kwargs", None),
         ("autocommit", False),
-        ("kwargs", inspect.Parameter.empty),
+        ("backend", None),
     ]
 
 

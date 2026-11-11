@@ -21,6 +21,9 @@ changes.
   host in Punycode (`xn--`).
 - The dbt installer accepts dbt's Rust target triples with `--target`, and rejects unknown
   options and missing values before installing.
+- Python's `dbapi.connect()` takes `backend` as its only keyword beyond `autocommit`, so a
+  misspelled keyword raises `TypeError` before the driver loads, instead of after opening the
+  database and connection.
 
 ### Fixed
 
