@@ -88,7 +88,7 @@ impl QueryDefaultDataset {
     }
 }
 
-/// Shared by plan clones so a transport retry does not copy the parameter tree.
+/// Shared, so cloning a plan does not copy the parameter tree.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct QueryParameters {
     pub(super) mode: Arc<str>,

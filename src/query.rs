@@ -365,7 +365,6 @@ pub(crate) fn begin_in_new_session(
         .metadata
         .session_id
         .as_deref()
-        .filter(|session_id| !session_id.is_empty())
         .map(Arc::from)
         .ok_or_else(|| {
             error(
