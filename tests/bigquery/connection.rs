@@ -302,10 +302,22 @@ fn manages_transactions_in_a_bigquery_session() {
         .set_sql_query("INSERT adbc_transaction_values VALUES (42)")
         .unwrap();
     assert_eq!(statement.execute_update().unwrap(), Some(1));
+    // A failed statement leaves BigQuery's transaction, and the work already done in it, open,
+    // and a statement created during the transaction joins it.
+    statement.set_sql_query("SELECT ERROR('fails')").unwrap();
+    assert_eq!(
+        statement.execute_update().unwrap_err().status,
+        Status::InvalidArguments
+    );
+    let mut joined = prepare_query(
+        &mut connection,
+        "INSERT adbc_transaction_values VALUES (43)",
+    );
+    assert_eq!(joined.execute_update().unwrap(), Some(1));
     statement
         .set_sql_query("SELECT COUNT(*) FROM adbc_transaction_values")
         .unwrap();
-    assert_eq!(read_single_i64(&mut statement), 1);
+    assert_eq!(read_single_i64(&mut statement), 2);
     connection.rollback().unwrap();
 
     statement
