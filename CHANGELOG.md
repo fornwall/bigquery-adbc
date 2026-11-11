@@ -14,7 +14,7 @@ changes.
 
 ### Changed
 
-- The native library is 3% smaller (266 KB on x86-64 Linux): IAM impersonation refusals decode
+- The native library is 3% smaller (259 KB on x86-64 Linux): IAM impersonation refusals decode
   without the SDK's generic `google.rpc.Status` parser, URL parsing links no Unicode host-name
   tables, and `adbc_core`, `tokio-util` and `flatbuffers` compile for size.
 - A URL in a credential document naming a non-ASCII host is refused; write an internationalized
@@ -27,6 +27,9 @@ changes.
   database and connection.
 - A bulk-ingest `Date64` value that is not a whole day is refused with its row in the bound stream,
   like every other refused value.
+- The patched dbt is built from dbt's `main` at `ef0aa4db3a` (2026-11-11).
+- The driver uses `google-cloud-bigquery` 1.0.0 for Storage Read and Write, which
+  `ADBC_INFO_VENDOR_VERSION` reports.
 
 ### Fixed
 
