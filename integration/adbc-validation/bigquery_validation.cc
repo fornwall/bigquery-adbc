@@ -5,7 +5,6 @@
 #include <gtest/gtest.h>
 
 #include <cctype>
-#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -14,7 +13,6 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <utility>
 #include <vector>
 
 #include "validation/adbc_validation.h"
@@ -48,6 +46,19 @@ bool IsDatasetId(std::string_view name) {
   return true;
 }
 
+// Options shared by the suite's databases and the dataset administration mode.
+AdbcStatusCode SetDriverOptions(struct AdbcDatabase* database,
+                                struct AdbcError* error) {
+  const std::string library = EnvOr("ADBC_BIGQUERY_LIBRARY");
+  const std::string project =
+      EnvOr("BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT");
+  RAISE_ADBC(AdbcDatabaseSetOption(database, "driver", library.c_str(), error));
+  RAISE_ADBC(AdbcDatabaseSetOption(database, "entrypoint",
+                                   "AdbcDriverBigqueryInit", error));
+  return AdbcDatabaseSetOption(database, "bigquery.project_id", project.c_str(),
+                               error);
+}
+
 std::string QualifiedTable(std::string_view name, std::string_view db_schema) {
   const std::string project = EnvOr("BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT");
   const std::string schema = db_schema.empty() ? EnvOr("ADBC_BIGQUERY_DATASET")
@@ -66,32 +77,14 @@ AdbcStatusCode RunIgnoringResult(struct AdbcConnection* connection,
   return AdbcStatementRelease(&statement.value, error);
 }
 
-std::string CreateDatasetSql(std::string_view project,
-                             std::string_view dataset) {
-  return "CREATE SCHEMA " +
-         QuoteIdentifier(std::string(project) + "." + std::string(dataset)) +
-         " OPTIONS(default_table_expiration_days=1, "
-         "labels=[(\"adbc_validation\", \"true\"), "
-         "(\"bigquery_adbc_driver\", \"rust\")])";
-}
-
 class BigQueryQuirks : public adbc_validation::DriverQuirks {
  public:
   AdbcStatusCode SetupDatabase(struct AdbcDatabase* database,
                                struct AdbcError* error) const override {
-    const std::string library = EnvOr("ADBC_BIGQUERY_LIBRARY");
-    const std::string project =
-        EnvOr("BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT");
     const std::string dataset = EnvOr("ADBC_BIGQUERY_DATASET");
-    RAISE_ADBC(
-        AdbcDatabaseSetOption(database, "driver", library.c_str(), error));
-    RAISE_ADBC(AdbcDatabaseSetOption(database, "entrypoint",
-                                     "AdbcDriverBigqueryInit", error));
-    RAISE_ADBC(AdbcDatabaseSetOption(database, "bigquery.project_id",
-                                     project.c_str(), error));
-    RAISE_ADBC(AdbcDatabaseSetOption(database, "bigquery.dataset_id",
-                                     dataset.c_str(), error));
-    return ADBC_STATUS_OK;
+    RAISE_ADBC(SetDriverOptions(database, error));
+    return AdbcDatabaseSetOption(database, "bigquery.dataset_id",
+                                 dataset.c_str(), error);
   }
 
   AdbcStatusCode DropTable(struct AdbcConnection* connection,
@@ -265,11 +258,8 @@ class BigQueryQuirks : public adbc_validation::DriverQuirks {
         return NANOARROW_TYPE_BINARY;
       case NANOARROW_TYPE_INTERVAL_MONTHS:
       case NANOARROW_TYPE_INTERVAL_DAY_TIME:
-        return NANOARROW_TYPE_INTERVAL_MONTH_DAY_NANO;
       case NANOARROW_TYPE_DURATION:
         return NANOARROW_TYPE_INTERVAL_MONTH_DAY_NANO;
-      case NANOARROW_TYPE_TIMESTAMP:
-        return NANOARROW_TYPE_TIMESTAMP;
       default:
         return ingest_type;
     }
@@ -345,243 +335,123 @@ class BigQueryQuirks : public adbc_validation::DriverQuirks {
   }
 };
 
-class BigQueryDatabaseTest : public ::testing::Test,
-                             public adbc_validation::DatabaseTest {
+// Upstream fixtures are mixins that need GoogleTest's hooks and the quirks.
+template <typename Fixture>
+class BigQueryTest : public ::testing::Test, public Fixture {
  public:
   const adbc_validation::DriverQuirks* quirks() const override {
     return &quirks_;
   }
-  void SetUp() override { ASSERT_NO_FATAL_FAILURE(SetUpTest()); }
-  void TearDown() override { ASSERT_NO_FATAL_FAILURE(TearDownTest()); }
+  void SetUp() override { ASSERT_NO_FATAL_FAILURE(this->SetUpTest()); }
+  void TearDown() override { ASSERT_NO_FATAL_FAILURE(this->TearDownTest()); }
 
  private:
   BigQueryQuirks quirks_;
 };
+
+using BigQueryDatabaseTest = BigQueryTest<adbc_validation::DatabaseTest>;
 ADBCV_TEST_DATABASE(BigQueryDatabaseTest)
 
-class BigQueryConnectionTest : public ::testing::Test,
-                               public adbc_validation::ConnectionTest {
- public:
-  const adbc_validation::DriverQuirks* quirks() const override {
-    return &quirks_;
-  }
-  void SetUp() override { ASSERT_NO_FATAL_FAILURE(SetUpTest()); }
-  void TearDown() override { ASSERT_NO_FATAL_FAILURE(TearDownTest()); }
-
- private:
-  BigQueryQuirks quirks_;
-};
+using BigQueryConnectionTest = BigQueryTest<adbc_validation::ConnectionTest>;
 ADBCV_TEST_CONNECTION(BigQueryConnectionTest)
 
-class BigQueryStatementTest : public ::testing::Test,
-                              public adbc_validation::StatementTest {
+class BigQueryStatementTest
+    : public BigQueryTest<adbc_validation::StatementTest> {
  public:
-  const adbc_validation::DriverQuirks* quirks() const override {
-    return &quirks_;
-  }
-  void SetUp() override { ASSERT_NO_FATAL_FAILURE(SetUpTest()); }
-  void TearDown() override { ASSERT_NO_FATAL_FAILURE(TearDownTest()); }
-
   // BigQuery has only signed INT64; the driver rejects a UInt64 ingest schema
   // with NOT_IMPLEMENTED. Hiding the base method opts out of one canonical
   // case, as upstream's own drivers do.
   void TestSqlIngestUInt64() { GTEST_SKIP() << "BigQuery has no UInt64 type"; }
 
  protected:
+  // DURATION reads back as a month-day-nano INTERVAL, TIMESTAMP in
+  // microseconds.
   void ValidateIngestedTemporalData(struct ArrowArrayView* values,
                                     ArrowType type, enum ArrowTimeUnit unit,
                                     const char*) override {
-    const int64_t multiplier =
-        quirks_.IngestTemporalValueMultiplier(type, unit);
+    int64_t nanoseconds_per_unit = 1;
+    switch (unit) {
+      case NANOARROW_TIME_UNIT_SECOND:
+        nanoseconds_per_unit = 1'000'000'000;
+        break;
+      case NANOARROW_TIME_UNIT_MILLI:
+        nanoseconds_per_unit = 1'000'000;
+        break;
+      case NANOARROW_TIME_UNIT_MICRO:
+        nanoseconds_per_unit = 1'000;
+        break;
+      case NANOARROW_TIME_UNIT_NANO:
+        break;
+    }
+    const int64_t nanoseconds =
+        42 * quirks()->IngestTemporalValueMultiplier(type, unit) *
+        nanoseconds_per_unit;
 
     if (type == NANOARROW_TYPE_DURATION) {
-      int64_t nanoseconds_per_unit = 1;
-      switch (unit) {
-        case NANOARROW_TIME_UNIT_SECOND:
-          nanoseconds_per_unit = 1'000'000'000;
-          break;
-        case NANOARROW_TIME_UNIT_MILLI:
-          nanoseconds_per_unit = 1'000'000;
-          break;
-        case NANOARROW_TIME_UNIT_MICRO:
-          nanoseconds_per_unit = 1'000;
-          break;
-        case NANOARROW_TIME_UNIT_NANO:
-          break;
-      }
       struct ArrowInterval negative;
       struct ArrowInterval zero;
       struct ArrowInterval positive;
       ArrowIntervalInit(&negative, NANOARROW_TYPE_INTERVAL_MONTH_DAY_NANO);
       ArrowIntervalInit(&zero, NANOARROW_TYPE_INTERVAL_MONTH_DAY_NANO);
       ArrowIntervalInit(&positive, NANOARROW_TYPE_INTERVAL_MONTH_DAY_NANO);
-      negative.ns = -42 * multiplier * nanoseconds_per_unit;
-      positive.ns = 42 * multiplier * nanoseconds_per_unit;
+      negative.ns = -nanoseconds;
+      positive.ns = nanoseconds;
       ASSERT_NO_FATAL_FAILURE(adbc_validation::CompareArray<ArrowInterval*>(
           values, {std::nullopt, &negative, &zero, &positive}));
       return;
     }
 
     ASSERT_EQ(type, NANOARROW_TYPE_TIMESTAMP);
-    int64_t microseconds_per_unit = 1;
-    switch (unit) {
-      case NANOARROW_TIME_UNIT_SECOND:
-        microseconds_per_unit = 1'000'000;
-        break;
-      case NANOARROW_TIME_UNIT_MILLI:
-        microseconds_per_unit = 1'000;
-        break;
-      case NANOARROW_TIME_UNIT_MICRO:
-        break;
-      case NANOARROW_TIME_UNIT_NANO:
-        ASSERT_EQ(multiplier % 1'000, 0);
-        microseconds_per_unit = 0;
-        break;
-    }
-    const int64_t expected = unit == NANOARROW_TIME_UNIT_NANO
-                                 ? 42 * (multiplier / 1'000)
-                                 : 42 * multiplier * microseconds_per_unit;
+    ASSERT_EQ(nanoseconds % 1'000, 0);
+    const int64_t microseconds = nanoseconds / 1'000;
     ASSERT_NO_FATAL_FAILURE(adbc_validation::CompareArray<int64_t>(
-        values, {std::nullopt, -expected, 0, expected}));
+        values, {std::nullopt, -microseconds, 0, microseconds}));
   }
-
- private:
-  BigQueryQuirks quirks_;
 };
 ADBCV_TEST_STATEMENT(BigQueryStatementTest)
 
-std::string ErrorMessage(const struct AdbcError& error) {
-  return error.message == nullptr ? std::string("no error detail")
-                                  : std::string(error.message);
-}
-
-void ReleaseError(struct AdbcError* error) {
-  if (error->release != nullptr) error->release(error);
-  std::memset(error, 0, sizeof(*error));
-}
-
-bool ConfigureDatabase(struct AdbcDatabase* database, struct AdbcError* error,
-                       bool with_dataset) {
-  const std::string library = EnvOr("ADBC_BIGQUERY_LIBRARY");
-  const std::string project =
-      EnvOr("BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT");
-  const std::string dataset = EnvOr("ADBC_BIGQUERY_DATASET");
-  if (library.empty() || project.empty() || (with_dataset && dataset.empty())) {
-    std::cerr << "missing ADBC_BIGQUERY_LIBRARY, "
-                 "BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT, or "
-                 "ADBC_BIGQUERY_DATASET environment variable\n";
-    return false;
-  }
-  if (AdbcDatabaseNew(database, error) != ADBC_STATUS_OK ||
-      AdbcDatabaseSetOption(database, "driver", library.c_str(), error) !=
-          ADBC_STATUS_OK ||
-      AdbcDatabaseSetOption(database, "entrypoint", "AdbcDriverBigqueryInit",
-                            error) != ADBC_STATUS_OK ||
-      AdbcDatabaseSetOption(database, "bigquery.project_id", project.c_str(),
-                            error) != ADBC_STATUS_OK ||
-      (with_dataset &&
-       AdbcDatabaseSetOption(database, "bigquery.dataset_id", dataset.c_str(),
-                             error) != ADBC_STATUS_OK) ||
-      AdbcDatabaseInit(database, error) != ADBC_STATUS_OK) {
-    std::cerr << "failed to initialize BigQuery driver: "
-              << ErrorMessage(*error) << '\n';
-    return false;
-  }
-  return true;
-}
-
-bool OpenAdminConnection(struct AdbcDatabase* database,
-                         struct AdbcConnection* connection,
-                         struct AdbcError* error) {
-  if (!ConfigureDatabase(database, error, false)) return false;
-  if (AdbcConnectionNew(connection, error) != ADBC_STATUS_OK ||
-      AdbcConnectionInit(connection, database, error) != ADBC_STATUS_OK) {
-    std::cerr << "failed to open BigQuery administration connection: "
-              << ErrorMessage(*error) << '\n';
-    return false;
-  }
-  return true;
-}
-
-bool ExecuteAdminSql(struct AdbcConnection* connection, const std::string& sql,
-                     struct AdbcError* error) {
-  struct AdbcStatement statement{};
-  AdbcStatusCode status = AdbcStatementNew(connection, &statement, error);
-  if (status == ADBC_STATUS_OK) {
-    status = AdbcStatementSetSqlQuery(&statement, sql.c_str(), error);
-  }
-  if (status == ADBC_STATUS_OK) {
-    status = AdbcStatementExecuteQuery(&statement, nullptr, nullptr, error);
-  }
-  const std::string failure =
-      status == ADBC_STATUS_OK ? std::string() : ErrorMessage(*error);
-  if (statement.private_data != nullptr) {
-    struct AdbcError release_error{};
-    const AdbcStatusCode release_status =
-        AdbcStatementRelease(&statement, &release_error);
-    if (status == ADBC_STATUS_OK && release_status != ADBC_STATUS_OK) {
-      status = release_status;
-    }
-    ReleaseError(&release_error);
-  }
-  if (status != ADBC_STATUS_OK) {
-    std::cerr << "BigQuery administration SQL failed: " << failure
-              << "\nSQL: " << sql << '\n';
-    return false;
-  }
-  return true;
-}
-
-bool DropOwnedDataset(struct AdbcConnection* connection,
-                      std::string_view project, std::string_view dataset,
-                      struct AdbcError* error) {
-  if (!IsDatasetId(dataset) || !dataset.starts_with(kDatasetPrefix)) {
-    std::cerr << "refusing to drop dataset with unexpected ownership marker: "
-              << dataset << '\n';
-    return false;
-  }
-  return ExecuteAdminSql(
-      connection,
-      "DROP SCHEMA IF EXISTS " +
-          QuoteIdentifier(std::string(project) + "." + std::string(dataset)) +
-          " CASCADE",
-      error);
-}
-
+// Creates or drops ADBC_BIGQUERY_DATASET for tests/clients/adbc_validation.rs,
+// labelled and with expiring tables.
 int AdminDataset(bool create) {
   const std::string project =
       EnvOr("BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT");
   const std::string dataset = EnvOr("ADBC_BIGQUERY_DATASET");
+  if (EnvOr("ADBC_BIGQUERY_LIBRARY").empty()) {
+    std::cerr << "ADBC_BIGQUERY_LIBRARY must name the driver library\n";
+    return 2;
+  }
   if (!IsDatasetId(dataset) || !dataset.starts_with(kDatasetPrefix)) {
     std::cerr << "unsafe validation dataset ID: " << dataset << '\n';
     return 2;
   }
+  const std::string path = QuoteIdentifier(project + "." + dataset);
+  const std::string sql =
+      create ? "CREATE SCHEMA " + path +
+                   " OPTIONS(default_table_expiration_days=1, "
+                   "labels=[(\"adbc_validation\", \"true\"), "
+                   "(\"bigquery_adbc_driver\", \"rust\")])"
+             : "DROP SCHEMA IF EXISTS " + path + " CASCADE";
 
+  // No default dataset: the one being created does not exist yet.
+  adbc_validation::Handle<struct AdbcDatabase> database;
+  adbc_validation::Handle<struct AdbcConnection> connection;
+  const auto run = [&](struct AdbcError* error) -> AdbcStatusCode {
+    RAISE_ADBC(AdbcDatabaseNew(&database.value, error));
+    RAISE_ADBC(SetDriverOptions(&database.value, error));
+    RAISE_ADBC(AdbcDatabaseInit(&database.value, error));
+    RAISE_ADBC(AdbcConnectionNew(&connection.value, error));
+    RAISE_ADBC(AdbcConnectionInit(&connection.value, &database.value, error));
+    RAISE_ADBC(RunIgnoringResult(&connection.value, sql, error));
+    RAISE_ADBC(AdbcConnectionRelease(&connection.value, error));
+    return AdbcDatabaseRelease(&database.value, error);
+  };
   struct AdbcError error{};
-  struct AdbcDatabase database{};
-  struct AdbcConnection connection{};
-  bool ok = OpenAdminConnection(&database, &connection, &error);
-  if (ok && create) {
-    ok = ExecuteAdminSql(&connection, CreateDatasetSql(project, dataset),
-                         &error);
-  } else if (ok) {
-    ok = DropOwnedDataset(&connection, project, dataset, &error);
-  }
-
-  ReleaseError(&error);
-  if (connection.private_data != nullptr) {
-    struct AdbcError release_error{};
-    if (AdbcConnectionRelease(&connection, &release_error) != ADBC_STATUS_OK)
-      ok = false;
-    ReleaseError(&release_error);
-  }
-  if (database.private_data != nullptr) {
-    struct AdbcError release_error{};
-    if (AdbcDatabaseRelease(&database, &release_error) != ADBC_STATUS_OK)
-      ok = false;
-    ReleaseError(&release_error);
-  }
-  return ok ? 0 : 1;
+  if (run(&error) == ADBC_STATUS_OK) return 0;
+  std::cerr << "BigQuery administration SQL failed: "
+            << (error.message == nullptr ? "no error detail" : error.message)
+            << "\nSQL: " << sql << '\n';
+  if (error.release != nullptr) error.release(&error);
+  return 1;
 }
 
 }  // namespace
