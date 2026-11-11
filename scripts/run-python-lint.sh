@@ -26,7 +26,7 @@ echo ">> ruff check (python/ruff.toml)"
 python_tool ruff check --config python/ruff.toml .
 
 echo ">> ruff format --check (python/ruff.toml)"
-python_tool ruff format --check --config python/ruff.toml python integration scripts tests tools
+python_tool ruff format --check --config python/ruff.toml examples python integration scripts tests tools
 
 echo ">> pyrefly (Python 3.11)"
 # Pyrefly's default excludes skip the ../integration includes, without failing, in a checkout

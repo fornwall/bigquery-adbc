@@ -1,5 +1,5 @@
 # Shared lint configuration, discovered automatically within python/.
-# scripts/run-python-lint.sh passes it explicitly for integration/ as well.
+# scripts/run-python-lint.sh passes it explicitly for the Python outside python/.
 
 target-version = "py311"  # matches `requires-python` in python/pyproject.toml
 
