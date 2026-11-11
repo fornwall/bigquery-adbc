@@ -1021,6 +1021,26 @@ fn a_create_without_a_verdict_says_the_table_may_exist() {
         ],
     );
     assert_eq!(server.join().unwrap().len(), 1, "the insert was not resent");
+
+    // An insert that could not connect sent nothing, so it created nothing either.
+    let outcome = at_bigquery(crate::test_support::UNREACHABLE_ENDPOINT, |context| {
+        let client = context.state.metadata_client(context.runtime)?;
+        prepare_table(
+            context,
+            &client,
+            TARGET,
+            IngestMode::Create,
+            &schema,
+            TablePlan::Create,
+        )
+    });
+    let failure = outcome.unwrap_err();
+    assert_failure(
+        &failure,
+        Status::IO,
+        &["failed to create BigQuery ingest target project.dataset.events"],
+    );
+    assert_message_omits(&failure, &["may still have created", "create_append"]);
 }
 
 #[test]

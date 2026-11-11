@@ -21,6 +21,7 @@ use crate::query::{QueryContext, QueryDefaults, execute_driver_statement};
 use crate::rest::metadata::{MetadataClient, MetadataError, Table, TableId, TableView};
 use crate::rest::model::TableSchema;
 use crate::rest::rejection::service_error;
+use crate::rest::request::RequestStart;
 use crate::runtime::SharedRuntime;
 
 mod align;
@@ -582,12 +583,12 @@ fn create_table(
     mode: IngestMode,
     schema: &TableSchema,
 ) -> Result<bool> {
-    // A cancel that arrived before the insert was sent created nothing, and says nothing more.
-    context.operation.check()?;
+    let start = RequestStart::default();
     match context.runtime.block_on(metadata_client.insert_table(
         Some(context.operation),
         table,
         schema,
+        &start,
     )) {
         Ok(()) => Ok(true),
         Err(MetadataError::Rejected(status, body)) if status == reqwest::StatusCode::CONFLICT => {
@@ -607,8 +608,9 @@ fn create_table(
                 source.into_error(&format!("failed to create BigQuery ingest target {table}"));
             // The insert is resent only after a refusal that created nothing (see
             // `send_with_retry`), so a rerun is the retry, and a `create` rerun would only meet
-            // the table if this one landed.
-            if without_verdict(failure.status) {
+            // the table if this one landed. An insert that never reached BigQuery (cancelled
+            // before it was sent, or unable to connect) created nothing, and says nothing more.
+            if start.started() && without_verdict(failure.status) {
                 failure.message = format!(
                     "{}; BigQuery may still have created {table}",
                     failure.message

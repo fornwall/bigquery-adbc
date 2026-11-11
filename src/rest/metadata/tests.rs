@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use super::{
     Dataset, DatasetId, ListedTable, MetadataClient, Page, Table, TableId, TableView, listing_query,
 };
+use crate::rest::request::RequestStart;
 use crate::test_support::errors::assert_message_omits;
 use crate::test_support::http::{capture_requests, capture_requests_responding, error_body, ok};
 
@@ -689,7 +690,12 @@ fn a_table_insert_is_resent_only_after_a_rate_limit() {
         let requests = responses.len();
         let (endpoint, captured) = capture_requests(responses);
         let status = runtime
-            .block_on(client_at(&endpoint).insert_table(None, TABLE, &schema))
+            .block_on(client_at(&endpoint).insert_table(
+                None,
+                TABLE,
+                &schema,
+                &RequestStart::default(),
+            ))
             .err()
             .map(|failure| failure.into_error("failed to create p.d.t").status);
         assert_eq!(status, expected);

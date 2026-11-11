@@ -28,7 +28,7 @@ use crate::rest::client::RestClient;
 use crate::rest::json::{JsonInt, JsonIntValue, decode_json, encode_json};
 use crate::rest::projects_prefix;
 use crate::rest::rejection::{precondition_error, service_error, service_failure};
-use crate::rest::request::{Request, send};
+use crate::rest::request::{Request, RequestStart, send};
 use crate::rest::retry::{MAX_ATTEMPTS, RetryClass, RetryDelays, retry_class};
 use crate::rest::url::escape_url_component;
 
@@ -233,8 +233,13 @@ enum Call<'a> {
         etag: &'a str,
         body: &'a bytes::Bytes,
     },
-    /// A `POST` of `body` that creates a resource.
-    Create(&'a bytes::Bytes),
+    /// A `POST` of `body` that creates a resource. `start` records whether any attempt may have
+    /// reached BigQuery, the only way a caller can tell an insert that sent nothing from one
+    /// whose answer was lost.
+    Create {
+        body: &'a bytes::Bytes,
+        start: &'a RequestStart,
+    },
 }
 
 impl Call<'_> {
@@ -244,7 +249,7 @@ impl Call<'_> {
         match self {
             Self::Get => true,
             Self::Patch { etag, .. } => etag.is_empty(),
-            Self::Create(_) => false,
+            Self::Create { .. } => false,
         }
     }
 }
@@ -412,7 +417,9 @@ impl MetadataClient {
             let request = match call {
                 Call::Get => Request::get(url, ""),
                 Call::Patch { etag, body } => Request::patch(url, etag, body.clone(), ""),
-                Call::Create(body) => Request::post_json(url, body.clone(), ""),
+                Call::Create { body, start } => {
+                    Request::post_json(url, body.clone(), "").with_start_signal(start)
+                }
             };
             let answer = send(operation, &self.credentials, &self.http, request).await;
             let (class, failure) = match answer {
@@ -470,12 +477,14 @@ impl MetadataClient {
     }
 
     /// `tables.insert` of an empty table with `schema`, resent only after a rate-limit
-    /// rejection. The response is ignored.
+    /// rejection. The response is ignored. `start` is set once an attempt may have reached
+    /// BigQuery, so a failure that left it unset created nothing.
     pub(crate) async fn insert_table(
         &self,
         operation: Option<&Operation>,
         table: TableId<'_>,
         schema: &TableSchema,
+        start: &RequestStart,
     ) -> MetadataResult<()> {
         let tables = format!("{}/tables", self.dataset_url(table.dataset()));
         let url = response_fields(tables, ETAG_FIELDS);
@@ -487,7 +496,8 @@ impl MetadataClient {
             "the BigQuery table definition",
         )
         .map_err(MetadataError::Failed)?;
-        self.send_with_retry(operation, &url, Call::Create(&body.into()))
+        let body = body.into();
+        self.send_with_retry(operation, &url, Call::Create { body: &body, start })
             .await
             .map(|_| ())
     }
