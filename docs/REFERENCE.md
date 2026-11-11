@@ -462,8 +462,8 @@ REST is used instead when:
 - BigQuery returns a complete result without creating a job;
 - the `jobs.get` naming the job's result table fails;
 - the results went to one partition of a destination table (`table$20240101`);
-- the read session is empty, or its Arrow schema cannot be decoded or reconciled with the expected
-  schema;
+- the read session is empty, or its Arrow schema uses an encoding outside BigQuery's documented
+  mapping or cannot be reconciled with the expected schema (a malformed schema is an error);
 - `CreateReadSession` fails with `PERMISSION_DENIED` (no `bigquery.readsessions.create`),
   `UNIMPLEMENTED` (an emulator, or an endpoint without the Storage API), `RESOURCE_EXHAUSTED` (the
   rate limit), or `INVALID_ARGUMENT` (a table Storage Read refuses but REST reads, such as a
