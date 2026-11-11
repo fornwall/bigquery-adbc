@@ -15,14 +15,16 @@ curl -fsSL https://raw.githubusercontent.com/fornwall/bigquery-adbc/main/tools/d
 ```
 
 This installs the latest released `dbt-bigquery-adbc` into `~/.local/bin`, verifies its checksum,
-and configures your shell's `PATH`. It preserves your normal `dbt` binary, aliases and drivers.
-The first BigQuery connection downloads and verifies the matching driver.
-
-The script follows [dbt's installer](https://public.cdn.getdbt.com/fs/install/install.sh): add
-`--prefix /path/to/prefix` to change the location, or `--version 0.6.0` to select a bigquery-adbc
-release. Rerun it to update, or use `dbt-bigquery-adbc system update`.
-Windows users can extract the `dbt-bigquery-adbc-…-windows-x86_64.zip` from
+and adds it to your shell's `PATH`, leaving your normal `dbt` binary, aliases and drivers alone.
+The first BigQuery connection downloads and verifies the matching driver. Like
+[dbt's installer](https://public.cdn.getdbt.com/fs/install/install.sh), the script takes
+`--prefix /path/to/prefix` to change the location and `--version 0.6.0` to select a bigquery-adbc
+release. Rerun it, or run `dbt-bigquery-adbc system update`, to update. On Windows, extract the
+`dbt-bigquery-adbc-…-windows-x86_64.zip` from
 [GitHub releases](https://github.com/fornwall/bigquery-adbc/releases).
+
+Stock dbt downloads its own BigQuery driver from dbt Labs' CDN: the canonical `bigquery` driver,
+or, with `DBT_ADBC_BIGQUERY_USE_FOUNDRY=1`, the ADBC Driver Foundry build, `bigquery_foundry`.
 
 ### Trying it in a project
 
@@ -34,14 +36,14 @@ dbt-bigquery-adbc debug
 dbt-bigquery-adbc build
 ```
 
-`--version` identifies the driver release and patched dbt commit. To compare with dbt's own
+`--version` names the driver release and the patched dbt commit. To compare with dbt's own
 BigQuery driver in the same build:
 
 ```sh
 BIGQUERY_ADBC_USE_DBT_DRIVER=1 dbt-bigquery-adbc build
 ```
 
-Both drivers stay cached separately. `dbt.log` records the choice as `BigQuery driver resolved:`.
+Both drivers stay cached separately, and `dbt.log` records the choice as `BigQuery driver resolved:`.
 See [build details](../tools/dbt-build/README.md) for driver selection and packaging.
 
 ### Compatibility notes
@@ -49,10 +51,10 @@ See [build details](../tools/dbt-build/README.md) for driver selection and packa
 SQL models, tests, snapshots, seeds, `persist_docs`, partition copies and authorized views are
 supported. This remains experimental; review these differences before switching:
 
-- Seed `column_types` retain precision, scale and length: `numeric(5,2)` rounds `123.456` to
+- Seed `column_types` keep precision, scale and length: `numeric(5,2)` rounds `123.456` to
   `123.46` and rejects `1234.56`; `string(3)` rejects `abcdef`. dbt drops the old seed table before
-  loading, so a failed load can leave it absent. Run from the project directory for relative CSV
-  paths to resolve.
+  loading, so a failed load can leave it absent. Run from the project directory so that relative
+  CSV paths resolve.
 - An adapter response's `job_id` can be a jobless query ID, which `jobs.get` cannot fetch. Custom
   macros that set a destination table must query it separately to fetch its rows.
 - Without a profile `location`, seeds and copies need `bigquery.datasets.get` to resolve their
@@ -65,32 +67,28 @@ supported. This remains experimental; review these differences before switching:
   [validation gaps](LIMITATIONS.md#validation-gaps). Python-model cancellation can leave remote
   work running if its submission result was lost.
 - dbt itself drops nested column descriptions, removed policy tags and seed/copy job IDs
-  ([UP-77, UP-91 and UP-86](UPSTREAM.md)); these gaps affect both drivers.
+  ([UP-77, UP-91 and UP-86](UPSTREAM.md)), with either driver.
 
 ## For developers
 
 [`tools/dbt-build`](../tools/dbt-build/README.md#building) pins dbt and builds the patched binary.
-The [dbt integration suite](../integration/dbt/README.md) covers real projects and supports
-`--compare` against dbt's canonical driver. It needs ADC and an explicit test project; offline
-harness tests and CI do not validate live BigQuery behavior. Python-model success paths currently
-have mock coverage only.
+The [dbt integration suite](../integration/dbt/README.md) runs real projects against BigQuery and
+can `--compare` this driver with dbt's canonical one.
 
 The compatibility contract follows
 [`dbt-labs/bigquery-adbc`](https://github.com/dbt-labs/bigquery-adbc), dbt's Go fork. dbt defines
 its options in `crates/dbt-adbc/src/bigquery.rs`; this driver's option-only operations live in
-[`src/dbt/`](../src/dbt). General option semantics belong in [REFERENCE.md](REFERENCE.md), and
+[`src/dbt/`](../src/dbt). General option semantics are in [REFERENCE.md](REFERENCE.md), and
 inherited Go differences in [GO-DRIVER-COMPARISON.md](GO-DRIVER-COMPARISON.md).
 
 ### Database options
 
-`adbc.bigquery.sql.*` aliases `bigquery.*`, except `api_endpoint` maps to `bigquery.endpoint`
-and `auth_credentials` to `bigquery.auth.credentials`. Authentication type values accept the
-`adbc.bigquery.sql.auth_type.*` prefix. dbt's `impersonate.scopes` configures base credentials
-when no impersonation target is set, unless `bigquery.auth.scopes` overrides it.
-
-The profile methods `oauth`, `service-account`, `service-account-json`, `oauth-secrets` and
-`external-oauth-wif` map to ADC, JSON file, JSON string, refresh/access token and discrete WIF
-credentials respectively. WIF exchanges the identity provider's `access_token` as a JWT by default.
+dbt sends the [`adbc.bigquery.sql.*` aliases](REFERENCE.md#options). Its profile methods `oauth`,
+`service-account`, `service-account-json`, `oauth-secrets` and `external-oauth-wif` map to ADC,
+JSON file, JSON string, refresh/access token and discrete WIF credentials respectively; WIF
+exchanges the identity provider's `access_token` as a JWT by default. dbt's `impersonate.scopes`
+also sets the base credential's scopes when no impersonation target is set, unless
+`bigquery.auth.scopes` overrides it ([authentication scopes](REFERENCE.md#authentication-scopes)).
 
 ### Statement operations
 
@@ -114,14 +112,14 @@ dbt's placeholder SQL, preserves service error statuses, and rejects `execute_sc
 Under `bigquery.query.dry_run` they return `NOT_IMPLEMENTED`; a seed only checks its file and
 schema.
 
-Python models retain dbt's `pooling_timeout`, `gsc_path` and `gsc_bucket` spellings; the timeout is
+Python models keep dbt's `pooling_timeout`, `gsc_path` and `gsc_bucket` spellings; the timeout is
 in seconds and covers submission, polling and retries. Failed terminal job states are errors.
 Unlike the fork, a zero timeout means no deadline, a Cloud Storage write needs both bucket and
 object name, and a bigframes notebook needs `adbc.bigquery.create_batch.batch_id` and an existing
 `ONE_CLICK` runtime template unless `adbc.bigquery.notebook_execute_job.template_id` names one. The
 notebook runs as `adbc.bigquery.notebook_execute_job.service_account`, else the service account or
-impersonation target the credentials name, else as its template decides; it never guesses an
-`executionUser`.
+impersonation target the credentials name, else as its template decides; the driver never guesses
+an `executionUser`.
 
 ### CSV seeds
 
@@ -129,7 +127,7 @@ A non-empty seed uses `adbc.bigquery.sql.query.destination_table` and
 `adbc.bigquery.ingest.csv_filepath`, `.csv_delimiter` and `.csv_schema` (Arrow IPC). The driver
 streams the CSV to a load job with the supplied schema, one header row and quoted newlines enabled.
 Defaults are `CREATE_IF_NEEDED` and `WRITE_EMPTY`; this path is separate from ADBC bulk ingestion.
-Declared `BIGQUERY:type` metadata retains type parameters; unsupported types are rejected.
+Declared `BIGQUERY:type` metadata keeps type parameters; unsupported types are rejected.
 
 An upload that may have created the job is recovered by fetching it, never resent. One that sent
 nothing (it could not connect or obtain a token), or that BigQuery refused with a retryable reason
@@ -141,8 +139,9 @@ returns `ALREADY_EXISTS`.
 
 The option maps each view to its source datasets, for example:
 `{"project.marts.my_view": [{"project": "project", "dataset": "raw"}]}`.
-The driver patches each dataset's access list under an ETag and retries conflicting updates.
-Use canonical project IDs: numeric view project spellings can duplicate grants, as in the fork.
+The driver patches each dataset's access list under an ETag and retries conflicting updates. Use
+canonical project IDs in view names: a numeric one
+[can duplicate grants](LIMITATIONS.md#authentication-and-access), as in the fork.
 
 ### Dataset location
 
@@ -154,7 +153,7 @@ execution, but not partitioned execution.
 ### Result metadata
 
 `BIGQUERY:query_id` becomes dbt's `query_id` and `job_id`. Seeds and copies return their job ID,
-which dbt currently discards. Python-model results name the remote job.
+which dbt discards (UP-86). Python-model results name the remote job.
 
 The statistic aliases dbt reads are `BIGQUERY:Statistics:Query:TotalBytesProcessed` (with fallback
 to `BIGQUERY:Statistics:TotalBytesProcessed`), `...:Query:TotalBytesBilled`, `...:Query:SlotMillis`,
@@ -169,4 +168,4 @@ to `BIGQUERY:Statistics:TotalBytesProcessed`), `...:Query:TotalBytesBilled`, `..
 `RangePartitioning.*`, `RequirePartitionFilter`, `Clustering.Fields`, `Labels`, `ResourceTags`,
 `ExpirationTime`, `EncryptionConfig.KMSKeyName`, `ViewQuery`, `UseLegacySQL`, `ExternalDataConfig.*`
 and `MaterializedView.*`. dbt also reads field metadata `BIGQUERY:type`, `Type`, `Repeated` and
-`Description`. Missing-table errors retain the text dbt matches (`404 Not Found:` / `notFound:`).
+`Description`. Missing-table errors keep the text dbt matches (`404 Not Found:` / `notFound:`).
