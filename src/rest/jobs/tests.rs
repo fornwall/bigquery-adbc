@@ -539,7 +539,12 @@ fn a_failed_job_lookup_without_a_location_says_the_job_may_still_run() {
 fn a_lost_regional_job_is_recovered_from_a_later_list_page() {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    for project_id in ["billing/project", "123456789"] {
+    // Authenticated responses resolve a numeric project ID to its canonical text ID.
+    for (project_id, returned, canonical) in [
+        ("billing/project", "billing/project", "billing%2Fproject"),
+        ("123456789", "billing-project", "billing-project"),
+    ] {
+        let listed = |id: &str| json!({"jobReference": {"projectId": returned, "jobId": id, "location": "asia-northeast1"}});
         let mut responses = vec![
             (503, error_body("backendError", "response lost")),
             (409, error_body("duplicate", "no parseable job location")),
@@ -548,26 +553,13 @@ fn a_lost_regional_job_is_recovered_from_a_later_list_page() {
         responses.extend([
             (503, error_body("backendError", "list temporarily unavailable")),
             ok(json!({"jobs": [
-                job_in("job-listed-prefix", "asia-northeast1"),
+                listed("job-listed-prefix"),
                 {"jobReference": {"projectId": "987654321", "jobId": "job-listed", "location": "EU"}},
                 {}
             ], "nextPageToken": "next /+?"})),
-            ok(json!({"jobs": [job_in("job-listed", "asia-northeast1")]})),
-            ok(job_in("job-listed", "asia-northeast1")),
+            ok(json!({"jobs": [listed("job-listed")]})),
+            ok(listed("job-listed")),
         ]);
-        // Numeric project IDs are resolved by authenticated responses to a canonical text ID.
-        if project_id == "123456789" {
-            for (_, body) in &mut responses {
-                for entry in body["jobs"].as_array_mut().into_iter().flatten() {
-                    if entry["jobReference"]["projectId"] == "billing/project" {
-                        entry["jobReference"]["projectId"] = json!("billing-project");
-                    }
-                }
-                if body["jobReference"]["projectId"] == "billing/project" {
-                    body["jobReference"]["projectId"] = json!("billing-project");
-                }
-            }
-        }
         let (endpoint, captured) = capture_requests(responses);
         let (runtime, client) = job_client(&endpoint);
         let reference = JobReference::new(project_id, None, "job-listed".to_owned());
@@ -603,11 +595,6 @@ fn a_lost_regional_job_is_recovered_from_a_later_list_page() {
                 .path()
                 .ends_with("&pageToken=next%20%2F%2B%3F")
         );
-        let canonical = if project_id == "123456789" {
-            "billing-project"
-        } else {
-            "billing%2Fproject"
-        };
         assert_eq!(
             requests.last().unwrap().path(),
             format!("/bigquery/v2/projects/{canonical}/jobs/job-listed?location=asia-northeast1")
