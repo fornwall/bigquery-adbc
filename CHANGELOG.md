@@ -10,6 +10,9 @@ changes.
 - An append of an all-null list or struct field, which pyarrow types with Arrow `Null` elements,
   into a column of another shape returns the schema mismatch's `ALREADY_EXISTS` naming the column,
   instead of `NOT_IMPLEMENTED` for the `Null` type.
+- `BIGQUERY:type` metadata naming an `ARRAY<...>`, `STRUCT<...>` or `RANGE<...>` type on a scalar
+  parameter, ingest or seed field returns `INVALID_ARGUMENT` as a mismatch with the Arrow type,
+  instead of `NOT_IMPLEMENTED` claiming the driver lacks the type.
 
 ## [0.6.0] - 2026-11-11
 

@@ -1,6 +1,7 @@
 use super::*;
 use crate::test_support::arrow::bigquery_typed;
 use crate::test_support::errors::assert_failure;
+use adbc_core::error::Status;
 
 /// The exact metadata strings are a wire-format contract with consumers; a typo in a hoisted
 /// const must fail here rather than pass every test that uses the const on both sides.
@@ -202,21 +203,22 @@ fn string_typed_metadata_annotates_json_and_geography() {
 }
 
 /// A name the driver has no type for is unimplemented; a known type this field cannot be is a
-/// mismatch. A bare `STRUCT` or `RANGE` on a scalar Arrow field is the latter.
+/// mismatch. A composite on a scalar Arrow field, bare or parameterized, is the latter.
 #[test]
 fn composite_metadata_on_a_scalar_field_is_a_mismatch_not_a_missing_type() {
-    let annotated =
-        |rich_type: &str| bigquery_typed(Field::new("value", DataType::Int64, true), rich_type);
+    let resolve = |rich_type: &str| {
+        let field = bigquery_typed(Field::new("value", DataType::Int64, true), rich_type);
+        scalar_arrow_field_type(&DataType::Int64, &field, PARAMETER_FIELD).unwrap_err()
+    };
 
-    for rich_type in ["STRUCT", "RANGE"] {
-        let field = annotated(rich_type);
-        let failure = metadata_type(
-            &field,
-            rich_type,
-            Some(BigQueryType::Int64),
-            PARAMETER_FIELD,
-        )
-        .unwrap_err();
+    for rich_type in [
+        "STRUCT",
+        "RANGE",
+        "ARRAY<INT64>",
+        "STRUCT<`a` INT64>",
+        "RANGE<DATE>",
+    ] {
+        let failure = resolve(rich_type);
         assert_eq!(failure.status, Status::InvalidArguments);
         assert_eq!(
             failure.message,
@@ -227,15 +229,11 @@ fn composite_metadata_on_a_scalar_field_is_a_mismatch_not_a_missing_type() {
         );
     }
 
-    let field = annotated("NOT_A_TYPE");
-    let failure = metadata_type(
-        &field,
-        "NOT_A_TYPE",
-        Some(BigQueryType::Int64),
-        PARAMETER_FIELD,
-    )
-    .unwrap_err();
-    assert_failure(&failure, Status::NotImplemented, &["is not implemented"]);
+    assert_failure(
+        &resolve("NOT_A_TYPE"),
+        Status::NotImplemented,
+        &["is not implemented"],
+    );
 }
 
 /// Ingest normalization and query result decoding must reach the same Arrow layout for a type.

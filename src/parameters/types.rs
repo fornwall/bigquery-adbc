@@ -8,8 +8,8 @@ use crate::rest::model::{QueryParameterStructType, QueryParameterType};
 use crate::types::decimal::{BigQueryDecimalType, decimal_mapping};
 use crate::types::{
     BIGQUERY_TYPE_METADATA_KEY, BigQueryType, PARAMETER_FIELD, array_item_field, case_duplicate,
-    decimal_metadata_type_hint, folded_name, incompatible_metadata_error, metadata_type,
-    nested_array_error, range_field_element, scalar_arrow_field_type,
+    decimal_metadata_type_hint, folded_name, incompatible_metadata_error, is_composite_literal,
+    metadata_type, nested_array_error, range_field_element, scalar_arrow_field_type,
 };
 
 pub(super) fn parameter_type(field: &Field) -> Result<QueryParameterType> {
@@ -39,11 +39,7 @@ fn implied_scalar_type(
     };
     // BigQuery takes a NULL of a composite type, but nothing parses one out of metadata; a null
     // List or Struct field carries its shape instead.
-    if data_type == &DataType::Null
-        && ["ARRAY<", "STRUCT<", "RANGE<"]
-            .iter()
-            .any(|head| name.starts_with(head))
-    {
+    if data_type == &DataType::Null && is_composite_literal(name) {
         return Err(not_implemented(format!(
             "Arrow parameter field {:?} has type Null, which binds only a scalar BigQuery type, \
              not {name:?}; bind a null List or Struct field of that type instead",

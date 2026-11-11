@@ -16,10 +16,10 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
-use adbc_core::error::{Result, Status};
+use adbc_core::error::{Error, Result};
 use arrow_schema::{DataType, Field, Fields, IntervalUnit, Metadata, TimeUnit};
 
-use crate::error::{error, invalid_argument, not_implemented};
+use crate::error::{invalid_argument, not_implemented};
 
 pub(crate) mod cast;
 pub(crate) mod decimal;
@@ -356,22 +356,28 @@ pub(crate) fn metadata_type(
             field.name()
         )));
     }
+    // A composite on a scalar field, bare or parameterized, is a mismatch like `STRING` on an
+    // `Int64`, not an unimplemented type; composites are resolved by their own converters.
+    if is_composite_literal(name) {
+        return Err(incompatible_metadata_error(field, name));
+    }
     let Some(kind) = BigQueryType::from_sql(name) else {
-        return Err(error(
-            format!(
-                "BigQuery type {name:?} is not implemented for {subject} {:?}",
-                field.name()
-            ),
-            Status::NotImplemented,
-        ));
+        return Err(not_implemented(format!(
+            "BigQuery type {name:?} is not implemented for {subject} {:?}",
+            field.name()
+        )));
     };
-    // A bare `STRUCT` or `RANGE` on a scalar field is a mismatch like `STRING` on an `Int64`, not
-    // an unimplemented type; composites are resolved by their own converters from the
-    // parameterized spelling.
     if !kind.is_scalar() || !inferred.is_some_and(|inferred| kind.annotates(inferred)) {
         return Err(incompatible_metadata_error(field, name));
     }
     Ok(kind)
+}
+
+/// Whether `name` spells a parameterized `ARRAY<...>`, `STRUCT<...>` or `RANGE<...>` type.
+pub(crate) fn is_composite_literal(name: &str) -> bool {
+    ["ARRAY<", "STRUCT<", "RANGE<"]
+        .iter()
+        .any(|head| name.starts_with(head))
 }
 
 /// The item field of an Arrow list as the type converters read it: under the list's name, so a
@@ -401,7 +407,7 @@ pub(crate) fn array_item_field(list: &Field, item: &Field) -> Result<Field> {
 }
 
 /// The refusal for an Arrow list whose items convert to arrays, which BigQuery has no type for.
-pub(crate) fn nested_array_error(list: &Field) -> adbc_core::error::Error {
+pub(crate) fn nested_array_error(list: &Field) -> Error {
     not_implemented(format!(
         "Arrow field {:?} is a list of lists, but a BigQuery array cannot contain arrays \
          directly; wrap each inner list in a STRUCT",
@@ -515,8 +521,8 @@ fn range_element_from_metadata(field: &Field, subject: &str) -> Result<Option<Ra
     if !rich_type.starts_with("RANGE") {
         return Ok(None);
     }
-    let element_type = range_metadata(field)
-        .and_then(|rich_type| rich_type.strip_prefix("RANGE<"))
+    let element_type = rich_type
+        .strip_prefix("RANGE<")
         .and_then(|value| value.strip_suffix('>'))
         .ok_or_else(|| {
             invalid_argument(format!(
@@ -651,9 +657,8 @@ pub(crate) fn decimal_metadata_type_hint(
     })
 }
 
-/// The error for composite `BIGQUERY:type` metadata that cannot describe the Arrow field it
-/// annotates.
-pub(crate) fn incompatible_metadata_error(field: &Field, name: &str) -> adbc_core::error::Error {
+/// The error for `BIGQUERY:type` metadata that cannot describe the Arrow field it annotates.
+pub(crate) fn incompatible_metadata_error(field: &Field, name: &str) -> Error {
     invalid_argument(format!(
         "BigQuery type metadata {name:?} is incompatible with Arrow field {:?} of type {}",
         field.name(),
