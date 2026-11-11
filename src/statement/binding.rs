@@ -6,11 +6,14 @@ use arrow_schema::SchemaRef;
 
 use crate::error::invalid_state;
 
+/// Bound Arrow data, as `bind_stream` receives it.
+pub(super) type BoundStream = Box<dyn RecordBatchReader + Send>;
+
 #[derive(Default)]
 pub(super) enum ParameterBinding {
     #[default]
     Unbound,
-    Bound(Box<dyn RecordBatchReader + Send>),
+    Bound(BoundStream),
     Consumed,
 }
 
@@ -24,7 +27,7 @@ impl ParameterBinding {
     }
 
     /// Taking a binding also records that it cannot be executed again, including after failure.
-    pub(super) fn take(&mut self) -> Option<Box<dyn RecordBatchReader + Send>> {
+    pub(super) fn take(&mut self) -> Option<BoundStream> {
         match std::mem::replace(self, Self::Consumed) {
             Self::Bound(reader) => Some(reader),
             state => {

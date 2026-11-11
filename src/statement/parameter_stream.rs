@@ -13,6 +13,8 @@ use crate::query::{ExecutionContext, StatementQueryContext, StatementQueryOption
 use crate::rest::model::QueryParameter;
 use crate::transaction::{TransactionContext, TransactionState};
 
+use super::binding::BoundStream;
+
 pub(super) struct ParameterRows {
     batches: Batches,
     /// Rows yielded across batches: the stream position of the next row, which errors name.
@@ -21,10 +23,7 @@ pub(super) struct ParameterRows {
 }
 
 impl ParameterRows {
-    pub(super) fn new(
-        reader: Box<dyn RecordBatchReader + Send>,
-        parameter_mode: ParameterMode,
-    ) -> Result<Self> {
+    pub(super) fn new(reader: BoundStream, parameter_mode: ParameterMode) -> Result<Self> {
         let schema = reader.schema();
         let plan = ParameterPlan::try_new(schema.as_ref(), parameter_mode)?;
         Ok(Self {
@@ -98,7 +97,7 @@ impl ParameterRows {
 
 /// A bound stream, read one row at a time.
 struct Batches {
-    reader: Box<dyn RecordBatchReader + Send>,
+    reader: BoundStream,
     schema: SchemaRef,
     /// The batch holding row `row`, unless none has been read or it is exhausted.
     current: Option<RecordBatch>,

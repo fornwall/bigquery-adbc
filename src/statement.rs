@@ -36,7 +36,7 @@ use crate::{
     BigQueryStatementOption,
 };
 
-use binding::ParameterBinding;
+use binding::{BoundStream, ParameterBinding};
 pub(crate) use operations::OptionOnlyOutcome;
 use operations::{OptionOnlyOperation, StatementMode};
 use parameter_stream::{
@@ -153,7 +153,7 @@ impl BigQueryStatement {
 
     /// The SQL an execute runs and the binding it consumes, after the checks every execute makes
     /// before reading a row. A dry run reads no row, so it leaves the binding in place.
-    fn take_query(&mut self) -> Result<(Arc<str>, Option<Box<dyn RecordBatchReader + Send>>)> {
+    fn take_query(&mut self) -> Result<(Arc<str>, Option<BoundStream>)> {
         let sql = require_sql(self.sql.as_ref(), "execute")?.clone();
         self.parameters.require_available()?;
         self.refuse_session_creation()?;
@@ -388,7 +388,7 @@ impl Statement for BigQueryStatement {
         )))
     }
 
-    fn bind_stream(&mut self, reader: Box<dyn RecordBatchReader + Send>) -> Result<()> {
+    fn bind_stream(&mut self, reader: BoundStream) -> Result<()> {
         // The bound used everywhere the binding is read later, checked here as the C ABI's import
         // checks it, so a refused schema keeps the previous binding instead of failing at execute.
         validate_schema_nesting(reader.schema().fields(), "bound Arrow")?;
