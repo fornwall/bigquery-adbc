@@ -816,6 +816,27 @@ fn an_all_null_column_without_a_column_to_fill_reports_the_target() {
     }
 }
 
+/// A target that is not a table is the refusal an append reports, before its columns are used to
+/// type the bound data, which a snapshot's REQUIRED column would refuse for an all-null field.
+#[test]
+fn an_append_into_a_snapshot_names_the_target_before_its_columns() {
+    let mut snapshot = table(&json!([{"name": "id", "type": "INTEGER", "mode": "REQUIRED"}]));
+    snapshot["type"] = json!("SNAPSHOT");
+    let batch =
+        RecordBatch::try_from_iter([("id", Arc::new(NullArray::new(1)) as ArrayRef)]).unwrap();
+    let (outcome, _, _) = ingest_against_mocks(
+        vec![ok(snapshot)],
+        MockPlan::default(),
+        IngestMode::Append,
+        reading(batch),
+    );
+    assert_failure(
+        &outcome.unwrap_err(),
+        Status::InvalidArguments,
+        &["BigQuery ingest target project.dataset.events is a SNAPSHOT, not a table"],
+    );
+}
+
 /// An append reads its target before its rows, so a target it cannot write into is reported
 /// before the bound stream is read: the reader here fails if it is ever asked for a batch.
 #[test]

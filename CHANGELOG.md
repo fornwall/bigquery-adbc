@@ -58,6 +58,8 @@ changes.
 - When looking for a job submitted without `bigquery.location` fails partway, for example on a
   transient `jobs.get` failure, the error now says the job may still run and names it in
   `bigquery.job_id`, as it does when the job is found nowhere.
+- An append to a view, snapshot or other object that is not a table reports that, rather than
+  what one of its columns makes of a bound all-null field.
 
 ## [0.5.0] - 2026-11-09
 

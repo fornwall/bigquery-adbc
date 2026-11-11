@@ -320,21 +320,19 @@ fn ingest_schema(
         }
     }
     let existing = fetch_target(context, metadata_client, table)?;
-    if let Some(actual) = existing.as_ref().and_then(|table| table.schema.as_ref()) {
-        normalized_schema = align_with_table(&normalized_schema, actual)?;
+    // A target that cannot take the append at all is the error to report, not what its columns
+    // make of the bound fields, nor a `Null` field it left untyped.
+    if let Some(found) = &existing {
+        validate_ingestible_target(table, &found.table_type)?;
+        if let Some(actual) = &found.schema {
+            normalized_schema = align_with_table(&normalized_schema, actual)?;
+        }
     }
-    // A target that cannot take the append at all is the error to report, not the `Null` field
-    // it left untyped.
     if has_null_field(normalized_schema.fields()) {
         match &existing {
             None if mode == IngestMode::Append => return Err(missing_target(table)),
-            Some(found) => {
-                validate_ingestible_target(table, &found.table_type)?;
-                if found.schema.is_none() {
-                    return Err(schemaless_target(table));
-                }
-            }
-            None => {}
+            Some(found) if found.schema.is_none() => return Err(schemaless_target(table)),
+            _ => {}
         }
     }
     let table_schema = checked_table_schema(&normalized_schema)?;
