@@ -217,19 +217,23 @@ fn releasing_the_connection_while_a_statement_opens_its_transaction_ends_the_ses
     );
 }
 
-/// Every execute refuses an ingest in manual-commit mode, before it looks for bound data.
+/// Every execute refuses an ingest in manual-commit mode, before it looks for bound data. So does
+/// a dry run, which could only report this same failure.
 #[test]
 fn ingest_inside_a_transaction_is_rejected_by_every_execute_entrypoint() {
-    for execute in EXECUTE_ENTRIES {
-        let mut statement = test_statement();
-        statement.transaction.disable_autocommit().unwrap();
-        set_option(&mut statement, OptionStatement::TargetTable, "events");
-        let error = execute(&mut statement).unwrap_err();
-        assert_failure(
-            &error,
-            Status::InvalidState,
-            &["transaction", "adbc.connection.autocommit"],
-        );
+    for dry_run in [false, true] {
+        for execute in EXECUTE_ENTRIES {
+            let mut statement = test_statement();
+            statement.transaction.disable_autocommit().unwrap();
+            set_option(&mut statement, OptionStatement::TargetTable, "events");
+            set_option(&mut statement, BqOption::DryRun, dry_run);
+            let error = execute(&mut statement).unwrap_err();
+            assert_failure(
+                &error,
+                Status::InvalidState,
+                &["transaction", "adbc.connection.autocommit"],
+            );
+        }
     }
 }
 

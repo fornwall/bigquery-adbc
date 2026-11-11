@@ -60,20 +60,6 @@ fn dry_run_ingest_requires_bound_data() {
 }
 
 #[test]
-fn dry_run_ingest_is_refused_in_a_manual_transaction() {
-    // What a dry run would faithfully report here is the rejection itself.
-    let mut statement = dry_run_ingest_statement();
-    statement.bind(int64_column("value", vec![1])).unwrap();
-    statement.transaction.disable_autocommit().unwrap();
-    let error = statement.execute_update().unwrap_err();
-    assert_failure(
-        &error,
-        Status::InvalidState,
-        &["adbc.connection.autocommit"],
-    );
-}
-
-#[test]
 fn clearing_the_ingest_target_returns_the_statement_to_the_query_dry_run_path() {
     let mut statement = dry_run_ingest_statement();
     statement.set_sql_query("SELECT 1").unwrap();
