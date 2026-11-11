@@ -175,7 +175,7 @@ impl ChunkEncoder {
         window: RecordBatch,
         first_row: usize,
     ) -> Result<EncodedBatchChunk> {
-        self.admit(
+        let result = self.admit(
             &window,
             first_row,
             |planned_batch, row_count, serialized_size| {
@@ -187,7 +187,9 @@ impl ChunkEncoder {
                     row_count,
                 })
             },
-        )
+        );
+        drop(window);
+        result
     }
 
     /// Sizes the prefix of `window` that [`Self::encode`] would send, without materializing it,
