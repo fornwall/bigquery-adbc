@@ -240,8 +240,13 @@ pub(super) fn require_credentials(settings: &DatabaseConfig) -> Result<&str> {
 /// set as an option still works, since it ends at its writer's EOF, but a path the URI supplied
 /// (`from_uri`) must be a regular file: a pipe, terminal or `/dev/stdin` could block the
 /// connection forever, on its open or its read, as no URI's author may make the driver do.
-/// `metadata` follows symbolic links and does not open the file, so the check cannot block; a path
-/// it cannot inspect is left to the open, whose error gives the cause.
+///
+/// Such a path is checked before it is opened, so a device is never opened at all, and again
+/// through the descriptor, so a path swapped in between gains nothing. On Unix it is opened
+/// non-blocking, which keeps a pipe swapped in from blocking the open, and a file whose reads
+/// would wait, such as `/proc/kmsg`, fails its read instead; a FUSE file system that ignores the
+/// flag can still stall the read. A path that cannot be inspected is left to the open, whose
+/// error gives the cause.
 pub(super) fn read_credential_file(path: &str, from_uri: bool) -> Result<String> {
     use std::io::{Error, ErrorKind, Read as _};
     const LIMIT: usize = 1024 * 1024;
@@ -250,8 +255,9 @@ pub(super) fn read_credential_file(path: &str, from_uri: bool) -> Result<String>
         return Err(irregular_credential_file_from_uri());
     }
     let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .and_then(|file| file.take(LIMIT as u64 + 1).read_to_end(&mut bytes))
+    open_credential_file(path, from_uri)?
+        .take(LIMIT as u64 + 1)
+        .read_to_end(&mut bytes)
         .map_err(|source| unreadable_credential_file(&source))?;
     if bytes.len() > LIMIT {
         return Err(oversized_credential_file());
@@ -264,6 +270,31 @@ pub(super) fn read_credential_file(path: &str, from_uri: bool) -> Result<String>
             "stream did not contain valid UTF-8",
         ))
     })
+}
+
+/// Opens the credential file at `path`; with `from_uri`, only as [`read_credential_file`] permits.
+pub(super) fn open_credential_file(path: &str, from_uri: bool) -> Result<std::fs::File> {
+    let mut options = std::fs::File::options();
+    options.read(true);
+    #[cfg(unix)]
+    if from_uri {
+        std::os::unix::fs::OpenOptionsExt::custom_flags(
+            &mut options,
+            libc::O_NONBLOCK | libc::O_NOCTTY,
+        );
+    }
+    let file = options
+        .open(path)
+        .map_err(|source| unreadable_credential_file(&source))?;
+    if from_uri
+        && !file
+            .metadata()
+            .map_err(|source| unreadable_credential_file(&source))?
+            .is_file()
+    {
+        return Err(irregular_credential_file_from_uri());
+    }
+    Ok(file)
 }
 
 /// The credential-document fields that name where a credential is sent: the field, the value

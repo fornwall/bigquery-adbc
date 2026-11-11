@@ -367,22 +367,37 @@ fn a_uri_cannot_name_a_credential_file_that_is_not_a_regular_file() {
         })
     };
 
-    for path in ["/dev/null", fifo.path(), directory.to_str().unwrap()] {
-        let settings = file_settings(path, true);
+    let refused = |path: &str, open: fn(&str) -> adbc_core::error::Result<()>| {
         let (sender, receiver) = std::sync::mpsc::channel();
+        let owned = path.to_owned();
         std::thread::spawn(move || {
-            let _ = sender.send(ClientConfiguration::build(&settings).map(|_| ()));
+            let _ = sender.send(open(&owned));
         });
-        let built = receiver
+        let error = receiver
             .recv_timeout(Duration::from_secs(30))
             .unwrap_or_else(|_| {
                 let _ = std::fs::OpenOptions::new().write(true).open(&fifo.0);
-                panic!("{path}: the build blocked")
-            });
-        let error = built.unwrap_err();
+                panic!("{path}: the open blocked")
+            })
+            .unwrap_err();
         assert_eq!(error.status, Status::InvalidArguments, "{path}");
         assert_eq!(error.message, REFUSAL, "{path}");
+    };
+    for path in ["/dev/null", fifo.path(), directory.to_str().unwrap()] {
+        refused(path, |path| {
+            ClientConfiguration::build(&settings(|config| {
+                config.authentication_type = BigQueryAuthenticationType::JsonCredentialFile;
+                config.credentials = Some(Secret::from(path));
+                config.credentials_from_uri = true;
+            }))
+            .map(|_| ())
+        });
     }
+    // A pipe swapped in after the path was checked is opened without waiting for a writer, and
+    // refused through its descriptor.
+    refused(fifo.path(), |path| {
+        crate::config::credentials::open_credential_file(path, true).map(|_| ())
+    });
     ClientConfiguration::build(&file_settings(key.path(), true)).unwrap();
     // A path that cannot be inspected keeps the cause the open reports.
     let missing = ClientConfiguration::build(&file_settings("/nonexistent/key.json", true))
