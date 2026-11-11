@@ -76,8 +76,8 @@ pub(crate) struct DatabaseConfig {
     pub(crate) credentials: Option<Secret>,
     /// Whether `credentials` is a `bigquery://` URI's `AuthCredentials` rather than an explicit
     /// option. A URI is often assembled from input the application does not control, so the
-    /// document it supplies, inline or by path, may not name a command for the auth library to
-    /// run; see [`Self::endpoint_from_uri`] for the same rule about hosts.
+    /// document it supplies, inline or by path, may not have the auth library run a command or
+    /// read an unbounded file; see [`Self::endpoint_from_uri`] for the same rule about hosts.
     pub(crate) credentials_from_uri: bool,
     pub(crate) credentials_type: Option<BigQueryCredentialsType>,
     pub(crate) user_authentication: UserAuthenticationConfig,
@@ -242,11 +242,17 @@ impl DatabaseConfig {
     /// other service require HTTPS to a Google API host or `bigquery.allow_untrusted_endpoint`.
     fn validate_endpoints(&self) -> Result<()> {
         // An anonymous credential mints no token, so there is nothing an endpoint can capture.
-        if self.authentication_type == BigQueryAuthenticationType::Anonymous
-            || self.allow_untrusted_endpoint
+        if self.authentication_type != BigQueryAuthenticationType::Anonymous
+            && !self.allow_untrusted_endpoint
         {
-            return Ok(());
+            self.validate_service_endpoints()?;
         }
+        self.validate_credential_urls()
+    }
+
+    /// Hold each service endpoint override to the trust rule [`Self::validate_endpoints`] states.
+    /// The values are already normalized, so there is nothing else to check.
+    fn validate_service_endpoints(&self) -> Result<()> {
         for kind in ServiceEndpointKind::ALL {
             let Some(endpoint) = self.endpoints.get(kind) else {
                 continue;
@@ -269,14 +275,16 @@ impl DatabaseConfig {
                 untrusted_endpoint(option, self.authentication_type, scheme, host)
             });
         }
-        self.validate_credential_urls()
+        Ok(())
     }
 
     /// Validate credential-exchange URLs, which include paths unlike service endpoints.
     ///
     /// The OAuth token endpoint receives `bigquery.auth.client_secret` and
     /// `bigquery.auth.refresh_token`, a permanent credential rather than a one-hour token; the
-    /// Security Token Service URL receives the external-account subject token.
+    /// Security Token Service URL receives the external-account subject token. The opt-in lifts
+    /// only the trust rule: the auth library parses these URLs either way, so they must parse here
+    /// first, which also keeps a host that would panic a debug build's parser out (UP-103).
     fn validate_credential_urls(&self) -> Result<()> {
         for (option, configured, exchange, google, legacy_oauth_host) in [
             (
@@ -313,7 +321,7 @@ impl DatabaseConfig {
                     option.as_str()
                 ))
             })?;
-            if is_trusted_credential_url(&url, legacy_oauth_host) {
+            if self.allow_untrusted_endpoint || is_trusted_credential_url(&url, legacy_oauth_host) {
                 continue;
             }
             return Err(untrusted_credential_url(

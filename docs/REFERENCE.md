@@ -143,7 +143,7 @@ during initialization, because driver managers can reorder options.
 | `bigquery.gcs_endpoint` | Cloud Storage JSON API override for dbt python-model uploads; default `https://storage.googleapis.com`. |
 | `bigquery.dataproc_endpoint` | Dataproc override for dbt python-model Spark submissions; default `https://{region}-dataproc.googleapis.com`. An override replaces the whole host, including the region. |
 | `bigquery.vertex_endpoint` | Vertex AI override for dbt python-model notebook execution; default `https://{region}-aiplatform.googleapis.com`. An override replaces the whole host, including the region. |
-| `bigquery.allow_untrusted_endpoint` | Boolean, default `false`. Lifts the Google-host requirement of the [endpoint rules](#endpoint-overrides). Cannot be set through a URI. |
+| `bigquery.allow_untrusted_endpoint` | Boolean, default `false`. Lifts the Google-host requirement of the [endpoint rules](#endpoint-overrides); the URLs must still parse. Cannot be set through a URI. |
 | `bigquery.user_agent` | Printable ASCII text, such as `my-app/1.0`, appended to the driver's [user agent](#diagnostics). |
 
 A credential option that the selected `bigquery.auth_type` does not read returns
@@ -628,18 +628,20 @@ somewhere new, but an explicit option can. Unless `bigquery.allow_untrusted_endp
 - With impersonation configured through `bigquery.impersonate.*`, a credential document's
   `universe_domain` must be `googleapis.com` too, because the source token goes to
   `iamcredentials.{universe_domain}`.
-- Not checked: a document's `credential_source`, which names your identity provider (the subject
-  token goes to `token_url`), and Application Default Credentials found through the environment or
-  `gcloud`, which are the machine owner's configuration.
+- A document's `credential_source` names your identity provider (the subject token goes to
+  `token_url`), so these rules do not apply to it. Application Default Credentials found through
+  the environment or `gcloud` are not checked at all: they are the machine owner's configuration.
 - A document a URI supplies through `AuthCredentials`, inline or by path, cannot name a
-  `credential_source.executable`, at any `source_credentials` depth: the auth library runs that
-  command once the machine sets `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`. Set
-  `bigquery.auth.credentials` as an option to use one; `bigquery.allow_untrusted_endpoint` concerns
-  hosts and does not lift this.
-- Hosts are ASCII. Endpoint options and proxy variables accept only ASCII host names, and a URL in a
-  credential document naming a non-ASCII host (an internationalized or fullwidth spelling) is
-  refused; write an internationalized host in Punycode (`xn--`). The URL options above and the
-  destinations the driver checks in a document also refuse a percent-encoded host.
+  `credential_source.executable`, which the auth library runs once the machine sets
+  `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`, and its `credential_source.file` must be a regular
+  file of at most 1 MiB, which the library reads whole at every token fetch. This holds at any
+  `source_credentials` depth. Set `bigquery.auth.credentials` as an option to go beyond it;
+  `bigquery.allow_untrusted_endpoint` concerns hosts and does not lift it.
+- Hosts are ASCII. Endpoint options and proxy variables accept only ASCII host names. Every other
+  URL the driver hands the auth library, the URL options above and a document's destinations and
+  `credential_source` URLs, is refused if its host is non-ASCII (an internationalized or fullwidth
+  spelling) or percent-encoded, with or without the opt-in; write an internationalized host in
+  Punycode (`xn--`).
 - Validation runs when clients are built, so options can be set in any order.
   `bigquery.allow_untrusted_endpoint` must be a database option; a URI cannot relax any check (G13).
 - Two exposures remain: an application that lets its own users set `bigquery.endpoint` lets them

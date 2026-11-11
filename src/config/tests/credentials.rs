@@ -407,6 +407,98 @@ fn a_uri_cannot_name_a_credential_file_that_runs_a_command() {
     }
 }
 
+/// The auth library reads a `credential_source.file` whole, synchronously, at every token fetch
+/// (UP-104). From a URI, whose author chooses the path, the file must therefore be a regular file
+/// of at most 1 MiB when the credentials are built, so `/dev/zero`, a directory or a large log
+/// file is refused, at any depth. The token file a workload identity configuration names passes,
+/// and an option, the application's own configuration, is not checked.
+#[test]
+fn a_uri_document_may_read_only_a_small_regular_subject_token_file() {
+    use adbc_core::Driver as _;
+    use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+
+    const LIMIT: usize = 1024 * 1024;
+    let token = TemporaryFile::new("uri-subject-token", "subject-token");
+    let at_limit = TemporaryFile::new("uri-subject-token-at-limit", "t".repeat(LIMIT));
+    let oversized = TemporaryFile::new("uri-subject-token-oversized", "t".repeat(LIMIT + 1));
+    let directory = std::env::temp_dir();
+    let document = |file: &str, nested: bool| {
+        let external = serde_json::json!({
+            "type": "external_account",
+            "audience": "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/provider",
+            "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+            "token_url": "https://sts.googleapis.com/v1/token",
+            "credential_source": {"file": file},
+        });
+        if nested {
+            serde_json::json!({
+                "type": "impersonated_service_account",
+                "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/sa@p.iam.gserviceaccount.com:generateAccessToken",
+                "source_credentials": external,
+            })
+        } else {
+            external
+        }
+        .to_string()
+    };
+    let mut driver = crate::BigQueryDriver::try_new().unwrap();
+    let mut database = |document: &str, from_uri: bool| {
+        let options = if from_uri {
+            let encoded = utf8_percent_encode(document, NON_ALPHANUMERIC);
+            vec![(
+                OptionDatabase::Uri,
+                format!("bigquery:///data-project?OAuthType=2&AuthCredentials={encoded}").into(),
+            )]
+        } else {
+            vec![
+                (
+                    OptionDatabase::Other("bigquery.auth_type".to_owned()),
+                    "json_credential_string".into(),
+                ),
+                (
+                    OptionDatabase::Other("bigquery.auth.credentials".to_owned()),
+                    document.into(),
+                ),
+            ]
+        };
+        driver.new_database_with_opts(options).unwrap()
+    };
+
+    for nested in [false, true] {
+        let prefix = if nested { "source_credentials." } else { "" };
+        for path in [
+            "/dev/zero",
+            directory.to_str().unwrap(),
+            oversized.path(),
+            "/nonexistent/subject-token",
+        ] {
+            let error = database(&document(path, nested), true)
+                .new_connection()
+                .unwrap_err();
+            assert_eq!(
+                error.message,
+                format!(
+                    "the JSON credential document the connection URI supplied names a file in its \
+                     {prefix}credential_source.file field (value not echoed) that is not a \
+                     regular file of at most 1 MiB; a URI cannot make the driver read anything \
+                     else, so set bigquery.auth.credentials as a database option to read it"
+                ),
+                "{path}"
+            );
+            assert_eq!(error.status, Status::InvalidArguments);
+            // An option is the application's own choice, and the library reads it at token time.
+            database(&document(path, nested), false)
+                .new_connection()
+                .unwrap_or_else(|error| panic!("{path}: {error}"));
+        }
+        for path in [token.path(), at_limit.path()] {
+            database(&document(path, nested), true)
+                .new_connection()
+                .unwrap_or_else(|error| panic!("{path}: {error}"));
+        }
+    }
+}
+
 /// Both halves of a credential-type rejection are type names rather than secrets: the assertion
 /// the operator made, what the document turned out to be, and the set that exists at all. The auth
 /// library's own error is dropped because it can quote the document, so a document it could not

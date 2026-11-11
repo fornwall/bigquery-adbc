@@ -625,6 +625,101 @@ fn the_untrusted_endpoint_option_permits_every_document_destination() {
     }
 }
 
+/// The opt-in lifts the trust rule, not the URL checks: every URL the driver hands the auth
+/// library is still parsed, and a host the `idna` stub would panic on in a debug build (UP-103)
+/// is refused, from an option or a document, whichever field names it.
+#[test]
+fn the_untrusted_endpoint_option_still_requires_ascii_url_hosts() {
+    const PANICKING_HOST: &str = "https://B\u{fc}.example/token";
+    let runtime = crate::runtime::new_runtime().unwrap();
+    let _guard = runtime.enter();
+    let mut refused = vec![user_authentication_via(PANICKING_HOST, true)];
+    let mut external = settings(|config| {
+        config.authentication_type = BigQueryAuthenticationType::ExternalAccount;
+        config.external_account.audience = Some(Arc::from(
+            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/p/providers/p",
+        ));
+        config.external_account.request_url = Some(Secret::from("https://idp.example/token"));
+        config.external_account.request_data = Some(Secret::from("grant_type=x"));
+        config.external_account.token_url = Some(Arc::from(PANICKING_HOST));
+    });
+    external.allow_untrusted_endpoint = true;
+    refused.push(external);
+    let mut guards = Vec::new();
+    for (_, document) in documents_sending_a_credential_to(PANICKING_HOST) {
+        let (file, modes) = in_both_credential_modes("document-opted-in-non-ascii", &document);
+        guards.push(file);
+        for mut settings in modes {
+            settings.allow_untrusted_endpoint = true;
+            refused.push(settings);
+        }
+    }
+    for settings in refused {
+        let error = ClientConfiguration::build(&settings).unwrap_err();
+        assert_eq!(error.status, Status::InvalidArguments, "{}", error.message);
+        assert_message_omits(&error, &["B\u{fc}"]);
+    }
+    drop(guards);
+}
+
+/// A `credential_source` names the identity provider, so no trust rule applies to its URLs, but
+/// the auth library parses them: one whose host the `idna` stub would panic on in a debug build
+/// (UP-103) is refused, with or without the opt-in, at any depth.
+#[test]
+fn a_credential_source_url_must_have_an_ascii_host() {
+    let runtime = crate::runtime::new_runtime().unwrap();
+    let _guard = runtime.enter();
+    for (field, source) in [
+        ("url", json!({"url": "https://B\u{fc}.example/token"})),
+        ("url", json!({"url": "https://B%C3%BC.example/token"})),
+        (
+            "region_url",
+            json!({
+                "environment_id": "aws1",
+                "region_url": "http://B\u{fc}/latest/meta-data/placement/availability-zone",
+                "regional_cred_verification_url":
+                    "https://sts.{region}.amazonaws.com?Action=GetCallerIdentity&Version=2011-06-15",
+            }),
+        ),
+        (
+            "regional_cred_verification_url",
+            json!({
+                "environment_id": "aws1",
+                "regional_cred_verification_url": "https://sts.{region}.B\u{fc}.com?Action=x",
+            }),
+        ),
+        (
+            "imdsv2_session_token_url",
+            json!({
+                "environment_id": "aws1",
+                "regional_cred_verification_url": "https://sts.{region}.amazonaws.com?Action=x",
+                "imdsv2_session_token_url": "http://B\u{fc}/latest/api/token",
+            }),
+        ),
+    ] {
+        let document = with_field(external_account_document(), "credential_source", source);
+        for (prefix, document) in [
+            ("", document.clone()),
+            ("source_credentials.", impersonated_document(document)),
+        ] {
+            for opted_in in [false, true] {
+                let mut settings = json_credentials(document.to_string());
+                settings.allow_untrusted_endpoint = opted_in;
+                let error = ClientConfiguration::build(&settings).unwrap_err();
+                assert_eq!(
+                    error.message,
+                    format!(
+                        "the JSON credential document in BigQuery option bigquery.auth.credentials \
+                         has a {prefix}credential_source.{field} field whose host is not ASCII or \
+                         is percent-encoded (value not echoed); write an internationalized host \
+                         in Punycode (xn--)"
+                    )
+                );
+            }
+        }
+    }
+}
+
 /// Trusting a REST endpoint trusts that endpoint alone, and a document is not an option.
 #[test]
 fn a_custom_rest_endpoint_does_not_trust_a_documents_destinations() {

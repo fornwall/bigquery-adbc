@@ -561,15 +561,15 @@ fn a_uri_cannot_supply_a_credential_document_that_runs_a_command() {
             .unwrap_or_else(|error| panic!("{field}: {error}"));
     }
 
-    // A URI document whose subject token comes from a file runs nothing.
-    let mut file_sourced = impersonated;
-    file_sourced["source_credentials"]["credential_source"] =
-        serde_json::json!({"file": "/var/run/secrets/token"});
+    // A URI document whose subject token comes from the identity provider's URL runs nothing.
+    let mut url_sourced = impersonated;
+    url_sourced["source_credentials"]["credential_source"] =
+        serde_json::json!({"url": "https://idp.example/token"});
     let mut database = new_database();
     set_option(
         &mut database,
         OptionDatabase::Uri,
-        uri_with(&file_sourced).as_str(),
+        uri_with(&url_sourced).as_str(),
     );
     database.new_connection().unwrap();
 }

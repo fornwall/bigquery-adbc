@@ -59,7 +59,8 @@ cannot show whether the service is fixed.
 | UP-100 | Token exchanges follow redirects | `google-cloud-auth` | Local finding; no SDK policy option | None |
 | UP-101 | Token exchanges have no timeout | `google-cloud-auth` | Local finding; driver bounds the caller's wait | None |
 | UP-102 | gRPC server streams have no deadline or keepalive | `google-cloud-gax-internal` | Local finding; driver bounds `ReadRows` silence and Storage Write waits | None |
-| UP-103 | Mixed-case non-ASCII hosts panic in debug builds | `idna_adapter` | Local finding; driver guards the URLs it parses | None |
+| UP-103 | Mixed-case non-ASCII hosts panic in debug builds | `idna_adapter` | Local finding; driver guards the URLs it hands on | None |
+| UP-104 | Subject-token reads are unbounded | `google-cloud-auth` | Local finding; driver bounds URI-supplied files | None |
 
 ## Git snapshot candidates
 
@@ -375,7 +376,17 @@ The stub refuses every non-ASCII host, but in a debug build its `map_normalize` 
 ASCII character it receives is lower case. `idna` hands it the character just before a label's
 first non-ASCII one without lowercasing it, so `reqwest::Url::parse("https://Bü/")` panics instead
 of failing; release builds return the parse error. The driver refuses a non-ASCII or
-percent-encoded authority before parsing a URL itself (`src/config/endpoints.rs`). URLs the auth
-library parses still panic in a debug build: an ADC file's `token_uri`, and an external-account
-document's `credential_source.url`, which the driver does not read. Lowercasing ASCII in the
-stub's `map_normalize` would fix it.
+percent-encoded authority in every URL it parses or hands the auth library, options and
+credential documents alike (`src/config/endpoints.rs`). The library still parses the URLs in an
+ADC file, such as its `token_uri`, unchecked, so those panic in a debug build. Lowercasing ASCII in
+the stub's `map_normalize` would fix it.
+
+## UP-104: external-account subject-token reads are unbounded
+
+The pinned auth library's [file source](https://github.com/googleapis/google-cloud-rust/blob/9ba338718561739ab257e87502516d4be42dd5d1/src/auth/src/credentials/external_account_sources/file_sourced.rs#L57)
+reads `credential_source.file` with `std::fs::read_to_string` at every token fetch, synchronously
+on a runtime worker, and its [URL source](https://github.com/googleapis/google-cloud-rust/blob/9ba338718561739ab257e87502516d4be42dd5d1/src/auth/src/credentials/external_account_sources/url_sourced.rs#L88)
+reads the whole response, neither with a size limit. A file such as `/dev/zero` exhausts memory and
+blocks the worker. The driver refuses a URI-supplied document whose file is not a regular file of
+at most 1 MiB (`src/config/credentials.rs`); a document set as an option, an ADC file, and a URL
+source's response stay unbounded.

@@ -162,27 +162,35 @@ pub(crate) fn endpoint_scheme_and_host(endpoint: &str) -> Option<(&'static str, 
     Some((scheme, host))
 }
 
-/// Parses a URL with the WHATWG parser `reqwest` uses, first refusing an authority that carries a
-/// non-ASCII character or a percent-escape.
+/// Parses a URL with the WHATWG parser `reqwest` uses, first refusing an
+/// [unsafe authority](unsafe_url_authority).
+pub(crate) fn parse_url(value: &str) -> Option<reqwest::Url> {
+    if unsafe_url_authority(value) {
+        return None;
+    }
+    reqwest::Url::parse(value).ok()
+}
+
+/// Whether a URL's authority carries a non-ASCII character or a percent-escape, which no URL the
+/// driver hands to `reqwest`, its own or the auth library's, may do.
 ///
 /// `idna` runs on its stub back end (`Cargo.toml`), which refuses every non-ASCII host anyway, but
 /// in a debug build it asserts that an ASCII letter it normalizes is lower case, and an upper-case
 /// letter just before a non-ASCII one (`https://Bü/`) is handed to it as is (UP-103). Refusing such
-/// a host here keeps that a parse failure instead of a panic. The scan reads the authority as the
-/// parser does for HTTP: after any run of `/` and `\` following the scheme, ignoring tabs and
-/// newlines, up to `/`, `\`, `?` or `#`. No endpoint spells its host with percent-escapes.
-pub(crate) fn parse_url(value: &str) -> Option<reqwest::Url> {
-    let (_, after_scheme) = value.split_once(':')?;
-    let unsafe_authority = after_scheme
+/// a host first keeps that a refusal instead of a panic. The scan reads the authority as the parser
+/// does for HTTP: after any run of `/` and `\` following the scheme, ignoring tabs and newlines, up
+/// to `/`, `\`, `?` or `#`. No endpoint spells its host with percent-escapes. A value without a
+/// scheme never reaches host parsing.
+pub(crate) fn unsafe_url_authority(value: &str) -> bool {
+    let Some((_, after_scheme)) = value.split_once(':') else {
+        return false;
+    };
+    after_scheme
         .chars()
         .filter(|character| !matches!(character, '\t' | '\n' | '\r'))
         .skip_while(|character| matches!(character, '/' | '\\'))
         .take_while(|character| !matches!(character, '/' | '\\' | '?' | '#'))
-        .any(|character| character == '%' || !character.is_ascii());
-    if unsafe_authority {
-        return None;
-    }
-    reqwest::Url::parse(value).ok()
+        .any(|character| character == '%' || !character.is_ascii())
 }
 
 /// Parses a URL a credential is sent to (an OAuth token endpoint or an identity-provider token

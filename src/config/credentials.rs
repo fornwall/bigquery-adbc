@@ -24,10 +24,11 @@ use crate::options::valid_enum_values;
 use crate::{BigQueryAuthenticationType, BigQueryCredentialsType, BigQueryDatabaseOption};
 
 use super::DatabaseConfig;
-use super::endpoints::{is_trusted_credential_url, parse_credential_url};
+use super::endpoints::{is_trusted_credential_url, parse_credential_url, unsafe_url_authority};
 use super::rejections::{
-    executable_source_from_uri, malformed_document_destination, oversized_credential_file,
-    required_option, unreadable_credential_file, untrusted_document_destination,
+    executable_source_from_uri, malformed_credential_source_url, malformed_document_destination,
+    oversized_credential_file, required_option, unreadable_credential_file,
+    unsuitable_subject_token_file_from_uri, untrusted_document_destination,
 };
 
 /// Applies the quota project and effective base scopes to a credential builder.
@@ -277,10 +278,13 @@ const DOCUMENT_DESTINATIONS: [(&str, &str, bool); 3] = [
 
 /// Refuses a credential document that would send a credential outside Google's API hosts, unless
 /// `bigquery.allow_untrusted_endpoint` is set. Google warns against accepting these documents from
-/// an untrusted source, and a URI can carry one in `AuthCredentials`.
+/// an untrusted source, and a URI can carry one in `AuthCredentials`. The opt-in lifts only the
+/// trust rule: the auth library parses these URLs either way, so they must parse here first, which
+/// also keeps a host that would panic a debug build's parser out (UP-103).
 ///
-/// `credential_source` is deliberately not read. Its URLs and file name the customer's own
-/// identity provider, which supplies the subject token; the token leaves at `token_url`.
+/// `credential_source` names the customer's own identity provider, which supplies the subject
+/// token that leaves at `token_url`, so it is no destination; [`check_credential_sources`] holds
+/// it to what holds whoever supplied the document.
 ///
 /// `universe_domain` selects a destination only under `bigquery.impersonate.*`, whose
 /// `generateAccessToken` call goes to `iamcredentials.{universe_domain}` with the source token.
@@ -290,14 +294,11 @@ const DOCUMENT_DESTINATIONS: [(&str, &str, bool); 3] = [
 /// Reads the parsed value the credential builder receives, so a duplicated key cannot pass here
 /// and resolve differently there.
 fn validate_document_destinations(settings: &DatabaseConfig, document: &Value) -> Result<()> {
-    if settings.allow_untrusted_endpoint {
-        return Ok(());
-    }
     let check = |prefix: &str, field: &str, value: &str, google: &str, legacy_oauth_host: bool| {
         let field = format!("{prefix}{field}");
         let url = parse_credential_url(value)
             .ok_or_else(|| malformed_document_destination(&field, google))?;
-        if is_trusted_credential_url(&url, legacy_oauth_host) {
+        if settings.allow_untrusted_endpoint || is_trusted_credential_url(&url, legacy_oauth_host) {
             return Ok(());
         }
         Err(untrusted_document_destination(
@@ -340,28 +341,65 @@ fn document_chain(document: &Value) -> impl Iterator<Item = (String, &Value)> {
     })
 }
 
-/// Refuses a document from a URI's `AuthCredentials` whose `credential_source` names an
-/// executable, which the auth library runs once the machine sets
-/// `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`.
+/// The `credential_source` fields holding a URL the auth library fetches: a URL source's, and an
+/// AWS source's region, metadata, session-token and request-template URLs.
+const CREDENTIAL_SOURCE_URLS: [&str; 4] = [
+    "url",
+    "region_url",
+    "regional_cred_verification_url",
+    "imdsv2_session_token_url",
+];
+
+/// The largest subject-token file a URI-supplied document may name, as for a credential file.
+const SUBJECT_TOKEN_FILE_LIMIT: u64 = 1024 * 1024;
+
+/// Checks each `credential_source` in the document chain before the auth library sees it.
 ///
-/// A URI is often assembled from input the application does not control, so it may not make the
-/// driver run a command, as it may not send a credential to a new host. Only an option trusts
-/// such a document: `bigquery.allow_untrusted_endpoint` is about hosts and does not apply, and
-/// the other credential sources are left alone because their subject token goes to the checked
-/// `token_url`. A null `executable` names no command, so the auth library reads another source.
-fn reject_executable_source_from_uri(settings: &DatabaseConfig, document: &Value) -> Result<()> {
-    if !settings.credentials_from_uri {
-        return Ok(());
-    }
+/// Every URL it fetches must have an ASCII, unescaped host, whoever supplied the document: no
+/// trust rule applies, but a host the `idna` stub would panic on in a debug build must not reach
+/// the library's parser (UP-103).
+///
+/// A document from a URI's `AuthCredentials`, inline or by path, is also held to what a URI's
+/// author may make the driver do, since a URI is often assembled from input the application does
+/// not control. It may not name an `executable`, which the library runs once the machine sets
+/// `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`, and its `file` must be a regular file of at most
+/// 1 MiB, because the library reads it whole, synchronously, at every token fetch (UP-104). Only
+/// an option trusts more: `bigquery.allow_untrusted_endpoint` is about hosts and does not apply.
+/// A URL source's response goes to the checked `token_url`, so where it points is not limited.
+/// A field of another JSON type is left to the library, which refuses it, except that a null
+/// `executable` names no command.
+fn check_credential_sources(settings: &DatabaseConfig, document: &Value) -> Result<()> {
     for (prefix, document) in document_chain(document) {
-        if document
-            .get("credential_source")
-            .and_then(|source| source.get("executable"))
-            .is_some_and(|executable| !executable.is_null())
-        {
-            return Err(executable_source_from_uri(&format!(
-                "{prefix}credential_source.executable"
-            )));
+        let Some(source) = document.get("credential_source") else {
+            continue;
+        };
+        let field = |name: &str| format!("{prefix}credential_source.{name}");
+        if settings.credentials_from_uri {
+            if source
+                .get("executable")
+                .is_some_and(|executable| !executable.is_null())
+            {
+                return Err(executable_source_from_uri(&field("executable")));
+            }
+            if let Some(path) = source.get("file").and_then(Value::as_str) {
+                // `metadata` follows symbolic links, as a projected token file is one, and does
+                // not open the file, so a FIFO cannot block here.
+                let small_regular_file = std::fs::metadata(path).is_ok_and(|metadata| {
+                    metadata.is_file() && metadata.len() <= SUBJECT_TOKEN_FILE_LIMIT
+                });
+                if !small_regular_file {
+                    return Err(unsuitable_subject_token_file_from_uri(&field("file")));
+                }
+            }
+        }
+        for name in CREDENTIAL_SOURCE_URLS {
+            if source
+                .get(name)
+                .and_then(Value::as_str)
+                .is_some_and(unsafe_url_authority)
+            {
+                return Err(malformed_credential_source_url(&field(name)));
+            }
         }
     }
     Ok(())
@@ -431,7 +469,7 @@ pub(super) fn build_json_credentials(
         )));
     }
 
-    reject_executable_source_from_uri(settings, &value)?;
+    check_credential_sources(settings, &value)?;
     validate_document_destinations(settings, &value)?;
 
     // Read before a builder consumes the value. Only a standard IAM URL identifies a target we

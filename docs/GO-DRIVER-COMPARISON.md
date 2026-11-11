@@ -597,9 +597,10 @@ information, a fragment, extra path segments, and impersonation parameters witho
 ignores or drops these, or folds extra segments into the project ID, and decodes `AuthCredentials`
 twice, so an encoded `+` becomes a space. An IPv6 host without a port keeps its brackets here
 (`bigquery://[::1]/p` is `https://[::1]:443`); Go drops them and builds `::1:443`, which it cannot
-dial. A credential document from `AuthCredentials` that names a `credential_source.executable`
-returns `INVALID_ARGUMENT`, so a URI cannot run a command; Go runs it once the machine sets
-`GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`.
+dial. A credential document from `AuthCredentials` that names a `credential_source.executable`,
+or a `credential_source.file` that is not a regular file of at most 1 MiB, returns
+`INVALID_ARGUMENT`, so a URI cannot run a command or read `/dev/zero`; Go runs the command once the
+machine sets `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`, and reads any file.
 
 ### G76. Scopes can shape the credential, not only the impersonated token
 
@@ -653,8 +654,9 @@ whole, so a URI that names `/dev/zero` exhausts Go's memory.
 
 ### G97. URL hosts in credential documents must be ASCII
 
-A credential document's `token_uri`, `token_url`, `service_account_impersonation_url` or
-`credential_source.url` naming a non-ASCII host is refused, so an internationalized host must be
+A credential document's `token_uri`, `token_url`, `service_account_impersonation_url`,
+`credential_source.url` or AWS source URL naming a non-ASCII host is refused, so an
+internationalized host must be
 written in Punycode (`xn--`); Go's HTTP client converts such a host to Punycode itself. Without
 Unicode mapping, a fullwidth spelling of a Google host cannot pass the [endpoint
 rules](REFERENCE.md#endpoint-overrides) either.

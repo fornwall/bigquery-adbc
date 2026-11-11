@@ -241,6 +241,27 @@ pub(super) fn executable_source_from_uri(field: &str) -> adbc_core::error::Error
     ))
 }
 
+/// Reject a document a URI supplied that names a subject-token file the driver will not have the
+/// auth library read. `field` is the JSON field path; the path itself is never quoted.
+pub(super) fn unsuitable_subject_token_file_from_uri(field: &str) -> adbc_core::error::Error {
+    invalid_argument(format!(
+        "the JSON credential document the connection URI supplied names a file in its {field} \
+         field (value not echoed) that is not a regular file of at most 1 MiB; a URI cannot make \
+         the driver read anything else, so set {} as a database option to read it",
+        BigQueryDatabaseOption::AuthenticationCredentials.as_str(),
+    ))
+}
+
+/// Reject a URL in a document's `credential_source` whose host the URL parser cannot take.
+pub(super) fn malformed_credential_source_url(field: &str) -> adbc_core::error::Error {
+    invalid_argument(format!(
+        "the JSON credential document in BigQuery option {} has a {field} field whose host is not \
+         ASCII or is percent-encoded (value not echoed); write an internationalized host in \
+         Punycode (xn--)",
+        BigQueryDatabaseOption::AuthenticationCredentials.as_str(),
+    ))
+}
+
 /// Reject a credential document destination that names no host the trust rule can judge.
 pub(super) fn malformed_document_destination(field: &str, google: &str) -> adbc_core::error::Error {
     invalid_argument(format!(

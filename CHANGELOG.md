@@ -17,9 +17,10 @@ changes.
 - The native library is 3% smaller (250 KB on x86-64 Linux): IAM impersonation refusals decode
   without the SDK's generic `google.rpc.Status` parser, URL parsing links no Unicode host-name
   tables, and `adbc_core`, `tokio-util` and `flatbuffers` compile for size.
-- A URL in a credential document naming a non-ASCII host is refused; write an internationalized
-  host in Punycode (`xn--`). The credential URL options and the destinations checked in a document
-  also refuse a percent-encoded host.
+- A credential URL option or a URL in a credential document, `credential_source` included,
+  naming a non-ASCII or percent-encoded host is refused; write an internationalized host in
+  Punycode (`xn--`). `bigquery.allow_untrusted_endpoint` no longer skips parsing those options and
+  a document's destinations, so a malformed one fails when the connection opens.
 - A `json_credential_string` credential that does not begin a JSON object, usually a file path,
   is refused with how to select `json_credential_file` instead.
 - The dbt installer accepts dbt's Rust target triples with `--target`, and rejects unknown
@@ -43,8 +44,9 @@ changes.
 
 - A credential document that a URI supplies through `AuthCredentials`, inline or by path, can no
   longer name a `credential_source.executable`, which the auth library runs when
-  `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`; set `bigquery.auth.credentials` as an option for
-  an executable-sourced credential.
+  `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`, nor a `credential_source.file` other than a
+  regular file of at most 1 MiB, which the library reads whole at every token fetch (so
+  `/dev/zero` exhausted memory). Set `bigquery.auth.credentials` as an option to go beyond this.
 - A `bigquery.auth.credentials` file over 1 MiB is refused after reading that much instead of
   being read whole, so a path such as `/dev/zero`, which a URI's `AuthCredentials` can name, no
   longer exhausts memory.
