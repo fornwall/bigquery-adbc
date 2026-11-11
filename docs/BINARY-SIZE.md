@@ -103,7 +103,7 @@ adding 44,800.
 | IAM's impersonation refusal decodes into three driver-owned structs, not gax's `rpc::Status`, whose typed detail decoder links every `google.rpc` detail type | -107,024 |
 | `src/arrow_ipc_bigquery` replaces `arrow-ipc`, which stays a test oracle | -1,323,880 |
 | LZ4 blocks decode in place, without `lz4_flex`'s frame decoder | -6,080 |
-| Gathers use type-erased `MutableArrayData`; one generic `arrow_select::concat` import instantiated 780,091 bytes | |
+| Gathers use type-erased `MutableArrayData`; one generic `arrow_select::concat` import instantiated 780,091 bytes. Dictionary expansion copies primitive and byte values directly, generic only over key and offset types, for a 2× faster scattered-key gather ([PERFORMANCE.md](PERFORMANCE.md#ingest-normalization)) | +18,672 for the direct copies |
 | Shared `#[cold] #[inline(never)]` error and FFI panic paths | -109,984 |
 | Module-local error constructors cold; `BigQueryType::from_sql` out of line | -12,352; -8,200 |
 | `DriverRuntime::block_on` erases the future type; stack pinning removes the original box | -129,976 for boxed erasure; +1,088 to remove the allocation |
