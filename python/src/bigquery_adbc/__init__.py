@@ -52,20 +52,6 @@ def __getattr__(name: str) -> str:
     return version
 
 
-def _validated_library_path(path: Path, source: str) -> str:
-    try:
-        is_file = path.is_file()
-    except OSError as error:
-        raise FileNotFoundError(
-            f"Could not inspect the BigQuery ADBC driver library from {source}: {path} ({error})"
-        ) from error
-
-    if not is_file:
-        raise FileNotFoundError(f"The BigQuery ADBC driver library from {source} is not a regular file: {path}")
-
-    return str(path.resolve(strict=True))
-
-
 def driver_path() -> str:
     """Return the absolute path of the native BigQuery ADBC driver library.
 
@@ -76,7 +62,14 @@ def driver_path() -> str:
 
     override = os.environ.get(_LIBRARY_ENV)
     if override:
-        return _validated_library_path(Path(override).expanduser(), f"the {_LIBRARY_ENV} environment variable")
+        path = Path(override).expanduser()
+        try:
+            is_file = path.is_file()
+        except OSError as error:
+            raise FileNotFoundError(f"Could not inspect {_LIBRARY_ENV}: {path} ({error})") from error
+        if not is_file:
+            raise FileNotFoundError(f"{_LIBRARY_ENV} is not a regular file: {path}")
+        return str(path.resolve(strict=True))
 
     candidates = [path for filename in _LIBRARY_FILENAMES if (path := _PACKAGE_DIR / filename).is_file()]
     if not candidates:
@@ -89,8 +82,7 @@ def driver_path() -> str:
     if len(candidates) > 1:
         found = ", ".join(path.name for path in candidates)
         raise RuntimeError(f"Expected exactly one bundled BigQuery ADBC driver library, but found: {found}")
-
-    return _validated_library_path(candidates[0], "the installed Python package")
+    return str(candidates[0])
 
 
 def connect(

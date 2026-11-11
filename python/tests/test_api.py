@@ -68,7 +68,7 @@ def test_driver_path_rejects_invalid_override(monkeypatch: pytest.MonkeyPatch, t
         path.mkdir()
     monkeypatch.setenv("BIGQUERY_ADBC_LIBRARY", str(path))
 
-    with pytest.raises(FileNotFoundError, match="environment variable is not a regular file") as caught:
+    with pytest.raises(FileNotFoundError, match="BIGQUERY_ADBC_LIBRARY is not a regular file") as caught:
         driver.driver_path()
     assert str(path) in str(caught.value)
 
