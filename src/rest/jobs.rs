@@ -1096,7 +1096,7 @@ impl InferredSubmission {
                         .await
                     {
                         Ok(body) => found(&located, body),
-                        Err(failure) => Err(Unlocated::unknown(failure)),
+                        Err(failure) => Err(self.unrecovered(failure, &located)),
                     };
                 }
                 answer => match classify(answer, &error_context) {
@@ -1148,24 +1148,30 @@ impl InferredSubmission {
     /// step finds it, `original` is reported, and if one fails, its failure; either way the job
     /// may still run.
     async fn locate(&self, original: adbc_core::error::Error) -> Located {
-        let mut failure = match self.search().await {
-            Ok(Some(located)) => return Ok(located),
-            Ok(None) => original,
-            Err(failure) => failure,
-        };
+        match self.search().await {
+            Ok(Some(located)) => Ok(located),
+            Ok(None) => Err(self.unrecovered(original, &self.reference)),
+            Err(failure) => Err(self.unrecovered(failure, &self.reference)),
+        }
+    }
+
+    /// `failure` ended recovery of the job, which `reference` names as far as it is known and
+    /// which may still run.
+    fn unrecovered(
+        &self,
+        mut failure: adbc_core::error::Error,
+        reference: &JobReference,
+    ) -> Unlocated {
         append_remedy(
             &mut failure,
             &format!(
                 "BigQuery may still run job {}; recovery did not complete; \
                  check the job before running it again, or set {}",
-                job_name(&self.reference),
+                job_name(reference),
                 BigQueryDatabaseOption::Location.as_str()
             ),
         );
-        Err(Unlocated::unknown(with_job_link(
-            failure,
-            Some(&self.reference),
-        )))
+        Unlocated::unknown(with_job_link(failure, Some(reference)))
     }
 
     /// Steps 2–4: the job with its location and resource, `None` if no step found it, or the
