@@ -292,7 +292,7 @@ pub(crate) fn ingest_batch(
     ingest(connection, table, IngestMode::Create, batch).unwrap()
 }
 
-/// One `Int64` column named `name`.
+/// One non-nullable `Int64` column named `name`, which an ingest creates as `REQUIRED`.
 pub(crate) fn int64_batch(name: &str, values: Vec<i64>) -> RecordBatch {
     RecordBatch::try_from_iter([(name, Arc::new(Int64Array::from(values)) as ArrayRef)]).unwrap()
 }
