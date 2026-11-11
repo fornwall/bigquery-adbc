@@ -23,15 +23,15 @@ use arrow_array::{
     TimestampSecondArray,
 };
 use arrow_buffer::{IntervalDayTime, IntervalMonthDayNano, NullBuffer, OffsetBuffer, i256};
-use arrow_schema::{ArrowError, DataType, Field, Schema, TimeUnit};
+use arrow_schema::{ArrowError, DataType, Field, Fields, Schema, TimeUnit};
 
 use crate::support::{
     DropTable, SCRATCH_DATASET, assert_bignumeric_extremes, assert_decimal_domain_result,
-    bignumeric_extremes_batch, bignumeric_extremes_select, connect, connect_with_dataset,
-    count_rows, date_at, decimal_domain_batch, execute_sql, i64_at, ingest, ingest_batch,
-    int64_batch, interval_at, option_string, prepare_query, project, read_all, read_single_i64,
-    read_single_string, scratch_fixture, scratch_table, set_option, single_batch, str_at,
-    struct_at, ts_at, typed,
+    bignumeric_extremes_batch, bignumeric_extremes_select, concatenated, connect,
+    connect_with_dataset, count_rows, date_at, decimal_domain_batch, decimal_domain_select,
+    execute_sql, i64_at, ingest, ingest_batch, int64_batch, interval_at, option_string,
+    prepare_query, project, read_all, read_single_i64, read_single_string, scratch_fixture,
+    scratch_table, set_option, single_batch, str_at, struct_at, ts_at, typed,
 };
 
 #[test]
@@ -322,35 +322,23 @@ fn bulk_ingests_after_rapid_table_recreation() {
             &mut connection,
             &format!("SELECT id, generation, value FROM `{table}` ORDER BY id"),
         );
-        let (_, batches) = read_all(&mut query);
-        let mut checked = 0;
-        for batch in batches {
-            assert!(
-                checked + batch.num_rows() <= 4,
-                "generation {generation}: extra rows"
-            );
-            let ids = typed::<Int64Array>(batch.column(0).as_ref());
-            let generations = typed::<Int64Array>(batch.column(1).as_ref());
-            for (row, (id, actual_generation)) in ids.iter().zip(generations.iter()).enumerate() {
-                assert_eq!(
-                    id,
-                    Some(i64::try_from(checked + row).unwrap()),
-                    "generation {generation} returned an unexpected row ID on {table}"
-                );
-                assert_eq!(
-                    actual_generation,
-                    Some(generation),
-                    "generation {generation} returned stale rows on {table}"
-                );
-            }
-            assert_eq!(
-                batch.column(2).to_data(),
-                expected.slice(checked, batch.num_rows()).to_data(),
-                "generation {generation} returned stale or corrupted values on {table}"
-            );
-            checked += batch.num_rows();
-        }
-        assert_eq!(checked, 4, "generation {generation} lost rows on {table}");
+        let (schema, batches) = read_all(&mut query);
+        let columns = concatenated(&schema, &batches);
+        assert_eq!(
+            typed::<Int64Array>(columns[0].as_ref()).values(),
+            &[0, 1, 2, 3],
+            "generation {generation} returned missing, extra or reordered rows on {table}"
+        );
+        assert_eq!(
+            typed::<Int64Array>(columns[1].as_ref()).values(),
+            &[generation; 4],
+            "generation {generation} returned stale rows on {table}"
+        );
+        assert_eq!(
+            columns[2].to_data(),
+            expected.to_data(),
+            "generation {generation} returned stale or corrupted values on {table}"
+        );
     }
 }
 
@@ -540,16 +528,9 @@ fn bulk_ingests_decimals_by_value_domain() {
 
     let mut query = prepare_query(
         &mut connection,
-        &format!(
-            "SELECT CAST(decimal32 AS STRING), CAST(negative_scale AS STRING), \
-             CAST(decimal128 AS STRING), CAST(decimal256 AS STRING), \
-             CAST(explicit_bignumeric AS STRING), TYPEOF(decimal32), \
-             TYPEOF(negative_scale), TYPEOF(decimal128), TYPEOF(decimal256), \
-             TYPEOF(explicit_bignumeric) FROM `{table}`"
-        ),
+        &format!("{} FROM `{table}`", decimal_domain_select("")),
     );
-    let batch = single_batch(&mut query);
-    assert_decimal_domain_result(&batch);
+    assert_decimal_domain_result(&single_batch(&mut query));
 }
 
 /// BIGNUMERIC values read from BigQuery ingest back. A `BIGNUMERIC(76, 38)` column rejects the
@@ -727,76 +708,42 @@ fn bulk_ingests_decimal_arrays_at_their_declared_scale() {
 fn bulk_ingests_range_values() {
     let (table, _drop_table, mut connection) = scratch_fixture("range_ingest");
 
-    let range = |name: &str, element_type: &str, data_type: DataType| {
-        Field::new(
-            name,
-            DataType::Struct(
-                vec![
-                    Field::new("start", data_type.clone(), true),
-                    Field::new("end", data_type, true),
-                ]
-                .into(),
-            ),
-            true,
-        )
-        .with_metadata(HashMap::from([(
-            "BIGQUERY:type".to_owned(),
-            format!("RANGE<{element_type}>"),
-        )]))
+    let range = |name: &str, element_type: &str, start: ArrayRef, end: ArrayRef| {
+        let fields = Fields::from(vec![
+            Field::new("start", start.data_type().clone(), true),
+            Field::new("end", end.data_type().clone(), true),
+        ]);
+        let field = Field::new(name, DataType::Struct(fields.clone()), true).with_metadata(
+            HashMap::from([("BIGQUERY:type".to_owned(), format!("RANGE<{element_type}>"))]),
+        );
+        let values = StructArray::new(fields, vec![start, end], None);
+        (field, Arc::new(values) as ArrayRef)
     };
-    let date = range("date_range", "DATE", DataType::Date32);
-    let datetime = range(
-        "datetime_range",
-        "DATETIME",
-        DataType::Timestamp(TimeUnit::Microsecond, None),
-    );
-    let timestamp = range(
-        "timestamp_range",
-        "TIMESTAMP",
-        DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into())),
-    );
-    let date_values = StructArray::new(
-        match date.data_type() {
-            DataType::Struct(fields) => fields.clone(),
-            _ => unreachable!(),
-        },
-        vec![
-            Arc::new(Date32Array::from(vec![Some(1)])),
-            Arc::new(Date32Array::from(vec![Some(3)])),
-        ],
-        None,
-    );
-    let datetime_values = StructArray::new(
-        match datetime.data_type() {
-            DataType::Struct(fields) => fields.clone(),
-            _ => unreachable!(),
-        },
-        vec![
-            Arc::new(TimestampMicrosecondArray::from(vec![Some(1_000_001)])),
-            Arc::new(TimestampMicrosecondArray::from(vec![None])),
-        ],
-        None,
-    );
-    let timestamp_values = StructArray::new(
-        match timestamp.data_type() {
-            DataType::Struct(fields) => fields.clone(),
-            _ => unreachable!(),
-        },
-        vec![
-            Arc::new(TimestampMicrosecondArray::from(vec![Some(1_000_001)]).with_timezone_utc()),
-            Arc::new(TimestampMicrosecondArray::from(vec![Some(2_000_002)]).with_timezone_utc()),
-        ],
-        None,
-    );
-    let batch = RecordBatch::try_new(
-        Arc::new(Schema::new(vec![date, datetime, timestamp])),
-        vec![
-            Arc::new(date_values),
-            Arc::new(datetime_values),
-            Arc::new(timestamp_values),
-        ],
-    )
-    .unwrap();
+    let timestamp =
+        |value: Option<i64>| -> ArrayRef { Arc::new(TimestampMicrosecondArray::from(vec![value])) };
+    let (fields, columns): (Vec<_>, Vec<_>) = [
+        range(
+            "date_range",
+            "DATE",
+            Arc::new(Date32Array::from(vec![1])),
+            Arc::new(Date32Array::from(vec![3])),
+        ),
+        range(
+            "datetime_range",
+            "DATETIME",
+            timestamp(Some(1_000_001)),
+            timestamp(None),
+        ),
+        range(
+            "timestamp_range",
+            "TIMESTAMP",
+            Arc::new(TimestampMicrosecondArray::from(vec![1_000_001]).with_timezone_utc()),
+            Arc::new(TimestampMicrosecondArray::from(vec![2_000_002]).with_timezone_utc()),
+        ),
+    ]
+    .into_iter()
+    .unzip();
+    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
     assert_eq!(ingest_batch(&mut connection, &table, batch), Some(1));
 
     let mut query = prepare_query(

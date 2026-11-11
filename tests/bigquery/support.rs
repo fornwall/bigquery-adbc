@@ -558,6 +558,22 @@ pub(crate) fn decimal_domain_batch() -> RecordBatch {
     .unwrap()
 }
 
+/// The select [`assert_decimal_domain_result`] checks, over the [`decimal_domain_batch`] columns
+/// spelled with `prefix`: `@` for parameters, empty for a table's columns.
+pub(crate) fn decimal_domain_select(prefix: &str) -> String {
+    let schema = decimal_domain_batch().schema();
+    let names = schema
+        .fields()
+        .iter()
+        .map(|field| format!("{prefix}{}", field.name()));
+    let casts = names.clone().map(|name| format!("CAST({name} AS STRING)"));
+    let types = names.map(|name| format!("TYPEOF({name})"));
+    format!(
+        "SELECT {}",
+        casts.chain(types).collect::<Vec<_>>().join(", ")
+    )
+}
+
 #[track_caller]
 pub(crate) fn assert_decimal_domain_result(batch: &RecordBatch) {
     let values = (0..batch.num_columns())

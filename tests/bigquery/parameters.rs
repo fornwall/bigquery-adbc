@@ -21,9 +21,10 @@ use arrow_schema::{DataType, Field, IntervalUnit, Metadata, Schema};
 use crate::support::{
     DropTable, assert_bignumeric_extremes, assert_decimal_domain_result, bignumeric_extremes_batch,
     bignumeric_extremes_select, bool_at, connect, connect_at_location, connect_with_dataset_at,
-    count_rows, date_value, decimal_domain_batch, execute_sql, i64_at, int64_batch, interval_at,
-    list_at, named_parameter_query, prepare_query, project, schema_without_job_metadata,
-    scratch_table, set_option, single_batch, str_at, struct_at, ts_value, typed,
+    count_rows, date_value, decimal_domain_batch, decimal_domain_select, execute_sql, i64_at,
+    int64_batch, interval_at, list_at, named_parameter_query, prepare_query, project,
+    schema_without_job_metadata, scratch_table, set_option, single_batch, str_at, struct_at,
+    ts_value, typed,
 };
 
 #[test]
@@ -214,19 +215,9 @@ fn a_placeholder_style_mismatch_names_the_parameter_mode_to_set() {
 #[ignore = "requires Google Cloud ADC and access to the integration project"]
 fn executes_decimal_parameters_by_value_domain() {
     let mut connection = connect(project());
-    let mut statement = named_parameter_query(
-        &mut connection,
-        "SELECT CAST(@decimal32 AS STRING), CAST(@negative_scale AS STRING), \
-        CAST(@decimal128 AS STRING), CAST(@decimal256 AS STRING), \
-        CAST(@explicit_bignumeric AS STRING), TYPEOF(@decimal32), \
-        TYPEOF(@negative_scale), TYPEOF(@decimal128), TYPEOF(@decimal256), \
-        TYPEOF(@explicit_bignumeric)",
-    );
-
+    let mut statement = named_parameter_query(&mut connection, &decimal_domain_select("@"));
     statement.bind(decimal_domain_batch()).unwrap();
-
-    let batch = single_batch(&mut statement);
-    assert_decimal_domain_result(&batch);
+    assert_decimal_domain_result(&single_batch(&mut statement));
 }
 
 /// Both read paths return BIGNUMERIC's full domain, so parameters must accept all of it too.
