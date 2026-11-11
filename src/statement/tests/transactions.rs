@@ -109,6 +109,48 @@ fn failed_lazy_begin_does_not_execute_the_caller_query_or_enable_autocommit() {
     ));
 }
 
+/// A statement that cannot run for want of a project says so with the same status in manual-commit
+/// mode, where the failure comes from the `BEGIN` that would create the session, as in autocommit.
+#[test]
+fn a_manual_commit_statement_without_a_project_fails_as_in_autocommit() {
+    let project = (crate::BigQueryDatabaseOption::ProjectId.into(), "".into());
+    let mut connection = crate::test_support::driver::test_connection_with(
+        crate::test_support::UNREACHABLE_ENDPOINT,
+        [project],
+    );
+    for autocommit in [true, false] {
+        set_option(&mut connection, OptionConnection::AutoCommit, autocommit);
+        let mut statement = connection.new_statement().unwrap();
+        statement.set_sql_query(INSERT).unwrap();
+        let failure = statement.execute_update().unwrap_err();
+        assert_failure(
+            &failure,
+            Status::InvalidState,
+            &["a BigQuery project must be configured"],
+        );
+    }
+}
+
+/// A `BEGIN` whose job names no session fails the statement with `INVALID_DATA`, before the
+/// caller's query runs, and leaves no session to end or reuse.
+#[test]
+fn a_session_creating_begin_that_names_no_session_fails_the_statement() {
+    let (endpoint, requests) = capture_statements(vec![finished()]);
+    let (_connection, mut statement) = manual_insert_at(&endpoint);
+
+    let failure = statement.execute_update().unwrap_err();
+    assert_failure(
+        &failure,
+        Status::InvalidData,
+        &["without returning the session's ID"],
+    );
+    assert_eq!(sql_of(&requests.join().unwrap()), ["BEGIN TRANSACTION"]);
+    assert!(matches!(
+        statement.transaction.begin_query().unwrap(),
+        QueryTransaction::Start(None, _)
+    ));
+}
+
 /// A cancel that lands while the `BEGIN` creating the session is in flight still ends the
 /// session BigQuery creates, and leaves the next statement to open a fresh one.
 #[test]

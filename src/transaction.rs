@@ -477,15 +477,6 @@ pub(crate) fn outcome_unknown(failure: &adbc_core::error::Error) -> bool {
     !has_job_verdict(failure) || retryable_failure(failure.status)
 }
 
-/// A failed control statement's error, as its callers branch on it: a status from a job lookup
-/// says nothing of the statement, so a failure without a verdict reports `IO`.
-fn settled_control_failure(mut failure: adbc_core::error::Error) -> adbc_core::error::Error {
-    if outcome_unknown(&failure) && !retryable_failure(failure.status) {
-        failure.status = Status::IO;
-    }
-    failure
-}
-
 /// The failure of a caller that stopped waiting for control statement `sql` after `timeout`.
 fn control_timeout(sql: &str, timeout: Duration) -> adbc_core::error::Error {
     error(
@@ -659,6 +650,10 @@ impl<'a> TransactionContext<'a> {
     /// the session, and with it the transaction. A `BEGIN` that fails, or whose outcome is
     /// unknown, returns no session to keep or end: BigQuery expires the session it may have
     /// created, which holds at most an empty transaction and so no locks.
+    ///
+    /// A failure keeps its own status, unlike one in an existing session (see
+    /// [`Self::run_to_verdict`]): no caller acts on whether this `BEGIN` took effect, and a
+    /// failure before it is sent, such as a missing project, names what to fix.
     fn begin_in_new_session(&self, operation: &Operation) -> Result<Arc<str>> {
         operation.check()?;
         let context = self.context.clone();
@@ -690,7 +685,7 @@ impl<'a> TransactionContext<'a> {
             tokio::time::timeout(CONTROL_TIMEOUT, operation.wait(&mut receiver)).await
         });
         let stopped = match waited {
-            Ok(Ok(Ok(outcome))) => return outcome.map_err(settled_control_failure),
+            Ok(Ok(Ok(outcome))) => return outcome,
             Ok(Ok(Err(_))) => {
                 return Err(driver_defect(format_args!(
                     "beginning a BigQuery transaction in a new session ended without a result"
@@ -750,7 +745,13 @@ impl<'a> TransactionContext<'a> {
             .runtime
             .block_on(async { tokio::time::timeout(timeout, receiver).await })
         {
-            Ok(Ok(outcome)) => outcome.map_err(settled_control_failure),
+            // Callers branch on the status, and one from a job lookup says nothing of `sql`.
+            Ok(Ok(outcome)) => outcome.map_err(|mut failure| {
+                if outcome_unknown(&failure) && !retryable_failure(failure.status) {
+                    failure.status = Status::IO;
+                }
+                failure
+            }),
             Ok(Err(_)) => Err(driver_defect(format_args!(
                 "BigQuery {sql} ended without a result"
             ))),
