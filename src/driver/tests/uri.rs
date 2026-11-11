@@ -562,7 +562,7 @@ fn a_uri_cannot_supply_a_credential_document_that_runs_a_command() {
     }
 
     // A URI document whose subject token comes from a file runs nothing.
-    let mut file_sourced = impersonated.clone();
+    let mut file_sourced = impersonated;
     file_sourced["source_credentials"]["credential_source"] =
         serde_json::json!({"file": "/var/run/secrets/token"});
     let mut database = new_database();
