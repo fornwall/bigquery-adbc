@@ -41,16 +41,19 @@ DML restrictions on recently streamed rows.
 ### G7. Ingest schema mismatches return `ALREADY_EXISTS`
 
 For `append` and `create_append`, a bound schema the existing table cannot accept returns
-`ALREADY_EXISTS` before a stream opens, as adbc.h requires, naming every column at fault
+`ALREADY_EXISTS` before a stream opens, as adbc.h requires, naming the columns at fault
 ([rules](REFERENCE.md#bulk-ingest)). Decimal and length-limited string values are also checked,
-because Storage Write silently rounds and stores overlong values. Go never compares schemas and
-reports the later append failure as `IO`.
+because Storage Write silently rounds and stores overlong values. Go never compares schemas: after
+preparing the table it reports BigQuery's rejection as `ALREADY_EXISTS` only for a load job's
+`Provided Schema does not match Table` or Storage Write's `SCHEMA_MISMATCH_EXTRA_FIELDS`, and as
+`IO` otherwise.
 
 ### G11. Arrow interval bulk ingestion is supported
 
 All three Arrow interval layouts ingest into `INTERVAL` (day-time via month-day-nanosecond, UP-19;
-sub-microsecond parts truncate toward zero). Go cannot ingest intervals, including the interval
-schemas it returns.
+sub-microsecond parts truncate toward zero). Go cannot create an `INTERVAL` column, and its default
+load path cannot write intervals to Parquet; its Storage Write path sends them unconverted, so
+day-time values are misread (UP-19).
 
 ### G22. Oversized Arrow ingest batches are split into bounded append requests
 
@@ -59,8 +62,9 @@ limit, sized by the normalized output; only a single row too large for one reque
 with `INVALID_ARGUMENT`. Appends carry offsets on a pending stream: the oldest failed append gets
 three retries, queued successors are replayed at their offsets, each later failure starts a new
 budget (so an append may be sent more than four times), and a replay answered `ALREADY_EXISTS`
-counts as written. Go sends each batch as one request, so a large batch fails at the service, and
-retries only a first append on `NotFound`, so a transport failure mid-ingest fails it.
+counts as written. Go's Storage Write path sends each batch as one request, so a large batch
+fails at the service, and retries only a first append on `NotFound`, so a transport failure
+mid-ingest fails it.
 
 ### G23. The first ingest batch is validated before target-table mutation
 
@@ -72,15 +76,17 @@ it created.
 
 ### G24. Storage Write ingestion supports exact Arrow Date64 values
 
-Whole-day Date64 values ingest as `DATE`; others return `INVALID_DATA`. Go's Storage Write path does
-not support Date64.
+Whole-day Date64 values ingest as `DATE`; others return `INVALID_DATA`. Go cannot create a table
+from Date64; its default load path appends to an existing `DATE` column, truncating partial days,
+and its Storage Write path sends Date64 unconverted.
 
 ### G29. The bulk-ingest compression option is refused
 
-`bigquery.bulk_ingest.compression` is refused at every scope. Go accepts `none`, `lz4` and `zstd`
-but never applies them, so appends are uncompressed in both. The one inert Go option accepted here
-is `bigquery.query.link_failed_job`, which dbt 2.0 sets on every statement; failed jobs carry their
-console link regardless (G51).
+`bigquery.bulk_ingest.compression` is refused at every scope, and appends are sent uncompressed. Go
+accepts `none`, `lz4` and `zstd` but never reads them; driverbase's default IPC options
+ZSTD-compress every Go Storage Write batch. The fork's `adbc.bigquery.sql.query.link_failed_job`,
+which dbt 2.0 sets on every statement, is accepted without effect, since failed jobs carry their
+console link regardless, as in Go (G51).
 
 ### G30. A dry run on a bulk-ingest statement validates instead of writing
 
@@ -96,11 +102,12 @@ only the RPC status message.
 
 ### G53. Lossless numeric widening accepts more Arrow input types
 
-Ingest and parameters widen `Int8`, `UInt8`, `UInt16` and `UInt32` to `INT64` and `Float16` to
-`FLOAT64`, which Go rejects. Ingest, like Go, rejects `UInt64` (cast it to `Int64` or
-`Decimal128(20, 0)`); a `UInt64` parameter binds as `INT64` and fails only above `i64::MAX`. A
-`Float32` or `Float16` parameter binds as its exact value (`0.1f32` as `0.10000000149011612`), where
-Go sends the shortest decimal (`0.1`).
+Ingest widens `Int8`, `UInt8`, `UInt16` and `UInt32` to `INT64` and `Float16` to `FLOAT64`; Go
+cannot create a table from them. Ingest rejects `UInt64` (cast it to `Int64` or
+`Decimal128(20, 0)`), from which Go cannot create a table either. Both drivers bind all of these as
+`INT64` or `FLOAT64` parameters (a `UInt64` above `i64::MAX` fails locally here), but a `Float32`
+or `Float16` binds as its exact value here (`0.1f32` as `0.10000000149011612`), where Go sends the
+shortest decimal (`0.1`).
 
 ### G63. Storage Write ingestion uses the configured credentials and Storage endpoint
 
@@ -133,8 +140,8 @@ type. Go treats it as a table, so `append` reaches the service and `replace` del
 ### G92. Array decimal elements keep their declared scale on ingest
 
 Storage Write reads `ARRAY<NUMERIC>` and `ARRAY<BIGNUMERIC>` elements at scale 9 or 38 whatever
-their Arrow scale (UP-89), so ingest rescales them. Go sends them unchanged, so `0.01` in a
-`List<Decimal128(10, 2)>` is stored as `0.000000001`.
+their Arrow scale (UP-89), so ingest rescales them. Go's Storage Write path sends them unchanged,
+so `0.01` in a `List<Decimal128(10, 2)>` is stored as `0.000000001`.
 
 ### G93. Repeated TIMESTAMP ingest fields are refused before any request
 
@@ -220,8 +227,8 @@ and can hold fewer than 1,024 rows; Go reads through Storage Read and keeps its 
 One stream preserves any `ORDER BY`; `bigquery.query.unordered_read`, which Go lacks, reads all
 granted streams in parallel. Go's SDK scans the SQL for a top-level `ORDER BY`, and the scan fails
 on unbalanced parentheses, so `SELECT x FROM t WHERE s = '(' ORDER BY x` returns rows out of order.
-Batch row counts are checked, and transient failures and stalls resume at the next unread row; Go's
-SDK does neither.
+Both resume transient stream failures at the next unread row; only this driver checks batch row
+counts and resumes a stalled stream.
 
 ### G27. Resolving the result table costs one round trip instead of two
 
@@ -234,24 +241,24 @@ Result schemas carry `BIGQUERY:query_id` and six statistics under Go's keys and 
 ([result metadata](REFERENCE.md#result-schema-metadata)); Go emits about 30, writing `"0"` for
 unreported ones where this driver omits them. The statement type always comes from BigQuery, which
 can classify jobless queries differently (`SET @@dataset_id` then `SELECT` is `SELECT` without a job
-and `SCRIPT` with one). Go's Storage Read adds a `jobs.get` and a `tables.get` per result.
+and `SCRIPT` with one).
 
-### G32. Row counts: DDL stays unknown, and DML never reports the table's size
+### G32. Row counts: DDL, dry runs and destination queries stay unknown
 
-DDL reports `-1` rows affected, where Go reports `0`; DML reports `numDmlAffectedRows`, where Go's
-`ExecuteQuery` returns the target table's size afterwards. Dry runs, scripts that do not end in a
-query and destination-table queries also report `-1`, where Go reports a dry run's bytes processed
-([row counts](REFERENCE.md#row-counts)).
+DDL reports `-1` rows affected, where Go reports `0`. Dry runs, scripts that do not end in a query
+and destination-table queries also report `-1`, where Go reports a dry run's bytes processed and a
+destination table's estimated row count ([row counts](REFERENCE.md#row-counts)). DML reports
+`numDmlAffectedRows`, as Go does; the fork's `ExecuteQuery` returns the target table's size
+afterwards.
 
 ### G45. Scripts use the ordinary result path instead of interpreting an SDK failure
 
 A script returns BigQuery's result for it, or an empty schema and zero rows, with `SCRIPT` metadata.
-For a script without a result, Go's SDK reads the newest child query's table instead: Go and the
-fork hang on a query followed by DML, DDL or `ASSERT`, and Go matches the SDK's error message when
-no child query ran. A denied
-Storage Read (`PERMISSION_DENIED`) falls back to REST and is remembered for the billing project,
-where Go returns `UNAUTHORIZED`, and an `INVALID_ARGUMENT` refusal falls back for that result only,
-where Go errors.
+For a script without a result, Go's SDK reads the newest child query's table instead: Go hangs on a
+query followed by DML, DDL or `ASSERT`, where the fork returns an empty result, and matches the
+SDK's error message when no child query ran. A denied Storage Read (`PERMISSION_DENIED`) falls back
+to REST and is remembered for the billing project, where Go returns `UNAUTHORIZED`, and an
+`INVALID_ARGUMENT` refusal falls back for that result only, where Go errors.
 
 ### G46. Ordinary queries use `jobs.query`; job-only configurations use `jobs.insert`
 
@@ -261,7 +268,7 @@ destination tables and non-default dispositions or priority use `jobs.insert`. G
 by default (G87). A destination query returns the schema and no rows, where Go reads the table back.
 Complete first responses stay on REST and any continuation selects Storage Read before rows are
 delivered, so REST's 20 MiB row limit only applies when Storage Read is disabled or unavailable; Go
-uses Storage Read for every nonempty result.
+reads every result through Storage Read, even an empty one.
 
 ### G47. Submission retries preserve identity, and named jobs can be recovered
 
@@ -285,12 +292,12 @@ the fork lets BigQuery infer it.
 ### G49. Remote job cancellation and operation lifetime
 
 As in Go, cancellation, supersession, reader release or an early end stops local work and requests
-cancellation of an unfinished job; remote cancellation can be delayed by the ten-second completion
-wait (G46), and queries that finish during it cannot be stopped. Unlike Go, a cancel during a
-pending submission lets it finish in the background, then cancels the job it names or G48 finds,
-and a failed remote cancel is retried. A failed explicit cancel returns `UNKNOWN` within 30 seconds; a
-`jobs.query` whose retries ended without a job reference cannot be cancelled, and its error says the
-statement may still have run.
+cancellation of an unfinished job, and a failed explicit cancel returns `UNKNOWN` within 30 seconds.
+Remote cancellation can be delayed by the ten-second completion wait (G46), and queries that finish
+during it cannot be stopped. Go aborts a pending `jobs.insert` and polls `jobs.get` for the job ID
+it chose; this driver lets the submission finish in the background, then cancels the job it names or
+G48 finds. A `jobs.query` whose retries ended without a job reference cannot be cancelled, and its
+error says the statement may still have run.
 
 ### G52. Canonical statement progress reports response-boundary work without extra polling
 
@@ -315,8 +322,9 @@ are refused.
 
 ### G88. Inline Arrow has a different schema and metadata contract
 
-Go's inline Arrow schemas come from the service, normalized by `unmangleBigQueryArrowType`, with
-`BIGQUERY:type` guessed where the BigQuery schema is unavailable; the metadata adds
+Go's inline Arrow batches carry the service's schema, normalized by `unmangleBigQueryArrowType`;
+its reader declares fields from the response's `TableSchema` unless the field counts differ, when
+it uses the batch schema with a guessed `BIGQUERY:type`. The metadata adds
 `BIGQUERY:job_creation_reason` but omits `BIGQUERY:query_id`, the statement type and slot
 milliseconds. This driver derives fields from BigQuery's `TableSchema` on every path. Inline Arrow
 also fails with HTTP 400 `jobInternalError` for a collated column (`SELECT COLLATE('hello',
@@ -429,7 +437,7 @@ for every table at any depth. Column depth, or the fork's
 
 Filters match case-sensitively, so `table_name="EVENT%"` does not match `events`; Go's driverbase
 matches case-insensitively. A wildcard-free filter becomes a direct lookup (G74), which BigQuery
-resolves case-sensitively except in a dataset created with `isCaseInsensitive`, as in Go.
+resolves case-sensitively except in a dataset created with `isCaseInsensitive`.
 
 ### G60. Hidden datasets are discoverable and retain their table statistics
 
@@ -440,57 +448,62 @@ with their tables' statistics. Go lists them too but returns no statistics, beca
 ### G62. Metadata discovery skips inaccessible tables without suppressing service restrictions
 
 Discovery skips a table or dataset only on HTTP 403 with `accessDenied` or no reason; other 403s,
-such as rate limits or a disabled API, fail the call. Go skips every 403, so throttling can silently
-shorten a listing. A tables-depth listing (G55) can include tables whose metadata is inaccessible,
-which Go omits.
+such as rate limits or a disabled API, fail the call. Go skips a table on any 403 its SDK does not
+retry, so a quota or service refusal can silently shorten a listing, but fails the call on any error
+listing a dataset's tables. A tables-depth listing (G55) can include tables whose metadata is
+inaccessible, which Go omits.
 
 ### G65. Table-schema metadata describes the table, not its storage accounting
 
 `GetTableSchema` metadata holds up to 35 table-definition keys from `tables.get(view=BASIC)` in the
 fork's spellings, which dbt 2.0 reads ([DBT.md](DBT.md#metadata)); only `Type` is always present. Go
 and the fork use the default view, which also collects storage statistics. Go writes
-`BIGQUERY:<snake_case>` keys, lacks spellings dbt reads such as `Labels` and
-`RequirePartitionFilter`, and adds storage counters and other fields that here come from
-`GetStatistics` and `GetObjects`.
+`BIGQUERY:<snake_case>` keys, with PascalCase aliases for 29 of them, lacks spellings dbt reads
+such as `Labels` and `RequirePartitionFilter`, and adds storage counters and other fields that here
+come from `GetStatistics` and `GetObjects`.
 
 ### G66. Field metadata omits what the Arrow field already says
 
 Field metadata has `BIGQUERY:type`, `Type` and the extension keys, as in Go, but no `Required`,
 `Repeated` only when true, `Description` and `Collation` only when non-empty, and `MaxLength` only
-when declared, where Go writes `"0"` ([supported types](REFERENCE.md#supported-types)). Decimal
-columns add `BIGQUERY:precision` and `BIGQUERY:scale`, and `PolicyTags` uses BigQuery's
-`{"names":[…]}` rather than Go's `{"Names":[…]}`. A column default is `GetObjects`'
+when declared, where Go writes `"0"` ([supported types](REFERENCE.md#supported-types)).
+Parameterized decimal columns add `BIGQUERY:precision` and `BIGQUERY:scale`, a declared length adds
+`BIGQUERY:max_length` beside `MaxLength`, and `PolicyTags` uses BigQuery's `{"names":[…]}` rather
+than Go's `{"Names":[…]}`. A column default is `GetObjects`'
 `xdbc_column_def`, not Go's `DefaultValueExpression` key, and a list's item field carries the
 element's `BIGQUERY:type`, which Go's lacks.
 
 ### G69. An empty `table_type` list matches no tables
 
-An empty, non-NULL `table_type` list returns no tables and sends no request, because adbc.h gives
+An empty, non-NULL `table_type` list returns no tables and sends no table request, because adbc.h
+gives
 only NULL the meaning "any type"; Go's driverbase treats it like NULL.
 
 ### G72. A table or dataset dropped mid-listing is skipped, not reported as a missing dataset
 
 A table or dataset that returns 404 mid-listing is skipped. Go skips a vanished table, but a dataset
-dropped between `datasets.list` and its `tables.list` fails the call with `NOT_FOUND`.
+dropped between `datasets.list` and its `tables.list` fails the call: `GetStatistics` with
+`NOT_FOUND`, and `GetObjects` with an unmapped error the C interface reports as `UNKNOWN`.
 
 ### G73. An unrecognized table type is reported as `TABLE` rather than passed through
 
-Only the five types `GetTableTypes` publishes are reported; any other or missing value becomes
-`TABLE` with a `debug` diagnostic. Go passes the value through, and an unknown type would make dbt
-2.0 panic (UP-79).
+Only the five types `GetTableTypes` publishes are reported; a missing value becomes `TABLE`, and any
+other value `TABLE` with a `debug` diagnostic. Go passes the value through, and an unknown type
+would make dbt 2.0 panic (UP-79).
 
 ### G74. Default metadata patterns cannot take an exact dataset lookup for a name containing `_`
 
 adbc.h makes `_` a single-character wildcard with no escape, so a dataset filter containing `_`, as
-dbt names usually do, walks `datasets.list` instead of taking a direct lookup, as every Go filter
-does. The fork's connection option `bigquery.get_objects.disable_wildcards=true` makes filters
-literal, so such names get direct lookups.
+dbt names usually do, walks `datasets.list`, as every Go filter does, instead of taking a direct
+lookup. The fork's connection option `bigquery.get_objects.disable_wildcards=true`, which this
+driver also accepts, makes filters literal, so such names get direct lookups.
 
 ### G75. A catalog filter naming one project enumerates that project
 
-A wildcard-free catalog filter naming a valid project lists it. Only a walk that finds nothing
-sends a one-result `datasets.list` to tell a missing project from an empty one. Go lists only the
-connection's project. In both drivers a wildcard filter, or none, covers only the current project
+A wildcard-free catalog filter naming a valid project lists it; a one-result `datasets.list` tells a
+missing project from an empty one only at catalogs depth or when a one-dataset lookup finds nothing.
+Go lists only the project its client was built with, even after `adbc.connection.catalog` changes
+(G84). A wildcard filter, or none, covers only that project in Go and the current catalog here
 ([metadata catalogs](REFERENCE.md#metadata-catalogs)).
 
 ### G77. `xdbc_type_name` reports the GoogleSQL type, not the REST spelling
@@ -502,8 +515,8 @@ reports the REST name (`INTEGER`, `BOOLEAN`, `RECORD`) and drops the repeated mo
 
 Metadata reads and blind patches retry transient failures up to five attempts; `tables.insert`
 retries only rejections that applied nothing, and the authorized-view patch re-reads the access list
-([authorized views](DBT.md#authorized-views)). Go's SDK retries reads, inserts and patches on HTTP 500, 502, 503 and 504,
-`backendError` and `rateLimitExceeded` until the context ends.
+([authorized views](DBT.md#authorized-views)). Go's SDK retries reads, inserts and patches on HTTP
+500, 502, 503 and 504, `backendError` and `rateLimitExceeded` until the context ends.
 
 ## Configuration and authentication
 
@@ -545,7 +558,8 @@ overlap with `bigquery.query.prefetch_concurrency`.
 
 Setting `uri` resets the configuration to defaults before applying the URI; before initialization
 the URI is applied first and explicit options override it ([connection
-URIs](REFERENCE.md#connection-uris)). Go applies only the fields the URI contains.
+URIs](REFERENCE.md#connection-uris)). Go sets the project, endpoint and auth type (defaulting to
+the public endpoint and ADC) and the parameters present, keeping every other setting.
 
 ### G20. Project identifiers have structural checks only
 
@@ -577,7 +591,7 @@ case too, so `bigquery.Query.Priority=batch` works; Go matches both exactly.
 ### G43. The specification-default no-op options are accepted rather than refused
 
 `adbc.ingest.temporary`, `adbc.connection.readonly` and `adbc.statement.exec.incremental` accept
-`false` as a no-op; `true` returns `NOT_IMPLEMENTED`. Go refuses the first two whatever the value.
+`false` as a no-op; `true` returns `NOT_IMPLEMENTED`. Go refuses all three whatever the value.
 
 ### G44. The endpoint options accept the fork's spellings as well as the Go driver's
 
@@ -601,21 +615,23 @@ returns `NOT_IMPLEMENTED`. On a statement, reading them returns `NOT_FOUND` nami
 
 The URI returns `INVALID_ARGUMENT` for unused credential parameters, repeated parameters, user
 information, a fragment, extra path segments, and impersonation parameters without a target. Go
-ignores or drops these, or folds extra segments into the project ID, and decodes `AuthCredentials`
-twice, so an encoded `+` becomes a space. An IPv6 host without a port keeps its brackets here
-(`bigquery://[::1]/p` is `https://[::1]:443`); Go drops them and builds `::1:443`, which it cannot
-dial. A credential document from `AuthCredentials` that names a `credential_source.executable`,
-or a `credential_source.file` that is not a regular file of at most 1 MiB, returns
-`INVALID_ARGUMENT`, as does an `AuthCredentials` file path that is not a regular file, so a URI
-cannot run a command, read `/dev/zero` or block on a pipe; Go runs the command once the machine sets
-`GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`, and reads any file.
+ignores or drops most of these (impersonation parameters without a target fail when a connection
+opens, except a lone lifetime), folds extra segments into the project ID, and decodes
+`AuthCredentials` twice, so an encoded `+` becomes a space. An IPv6 host without a port keeps its
+brackets here (`bigquery://[::1]/p` is `https://[::1]:443`); Go drops them and builds `::1:443`,
+which it cannot dial. A credential document from `AuthCredentials` that names a
+`credential_source.executable`, or a `credential_source.file` that is not a regular file of at most
+1 MiB, returns `INVALID_ARGUMENT`, as does an `AuthCredentials` file path that is not a regular
+file, so a URI cannot run a command, read `/dev/zero` or block on a pipe; Go runs the command once
+the machine sets `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`, and reads any file.
 
 ### G76. Scopes can shape the credential, not only the impersonated token
 
 `bigquery.auth.scopes` configures service-account, impersonated and external-account credentials,
-for example to add Drive access for external tables over Google Sheets; Go always requests
-`cloud-platform`. It can also narrow user tokens to a subset of the consent grant ([authentication
-scopes](REFERENCE.md#authentication-scopes)).
+for example to add Drive access for external tables over Google Sheets, and can narrow user tokens
+to a subset of the consent grant ([authentication scopes](REFERENCE.md#authentication-scopes)). Go's
+scopes are fixed, `bigquery` for REST and the library defaults including `cloud-platform` for
+Storage, except for an impersonated token's `bigquery.impersonate.scopes`.
 
 ### G80. A NULL string option value is refused rather than read as `""`
 
@@ -646,7 +662,8 @@ With explicit credentials plus an impersonation target, the configured credentia
 impersonation source and `bigquery.auth.quota_project` applies; Go impersonates from ambient ADC and
 drops the quota project, while the fork passes the configured source ([dbt
 authentication](DBT.md#database-options)). Credential options the selected auth type does not read,
-or impersonation under `anonymous`, return `INVALID_ARGUMENT`; Go ignores them.
+or impersonation under `anonymous`, return `INVALID_ARGUMENT`; Go ignores the former and, under
+`anonymous`, impersonates from ambient ADC.
 
 ### G94. The custom user agent is sent with REST and Storage Read requests only
 
@@ -656,7 +673,7 @@ Go also accepts it per connection and sends it on every request.
 ### G96. Credential file errors do not quote the path, and reads are bounded
 
 Credential file errors name the option or variable, the OS cause and the remedy, but not the value,
-which may be a misplaced key or token. Go's client library errors name the path. A
+which may be a misplaced key or token. Go's errors quote the path. A
 `bigquery.auth.credentials` file over 1 MiB is refused after reading that much; Go reads any file
 whole, so a URI that names `/dev/zero` exhausts Go's memory.
 
@@ -696,7 +713,7 @@ between a file and the metadata server, as removing the file would off Google Cl
 
 The library exports only `AdbcDriverBigqueryInit` and `AdbcDriverInit`, so it loads through a driver
 manager or `AdbcLoadDriverFromInitFunc` but cannot be linked directly against the C API, as Go's
-can.
+can. Go also exports the `AdbcDriverBigQueryInit` spelling.
 
 ### G59. Bound C input validation
 
