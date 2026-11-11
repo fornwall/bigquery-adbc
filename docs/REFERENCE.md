@@ -345,7 +345,8 @@ the next query that needs one.
   DDL, which BigQuery refuses in a transaction except on temporary tables and functions.
 - Commit and rollback ignore cancellation for up to a minute, plus ten seconds to end the session
   after a failure. Releasing a connection with a transaction open rolls it back and ends the
-  session, which the release waits for within the same limits, except on a Tokio worker thread.
+  session, which the release waits for within the same limits, except inside a Tokio runtime (a
+  Rust host's async code or blocking pool), where both run in the background.
 - A commit keeps the transaction open only when BigQuery provably refused it, which
   `bigquery.job.verdict` shows. Any other commit or rollback failure ends the session, or says that
   could not be done or confirmed; a commit without a verdict returns `IO` or `TIMEOUT` and says
