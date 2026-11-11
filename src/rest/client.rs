@@ -38,8 +38,8 @@ const MEDIA_RESPONSE_BODY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Raw-response limits, separate from the pipeline's decoded-batch budget. Media uploads return one
 /// resource document. A query page holds about 10 MiB of row data, or one row of up to 20 MiB, but
-/// BigQuery counts a string's own bytes and its JSON spells a control character, `<` or `>` in six
-/// (`<`): one row of 20,000,000 U+0001 characters arrives as 120,000,768 bytes.
+/// BigQuery counts a string's own bytes and its JSON spells a control character, `<` or `>` as six
+/// (`\u003c`): one row of 20,000,000 U+0001 characters arrives as 120,000,768 bytes.
 const REQUEST_RESPONSE_LIMIT: usize = 128 << 20;
 const MEDIA_RESPONSE_LIMIT: usize = 8 << 20;
 

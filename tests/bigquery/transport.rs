@@ -7,8 +7,8 @@ use arrow_array::Array as _;
 use crate::support::{concatenated, connect, prepare_query, project, read_all, set_option, typed};
 
 /// BigQuery's 20 MiB row limit counts a string's own bytes, but its JSON spells a control
-/// character, `<` or `>` as six (`\u0001`), so one row of 20 MB arrives as a 120 MB response. The
-/// first response is complete, so REST returns it even with Storage Read enabled.
+/// character, `<` or `>` as six (`\u0001`), so one row of 20 MB arrives as a 120 MB response.
+/// Storage Read is disabled, so REST reads that whole response.
 #[test]
 #[ignore = "requires Google Cloud ADC and access to the integration project"]
 fn reads_a_row_whose_escaped_json_is_six_times_its_size() {
