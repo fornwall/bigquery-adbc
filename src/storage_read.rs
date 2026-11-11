@@ -199,7 +199,7 @@ async fn open_reader(
         Err(source) => {
             return Err(error(
                 format!("failed to decode the BigQuery Storage Read session schema: {source}"),
-                Status::Internal,
+                Status::InvalidData,
             ));
         }
     };

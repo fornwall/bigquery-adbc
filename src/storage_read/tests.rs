@@ -675,7 +675,7 @@ mod mock_reads {
                 let Err(failure) = result else {
                     panic!("malformed IPC must remain an error");
                 };
-                assert_eq!(failure.status, Status::Internal);
+                assert_eq!(failure.status, Status::InvalidData);
                 assert!(
                     failure
                         .message

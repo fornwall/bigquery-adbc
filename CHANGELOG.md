@@ -25,6 +25,8 @@ changes.
   attempt whose answer was lost fetches the job that attempt may have created, as it does when
   retries run out, instead of reporting the refusal as though no job ran. If the job cannot be
   fetched, the error says it may still run.
+- A malformed Storage Read session schema fails with `INVALID_DATA`, as a malformed record batch or
+  REST response does, instead of `INTERNAL`.
 
 ## [0.6.0] - 2026-11-11
 
