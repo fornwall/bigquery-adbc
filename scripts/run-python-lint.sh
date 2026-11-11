@@ -29,4 +29,6 @@ echo ">> ruff format --check (python/)"
 python_tool ruff format --check python
 
 echo ">> pyrefly (Python 3.11)"
-python_tool pyrefly check --config python/pyproject.toml
+# Pyrefly's default excludes skip the ../integration includes, without failing, in a checkout
+# below a directory the repository ignores, such as an agent worktree in .claude/.
+python_tool pyrefly check --config python/pyproject.toml --disable-project-excludes-heuristics=true
