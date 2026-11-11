@@ -159,9 +159,9 @@ The Miri command skips the driver-manager round trips (foreign code) and one soc
 `-Zmiri-ignore-leaks` is needed because the shared runtime's worker threads outlive the tests; it
 also hides leaked allocations, so an FFI change that could leak needs a Rust test asserting the
 release (as the bind tests assert that refused inputs are consumed). Run other tests under Miri only
-as filtered suites: socket mocks and the Tokio reactor can hang. Hosted runners can be nearly four
-times slower than usual, so keep the Miri suite far below the job timeout; tests whose cost adds no
-memory coverage shrink under `cfg!(miri)` or are ignored there.
+as filtered suites: socket mocks and the Tokio reactor can hang. Keep the Miri suite far below the
+job timeout, since hosted runners can be nearly four times slower than usual; tests whose cost adds
+no memory coverage shrink or are ignored under `cfg!(miri)`.
 
 ## Live tests
 
@@ -174,8 +174,10 @@ cloud access, and the active gcloud project is not a default.
 export BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT=my-test-project
 ```
 
-The Rust suite needs the existing `sq_scratch` dataset and, for Cloud Storage cases, the
-`<project>-adbc-scratch` bucket ([defaults](tests/bigquery/support.rs)). Its ADC-only cases:
+The Rust suite needs the existing `sq_scratch` dataset, the `<project>-adbc-scratch` bucket for
+Cloud Storage cases ([defaults](tests/bigquery/support.rs)), and permission to create a disposable
+dataset in `asia-northeast1` for `regional_recovery_survives_lost_submission_responses`. Its
+ADC-only cases:
 
 ```sh
 cargo test --locked --all-features --test bigquery -- --ignored \
@@ -188,7 +190,7 @@ cargo test --locked --all-features --lib ffi::roundtrip:: -- --ignored  # export
 ```
 
 Run one test with `scripts/run-one-live-test.sh <name>`; it fails if the name matches nothing.
-Separately run cases:
+Two skipped cases run separately:
 
 ```sh
 # Needs the project's numeric ID.
@@ -196,20 +198,15 @@ BIGQUERY_ADBC_PROJECT_NUMBER="$(gcloud projects describe "$BIGQUERY_ADBC_INTEGRA
   scripts/run-one-live-test.sh numeric_project_identifiers_work_for_queries_metadata_and_copies
 # Can fail on a known BigQuery issue (UP-26).
 scripts/run-one-live-test.sh bulk_ingests_after_rapid_table_recreation
-# Needs permission to create a disposable dataset in asia-northeast1; refuses emulator mode.
-scripts/run-one-live-test.sh regional_recovery_survives_lost_submission_responses
 ```
 
-The regional recovery test drops real submission responses through a loopback proxy, then checks
-409 and cross-region `jobs.list` recovery, identical retries, exactly-once mutations and remote
-cancellation; it cancels jobs and deletes resources on failure too.
-
-Other credential types:
+The other three skipped cases have scripts that set up their credentials, and a standalone check
+covers OAuth scopes:
 
 | Script | Requirements |
 | --- | --- |
 | `scripts/run-oauth-live-test.sh` | Authorized-user ADC. Checks the same identity through discrete OAuth, authorized-user JSON file/string, and a temporary access token. |
-| `cargo +nightly -Zscript scripts/check-oauth-scope-narrowing.rs` | Authorized-user ADC granting `cloud-platform` and at least one other scope. Standalone Cargo script (embedded manifest pins `google-cloud-auth` to an upstream commit; runs outside this repository too) that compares direct refresh requests with the SDK token's scopes from Google's `tokeninfo` endpoint and verifies the SDK restricts the token to the requested subset. |
+| `cargo +nightly -Zscript scripts/check-oauth-scope-narrowing.rs` | Authorized-user ADC granting `cloud-platform` and at least one other scope. Checks, through Google's `tokeninfo` endpoint, that the auth SDK restricts a refreshed user token to the requested subset of scopes. |
 | `scripts/run-service-account-live-test.sh` | A service-account key at `BIGQUERY_ADBC_SERVICE_ACCOUNT_KEY_FILE` (default `~/.config/gcloud/bigquery-adbc-integration-key.json`) for an account with `roles/bigquery.jobUser`. Tests file and inline credentials; if the key is missing, prints how to create one for `BIGQUERY_ADBC_SERVICE_ACCOUNT`. |
 | `scripts/run-storage-read-permission-fallback-live-test.sh` | Permission to impersonate `BIGQUERY_ADBC_STORAGE_READ_DENIED_SERVICE_ACCOUNT`, an account that can run queries but lacks `bigquery.readsessions.create`. |
 
@@ -225,8 +222,8 @@ run one. `PYTEST_ADDOPTS` passes options to the pytest suites.
 
 ## BigQuery emulator
 
-The Rust and Python DB-API suites can use a local emulator (Python 3.11 or newer); BigQuery remains
-the default. Run six smoke tests (queries, dry runs, nested results, parameters, Storage Read and
+The Rust and Python DB-API suites can use a local emulator instead of BigQuery; the runner needs
+Python 3.11 or newer. Run six smoke tests (queries, dry runs, nested results, parameters, Storage Read and
 Storage Write), or pass another command after `--`:
 
 ```sh
@@ -290,14 +287,13 @@ python3 tools/generate_licenses.py
 python3 tools/generate_licenses.py --check
 ```
 
-Generation uses locked Cargo metadata for all five release targets, covering normal and build
-dependencies (including code that may not survive linking), nested notices and source copyright
-headers, deduplicated by hash. The pinned compiler supplies `COPYRIGHT-library.html`; Cargo may
-download dependency sources. Packaging checks the saved hashes offline, and source distributions
-include the bundle and generator. Review new dependencies' licenses: missing texts fail
-generation, so add a reviewed copy to `tools/license-sources/` with its upstream revision and URL
-in `sources.json` (checked against Cargo VCS metadata). CI regenerates the bundle and builds reject
-stale or damaged copies; these checks preserve notices but do not replace license review.
+The bundle covers the normal and build dependencies of all five release targets, from locked Cargo
+metadata (Cargo may download their sources), including nested notices and source copyright
+headers; the pinned compiler supplies `COPYRIGHT-library.html`. Source distributions include the
+bundle and its generator. A dependency without a license text fails generation: review its
+license, then add a copy to `tools/license-sources/` with its upstream revision and URL in
+`sources.json`. CI regenerates the bundle and packaging rejects a stale or damaged copy; neither
+replaces license review.
 
 ## Releasing
 
@@ -311,17 +307,17 @@ git push origin vX.Y.Z
 ```
 
 The tag runs the [wheel workflow](.github/workflows/wheels.yml). Once CI and every platform build
-pass on the tagged commit, it creates a GitHub release, with the version's changelog section as
-notes (it stops before publishing anything if that section is missing), then publishes the wheels
-and source distribution to PyPI. CI tests a wheel built from the same source archive that gets
-published. The release carries a [native archive](#distribution-packaging) per platform, built from
-the library in that platform's tested wheel, with `SHA256SUMS`, plus each platform's compressed
-library and the `install.sh` that [patched dbt](tools/dbt-build/README.md) builds download. Those
-builds hash the published file, so they start after the release exists and attach their archives
-and `dbt-SHA256SUMS` about an hour later; PyPI does not wait for them.
+pass on the tagged commit, it creates a GitHub release with the version's changelog section as
+notes, stopping before anything is published if that section is missing, then publishes the wheels
+and source distribution to PyPI; CI tests a wheel built from that same source archive. The release
+carries a [native archive](#distribution-packaging) per platform, built from the library in that
+platform's tested wheel, `SHA256SUMS`, each platform's compressed library, and the `install.sh`
+that downloads [patched dbt](tools/dbt-build/README.md) builds. Those builds embed the published
+library's hash, so they start once the release exists and attach their archives and
+`dbt-SHA256SUMS` about an hour later; PyPI does not wait for them.
 
 PyPI never accepts a version twice, so a bad release needs a new version; re-running the workflow
 only finishes an interrupted upload. Publishing uses
 [Trusted Publishing](https://docs.pypi.org/trusted-publishers/) from the `pypi` GitHub environment,
-which only `v*` tags can deploy to; no token is stored. Other tag forms, including pre-releases, do
-not publish.
+which only `v*` tags can deploy to; no token is stored. Only `vX.Y.Z` tags publish, not
+pre-releases.
