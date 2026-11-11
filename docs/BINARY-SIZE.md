@@ -110,7 +110,7 @@ adding 44,800.
 | `ffi::handle::dispatch` takes `&mut dyn FnMut`; metadata column builders take `&mut dyn Iterator`; three metadata paths lose a type parameter | -86,120 |
 | Cancellation retry and Dataproc submission take `dyn` closures | -4,712; -2,144 |
 | Spawned futures boxed as task types Tokio already instantiates (`DetachedTask`, `ProducerTask`) | -15,328; -12,640; -8,064 |
-| Session creation, transaction control and connection cleanup share one `Box<dyn FnOnce() + Send>` blocking-task type (`DriverRuntime::spawn_detached_blocking`; 8,859,344 → 8,842,464, `.text` -11,392, `.eh_frame` -1,144); query submission and row conversion keep their own | -16,880 |
+| Session creation, transaction control and connection cleanup share one `Box<dyn FnOnce() + Send>` blocking-task type (`DriverRuntime::spawn_detached_blocking`; `.text` -11,392, `.eh_frame` -1,144); query submission and row conversion keep their own | -16,880 |
 | Boxing that shares no existing instantiation grows the file: `tables.get` fan-out task, `Operation::wait` | +1,504; +5,856 |
 | Per-package `opt-level`: control-plane crates at `"z"`, the HTTP and TLS stream glue at `"s"`, data-path crates at 3. Versus no per-package levels; versus the same crates at 14 `"z"` and 56 `"s"` | -1,177,480; -67,168 |
 | `flatbuffers`, which reads and writes only per-message IPC headers, at `"z"` ([throughput](#flatbuffers-at-z)) | -16,792 |
@@ -127,7 +127,7 @@ adding 44,800.
 | Dataproc submissions and Vertex template reads and submissions share their async retry state machine | -4,400 |
 | REST transport and JSON diagnostics stay out of line on cold paths | -2,048 |
 | Capped service-error summaries share one loop through a borrowed iterator | -1,600 |
-| Canonical option-enum names share one out-of-line case-insensitive scan; an unmatched name takes the legacy-alias lookup (keeping per-enum lookups `inline(never)` instead: +448) | -1,952 |
+| Canonical option-enum names share one out-of-line case-insensitive scan; an unmatched name takes the legacy-alias lookup (keeping per-enum lookups `inline(never)` instead: +448; [speed](#shared-option-name-scan)) | -1,952 |
 
 The data-path crates at `opt-level` 3 are this crate, `arrow-*`, `serde_json`, `tokio`, `ring`,
 `lz4_flex`, `chrono`, `once_cell`, `prost` and `num-bigint`. The stream glue at `"s"` is
@@ -143,9 +143,11 @@ every case's best median within -3% and +6% of the base, inside the base runs' o
 largest ratio is the 1-row scalar encode at 11 ns. `memchr`, which `serde_json` scans strings with,
 and `hashbrown` would save 2,816 and 2,072 bytes at `"s"`, but stay at 3.
 
-The shared option-name scan trades speed: median of five 3,000,000-call samples per run, two runs
-alternating before/after/after/before, AMD Ryzen 9 7950X3D pinned to CPU 8 (local parsing, not
-query latency). The two large key enums hold 81 variants together:
+### Shared option-name scan
+
+The shared scan trades speed in local option parsing, not query latency: median of five
+3,000,000-call samples per run, two runs alternating before/after/after/before, AMD Ryzen 9 7950X3D
+pinned to CPU 8. The two large key enums hold 81 variants together:
 
 | Lookup | Before, ns/call | Shared scan, ns/call |
 | --- | ---: | ---: |
