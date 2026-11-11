@@ -568,9 +568,10 @@ Execution:
   request is sent or bound data is consumed: a Storage Write stream cannot join a session, and
   BigQuery does not allow DDL that creates or drops permanent tables inside a transaction.
 - With `bigquery.query.dry_run`, an ingest validates instead of writing: it resolves the target,
-  converts the bound Arrow schema, checks the target against the ingest mode with one read-only
-  table lookup, and reports zero rows. Row values are not validated, and the data stays bound, so
-  clearing the option and executing again ingests it (G30).
+  converts the bound Arrow schema and checks that it leaves an append request room for rows,
+  checks the target against the ingest mode with one read-only table lookup, and reports zero
+  rows. Row values are not validated, and the data stays bound, so clearing the option and
+  executing again ingests it (G30).
 
 Columns and values:
 

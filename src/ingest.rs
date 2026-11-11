@@ -35,7 +35,7 @@ use schema::{
     validate_existing_schema, validate_ingestible_target,
 };
 use target::resolve_target;
-use write::{FirstBatch, read_batch, write_batches};
+use write::{FirstBatch, check_append_schema, read_batch, write_batches};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct IngestOptions {
@@ -91,6 +91,10 @@ pub(crate) struct IngestContext<'a> {
 
 /// Checks the target, schema and ingest mode for `bigquery.query.dry_run`.
 /// Reads table metadata but preserves the bound stream, so row values are not validated.
+///
+/// The checks run in the ingest's order: a schema that leaves an AppendRows request no room for
+/// rows is refused before a `create` or `replace` reads its target, though an ingest of an empty
+/// stream, which sends no append, would not refuse it.
 pub(crate) fn validate_ingest(
     context: IngestContext<'_>,
     options: &IngestOptions,
@@ -100,6 +104,7 @@ pub(crate) fn validate_ingest(
     let table = resolve_target(context.current_catalog, context.current_schema, options)?;
     let metadata_client = context.state.metadata_client(context.runtime)?;
     let settled = ingest_schema(&context, &metadata_client, table, options.mode, schema)?;
+    check_append_schema(Arc::new(storage_write_schema(&settled.normalized_schema)))?;
     if settled.plan.is_none() {
         let expected = &settled.table_schema;
         plan_table(&context, &metadata_client, table, options.mode, expected)?;

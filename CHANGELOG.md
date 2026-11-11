@@ -84,6 +84,8 @@ changes.
   value, instead of `INVALID_ARGUMENT`.
 - Named parameters whose names differ beyond ASCII case, such as `é` and `É`, bind as the separate
   parameters BigQuery reads them as, instead of being refused as duplicates.
+- A bulk-ingest dry run refuses a schema that leaves an append request no room for rows, as the
+  ingest it validates does.
 
 ## [0.5.0] - 2026-11-09
 

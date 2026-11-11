@@ -61,6 +61,12 @@ impl FirstBatch {
     }
 }
 
+/// Checks that `normalized_schema` leaves room for rows in an AppendRows request, as
+/// [`FirstBatch::new`] does for an ingest, for a dry run that has no batch to check.
+pub(super) fn check_append_schema(normalized_schema: SchemaRef) -> Result<()> {
+    ChunkEncoder::new(normalized_schema).map(drop)
+}
+
 /// Appends every batch the reader yields to one pending Storage Write stream and finalizes it.
 ///
 /// None of the rows is visible until [`FinalizedStream::commit`]: that split is what lets a

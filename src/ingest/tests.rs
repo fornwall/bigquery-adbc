@@ -427,6 +427,32 @@ fn data_too_large_to_append_is_refused_before_the_target_changes() {
     }
 }
 
+/// A dry run refuses a schema that leaves no room for rows in an AppendRows request, as the
+/// ingest it validates would. Only an append reads its target first, since the target's columns
+/// can settle the schema it writes under.
+#[test]
+fn a_dry_run_refuses_a_schema_too_large_for_any_append() {
+    let schema = Schema::new_with_metadata(
+        vec![Field::new("id", DataType::Int64, false)],
+        HashMap::from([("pandas".to_owned(), "x".repeat(10_000_000))]),
+    );
+    let existing = table(&json!([{"name": "id", "type": "INTEGER", "mode": "NULLABLE"}]));
+    for mode in MODES {
+        let appends = matches!(mode, IngestMode::Append | IngestMode::CreateAppend);
+        let options = target_options(mode);
+        let lookup = appends.then(|| ok(existing.clone()));
+        let (outcome, requests) = against_bigquery(lookup.into_iter().collect(), |context| {
+            validate_ingest(*context, &options, &schema)
+        });
+        assert_failure(
+            &outcome.unwrap_err(),
+            Status::InvalidArguments,
+            &["Arrow schema serializes", "leaving no room for rows"],
+        );
+        assert_eq!(requests.len(), usize::from(appends), "{mode:?}");
+    }
+}
+
 /// A `replace` over a table whose schema no longer matches is one atomic statement.
 ///
 /// `tables.delete` then `tables.insert` would leave a window without the table, in which a
