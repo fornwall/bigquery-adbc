@@ -158,8 +158,8 @@ fn reported_rows(
     metadata: &response::QueryMetadata,
     options: &StatementQueryOptions,
 ) -> Option<i64> {
-    if metadata.num_dml_affected_rows.is_some() {
-        return metadata.num_dml_affected_rows;
+    if let Some(affected) = metadata.num_dml_affected_rows {
+        return known_count(affected);
     }
     if options.destination_table.is_some() {
         return None;
@@ -168,6 +168,12 @@ fn reported_rows(
     metadata
         .total_rows
         .and_then(|total_rows| i64::try_from(total_rows).ok())
+}
+
+/// A count from the wire, unless it is negative: adbc.h's `rows_affected` is a count or -1 for
+/// unknown, so no other negative value may reach the caller.
+fn known_count(count: i64) -> Option<i64> {
+    (count >= 0).then_some(count)
 }
 
 /// Reads a partition with the result options of the statement that created it, not the reading
@@ -246,6 +252,7 @@ pub(crate) fn execute_update_with_parameters(
     Ok(complete
         .metadata
         .num_dml_affected_rows
+        .and_then(known_count)
         .filter(|_| !context.options.dry_run))
 }
 
@@ -360,3 +367,6 @@ pub(crate) fn create_session(
             )
         })
 }
+
+#[cfg(test)]
+mod tests;
