@@ -508,15 +508,16 @@ string_enum! {
             ["adbc.bigquery.sql.query.parameter_mode"],
             String
         ),
-        /// A JSON object of descriptions to set on the named top-level columns of the table
-        /// [`Self::DestinationTable`] names, which is how dbt spells `persist_docs`.
+        /// A JSON object of descriptions to set on the columns of the table
+        /// [`Self::DestinationTable`] names, keyed by dotted column path, which is how dbt spells
+        /// `persist_docs`.
         UpdateColumnsDescription => (
             "adbc.bigquery.table.update_columns_description",
             [],
             String
         ),
-        /// A JSON object of policy tags to set on the named top-level columns of the table
-        /// [`Self::DestinationTable`] names.
+        /// A JSON object of policy tags to set on the columns of the table
+        /// [`Self::DestinationTable`] names, keyed by dotted column path.
         UpdateColumnsPolicyTags => (
             "adbc.bigquery.table.update_columns_policy_tags",
             [],
