@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define CHECK(call)                 \
   do {                              \
@@ -55,8 +56,11 @@ int main(int argc, char** argv) {
   int64_t rows = 0;
   for (;;) {
     struct ArrowArray batch = {0};
-    if (stream.get_next(&stream, &batch) != 0) {
-      fprintf(stderr, "%s\n", stream.get_last_error(&stream));
+    int code = stream.get_next(&stream, &batch);
+    if (code != 0) {
+      // get_last_error may return NULL when the producer has no description.
+      const char* message = stream.get_last_error(&stream);
+      fprintf(stderr, "%s\n", message != NULL ? message : strerror(code));
       goto done;
     }
     if (batch.release == NULL) {  // The end of the stream.
