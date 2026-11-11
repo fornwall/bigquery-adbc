@@ -1,4 +1,5 @@
-//! Build shared credentials with error redaction and optional impersonation.
+//! Build shared credentials with error redaction, optional impersonation and recovery from a
+//! refused token exchange.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,112 +16,146 @@ use super::credentials::{
     require_credentials, with_quota_and_scopes,
 };
 use super::external_account::build_external_account_credentials;
+use super::recovery::recovering_credentials;
 use super::redaction::redacted_credentials;
 use super::rejections::{application_default_credentials_failure, credential_file_path};
+use super::secret::Secret;
 use super::{ClientConfiguration, DatabaseConfig};
-use crate::error::{CredentialLayer, invalid_argument};
+use crate::error::{CredentialLayer, driver_defect, invalid_argument};
 use crate::{BigQueryAuthenticationType, BigQueryDatabaseOption};
 
 impl ClientConfiguration {
     pub(crate) fn build(settings: &DatabaseConfig) -> Result<Self> {
         settings.validate_authentication()?;
         settings.validate_endpoints()?;
-        let (mut credentials, mut execution_principal) = match settings.authentication_type {
-            BigQueryAuthenticationType::Default
-            | BigQueryAuthenticationType::ApplicationDefault => {
-                let builder = with_quota_and_scopes!(
-                    DefaultCredentialsBuilder::default(),
-                    settings,
-                    with_scopes(settings.configured_scopes())
-                );
-                let credentials = builder.build().map_err(|_| {
-                    application_default_credentials_failure(
-                        std::env::var_os("GOOGLE_APPLICATION_CREDENTIALS").as_deref(),
-                    )
-                })?;
-                let credentials = match settings.quota_project.as_deref() {
-                    Some(project) => override_quota_project(credentials, project)?,
-                    None => credentials,
-                };
-                (credentials, None)
-            }
+        // Read once, so a rebuild reproduces the document validated here instead of reopening
+        // a path that may have changed since, or never stop blocking.
+        let document = match settings.authentication_type {
             BigQueryAuthenticationType::JsonCredentialFile => {
                 let path = credential_file_path(require_credentials(settings)?)?;
-                build_json_credentials(settings, &read_credential_file(path)?)?
+                Some(Secret::from(read_credential_file(path)?))
             }
             BigQueryAuthenticationType::JsonCredentialString => {
-                build_json_credentials(settings, require_credentials(settings)?)?
+                Some(Secret::from(require_credentials(settings)?))
             }
-            BigQueryAuthenticationType::UserAuthentication => {
-                (build_user_authentication_credentials(settings)?, None)
-            }
-            BigQueryAuthenticationType::ExternalAccount => {
-                build_external_account_credentials(settings)?
-            }
-            BigQueryAuthenticationType::TemporaryAccessToken => {
-                let token = settings.access_token.as_deref().ok_or_else(|| {
-                    invalid_argument(format!(
-                        "BigQuery option {} is required for bigquery.auth_type {:?}; set it to \
-                         an OAuth 2.0 access token with the BigQuery scope, which the driver \
-                         sends unchanged and never refreshes",
-                        BigQueryDatabaseOption::AuthenticationAccessToken.as_str(),
-                        BigQueryAuthenticationType::TemporaryAccessToken.as_str(),
-                    ))
-                })?;
-                (
-                    build_static_access_token_credentials(
-                        token,
-                        settings.quota_project.as_deref(),
-                    )?,
-                    None,
-                )
-            }
-            BigQueryAuthenticationType::Anonymous => {
-                (AnonymousCredentialsBuilder::new().build(), None)
-            }
+            _ => None,
         };
-        // Token-exchange errors can contain secrets. Static tokens and anonymous credentials
-        // perform no exchange.
-        let remote_exchange = !matches!(
-            settings.authentication_type,
-            BigQueryAuthenticationType::TemporaryAccessToken
-                | BigQueryAuthenticationType::Anonymous
-        );
-        if remote_exchange {
-            credentials = redacted_credentials(
-                credentials,
-                CredentialLayer::Authentication(settings.authentication_type),
-            );
-        }
-        if settings.impersonation.is_configured() {
-            let target = settings
-                .impersonation
-                .target_principal
-                .as_deref()
-                .ok_or_else(|| {
-                    invalid_argument(format!(
-                        "BigQuery option {} is required once any of {} or {} is set; set it to \
-                         the service account to impersonate, or clear the other impersonation \
-                         options",
-                        BigQueryDatabaseOption::ImpersonationTargetPrincipal.as_str(),
-                        BigQueryDatabaseOption::ImpersonationDelegates.as_str(),
-                        BigQueryDatabaseOption::ImpersonationLifetime.as_str(),
-                    ))
-                })?;
-            credentials = impersonated_credentials(credentials, settings, target)?;
-            // Impersonation overrides the source key's principal.
-            execution_principal = Some(Arc::from(target));
-            // Wrapped for every source: upstream puts the `generateAccessToken` response body
-            // into its error, and a refused grant or lifetime is impersonation's failure. A source
-            // failure keeps its own attribution.
-            credentials = redacted_credentials(credentials, CredentialLayer::Impersonation);
-        }
+        let (credentials, execution_principal) = credential_stack(settings, document.as_deref())?;
+        // Without an exchange there is no failure to recover from.
+        let credentials = if exchanges_tokens(settings.authentication_type)
+            || settings.impersonation.is_configured()
+        {
+            let settings = settings.clone();
+            recovering_credentials(credentials, move || {
+                credential_stack(&settings, document.as_deref()).map(|(credentials, _)| credentials)
+            })
+        } else {
+            credentials
+        };
         Ok(Self {
             credentials,
             execution_principal,
             endpoints: settings.endpoints.clone(),
         })
     }
+}
+
+/// The credentials `settings` select, with their redaction and impersonation layers, and the
+/// principal they act as, if known. `document` is the JSON credential document of the two types
+/// that take one.
+fn credential_stack(
+    settings: &DatabaseConfig,
+    document: Option<&str>,
+) -> Result<(Credentials, Option<Arc<str>>)> {
+    let (mut credentials, mut execution_principal) = match settings.authentication_type {
+        BigQueryAuthenticationType::Default | BigQueryAuthenticationType::ApplicationDefault => {
+            let builder = with_quota_and_scopes!(
+                DefaultCredentialsBuilder::default(),
+                settings,
+                with_scopes(settings.configured_scopes())
+            );
+            let credentials = builder.build().map_err(|_| {
+                application_default_credentials_failure(
+                    std::env::var_os("GOOGLE_APPLICATION_CREDENTIALS").as_deref(),
+                )
+            })?;
+            let credentials = match settings.quota_project.as_deref() {
+                Some(project) => override_quota_project(credentials, project)?,
+                None => credentials,
+            };
+            (credentials, None)
+        }
+        BigQueryAuthenticationType::JsonCredentialFile
+        | BigQueryAuthenticationType::JsonCredentialString => {
+            let document = document.ok_or_else(|| {
+                driver_defect(format_args!(
+                    "a JSON credential type was built without its document"
+                ))
+            })?;
+            build_json_credentials(settings, document)?
+        }
+        BigQueryAuthenticationType::UserAuthentication => {
+            (build_user_authentication_credentials(settings)?, None)
+        }
+        BigQueryAuthenticationType::ExternalAccount => {
+            build_external_account_credentials(settings)?
+        }
+        BigQueryAuthenticationType::TemporaryAccessToken => {
+            let token = settings.access_token.as_deref().ok_or_else(|| {
+                invalid_argument(format!(
+                    "BigQuery option {} is required for bigquery.auth_type {:?}; set it to an \
+                     OAuth 2.0 access token with the BigQuery scope, which the driver sends \
+                     unchanged and never refreshes",
+                    BigQueryDatabaseOption::AuthenticationAccessToken.as_str(),
+                    BigQueryAuthenticationType::TemporaryAccessToken.as_str(),
+                ))
+            })?;
+            (
+                build_static_access_token_credentials(token, settings.quota_project.as_deref())?,
+                None,
+            )
+        }
+        BigQueryAuthenticationType::Anonymous => (AnonymousCredentialsBuilder::new().build(), None),
+    };
+    // Token-exchange errors can contain secrets.
+    if exchanges_tokens(settings.authentication_type) {
+        credentials = redacted_credentials(
+            credentials,
+            CredentialLayer::Authentication(settings.authentication_type),
+        );
+    }
+    if settings.impersonation.is_configured() {
+        let target = settings
+            .impersonation
+            .target_principal
+            .as_deref()
+            .ok_or_else(|| {
+                invalid_argument(format!(
+                    "BigQuery option {} is required once any of {} or {} is set; set it to the \
+                     service account to impersonate, or clear the other impersonation options",
+                    BigQueryDatabaseOption::ImpersonationTargetPrincipal.as_str(),
+                    BigQueryDatabaseOption::ImpersonationDelegates.as_str(),
+                    BigQueryDatabaseOption::ImpersonationLifetime.as_str(),
+                ))
+            })?;
+        credentials = impersonated_credentials(credentials, settings, target)?;
+        // Impersonation overrides the source key's principal.
+        execution_principal = Some(Arc::from(target));
+        // Wrapped for every source: upstream puts the `generateAccessToken` response body into
+        // its error, and a refused grant or lifetime is impersonation's failure. A source failure
+        // keeps its own attribution.
+        credentials = redacted_credentials(credentials, CredentialLayer::Impersonation);
+    }
+    Ok((credentials, execution_principal))
+}
+
+/// Whether the authentication type obtains its token from an exchange; a static token and
+/// anonymous credentials perform none.
+fn exchanges_tokens(authentication_type: BigQueryAuthenticationType) -> bool {
+    !matches!(
+        authentication_type,
+        BigQueryAuthenticationType::TemporaryAccessToken | BigQueryAuthenticationType::Anonymous
+    )
 }
 
 /// Layers impersonation of `target` over the source credentials.

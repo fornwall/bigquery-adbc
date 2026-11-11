@@ -376,6 +376,7 @@ mod client;
 pub(crate) mod credentials;
 pub(crate) mod endpoints;
 pub(crate) mod external_account;
+mod recovery;
 mod redaction;
 mod rejections;
 pub(crate) mod secret;

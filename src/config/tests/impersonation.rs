@@ -5,7 +5,9 @@ use crate::test_support::credentials::{authorized_user_json, token_grant};
 use crate::test_support::http::ok;
 
 /// The driver must use the selected source credential even when it fails. A refused OAuth
-/// refresh stops before IAM and retains the source's remedy without falling back to ADC.
+/// refresh stops before IAM and retains the source's remedy without falling back to ADC. Each
+/// configuration refreshes twice: once as it is built, and once more for the request, from a
+/// rebuilt credential.
 #[test]
 fn impersonation_uses_the_configured_source_and_preserves_its_failure() {
     use crate::test_support::errors::{assert_failure, assert_message_omits};
@@ -17,7 +19,7 @@ fn impersonation_uses_the_configured_source_and_preserves_its_failure() {
                 "error": "invalid_grant", "error_description": "source-secret-sentinel"
             }),
         );
-        3
+        6
     ]);
     let mut document = authorized_user_json();
     document["token_uri"] = serde_json::json!(format!("{endpoint}/token"));
@@ -63,7 +65,7 @@ fn impersonation_uses_the_configured_source_and_preserves_its_failure() {
             ],
         );
     }
-    let requests = server.served(3);
+    let requests = server.served(6);
     for request in requests {
         assert_eq!(request.path(), "/token");
         for (field, expected) in [
@@ -89,6 +91,48 @@ fn impersonated_document(endpoint: &str) -> serde_json::Value {
         ),
         "source_credentials": source,
     })
+}
+
+/// IAM refuses `generateAccessToken` until a Token Creator grant propagates, a refusal the auth
+/// library classifies as permanent and its token cache would serve for good. The credential is
+/// built, and asks for its first token, as a connection opens: a grant that lands before the
+/// first request must let that request through, with the source token minted again.
+#[test]
+fn an_impersonation_refused_when_the_connection_opened_succeeds_once_granted() {
+    let (endpoint, server) = crate::test_support::http::capture_requests(vec![
+        token_grant("source-token"),
+        crate::test_support::http::google_rejection(
+            403,
+            "PERMISSION_DENIED",
+            "forbidden",
+            "Permission 'iam.serviceAccounts.getAccessToken' denied",
+        ),
+        token_grant("source-token"),
+        ok(
+            serde_json::json!({"accessToken": "target-token", "expireTime": "2099-01-01T00:00:00Z"}),
+        ),
+    ]);
+    let mut settings = json_credentials(impersonated_document(&endpoint).to_string());
+    settings.allow_untrusted_endpoint = true;
+    let runtime = crate::runtime::new_runtime().unwrap();
+    let configuration = {
+        let _guard = runtime.enter();
+        ClientConfiguration::build(&settings).unwrap()
+    };
+    let headers = runtime
+        .block_on(configuration.credentials.headers(http::Extensions::new()))
+        .unwrap();
+    let google_cloud_auth::credentials::CacheableResource::New { data, .. } = headers else {
+        panic!("expected new headers");
+    };
+    assert_eq!(data[http::header::AUTHORIZATION], "Bearer target-token");
+    let paths: Vec<_> = server
+        .served(4)
+        .iter()
+        .map(|request| request.path().to_owned())
+        .collect();
+    let iam = "/v1/projects/-/serviceAccounts/target@example.com:generateAccessToken";
+    assert_eq!(paths, ["/token", iam, "/token", iam]);
 }
 
 /// `generateAccessToken` takes each delegate as `projects/-/serviceAccounts/{email}` and IAM

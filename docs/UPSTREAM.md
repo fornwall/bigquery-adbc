@@ -61,6 +61,7 @@ cannot show whether the service is fixed.
 | UP-102 | gRPC server streams have no deadline or keepalive | `google-cloud-gax-internal` | Local finding; driver bounds `ReadRows` silence and Storage Write waits | None |
 | UP-103 | Mixed-case non-ASCII hosts panic in debug builds | `idna_adapter` | Local finding; driver guards the URLs it hands on | None |
 | UP-104 | Subject-token reads are unbounded | `google-cloud-auth` | Local finding; driver bounds URI-supplied files | None |
+| UP-140 | A permanent token failure is served for good | `google-cloud-auth` | Local finding; driver rebuilds the credential | None |
 | UP-150 | A second `AdbcStatement.close()` miscounts open statements | ADBC Python driver manager | Local finding; DB-API cursors close once | None |
 
 ## Git snapshot candidates
@@ -391,6 +392,16 @@ reads the whole response, neither with a size limit. A file such as `/dev/zero` 
 blocks the worker. The driver refuses a URI-supplied document whose file is not a regular file of
 at most 1 MiB (`src/config/credentials.rs`); a document set as an option, an ADC file, and a URL
 source's response stay unbounded.
+
+## UP-140: the token cache serves a permanent failure for good
+
+The pinned auth library's [`TokenCache`](https://github.com/googleapis/google-cloud-rust/blob/9ba338718561739ab257e87502516d4be42dd5d1/src/auth/src/token_cache.rs)
+ends its refresh task at the first failure classified as permanent, such as an IAM 403 or an OAuth
+`invalid_grant`, and returns it for the rest of the credential's life without asking again. Its
+first fetch starts when the credential is built, as a connection opens, so a refusal at that
+moment would fail every later request from the database's clients. On a permanent failure the
+driver builds the credential again from the same configuration and asks the new one once
+(`src/config/recovery.rs`), so each request makes at most one fresh exchange.
 
 ## UP-150: a second `AdbcStatement.close()` miscounts open statements
 

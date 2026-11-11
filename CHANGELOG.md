@@ -57,6 +57,10 @@ changes.
   `INVALID_DATA` as "over the driver's fixed 67108864-byte limit", when its JSON exceeds 64 MiB:
   BigQuery spells each control character, `<` or `>` in six bytes, so such a row can arrive as a
   120 MB response. The limit on a buffered response is now 128 MiB.
+- A token exchange refused permanently, such as an impersonation before its IAM grant propagates or
+  a revoked OAuth refresh token, no longer fails every later request from the database: each
+  request asks again with a rebuilt credential, as the Go driver does, so a refusal resolved after
+  the connection opened lets the next request through.
 - A credential document that a URI supplies through `AuthCredentials`, inline or by path, can no
   longer name a `credential_source.executable`, which the auth library runs when
   `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`, nor a `credential_source.file` other than a

@@ -385,7 +385,7 @@ Credential failures forward no `google.rpc.Status` details.
 | Condition | Status |
 | --- | --- |
 | A service API not enabled in the project (`accessNotConfigured`, or a `SERVICE_DISABLED` `google.rpc.ErrorInfo`) | `INVALID_STATE`, keeping the service's message on how to enable it |
-| Credentials that cannot mint an access token | `UNAUTHENTICATED`, with a remedy for the configured credential |
+| Credentials that cannot mint an access token | `UNAUTHENTICATED`, with a remedy for the configured credential; each later request asks the token service again |
 | A token service answering with a temporary failure, such as HTTP 503 | `IO`, retried like other transient failures |
 | A transient token-exchange failure for explicit credentials or impersonation, including a network failure | `IO`; a missing ambient ADC metadata server still returns `UNAUTHENTICATED` with setup advice |
 | A token service that accepts a connection and never answers, for any credential that mints tokens | `IO` after about two minutes; retries and later requests fail within seconds until a token arrives. A wait for a running job outlasts this like any other retryable failure |

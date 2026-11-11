@@ -701,28 +701,32 @@ fn application_default_credentials_that_cannot_be_loaded_report_the_cause_and_th
 
 /// A token endpoint answering with a retryable status is a service outage (`IO`, which the REST
 /// retry loops retry), not a rejected credential; a refusal stays `UNAUTHENTICATED` with the
-/// remedy for the credential.
+/// remedy for the credential. The token cache retries an outage itself, while a refusal, cached
+/// for good by the credential minted when the configuration was built, is asked once more of a
+/// rebuilt one, so the failure reported is current.
 #[test]
 fn an_unavailable_token_endpoint_is_an_io_failure_and_a_refusal_is_not() {
     use crate::rest::request::{Request, send};
 
     let runtime = crate::runtime::new_runtime().unwrap();
-    for (status, body, expected, remedy) in [
+    for (status, body, expected, remedy, exchanges) in [
         (
             503,
             serde_json::json!({"error": "backend_error"}),
             Status::IO,
             "HTTP 503",
+            1,
         ),
         (
             400,
             serde_json::json!({"error": "invalid_grant"}),
             Status::Unauthenticated,
             "could not be redeemed",
+            2,
         ),
     ] {
         let (endpoint, captured) =
-            crate::test_support::http::capture_requests(vec![(status, body)]);
+            crate::test_support::http::capture_requests(vec![(status, body); exchanges]);
         let settings = user_authentication_via(&format!("{endpoint}/token"), true);
         let configuration = {
             let _guard = runtime.enter();
@@ -739,7 +743,7 @@ fn an_unavailable_token_endpoint_is_an_io_failure_and_a_refusal_is_not() {
             .unwrap_err();
         assert_eq!(failure.status, expected, "{status}: {}", failure.message);
         assert_message(&failure, &["failed to authenticate to describe it", remedy]);
-        captured.served(1);
+        captured.served(exchanges);
     }
 
     // Explicit user credentials cannot fall back to a metadata server. A connection failure
