@@ -78,7 +78,7 @@ configuration.
 | Namespace | Contents |
 | --- | --- |
 | `bigquery.*` | The driver's own option keys. Use these. |
-| `adbc.bigquery.sql.*` | Go-compatible aliases for most `bigquery.*` keys and some values; `adbc.bigquery.sql.api_endpoint`, which [dbt 2.0](DBT.md) sends, also aliases `bigquery.endpoint`. Getters return canonical values; errors name the key as the caller spelled it. |
+| `adbc.bigquery.sql.*` | Aliases that the Go driver and [dbt 2.0](DBT.md) send: `adbc.bigquery.sql.<suffix>` for most `bigquery.<suffix>` keys, plus `api_endpoint`, `storage_read_api_endpoint` and `auth_credentials` for `bigquery.endpoint`, `bigquery.storage_endpoint` and `bigquery.auth.credentials`. `bigquery.auth_type` values also accept an `adbc.bigquery.sql.auth_type.` prefix. Getters return canonical values; errors name the key as the caller spelled it. |
 | `adbc.bigquery.*` (no `sql`) | dbt 2.0 option-only operations with no `bigquery.*` equivalent; see [DBT.md](DBT.md). |
 
 [Standard ADBC options](#standard-adbc-options) are also accepted. Use one spelling per option
@@ -88,6 +88,9 @@ during initialization, because driver managers can reorder options.
   only for endpoint hosts and ports, since a value sent under the wrong key can be a credential. A
   credential file path, as an option or in `GOOGLE_APPLICATION_CREDENTIALS`, is not repeated
   either; its errors give the operating system's cause and the remedy.
+- Setting an unknown key returns `NOT_IMPLEMENTED`, suggesting a similarly spelled key if one
+  exists, and setting a key on the wrong object returns it naming the object that takes the key;
+  getters return `NOT_FOUND` instead.
 - Optional string settings clear with `""`; JSON object options also accept `{}`. Booleans and enums
   with defaults require a listed value. Reading an unset option without a default returns
   `NOT_FOUND`, never `""`.
@@ -108,8 +111,7 @@ during initialization, because driver managers can reorder options.
   `bigquery.query.allow_large_results`, `bigquery.query.disable_flattened_results`,
   `bigquery.query.result_buffer_size`, `bigquery.query.job_creation_mode`,
   `bigquery.query.results_format`, `bigquery.query.arrow_serialization_options.buffer_compression`
-  and `bigquery.bulk_ingest.compression` (G15, G28, G29, G87). An option set on the wrong object
-  also returns `NOT_IMPLEMENTED`, naming the object that takes it.
+  and `bigquery.bulk_ingest.compression` (G15, G28, G29, G87).
 
 ### Database options
 
@@ -117,7 +119,7 @@ during initialization, because driver managers can reorder options.
 | --- | --- |
 | `bigquery.project_id` | Project that runs and is billed for jobs; empty clears it. |
 | `bigquery.dataset_id` | Initial dataset for unqualified table names. |
-| `bigquery.location` | Default location for every query, transaction session, and dbt 2.0 seed load and table copy. Without it, BigQuery infers each query's location, and a manual-commit transaction's session, a seed load and a table copy run in the default or destination dataset's location, cached per database for up to 32 datasets. |
+| `bigquery.location` | Location of every query, transaction session, and dbt 2.0 seed load and table copy. Without it, BigQuery infers each query's location, while a transaction session, seed load or table copy runs in the default or destination dataset's location, which the database caches for up to 32 datasets. |
 | `bigquery.auth_type` | `auth_bigquery` (default), `app_default_credentials`, `json_credential_file`, `json_credential_string`, `user_authentication`, `external_account`, `temporary_access_token`, or `anonymous`. The first two both use ADC. |
 | `bigquery.auth.credentials` | JSON credential file path or document, as selected by `auth_type`. Write-only. File mode rejects JSON documents, control characters, paths over 4,096 bytes and files over 1 MiB, and, for a path a URI supplies, anything but a regular file, such as a pipe or `/dev/stdin`; use `json_credential_string` for inline JSON. Destinations in the document follow the [endpoint rules](#endpoint-overrides). |
 | `bigquery.auth.credentials_type` | Optional check of the JSON credential type: `service_account`, `authorized_user`, `impersonated_service_account`, or `external_account`. |
@@ -195,8 +197,8 @@ defaults in effect, including the connection's.
 | `bigquery.query.link_failed_job` | Statement | Boolean, accepted for Go driver and dbt 2.0 compatibility but ignored: a failed job's error always ends with its console link. |
 | `bigquery.query.priority` | Statement | `INTERACTIVE` (default) or `BATCH`. |
 | `bigquery.query.disable_query_cache` | Statement | Boolean; `true` disables the BigQuery query cache. |
-| `bigquery.query.dry_run` | Statement | Boolean. Validates without executing and returns an empty stream with the inferred schema and `-1` rows affected; `execute_partitions` returns `INVALID_STATE`, since a dry run creates no job. Bound parameters are typed from their schema and stay bound. For ingest statements, see [bulk ingest](#bulk-ingest). A dbt 2.0 seed only checks its file and schema; the other dbt operations that change something return `NOT_IMPLEMENTED`. |
-| `bigquery.dataset.get_location` | Statement | JSON `{"project": ..., "dataset": ...}`. The statement reads that dataset's location with `datasets.get` instead of running SQL, returning a `location` column with one row, or none when the dataset is missing. See [dataset location](DBT.md#dataset-location). |
+| `bigquery.query.dry_run` | Statement | Boolean. Validates without executing and returns an empty stream with the inferred schema and `-1` rows affected; `execute_partitions` returns `INVALID_STATE`, since a dry run creates no job. Bound parameters are typed from their schema and stay bound. For ingest statements, see [bulk ingest](#bulk-ingest); for dbt 2.0 operations, [DBT.md](DBT.md#statement-operations). |
+| `bigquery.dataset.get_location` | Statement | JSON `{"project": ..., "dataset": ...}`. Execution returns that dataset's location instead of running SQL ([dataset location](DBT.md#dataset-location)). |
 | `bigquery.query.create_session` | Statement | Boolean; asks BigQuery to create a session, independent of ADBC transaction sessions. Execution returns `INVALID_STATE` while `adbc.connection.autocommit` is `false`, because queries then run in the transaction's session. |
 | `bigquery.query.parameter_mode` | Statement | `positional` (default) or `named`. `adbc.statement.bind_by_name` sets the same mode as a boolean; reading either key reports the current mode. |
 | `bigquery.query.max_billing_tier` | Statement | Returns `NOT_IMPLEMENTED`, because Google deprecated the field. Use `bigquery.query.max_bytes_billed`. |
@@ -302,16 +304,16 @@ Conversion rules:
   job creation, because its descriptors need durable job references; dry runs and job-only options
   use `jobs.insert`. None of this is configurable, and only `bigquery.query.job_timeout` sets an
   execution deadline.
-- Waiting for a query, table copy or CSV load outlasts ten minutes of consecutive retryable failures
-  (transport errors, timeouts, retryable statuses such as 5xx). The window restarts whenever
-  BigQuery reports the job unfinished or returns results, and is checked between rounds of
-  requests, so a wait can overrun by one round (with every request at its 60-second timeout, about
-  ten minutes for a query, five for a copy or load). A job `jobs.get` reports finished without an
-  error completes without its results when a read could add nothing, as for DML and other
-  statements that return no rows; its counts and statement type come from the job. A wait that
-  gives up fails with the last error and says the job's outcome is unknown, so check the job before
-  running it again. It requests cancellation of the unfinished job, except for a statement the
-  driver runs outside any operation, such as a `COMMIT`.
+- A wait for a query, table copy or CSV load gives up after ten minutes of consecutive retryable
+  failures (transport errors, timeouts, retryable statuses such as 5xx). The window restarts
+  whenever BigQuery reports the job unfinished or returns results, and is checked between rounds of
+  requests, so a wait can overrun by one round: about ten minutes for a query and five for a copy or
+  load, with every request at its 60-second timeout. The error carries the last failure and says
+  the job's outcome is unknown, so check the job before running it again. The driver requests
+  cancellation of the unfinished job, except for a statement it runs outside any operation, such as a `COMMIT`.
+- A job that `jobs.get` reports finished without an error completes without reading results when
+  they could add nothing, as for DML and other statements that return no rows; its counts and
+  statement type come from the job.
 - Cancellation stops local work immediately and
   [requests cancellation](https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/jobs/cancel)
   of any unfinished remote job, which BigQuery handles asynchronously. During the initial
@@ -485,9 +487,9 @@ REST is used instead when:
   rate limit), or `INVALID_ARGUMENT` (a table Storage Read refuses but REST reads, such as a
   destination table with `require_partition_filter`).
 
-`CreateReadSession` retries `UNAVAILABLE` and connection failures for up to a minute; any other
-status is an error, and a call unanswered for two minutes, even by a stalled TLS handshake, fails
-with `TIMEOUT`. Fallback happens before the first batch reaches the caller, so no row is repeated,
+`CreateReadSession` retries `UNAVAILABLE` and connection failures for up to a minute. Any other
+status not listed above fails the read, as does a call unanswered for two minutes (`TIMEOUT`), even
+by a stalled TLS handshake. Fallback happens before the first batch reaches the caller, so no row is repeated,
 and is reported only as a `warn` [diagnostic](#diagnostics). Readers never switch after delivering
 rows, so with Storage Read disabled or unavailable, an oversized row on a later REST page fails the
 stream. If BigQuery refuses the first page, disabling Storage Read fails with `INVALID_ARGUMENT`,
