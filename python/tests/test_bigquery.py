@@ -64,6 +64,18 @@ def _execute_update(project: str, sql: str) -> int:
         return statement.execute_update()
 
 
+def _dataset_exists(project: str, dataset: str) -> bool:
+    """Asks the dataset itself: INFORMATION_SCHEMA can lag a CREATE that landed late."""
+    with _connect(project) as connection:
+        try:
+            connection.adbc_connection.set_options(**{driver.ConnectionOptions.CURRENT_DB_SCHEMA.value: dataset})
+        except adbc_driver_manager.ProgrammingError as error:
+            if error.status_code == adbc_driver_manager.AdbcStatusCode.NOT_FOUND:
+                return False
+            raise
+    return True
+
+
 def _dataset_label_value(project: str, dataset: str) -> str | None:
     sql = f"""
         SELECT option_value
@@ -81,6 +93,8 @@ def _cleanup_dataset(project: str, dataset: str, run_label: str) -> None:
     expected_dataset = _DATASET_PREFIX + run_label
     if dataset != expected_dataset or not re.fullmatch(r"[a-z0-9_]+", dataset):
         raise RuntimeError(f"refusing to clean up unsafe dataset ID: {dataset!r}")
+    if not _dataset_exists(project, dataset):
+        return
 
     labels = _dataset_label_value(project, dataset) or ""
     for key, value in (_OWNER_LABEL, (_RUN_LABEL_KEY, run_label)):
@@ -99,21 +113,22 @@ def bigquery_dataset() -> Iterator[tuple[str, str]]:
 
     run_label = (datetime.now(UTC).strftime("%Y%m%d_%H%M%S") + f"_{os.getpid()}_{secrets.token_hex(4)}").lower()
     dataset = _DATASET_PREFIX + run_label
-    _execute_update(
-        project,
-        f"""
-            CREATE SCHEMA {_identifier(f"{project}.{dataset}")}
-            OPTIONS (
-                location = 'US',
-                default_table_expiration_days = 1,
-                labels = [
-                    ({_string_literal(_OWNER_LABEL[0])}, {_string_literal(_OWNER_LABEL[1])}),
-                    ({_string_literal(_RUN_LABEL_KEY)}, {_string_literal(run_label)})
-                ]
-            )
-        """,
-    )
+    # Owned before the CREATE: a request that fails on the client can still land in BigQuery.
     try:
+        _execute_update(
+            project,
+            f"""
+                CREATE SCHEMA {_identifier(f"{project}.{dataset}")}
+                OPTIONS (
+                    location = 'US',
+                    default_table_expiration_days = 1,
+                    labels = [
+                        ({_string_literal(_OWNER_LABEL[0])}, {_string_literal(_OWNER_LABEL[1])}),
+                        ({_string_literal(_RUN_LABEL_KEY)}, {_string_literal(run_label)})
+                    ]
+                )
+            """,
+        )
         yield project, dataset
     finally:
         _cleanup_dataset(project, dataset, run_label)

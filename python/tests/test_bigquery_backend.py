@@ -160,6 +160,7 @@ def test_cleanup_requires_both_ownership_labels(monkeypatch: pytest.MonkeyPatch,
 
     statements: list[tuple[str, str]] = []
     sql_labels = "[" + ", ".join(f'STRUCT("{key}", "{value}")' for key, value in labels.items()) + "]"
+    monkeypatch.setattr(test_bigquery, "_dataset_exists", lambda project, dataset: True)
     monkeypatch.setattr(test_bigquery, "_dataset_label_value", lambda project, dataset: sql_labels)
     monkeypatch.setattr(test_bigquery, "_execute_update", lambda project, sql: statements.append((project, sql)))
     if labels == {"bigquery_adbc": "python_tests", "run_id": "run_1"}:
@@ -169,3 +170,47 @@ def test_cleanup_requires_both_ownership_labels(monkeypatch: pytest.MonkeyPatch,
         with pytest.raises(RuntimeError, match="ownership labels do not match"):
             test_bigquery._cleanup_dataset("test-project", "bigquery_adbc_py_run_1", "run_1")
         assert statements == []
+
+
+def test_cleanup_of_a_dataset_that_does_not_exist_does_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    import test_bigquery
+
+    def unexpected(*args: object) -> None:
+        raise AssertionError(f"unexpected call {args!r}")
+
+    monkeypatch.setattr(test_bigquery, "_dataset_exists", lambda project, dataset: False)
+    monkeypatch.setattr(test_bigquery, "_dataset_label_value", unexpected)
+    monkeypatch.setattr(test_bigquery, "_execute_update", unexpected)
+    test_bigquery._cleanup_dataset("test-project", "bigquery_adbc_py_run_1", "run_1")
+
+
+@pytest.mark.parametrize("create_fails", [False, True])
+def test_live_fixture_owns_its_dataset_before_creating_it(monkeypatch: pytest.MonkeyPatch, create_fails: bool) -> None:
+    # A CREATE that fails on the client can still land in BigQuery, so cleanup runs either way.
+    import test_bigquery
+
+    failure = RuntimeError("lost response")
+    cleanups: list[tuple[str, str, str]] = []
+
+    def execute_update(project: str, sql: str) -> int:
+        if create_fails:
+            raise failure
+        return 0
+
+    monkeypatch.setenv("BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT", "test-project")
+    monkeypatch.setenv("ADBC_BIGQUERY_RUN_INTEGRATION", "1")
+    monkeypatch.setattr(test_bigquery, "_execute_update", execute_update)
+    monkeypatch.setattr(test_bigquery, "_cleanup_dataset", lambda *args: cleanups.append(args))
+    fixture = test_bigquery.bigquery_dataset.__wrapped__()
+
+    if create_fails:
+        with pytest.raises(RuntimeError) as caught:
+            next(fixture)
+        assert caught.value is failure
+    else:
+        project, dataset = next(fixture)
+        assert cleanups == []
+        fixture.close()
+    [(project, dataset, run_label)] = cleanups
+    assert project == "test-project"
+    assert dataset == "bigquery_adbc_py_" + run_label
