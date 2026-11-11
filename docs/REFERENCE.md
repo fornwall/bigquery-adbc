@@ -337,7 +337,10 @@ Conversion rules:
 ### Transactions
 
 `adbc.connection.autocommit=false` selects manual commit; the BigQuery transaction session opens at
-the next query that needs one.
+the next query that needs one, with one `BEGIN TRANSACTION` job that creates it. A cancel stops
+waiting for that job at once (`CANCELLED`), and a job unanswered after a minute returns `TIMEOUT`;
+the driver ends the session once BigQuery's answer names it. A failed or unanswered `BEGIN` leaves
+any session it created for BigQuery to expire.
 
 - A `COMMIT TRANSACTION` or `ROLLBACK TRANSACTION` in SQL, alone or in a script, ends the
   transaction, and the next statement starts a new one. A statement that fails leaves the
