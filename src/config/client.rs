@@ -59,21 +59,8 @@ impl ClientConfiguration {
                 base_layer(&rebuilt, document.as_deref()).map(|(credentials, _)| credentials)
             });
         }
-        if settings.impersonation.is_configured() {
-            let target = settings
-                .impersonation
-                .target_principal
-                .clone()
-                .ok_or_else(|| {
-                    invalid_argument(format!(
-                        "BigQuery option {} is required once any of {} or {} is set; set it to \
-                         the service account to impersonate, or clear the other impersonation \
-                         options",
-                        BigQueryDatabaseOption::ImpersonationTargetPrincipal.as_str(),
-                        BigQueryDatabaseOption::ImpersonationDelegates.as_str(),
-                        BigQueryDatabaseOption::ImpersonationLifetime.as_str(),
-                    ))
-                })?;
+        // `validate_authentication` requires a target whenever impersonation is configured.
+        if let Some(target) = settings.impersonation.target_principal.clone() {
             let source = credentials;
             let layer = impersonation_layer(source.clone(), settings, &target)?;
             let rebuilt = settings.clone();

@@ -231,6 +231,15 @@ impl DatabaseConfig {
                 )));
             }
         }
+        if self.impersonation.target_principal.is_none() && self.impersonation.is_configured() {
+            return Err(invalid_argument(format!(
+                "BigQuery option {} is required once any of {} or {} is set; set it to the \
+                 service account to impersonate, or clear the other impersonation options",
+                O::ImpersonationTargetPrincipal.as_str(),
+                O::ImpersonationDelegates.as_str(),
+                O::ImpersonationLifetime.as_str(),
+            )));
+        }
         Ok(())
     }
 

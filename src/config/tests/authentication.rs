@@ -121,6 +121,26 @@ fn anonymous_authentication_still_rejects_quota_project_and_impersonation() {
     }
 }
 
+/// A missing impersonation target is a configuration mistake, reported before the source
+/// credential file is read.
+#[test]
+fn a_missing_impersonation_target_is_refused_before_the_source_is_read() {
+    let missing_target = settings(|config| {
+        config.authentication_type = BigQueryAuthenticationType::JsonCredentialFile;
+        config.credentials = Some(Secret::from("/nonexistent/bigquery-adbc-key.json"));
+        config.impersonation.lifetime = Some(Duration::from_secs(60));
+    });
+    let message = ClientConfiguration::build(&missing_target)
+        .unwrap_err()
+        .message;
+    assert!(
+        message.starts_with(
+            "BigQuery option bigquery.impersonate.target_principal is required once any of"
+        ),
+        "{message}"
+    );
+}
+
 /// Scopes reach the credential the authentication type builds, except for the two types that
 /// mint no token, which refuse them rather than dropping them.
 #[test]
