@@ -102,12 +102,11 @@ only the RPC status message.
 
 ### G53. Lossless numeric widening accepts more Arrow input types
 
-Ingest widens `Int8`, `UInt8`, `UInt16` and `UInt32` to `INT64` and `Float16` to `FLOAT64`; Go
-cannot create a table from them. Ingest rejects `UInt64` (cast it to `Int64` or
-`Decimal128(20, 0)`), from which Go cannot create a table either. Both drivers bind all of these as
-`INT64` or `FLOAT64` parameters (a `UInt64` above `i64::MAX` fails locally here), but a `Float32`
-or `Float16` binds as its exact value here (`0.1f32` as `0.10000000149011612`), where Go sends the
-shortest decimal (`0.1`).
+Ingest widens `Int8`, `UInt8`, `UInt16` and `UInt32` to `INT64` and `Float16` to `FLOAT64`, and
+rejects `UInt64` (cast it to `Int64` or `Decimal128(20, 0)`); Go cannot create a table from any of
+them. Both drivers bind them as `INT64` or `FLOAT64` parameters, but a `Float32` or `Float16` binds
+as its exact value here (`0.1f32` as `0.10000000149011612`), where Go sends the shortest decimal
+(`0.1`).
 
 ### G63. Storage Write ingestion uses the configured credentials and Storage endpoint
 
