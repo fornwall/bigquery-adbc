@@ -3,8 +3,8 @@
 use adbc_core::error::Status;
 use adbc_core::options::{ObjectDepth, Statistics};
 use adbc_core::schemas;
-use adbc_core::{Connection, Statement};
-use adbc_driver_bigquery::{BigQueryConnection, BigQueryStatement};
+use adbc_core::{Connection, Optionable, Statement};
+use adbc_driver_bigquery::{BigQueryConnection, BigQueryConnectionOption, BigQueryStatement};
 use arrow_array::{
     Array, BooleanArray, Int16Array, Int64Array, ListArray, RecordBatch, RecordBatchReader,
     StringArray, StructArray, UnionArray,
@@ -502,4 +502,75 @@ fn gets_hidden_dataset_objects_and_statistics() {
         );
         assert!(reader.next().is_none());
     }
+}
+
+/// In a dataset created with `is_case_insensitive`, BigQuery resolves dataset and table names
+/// without regard to case, so an exact filter in another case finds them, and reports the names
+/// BigQuery resolved it to rather than the filter's spelling (G56, G74). Literal filters, since the
+/// scratch names contain `_`, which a pattern filter would match as a wildcard.
+#[test]
+#[ignore = "requires Google Cloud ADC and write access to the integration project"]
+fn exact_filters_in_a_case_insensitive_dataset_report_the_resolved_names() {
+    let project = project();
+    struct DropSchema(BigQueryStatement);
+    impl Drop for DropSchema {
+        fn drop(&mut self) {
+            if let Err(error) = self.0.execute_update() {
+                report_failed_cleanup("drop the case-insensitive test dataset", &error);
+            }
+        }
+    }
+
+    let mut connection = connect_at_location(project, "US");
+    let dataset = scratch_table("case_insensitive");
+    let qualified_dataset = format!("{project}.{dataset}");
+    // Armed first: a create whose response was lost still made the dataset.
+    let _cleanup = DropSchema(prepare_query(
+        &mut connection,
+        &format!("DROP SCHEMA IF EXISTS `{qualified_dataset}` CASCADE"),
+    ));
+    execute_sql(
+        &mut connection,
+        &format!(
+            "CREATE SCHEMA `{qualified_dataset}` OPTIONS(location='US', \
+             default_table_expiration_days=1, is_case_insensitive=TRUE)"
+        ),
+    );
+    execute_sql(
+        &mut connection,
+        &format!("CREATE TABLE `{qualified_dataset}.events` AS SELECT 42 AS id"),
+    );
+    connection
+        .set_option(
+            BigQueryConnectionOption::GetObjectsDisableWildcards.into(),
+            "true".into(),
+        )
+        .unwrap();
+
+    let filter = dataset.to_uppercase();
+    for (depth, table) in [
+        (ObjectDepth::Schemas, None),
+        (ObjectDepth::Tables, None),
+        (ObjectDepth::Tables, Some("EVENTS")),
+        (ObjectDepth::All, Some("EVENTS")),
+    ] {
+        let mut reader = connection
+            .get_objects(depth, Some(project), Some(&filter), table, None, None)
+            .unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        assert!(reader.next().is_none());
+        let schemas = all_struct_values(batch.column(1));
+        assert_eq!(schemas.len(), 1, "{depth:?} {table:?}");
+        assert_eq!(str_value(schemas.column(0)), dataset, "{depth:?} {table:?}");
+        if depth != ObjectDepth::Schemas {
+            let tables = all_struct_values(schemas.column(1));
+            assert_eq!(tables.len(), 1, "{depth:?} {table:?}");
+            assert_eq!(str_value(tables.column(0)), "events", "{depth:?} {table:?}");
+        }
+    }
+
+    let schema = connection
+        .get_table_schema(Some(project), Some(&filter), "EVENTS")
+        .unwrap();
+    assert_eq!(schema.field(0).name(), "id");
 }

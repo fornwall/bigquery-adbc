@@ -97,8 +97,6 @@ Open limitations and missing test coverage. Behavior is documented in the
   multi-page recovery searches have mock coverage only.
 - Storage Read reshaping beyond the types BigQuery sends (decimal widening, timestamp-zone
   conversion, interval reshaping) has unit coverage only (`src/storage_read/reshape.rs`).
-- Exact metadata filters in a dataset created with `isCaseInsensitive` (G56, G74) have mock coverage
-  only.
 - No test writes a `project.catalog.namespace.table` destination: the integration project has no
   BigLake catalog. The live test shows only that BigQuery resolves such a destination to the
   dataset its SQL names, so writes to Iceberg tables and reading their results are unverified.
