@@ -280,7 +280,7 @@ def main() -> int:
                 if status:
                     return status
             return 0
-        except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
+        except (OSError, RuntimeError, ValueError) as error:
             status = 1
             print(f"error: {error}", file=sys.stderr, flush=True)
             return 1
