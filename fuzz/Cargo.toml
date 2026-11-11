@@ -26,19 +26,19 @@ features = ["fuzz-shim"]
 
 [patch.crates-io]
 # Keep all Arrow crates on one snapshot, including the Google client's target-gated dependencies.
-arrow = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-arith = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-array = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-buffer = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-cast = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-cmp = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-data = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-ipc = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-ord = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-row = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-schema = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-select = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-string = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-arith = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-array = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-buffer = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-cast = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-cmp = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-data = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-ipc = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-ord = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-row = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-schema = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-select = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-string = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
 
 [workspace]
 

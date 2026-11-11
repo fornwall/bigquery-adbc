@@ -28,7 +28,7 @@ pub(super) const TABLE_TYPES: [&str; 5] = [TABLE, VIEW, EXTERNAL, MATERIALIZED_V
 ///
 /// Kept in lockstep with the `google-cloud-bigquery` pin in `Cargo.toml` by hand;
 /// `vendor_version_matches_the_pinned_client_library` fails when the pin moves without this.
-const VENDOR_VERSION: &str = "google-cloud-bigquery 0.19.0";
+const VENDOR_VERSION: &str = "google-cloud-bigquery 1.0.0";
 
 enum InfoValue {
     String(&'static str),

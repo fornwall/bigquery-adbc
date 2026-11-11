@@ -1,18 +1,18 @@
 {
   "files": {
     "RUST-STD.html": "9f40ba5efa153e0acbca8b55ce74ac8fd88d142c3825fa618866bdd6c8ce5125",
-    "THIRD_PARTY_LICENSES.txt": "bbc06a656755d87dfd147afb42346c6c0eac72c7e850b66cdc1fc875bf384a70"
+    "THIRD_PARTY_LICENSES.txt": "a9e031c8a5acef686a8d7d50fafaabfd0bec561df90f278a8bc0703db6bd56e0"
   },
   "inputs": {
-    "Cargo.lock": "dff41d58f0ba07b8b58bdb15c4affdb45368ee6a3ec0935f1a6a3ec779e771d1",
-    "Cargo.toml": "965d677f2466011c8e588555c401ae382f303a0759394c3242c8e711107a06ae",
+    "Cargo.lock": "c9fb1d29c0b3f9400a2a42dac614f97185f0efd5041d7dd5cd8c41fcc3d9bf19",
+    "Cargo.toml": "0a26226b88f2885a8baec9a64c02c1a19c02c6ce8571301d02cce845891a1ce6",
     "rust-toolchain": "1.99.1"
   },
   "packages": [
     {
       "license": "Apache-2.0",
       "name": "adbc_core",
-      "source": "git+https://github.com/apache/arrow-adbc?rev=aa2c1c2496d287e111d70d382e5d9af07568488b#aa2c1c2496d287e111d70d382e5d9af07568488b",
+      "source": "git+https://github.com/apache/arrow-adbc?rev=5565c52cb71006e3f6322c8821de6955775f631d#5565c52cb71006e3f6322c8821de6955775f631d",
       "version": "0.26.0"
     },
     {
@@ -20,6 +20,12 @@
       "name": "ahash",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "0.8.12"
+    },
+    {
+      "license": "Unlicense OR MIT",
+      "name": "aho-corasick",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.1.5"
     },
     {
       "license": "MIT OR Apache-2.0",
@@ -40,27 +46,81 @@
       "version": "0.7.8"
     },
     {
+      "license": "Apache-2.0",
+      "name": "arrow",
+      "source": "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b",
+      "version": "60.1.0"
+    },
+    {
+      "license": "Apache-2.0",
+      "name": "arrow-arith",
+      "source": "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b",
+      "version": "60.1.0"
+    },
+    {
       "license": "Apache-2.0 AND MIT",
       "name": "arrow-array",
-      "source": "git+https://github.com/apache/arrow-rs?rev=274f433115806af8a5ba557131f1c3fb9fc91630#274f433115806af8a5ba557131f1c3fb9fc91630",
+      "source": "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b",
       "version": "60.1.0"
     },
     {
       "license": "Apache-2.0",
       "name": "arrow-buffer",
-      "source": "git+https://github.com/apache/arrow-rs?rev=274f433115806af8a5ba557131f1c3fb9fc91630#274f433115806af8a5ba557131f1c3fb9fc91630",
+      "source": "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b",
+      "version": "60.1.0"
+    },
+    {
+      "license": "Apache-2.0",
+      "name": "arrow-cast",
+      "source": "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b",
+      "version": "60.1.0"
+    },
+    {
+      "license": "Apache-2.0",
+      "name": "arrow-cmp",
+      "source": "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b",
       "version": "60.1.0"
     },
     {
       "license": "Apache-2.0",
       "name": "arrow-data",
-      "source": "git+https://github.com/apache/arrow-rs?rev=274f433115806af8a5ba557131f1c3fb9fc91630#274f433115806af8a5ba557131f1c3fb9fc91630",
+      "source": "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b",
+      "version": "60.1.0"
+    },
+    {
+      "license": "Apache-2.0",
+      "name": "arrow-ipc",
+      "source": "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b",
+      "version": "60.1.0"
+    },
+    {
+      "license": "Apache-2.0",
+      "name": "arrow-ord",
+      "source": "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b",
+      "version": "60.1.0"
+    },
+    {
+      "license": "Apache-2.0",
+      "name": "arrow-row",
+      "source": "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b",
       "version": "60.1.0"
     },
     {
       "license": "Apache-2.0",
       "name": "arrow-schema",
-      "source": "git+https://github.com/apache/arrow-rs?rev=274f433115806af8a5ba557131f1c3fb9fc91630#274f433115806af8a5ba557131f1c3fb9fc91630",
+      "source": "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b",
+      "version": "60.1.0"
+    },
+    {
+      "license": "Apache-2.0",
+      "name": "arrow-select",
+      "source": "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b",
+      "version": "60.1.0"
+    },
+    {
+      "license": "Apache-2.0",
+      "name": "arrow-string",
+      "source": "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b",
       "version": "60.1.0"
     },
     {
@@ -68,6 +128,12 @@
       "name": "async-trait",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "0.1.92"
+    },
+    {
+      "license": "MIT",
+      "name": "atoi",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "3.1.1"
     },
     {
       "license": "Apache-2.0 OR MIT",
@@ -396,73 +462,73 @@
     {
       "license": "Apache-2.0",
       "name": "google-cloud-api",
-      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba",
+      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1",
       "version": "1.8.0"
     },
     {
       "license": "Apache-2.0",
       "name": "google-cloud-auth",
-      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba",
+      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1",
       "version": "1.18.0"
     },
     {
       "license": "Apache-2.0",
       "name": "google-cloud-bigquery",
-      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba",
-      "version": "0.19.0"
+      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1",
+      "version": "1.0.0"
     },
     {
       "license": "Apache-2.0",
       "name": "google-cloud-bigquery-derive",
-      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba",
+      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1",
       "version": "0.2.0"
     },
     {
       "license": "Apache-2.0",
       "name": "google-cloud-bigquery-v2",
-      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba",
+      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1",
       "version": "1.1.0"
     },
     {
       "license": "Apache-2.0",
       "name": "google-cloud-gax",
-      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba",
+      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1",
       "version": "1.15.0"
     },
     {
       "license": "Apache-2.0",
       "name": "google-cloud-gax-internal",
-      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba",
+      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1",
       "version": "0.7.21"
     },
     {
       "license": "Apache-2.0",
       "name": "google-cloud-longrunning",
-      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba",
+      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1",
       "version": "1.14.0"
     },
     {
       "license": "Apache-2.0",
       "name": "google-cloud-lro",
-      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba",
+      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1",
       "version": "1.11.0"
     },
     {
       "license": "Apache-2.0",
       "name": "google-cloud-rpc",
-      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba",
+      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1",
       "version": "1.6.0"
     },
     {
       "license": "Apache-2.0",
       "name": "google-cloud-type",
-      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba",
+      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1",
       "version": "1.6.0"
     },
     {
       "license": "Apache-2.0",
       "name": "google-cloud-wkt",
-      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba",
+      "source": "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1",
       "version": "1.10.0"
     },
     {
@@ -646,6 +712,42 @@
       "version": "1.5.1"
     },
     {
+      "license": "MIT/Apache-2.0",
+      "name": "lexical-core",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.6"
+    },
+    {
+      "license": "MIT/Apache-2.0",
+      "name": "lexical-parse-float",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.6"
+    },
+    {
+      "license": "MIT/Apache-2.0",
+      "name": "lexical-parse-integer",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.6"
+    },
+    {
+      "license": "MIT/Apache-2.0",
+      "name": "lexical-util",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.7"
+    },
+    {
+      "license": "MIT/Apache-2.0",
+      "name": "lexical-write-float",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.6"
+    },
+    {
+      "license": "MIT/Apache-2.0",
+      "name": "lexical-write-integer",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.6"
+    },
+    {
       "license": "MIT OR Apache-2.0",
       "name": "libc",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
@@ -767,6 +869,12 @@
     },
     {
       "license": "MIT OR Apache-2.0",
+      "name": "pkg-config",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.3.34"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
       "name": "powerfmt",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "0.2.1"
@@ -872,6 +980,24 @@
       "name": "ref-cast-impl",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "1.0.27"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
+      "name": "regex",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.13.1"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
+      "name": "regex-automata",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.4.18"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
+      "name": "regex-syntax",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.8.11"
     },
     {
       "license": "MIT OR Apache-2.0",
@@ -1400,6 +1526,24 @@
       "name": "zmij",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "1.0.23"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "name": "zstd",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.14.3"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "name": "zstd-safe",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "8.2.0"
+    },
+    {
+      "license": "BSD-3-Clause",
+      "name": "zstd-sys",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "2.1.2+zstd.1.5.7"
     }
   ],
   "targets": [

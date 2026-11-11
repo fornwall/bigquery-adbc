@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "adbc_core"
 version = "0.26.0"
-source = "git+https://github.com/apache/arrow-adbc?rev=aa2c1c2496d287e111d70d382e5d9af07568488b#aa2c1c2496d287e111d70d382e5d9af07568488b"
+source = "git+https://github.com/apache/arrow-adbc?rev=5565c52cb71006e3f6322c8821de6955775f631d#5565c52cb71006e3f6322c8821de6955775f631d"
 dependencies = [
  "arrow-array",
  "arrow-schema",
@@ -73,7 +73,7 @@ checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 [[package]]
 name = "arrow"
 version = "60.1.0"
-source = "git+https://github.com/apache/arrow-rs?rev=274f433115806af8a5ba557131f1c3fb9fc91630#274f433115806af8a5ba557131f1c3fb9fc91630"
+source = "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b"
 dependencies = [
  "arrow-arith",
  "arrow-array",
@@ -91,7 +91,7 @@ dependencies = [
 [[package]]
 name = "arrow-arith"
 version = "60.1.0"
-source = "git+https://github.com/apache/arrow-rs?rev=274f433115806af8a5ba557131f1c3fb9fc91630#274f433115806af8a5ba557131f1c3fb9fc91630"
+source = "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -104,7 +104,7 @@ dependencies = [
 [[package]]
 name = "arrow-array"
 version = "60.1.0"
-source = "git+https://github.com/apache/arrow-rs?rev=274f433115806af8a5ba557131f1c3fb9fc91630#274f433115806af8a5ba557131f1c3fb9fc91630"
+source = "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b"
 dependencies = [
  "ahash",
  "arrow-buffer",
@@ -122,7 +122,7 @@ dependencies = [
 [[package]]
 name = "arrow-buffer"
 version = "60.1.0"
-source = "git+https://github.com/apache/arrow-rs?rev=274f433115806af8a5ba557131f1c3fb9fc91630#274f433115806af8a5ba557131f1c3fb9fc91630"
+source = "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b"
 dependencies = [
  "bytes",
  "half",
@@ -133,7 +133,7 @@ dependencies = [
 [[package]]
 name = "arrow-cast"
 version = "60.1.0"
-source = "git+https://github.com/apache/arrow-rs?rev=274f433115806af8a5ba557131f1c3fb9fc91630#274f433115806af8a5ba557131f1c3fb9fc91630"
+source = "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -153,7 +153,7 @@ dependencies = [
 [[package]]
 name = "arrow-cmp"
 version = "60.1.0"
-source = "git+https://github.com/apache/arrow-rs?rev=274f433115806af8a5ba557131f1c3fb9fc91630#274f433115806af8a5ba557131f1c3fb9fc91630"
+source = "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -163,7 +163,7 @@ dependencies = [
 [[package]]
 name = "arrow-data"
 version = "60.1.0"
-source = "git+https://github.com/apache/arrow-rs?rev=274f433115806af8a5ba557131f1c3fb9fc91630#274f433115806af8a5ba557131f1c3fb9fc91630"
+source = "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b"
 dependencies = [
  "arrow-buffer",
  "arrow-schema",
@@ -175,7 +175,7 @@ dependencies = [
 [[package]]
 name = "arrow-ipc"
 version = "60.1.0"
-source = "git+https://github.com/apache/arrow-rs?rev=274f433115806af8a5ba557131f1c3fb9fc91630#274f433115806af8a5ba557131f1c3fb9fc91630"
+source = "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -190,7 +190,7 @@ dependencies = [
 [[package]]
 name = "arrow-ord"
 version = "60.1.0"
-source = "git+https://github.com/apache/arrow-rs?rev=274f433115806af8a5ba557131f1c3fb9fc91630#274f433115806af8a5ba557131f1c3fb9fc91630"
+source = "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -203,7 +203,7 @@ dependencies = [
 [[package]]
 name = "arrow-row"
 version = "60.1.0"
-source = "git+https://github.com/apache/arrow-rs?rev=274f433115806af8a5ba557131f1c3fb9fc91630#274f433115806af8a5ba557131f1c3fb9fc91630"
+source = "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -215,7 +215,7 @@ dependencies = [
 [[package]]
 name = "arrow-schema"
 version = "60.1.0"
-source = "git+https://github.com/apache/arrow-rs?rev=274f433115806af8a5ba557131f1c3fb9fc91630#274f433115806af8a5ba557131f1c3fb9fc91630"
+source = "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b"
 dependencies = [
  "bitflags 2.13.2",
 ]
@@ -223,7 +223,7 @@ dependencies = [
 [[package]]
 name = "arrow-select"
 version = "60.1.0"
-source = "git+https://github.com/apache/arrow-rs?rev=274f433115806af8a5ba557131f1c3fb9fc91630#274f433115806af8a5ba557131f1c3fb9fc91630"
+source = "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b"
 dependencies = [
  "ahash",
  "arrow-array",
@@ -237,7 +237,7 @@ dependencies = [
 [[package]]
 name = "arrow-string"
 version = "60.1.0"
-source = "git+https://github.com/apache/arrow-rs?rev=274f433115806af8a5ba557131f1c3fb9fc91630#274f433115806af8a5ba557131f1c3fb9fc91630"
+source = "git+https://github.com/apache/arrow-rs?rev=eea5c84c61cca79eb86547adaa248fab5d949c2b#eea5c84c61cca79eb86547adaa248fab5d949c2b"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -815,7 +815,7 @@ dependencies = [
 [[package]]
 name = "google-cloud-api"
 version = "1.8.0"
-source = "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba"
+source = "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1"
 dependencies = [
  "bytes",
  "google-cloud-wkt",
@@ -827,7 +827,7 @@ dependencies = [
 [[package]]
 name = "google-cloud-auth"
 version = "1.18.0"
-source = "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba"
+source = "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -852,8 +852,8 @@ dependencies = [
 
 [[package]]
 name = "google-cloud-bigquery"
-version = "0.19.0"
-source = "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba"
+version = "1.0.0"
+source = "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -886,7 +886,7 @@ dependencies = [
 [[package]]
 name = "google-cloud-bigquery-derive"
 version = "0.2.0"
-source = "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba"
+source = "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -896,7 +896,7 @@ dependencies = [
 [[package]]
 name = "google-cloud-bigquery-v2"
 version = "1.1.0"
-source = "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba"
+source = "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -917,7 +917,7 @@ dependencies = [
 [[package]]
 name = "google-cloud-gax"
 version = "1.15.0"
-source = "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba"
+source = "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1"
 dependencies = [
  "bytes",
  "futures",
@@ -936,7 +936,7 @@ dependencies = [
 [[package]]
 name = "google-cloud-gax-internal"
 version = "0.7.21"
-source = "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba"
+source = "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1"
 dependencies = [
  "bytes",
  "futures",
@@ -975,7 +975,7 @@ dependencies = [
 [[package]]
 name = "google-cloud-longrunning"
 version = "1.14.0"
-source = "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba"
+source = "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -992,7 +992,7 @@ dependencies = [
 [[package]]
 name = "google-cloud-lro"
 version = "1.11.0"
-source = "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba"
+source = "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1"
 dependencies = [
  "google-cloud-gax",
  "google-cloud-gax-internal",
@@ -1007,7 +1007,7 @@ dependencies = [
 [[package]]
 name = "google-cloud-rpc"
 version = "1.6.0"
-source = "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba"
+source = "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1"
 dependencies = [
  "bytes",
  "google-cloud-wkt",
@@ -1019,7 +1019,7 @@ dependencies = [
 [[package]]
 name = "google-cloud-type"
 version = "1.6.0"
-source = "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba"
+source = "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1"
 dependencies = [
  "bytes",
  "google-cloud-wkt",
@@ -1031,7 +1031,7 @@ dependencies = [
 [[package]]
 name = "google-cloud-wkt"
 version = "1.10.0"
-source = "git+https://github.com/googleapis/google-cloud-rust?rev=5a2297f47973775e925ce49d37971b03ce358fba#5a2297f47973775e925ce49d37971b03ce358fba"
+source = "git+https://github.com/googleapis/google-cloud-rust?rev=9ba338718561739ab257e87502516d4be42dd5d1#9ba338718561739ab257e87502516d4be42dd5d1"
 dependencies = [
  "base64 0.23.1",
  "bytes",

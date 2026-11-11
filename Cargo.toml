@@ -132,7 +132,7 @@ required-features = ["benchmark"]
 
 [dependencies]
 # Keep all ADBC crates on this lockstep revision.
-adbc_core = { git = "https://github.com/apache/arrow-adbc", rev = "aa2c1c2496d287e111d70d382e5d9af07568488b" }
+adbc_core = { git = "https://github.com/apache/arrow-adbc", rev = "5565c52cb71006e3f6322c8821de6955775f631d" }
 arrow-array = { version = "60.1.0", default-features = false, features = ["ffi"] }
 arrow-buffer = { version = "60.1.0", default-features = false }
 # Type-erased gathers avoid linking arrow-select's per-type kernels; see docs/BINARY-SIZE.md.
@@ -153,10 +153,10 @@ futures-core = { version = "0.3.34", default-features = false }
 
 # Keep Google clients on one revision. Disable the default aws-lc TLS provider to avoid
 # its CMake build and binary weight; src/runtime.rs installs rustls's ring provider.
-google-cloud-auth = { git = "https://github.com/googleapis/google-cloud-rust", rev = "5a2297f47973775e925ce49d37971b03ce358fba", default-features = false }
-google-cloud-bigquery = { git = "https://github.com/googleapis/google-cloud-rust", rev = "5a2297f47973775e925ce49d37971b03ce358fba", default-features = false }
+google-cloud-auth = { git = "https://github.com/googleapis/google-cloud-rust", rev = "9ba338718561739ab257e87502516d4be42dd5d1", default-features = false }
+google-cloud-bigquery = { git = "https://github.com/googleapis/google-cloud-rust", rev = "9ba338718561739ab257e87502516d4be42dd5d1", default-features = false }
 # REST uses src/rest and its compact models; bigquery-v2 is only a transitive dependency.
-google-cloud-gax = { git = "https://github.com/googleapis/google-cloud-rust", rev = "5a2297f47973775e925ce49d37971b03ce358fba" }
+google-cloud-gax = { git = "https://github.com/googleapis/google-cloud-rust", rev = "9ba338718561739ab257e87502516d4be42dd5d1" }
 # Header types for the static-token CredentialsProvider.
 http = { version = "1.5.0", default-features = false, features = ["std"] }
 # CSV uploads need the body trait, not reqwest's broader stream feature.
@@ -184,7 +184,7 @@ tokio-util = { version = "0.7.20", default-features = false, features = ["io"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std", "release_max_level_off"] }
 
 [dev-dependencies]
-adbc_driver_manager = { git = "https://github.com/apache/arrow-adbc", rev = "aa2c1c2496d287e111d70d382e5d9af07568488b" }
+adbc_driver_manager = { git = "https://github.com/apache/arrow-adbc", rev = "5565c52cb71006e3f6322c8821de6955775f631d" }
 # Oracle for the type-erased gathers.
 arrow-select = { version = "60.1.0", default-features = false }
 # Independent IPC oracle and compressed test fixtures; excluded from the shipped driver.
@@ -192,7 +192,7 @@ arrow-ipc = { version = "60.1.0", default-features = false, features = ["lz4"] }
 # Frame encoding for the LZ4 decoder's tests.
 lz4_flex = { version = "0.14.0", default-features = false, features = ["frame"] }
 # Entry-point type for ManagedDriver::load_static tests.
-adbc_ffi = { git = "https://github.com/apache/arrow-adbc", rev = "aa2c1c2496d287e111d70d382e5d9af07568488b" }
+adbc_ffi = { git = "https://github.com/apache/arrow-adbc", rev = "5565c52cb71006e3f6322c8821de6955775f631d" }
 # Cleartext HTTP/2 server for multiplexing tests.
 h2 = { version = "0.4.20", default-features = false }
 # Paused-clock tests reach upstream's token-cache refresh without waiting it out.
@@ -200,19 +200,19 @@ tokio = { version = "1.54.1", default-features = false, features = ["test-util"]
 
 [patch.crates-io]
 # Keep all Arrow crates on one snapshot, including the Google client's target-gated dependencies.
-arrow = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-arith = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-array = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-buffer = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-cast = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-cmp = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-data = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-ipc = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-ord = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-row = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-schema = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-select = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
-arrow-string = { git = "https://github.com/apache/arrow-rs", rev = "274f433115806af8a5ba557131f1c3fb9fc91630" }
+arrow = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-arith = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-array = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-buffer = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-cast = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-cmp = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-data = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-ipc = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-ord = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-row = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-schema = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-select = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
+arrow-string = { git = "https://github.com/apache/arrow-rs", rev = "eea5c84c61cca79eb86547adaa248fab5d949c2b" }
 
 # Keep file/line backtraces while reducing dependency build time and disk usage.
 [profile.dev.package."*"]

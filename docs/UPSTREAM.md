@@ -9,8 +9,8 @@ The findings apply to these revisions:
 
 | Component | Revision | Relationship to this repository |
 | --- | --- | --- |
-| Google Cloud Rust | [`5a2297f`](https://github.com/googleapis/google-cloud-rust/commit/5a2297f47973775e925ce49d37971b03ce358fba) | Cargo pin; BigQuery 0.19.0, auth 1.18.0. |
-| Apache Arrow ADBC | [`aa2c1c2`](https://github.com/apache/arrow-adbc/commit/aa2c1c2496d287e111d70d382e5d9af07568488b) | Rust, C++ validation and Python integration pins. Python packaging allows `adbc-driver-manager>=1.13,<2`. |
+| Google Cloud Rust | [`9ba3387`](https://github.com/googleapis/google-cloud-rust/commit/9ba338718561739ab257e87502516d4be42dd5d1) | Cargo pin; BigQuery 1.0.0, auth 1.18.0. |
+| Apache Arrow ADBC | [`5565c52`](https://github.com/apache/arrow-adbc/commit/5565c52cb71006e3f6322c8821de6955775f631d) | Rust, C++ validation and Python integration pins. Python packaging allows `adbc-driver-manager>=1.13,<2`. |
 | [Driver Foundry](https://github.com/adbc-drivers) validation | [`5db1f44`](https://github.com/adbc-drivers/validation/commit/5db1f44782f4868c5ae9e89d6ac9812ca6e1758c) | Integration pin. |
 | `h2` | 0.4.20 and [`e64c166`](https://github.com/hyperium/h2/commit/e64c1662ebb14794fc19cbcbb5b5dd0f67925f27) | Cargo uses 0.4.20; upstream `master` at this commit has UP-94. |
 | dbt | [`b601ffe`](https://github.com/dbt-labs/dbt/commit/b601ffe469be8404e70b5e20f0ea0babc35ba6a8) | External client, not a Cargo dependency. |
@@ -95,7 +95,7 @@ can return `NOT_FOUND` for longer than the driver's bounded retries (`pending_wr
 
 ## UP-27: ADBC validation cannot select exactly representable temporal inputs
 
-[`TestSqlIngestTemporalType`](https://github.com/apache/arrow-adbc/blob/aa2c1c2496d287e111d70d382e5d9af07568488b/c/validation/adbc_validation_statement.cc#L370)
+[`TestSqlIngestTemporalType`](https://github.com/apache/arrow-adbc/blob/5565c52cb71006e3f6322c8821de6955775f631d/c/validation/adbc_validation_statement.cc#L370)
 ingests `-42`, `0` and `42` in the selected unit, so nanosecond inputs cannot round-trip through
 BigQuery's microseconds. `validation-quirks.patch` adds `IngestTemporalValueMultiplier`, which the
 adapter sets to 1,000 for nanosecond timestamps and durations.
@@ -143,32 +143,32 @@ the table schema before writing (`src/ingest/schema.rs`), which misses a concurr
 
 ## UP-43: Endpoint overrides do not enforce credential-recipient trust
 
-The Storage clients' [host resolver](https://github.com/googleapis/google-cloud-rust/blob/5a2297f47973775e925ce49d37971b03ce358fba/src/gax-internal/src/host.rs)
+The Storage clients' [host resolver](https://github.com/googleapis/google-cloud-rust/blob/9ba338718561739ab257e87502516d4be42dd5d1/src/gax-internal/src/host.rs)
 accepts any custom endpoint, including plain HTTP, and sends credentials to it, so
 `DatabaseConfig::validate_endpoints` (`src/config.rs`) restricts authenticated Storage
 and auxiliary overrides to HTTPS `googleapis.com` hosts unless
 `bigquery.allow_untrusted_endpoint=true`; a REST endpoint set as an option is trusted separately
-for Go/dbt compatibility. [Impersonation](https://github.com/googleapis/google-cloud-rust/blob/5a2297f47973775e925ce49d37971b03ce358fba/src/auth/src/credentials/impersonated.rs)
+for Go/dbt compatibility. [Impersonation](https://github.com/googleapis/google-cloud-rust/blob/9ba338718561739ab257e87502516d4be42dd5d1/src/auth/src/credentials/impersonated.rs)
 sends the source token to `iamcredentials.{universe_domain}` without the service clients' universe
 check, so the driver also checks that field in credential documents.
 
 ## UP-46: Rust ADBC option conversions include rejected payloads in errors
 
 `adbc_core`'s `bool` and `IngestMode`
-[option conversions](https://github.com/apache/arrow-adbc/blob/aa2c1c2496d287e111d70d382e5d9af07568488b/rust/core/src/options.rs)
+[option conversions](https://github.com/apache/arrow-adbc/blob/5565c52cb71006e3f6322c8821de6955775f631d/rust/core/src/options.rs)
 format the rejected value into their errors, exposing a secret passed to the wrong option.
 `src/options.rs` decodes them with payload-free errors instead.
 
 ## UP-56: Storage Write's generated client links the RPCs its own writer never calls
 
-The [generated Storage clients](https://github.com/googleapis/google-cloud-rust/blob/5a2297f47973775e925ce49d37971b03ce358fba/src/bigquery/src/write/generated/gapic_storage/client.rs)
+The [generated Storage clients](https://github.com/googleapis/google-cloud-rust/blob/9ba338718561739ab257e87502516d4be42dd5d1/src/bigquery/src/write/generated/gapic_storage/client.rs)
 hold a dynamic stub that links every RPC, including `FlushRows`, `SplitReadStream` and the
 generated `AppendRows`, which the driver never calls ([size](BINARY-SIZE.md#upstream-only-weights)).
 `PendingWriter` and `Read::builder()` offer no way around them.
 
 ## UP-61: Rust BigQuery's pending-stream appends still have no timeout
 
-In `google-cloud-bigquery` 0.19.0, attempt timeouts and retry policies are configurable only on the
+In `google-cloud-bigquery` 1.0.0, attempt timeouts and retry policies are configurable only on the
 default-stream `WriterBuilder`, so nothing upstream bounds a pending-stream append. The driver
 bounds finalize and commit calls, and treats an append unanswered for five minutes as dead,
 reconnecting and replaying it at its offset.
@@ -181,14 +181,15 @@ their original offsets (`src/ingest/write/retry.rs`).
 
 ## UP-68: Rust BigQuery has no feature gating its unused query and generated surface
 
-The [crate manifest](https://github.com/googleapis/google-cloud-rust/blob/5a2297f47973775e925ce49d37971b03ce358fba/src/bigquery/Cargo.toml)
-always builds the query modules and the `google-cloud-bigquery-v2` graph, though the driver uses
-only Storage Read and Write. LTO keeps that code out of the artifact, but it is still compiled.
+The [crate manifest](https://github.com/googleapis/google-cloud-rust/blob/9ba338718561739ab257e87502516d4be42dd5d1/src/bigquery/Cargo.toml)
+always builds the query modules, the `google-cloud-bigquery-v2` graph and `arrow` with IPC
+compression (including zstd's C library), though the driver uses only Storage Read and Write. LTO
+keeps that code out of the artifact, but it is still compiled.
 
 ## UP-69: AWS credential formatting pulls in jiff
 
 `google-cloud-auth` depends on `jiff` only to format two AWS SigV4 date strings in
-[`aws_sourced.rs`](https://github.com/googleapis/google-cloud-rust/blob/5a2297f47973775e925ce49d37971b03ce358fba/src/auth/src/credentials/external_account_sources/aws_sourced.rs).
+[`aws_sourced.rs`](https://github.com/googleapis/google-cloud-rust/blob/9ba338718561739ab257e87502516d4be42dd5d1/src/auth/src/credentials/external_account_sources/aws_sourced.rs).
 Its existing `time` dependency could produce both, removing `jiff` and `jiff-core`
 ([size](BINARY-SIZE.md#yaml-and-authentication-dependencies)). Integration tests do not exercise
 real AWS federation.
@@ -222,7 +223,7 @@ driver reports any type outside the five `GetTableTypes` advertises as `TABLE`
 
 ## UP-81: external-account `token_lifetime_seconds` is silently ignored
 
-The [external-account configuration](https://github.com/googleapis/google-cloud-rust/blob/5a2297f47973775e925ce49d37971b03ce358fba/src/auth/src/credentials/external_account.rs)
+The [external-account configuration](https://github.com/googleapis/google-cloud-rust/blob/9ba338718561739ab257e87502516d4be42dd5d1/src/auth/src/credentials/external_account.rs)
 has no `service_account_impersonation.token_lifetime_seconds` field, so a credential document that
 sets it silently gets the 3600-second default. This affects `json_credential_file` and
 `json_credential_string`; the driver passes the field through unvalidated.
@@ -337,8 +338,8 @@ names and refuses an append into such a table with `NOT_IMPLEMENTED` before any 
 
 ## UP-100: SDK token exchanges follow redirects
 
-The pinned auth library's [user OAuth refresh](https://github.com/googleapis/google-cloud-rust/blob/5a2297f47973775e925ce49d37971b03ce358fba/src/auth/src/credentials/user_account.rs#L451-L470)
-and [STS exchange](https://github.com/googleapis/google-cloud-rust/blob/5a2297f47973775e925ce49d37971b03ce358fba/src/auth/src/credentials/internal/sts_exchange.rs#L100-L128)
+The pinned auth library's [user OAuth refresh](https://github.com/googleapis/google-cloud-rust/blob/9ba338718561739ab257e87502516d4be42dd5d1/src/auth/src/credentials/user_account.rs#L451-L470)
+and [STS exchange](https://github.com/googleapis/google-cloud-rust/blob/9ba338718561739ab257e87502516d4be42dd5d1/src/auth/src/credentials/internal/sts_exchange.rs#L100-L128)
 use reqwest's default redirect policy, with no builder option to change it, and HTTP 307 and 308
 resend the POST body with its refresh token and client secret or subject token. The driver's
 endpoint allowlist therefore does not constrain every recipient of these credentials; its own
@@ -348,11 +349,11 @@ redirect has been observed.
 ## UP-101: SDK token exchanges have no timeout
 
 The pinned auth library's user OAuth refresh, STS exchange and metadata-server requests each use a
-default `reqwest::Client`, with no builder option for a deadline, so a token service that accepts a
-connection and never answers hangs every waiting request. The driver bounds the wait at two minutes
-(`src/config/redaction.rs`), but the library's background refresh stays blocked until the
-connection dies: until then, retries and later requests fail at once with `IO` even if the service
-has recovered. A wait for a running job keeps looking through its outage window.
+`reqwest::Client` without a timeout, with no builder option for a deadline, so a token service
+that accepts a connection and never answers hangs every waiting request. The driver bounds the wait
+at two minutes (`src/config/redaction.rs`), but the library's background refresh stays blocked
+until the connection dies: until then, retries and later requests fail at once with `IO` even if
+the service has recovered. A wait for a running job keeps looking through its outage window.
 
 ## UP-102: gRPC server streams have no deadline or keepalive
 

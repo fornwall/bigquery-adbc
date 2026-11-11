@@ -15,7 +15,7 @@ Depend on it and on `adbc_core`, which defines the traits:
 
 ```toml
 bigquery-adbc = { git = "https://github.com/fornwall/bigquery-adbc", default-features = false }
-adbc_core = { git = "https://github.com/apache/arrow-adbc", rev = "aa2c1c2496d287e111d70d382e5d9af07568488b" }
+adbc_core = { git = "https://github.com/apache/arrow-adbc", rev = "5565c52cb71006e3f6322c8821de6955775f631d" }
 ```
 
 - `default-features = false` leaves out the `ffi` feature (the C ABI), so a shared library built on

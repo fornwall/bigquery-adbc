@@ -4,7 +4,7 @@
 edition = "2024"
 
 [dependencies]
-google-cloud-auth = { git = "https://github.com/googleapis/google-cloud-rust", rev = "5a2297f47973775e925ce49d37971b03ce358fba", default-features = false }
+google-cloud-auth = { git = "https://github.com/googleapis/google-cloud-rust", rev = "9ba338718561739ab257e87502516d4be42dd5d1", default-features = false }
 reqwest = { version = "=0.13.5", default-features = false, features = ["json", "query", "rustls-no-provider", "system-proxy"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 serde_json = "=1.0.154"
@@ -27,7 +27,7 @@ use google_cloud_auth::credentials::user_account::Builder;
 use reqwest::{Client, RequestBuilder};
 use serde_json::{Value, json};
 
-const REVISION: &str = "5a2297f47973775e925ce49d37971b03ce358fba";
+const REVISION: &str = "9ba338718561739ab257e87502516d4be42dd5d1";
 const TOKEN_ENDPOINT: &str = "https://oauth2.googleapis.com/token";
 const SCOPE: &str = "https://www.googleapis.com/auth/cloud-platform";
 const TIMEOUT: Duration = Duration::from_secs(30);
