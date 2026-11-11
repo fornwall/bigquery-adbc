@@ -96,7 +96,8 @@ during initialization, because driver managers can reorder options.
   `bigquery.query.max_bytes_billed` and `adbc.bigquery.dataproc.pooling_timeout`. Their reset rules
   are listed below.
 - Booleans accept `true` and `false` in any case and read back lowercase; `1`, `yes` and `on` are
-  rejected.
+  rejected. The driver's own keys (`bigquery.*`, `adbc.bigquery.*`) and enum values also ignore
+  ASCII case and read back as spelled here; standard `adbc.*` keys must match exactly.
 - Project identifiers (modern IDs, numbers and legacy domain-scoped IDs) are opaque; BigQuery checks
   their validity and existence. An empty option value clears the option; otherwise an identifier
   must be one resource-name segment, so `/`, `\`, ASCII control characters, `.` and `..` are

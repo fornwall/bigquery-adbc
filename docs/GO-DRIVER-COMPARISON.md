@@ -560,10 +560,11 @@ is GoogleSQL only, and BigQuery applies the latter two only to legacy SQL.
 because connections share their database's clients; on a connection they return `NOT_IMPLEMENTED`.
 Go also accepts them per connection.
 
-### G42. Boolean options accept only the two specification spellings
+### G42. Boolean options accept only the two specification spellings, in any case
 
 Boolean options accept only `true` and `false` (ignoring ASCII case). Go's `strconv.ParseBool` also
-accepts `1`, `0`, `t`, `T`, `f` and `F`.
+accepts `1`, `0`, `t`, `T`, `f` and `F`. The driver's own option keys and enum values ignore ASCII
+case too, so `bigquery.Query.Priority=batch` works; Go matches both exactly.
 
 ### G43. The specification-default no-op options are accepted rather than refused
 
