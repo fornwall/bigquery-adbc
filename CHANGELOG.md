@@ -51,6 +51,9 @@ changes.
   database and connection.
 - A bulk-ingest `Date64` value that is not a whole day is refused with its row in the bound stream,
   like every other refused value.
+- An append that omits a `REQUIRED` column with a default value says that Storage Write does not
+  fill it in. The reference now says that omitted nullable and repeated columns take their default
+  values.
 - The patched dbt is built from dbt's `main` at `ef0aa4db3a` (2026-11-11).
 - The driver uses `google-cloud-bigquery` 1.0.0 for Storage Read and Write, which
   `ADBC_INFO_VENDOR_VERSION` reports.

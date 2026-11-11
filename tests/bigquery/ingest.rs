@@ -1203,9 +1203,10 @@ fn appends_to_a_table_with_a_flexible_column_name_are_refused() {
 }
 
 /// Storage Write matches fields by name, ignoring case and order at every struct level, and
-/// writes an omitted NULLABLE column as NULL and an omitted REPEATED one as `[]`. Appends the
-/// service would reject or silently alter (it rounds decimals to the column's scale) are refused
-/// before anything is written.
+/// writes an omitted NULLABLE or REPEATED column as its default value, else as NULL or `[]`; a
+/// REQUIRED column must be bound even when it has a default. Appends the service would reject or
+/// silently alter (it rounds decimals to the column's scale) are refused before anything is
+/// written.
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn appends_resolve_columns_by_name_and_refuse_what_storage_write_would_alter() {
@@ -1213,8 +1214,9 @@ fn appends_resolve_columns_by_name_and_refuse_what_storage_write_would_alter() {
     execute_sql(
         &mut connection,
         &format!(
-            "CREATE TABLE `{table}` (id INT64 NOT NULL, amount NUMERIC(10, 2), \
-             customer STRUCT<id INT64, name STRING>, tags ARRAY<STRING>, note STRING)"
+            "CREATE TABLE `{table}` (id INT64 DEFAULT 0 NOT NULL, amount NUMERIC(10, 2), \
+             customer STRUCT<id INT64, name STRING>, tags ARRAY<STRING>, \
+             labels ARRAY<STRING> DEFAULT ['new'], note STRING, origin STRING DEFAULT 'adbc')"
         ),
     );
     let append = |connection: &mut BigQueryConnection, columns: Vec<(&str, ArrayRef)>| {
@@ -1263,6 +1265,14 @@ fn appends_resolve_columns_by_name_and_refuse_what_storage_write_would_alter() {
     );
     let failure = append(&mut connection, vec![("amount", amount(1, 5, 1))]).unwrap_err();
     assert_eq!(failure.status, Status::AlreadyExists, "{}", failure.message);
+    assert!(
+        failure.message.contains(
+            "REQUIRED column \"id\" is missing from the bound data, and Storage Write does not \
+             fill a REQUIRED column with its default value"
+        ),
+        "{}",
+        failure.message
+    );
 
     let mut query = prepare_query(
         &mut connection,
@@ -1270,7 +1280,10 @@ fn appends_resolve_columns_by_name_and_refuse_what_storage_write_would_alter() {
     );
     assert_eq!(
         read_single_string(&mut query),
-        r#"{"id":1,"amount":"12.3","customer":{"id":null,"name":"Ada"},"tags":[],"note":null}"#
+        concat!(
+            r#"{"id":1,"amount":"12.3","customer":{"id":null,"name":"Ada"},"tags":[],"#,
+            r#""labels":["new"],"note":null,"origin":"adbc"}"#
+        )
     );
 }
 

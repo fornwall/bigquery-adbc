@@ -792,14 +792,21 @@ fn collect_append_differences(
         }
         path.truncate(prefix);
     }
+    // Storage Write fills an omitted NULLABLE or REPEATED column with its default value, but
+    // refuses an append that omits a REQUIRED one even when it has a default (observed).
     for (index, actual) in actual.iter().enumerate() {
         if canonical_mode(&actual.mode) == "REQUIRED"
             && resolve_column(expected, index, &actual.name).is_none()
         {
-            differences.push(format!(
-                "REQUIRED column {} is missing from the bound data",
-                quoted_column(path, &actual.name)
-            ));
+            let column = quoted_column(path, &actual.name);
+            differences.push(if actual.default_value_expression.is_some() {
+                format!(
+                    "REQUIRED column {column} is missing from the bound data, and Storage Write \
+                     does not fill a REQUIRED column with its default value"
+                )
+            } else {
+                format!("REQUIRED column {column} is missing from the bound data")
+            });
         }
     }
 }

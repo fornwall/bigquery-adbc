@@ -579,11 +579,12 @@ Execution:
 
 Columns and values:
 
-- Append matches columns by name, ignoring case and order. Omitted nullable columns become NULL,
-  and omitted repeated columns become empty arrays. `JSON` and `GEOGRAPHY` columns also accept plain
-  strings, which BigQuery parses as JSON text or WKT, and `STRING` columns accept `GEOGRAPHY` values
-  as WKT text. Arrow nullability need not match `REQUIRED`, but Storage Write rejects actual NULL
-  values in required columns.
+- Append matches columns by name, ignoring case and order. An omitted nullable or repeated column
+  takes its default value, or else becomes NULL or an empty array. A `REQUIRED` column must be
+  bound even when it has a default value, since Storage Write refuses an append that omits it.
+  `JSON` and `GEOGRAPHY` columns also accept plain strings, which BigQuery parses as JSON text or
+  WKT, and `STRING` columns accept `GEOGRAPHY` values as WKT text. Arrow nullability need not match
+  `REQUIRED`, but Storage Write rejects actual NULL values in required columns.
 - An appended field adopts what the target column declares, and every value is checked against it.
   A decimal takes the column's type, precision and scale; a value with a fractional digit the column
   would round away, or too many integer digits, returns `INVALID_DATA` naming its row in the bound

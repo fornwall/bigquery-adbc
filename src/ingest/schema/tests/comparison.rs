@@ -148,6 +148,23 @@ fn incompatible_existing_schema_names_every_offending_column() {
             "REQUIRED column \"customer.tier\" is missing from the bound data",
         ]
     );
+
+    // Storage Write fills an omitted NULLABLE column's default value, but not a REQUIRED one's.
+    let with_default = |mode: &str| TableFieldSchema {
+        default_value_expression: Some("'none'".to_owned()),
+        ..field_mode("note", "STRING", mode)
+    };
+    let expected = table_schema([field("id", "INT64")]);
+    let actual = table_schema([field("id", "INT64"), with_default("NULLABLE")]);
+    validate_existing_schema(ORDERS, Some(&actual), &expected).unwrap();
+    let actual = table_schema([field("id", "INT64"), with_default("REQUIRED")]);
+    assert_eq!(
+        append_differences(&actual, &expected),
+        [
+            "REQUIRED column \"note\" is missing from the bound data, and Storage Write does not \
+             fill a REQUIRED column with its default value"
+        ]
+    );
 }
 
 /// Appends resolve columns as Storage Write does (see `collect_append_differences`): by name,
