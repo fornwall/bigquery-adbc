@@ -598,6 +598,62 @@ fn init_against_an_allocated_but_uninitialized_database_is_refused() {
     release(&mut connection);
 }
 
+/// `Init` installs the cancellation handle on the object it initialized. A `Release` and `New`
+/// on the same struct while `Init` waits on BigQuery put another object in the slot, and that one
+/// must not receive the first connection's handle, which would leave it uncancellable.
+#[test]
+fn init_installs_cancellation_on_its_own_object_when_the_slot_is_refilled() {
+    use std::sync::mpsc::channel;
+
+    let (entered_sender, entered_receiver) = channel::<()>();
+    let (resume_sender, resume_receiver) = channel::<()>();
+    let (endpoint, requests) = capture_requests_gated(
+        vec![(200, serde_json::json!({"datasets": []}))],
+        move || {
+            entered_sender.send(()).expect("test channel");
+            resume_receiver.recv().expect("test channel");
+            true
+        },
+    );
+    let mut database = database_at(&endpoint);
+    let mut connection = pending();
+    let catalog = set(&mut connection, "adbc.connection.catalog", "other-project");
+    assert_eq!(catalog.0, ADBC_STATUS_OK);
+
+    let database_address = (&raw mut database).expose_provenance();
+    let connection_address = (&raw mut connection).expose_provenance();
+    // SAFETY: The parent keeps both handles alive until this thread joins.
+    let opening = std::thread::spawn(move || unsafe {
+        connection_init(
+            std::ptr::with_exposed_provenance_mut(connection_address),
+            std::ptr::with_exposed_provenance_mut(database_address),
+            null(),
+        )
+    });
+    entered_receiver
+        .recv()
+        .expect("the catalog validation request");
+    let connection_ptr =
+        std::ptr::with_exposed_provenance_mut::<AdbcConnection>(connection_address);
+    // SAFETY: The struct stays allocated; the slot functions order these calls with the `Init`
+    // in flight, which keeps its own reference to the object it is initializing.
+    unsafe {
+        assert_eq!(release_handle(connection_ptr, null()), ADBC_STATUS_OK);
+        assert_eq!(new_handle(connection_ptr, null()), ADBC_STATUS_OK);
+    }
+    resume_sender.send(()).expect("test channel");
+    assert_eq!(opening.join().unwrap(), ADBC_STATUS_OK);
+    requests.served(1);
+
+    let cancel = call(|error| {
+        // SAFETY: The struct holds the pending object `New` installed.
+        unsafe { connection_cancel(connection_ptr, error) }
+    });
+    assert_refused(cancel, ADBC_STATUS_INVALID_STATE, "uninitialized");
+    release(&mut connection);
+    release(&mut database);
+}
+
 /// Building a connection can call BigQuery, here to validate a catalog set before `Init`, so it
 /// must not hold the database lock: the database's getters, and other connections being opened,
 /// stay available meanwhile.

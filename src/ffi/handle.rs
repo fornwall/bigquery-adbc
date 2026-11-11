@@ -302,21 +302,30 @@ pub(crate) unsafe fn published_progress<S>(
     }
 }
 
-/// Install cancellation before publishing an initialized state, so execution cannot become
-/// available before cancellation does. Statements install it at construction instead.
+/// [`dispatch`] for an `Init` that makes the object cancellable: `f` returns the cancellation
+/// handle [`cancel`] will use, installed on the object `f` initialized while its state lock is
+/// still held, so before any operation can start. The slot is not read again: a racing `Release`
+/// and `New` can have put another object there. Statements install theirs at construction.
 ///
 /// # Safety
-/// `slot` must satisfy [`acquire`]'s contract.
-pub(crate) unsafe fn install_cancel_handle<S>(
+/// `slot` must satisfy [`acquire`]'s contract, and `error` [`finish`]'s.
+pub(crate) unsafe fn dispatch_init<S>(
     slot: *const *mut c_void,
-    kind: &str,
-    handle: Box<dyn CancelHandle>,
-) -> Result<()> {
-    // SAFETY: the caller supplies the slot's contract.
-    let exported = unsafe { acquire::<S>(slot, kind) }?;
-    // `Init` succeeds at most once, so the cell is empty.
-    drop(exported.cancel.set(handle));
-    Ok(())
+    kind: &'static str,
+    error: *mut AdbcError,
+    f: impl FnOnce(&mut S) -> Result<Box<dyn CancelHandle>>,
+) -> AdbcStatusCode {
+    let outcome = catch(|| {
+        // SAFETY: the caller supplies the slot's contract.
+        let exported = unsafe { acquire::<S>(slot, kind) }?;
+        let mut state = exported.state.lock().map_err(|_| poisoned(kind))?;
+        let handle = f(&mut state)?;
+        // `Init` succeeds at most once, so the cell is empty.
+        drop(exported.cancel.set(handle));
+        Ok(())
+    });
+    // SAFETY: the caller supplies a valid optional error output for this call.
+    unsafe { finish(outcome, error) }
 }
 
 /// Empty the handle's slot and drop its reference, so a second release is an error rather than a

@@ -327,9 +327,11 @@ fn cancel_without_an_installed_handle_is_an_invalid_state() {
     assert_eq!(cancel_slot(&mut slot), ADBC_STATUS_INVALID_STATE);
 
     let cancelled = Arc::new(AtomicBool::new(false));
-    let handle = Box::new(RecordingCancel(cancelled.clone()));
+    let handle: Box<dyn CancelHandle> = Box::new(RecordingCancel(cancelled.clone()));
     // SAFETY: As in `run`.
-    unsafe { install_cancel_handle::<u32>(&raw const *slot, "connection", handle) }.unwrap();
+    let status =
+        unsafe { dispatch_init::<u32>(&raw const *slot, "connection", null(), |_| Ok(handle)) };
+    assert_eq!(status, ADBC_STATUS_OK);
     assert_eq!(cancel_slot(&mut slot), ADBC_STATUS_OK);
     assert!(cancelled.load(Ordering::SeqCst));
     assert_eq!(release_slot(&mut slot), ADBC_STATUS_OK);

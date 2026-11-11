@@ -10,7 +10,7 @@ use arrow_array::ffi_stream::FFI_ArrowArrayStream;
 
 use super::abi::{AdbcConnection, AdbcDatabase, AdbcError, AdbcStatusCode};
 use super::guard::{byte_slice, optional_str, optional_str_list, required_output, required_str};
-use super::handle::{Staged, install_cancel_handle};
+use super::handle::{Staged, dispatch_init};
 use super::options::{FfiHandle, slot_of, with_handle, with_state, with_stream};
 use super::stream::write_schema;
 use crate::connection::BigQueryConnection;
@@ -35,7 +35,7 @@ pub(super) unsafe extern "C" fn connection_init(
 ) -> AdbcStatusCode {
     // SAFETY: The caller upholds the shared contracts for every argument.
     unsafe {
-        with_state(connection, error, |state| {
+        dispatch_init::<State>(slot_of(connection), KIND, error, |state| {
             let options = state.pending(KIND)?;
             // Building the connection can call BigQuery, so it uses a snapshot rather than
             // holding the database lock, which would serialize concurrent opens and block the
@@ -45,12 +45,10 @@ pub(super) unsafe extern "C" fn connection_init(
                 Ok(database.ready(super::database::KIND)?.snapshot())
             })?
             .new_connection_with_opts(options.clone())?;
-            // `connection_cancel` uses this handle without the dispatch turn. Install it before
-            // publishing the ready state, since an operation can start as soon as the connection
-            // is usable.
-            install_cancel_handle::<State>(slot_of(connection), KIND, ready.get_cancel_handle())?;
+            // `connection_cancel` uses this handle without the dispatch turn.
+            let cancel = ready.get_cancel_handle();
             *state = State::Ready(ready);
-            Ok(())
+            Ok(cancel)
         })
     }
 }
