@@ -22,14 +22,20 @@ login = "Run: gcloud auth application-default login"
 try:
     with open(path, encoding="utf-8") as file:
         credential = json.load(file)
-except OSError as error:
-    sys.exit(f"{error}\n{login}")
+except (OSError, ValueError) as error:
+    # Decoding errors name a position, never the document's contents.
+    sys.exit(f"cannot read {path}: {error}\n{login}")
+if not isinstance(credential, dict):
+    sys.exit(f"{path} holds a {type(credential).__name__}, not an authorized_user credential.\n{login}")
 if credential.get("type") != "authorized_user":
     sys.exit(f"{path} holds {credential.get('type')!r} credentials, not authorized_user.\n{login}")
 for field in ("client_id", "client_secret", "refresh_token"):
-    if not credential.get(field):
+    value = credential.get(field)
+    if not value:
         sys.exit(f"{path} has no {field}")
-    print(f"export BIGQUERY_ADBC_OAUTH_{field.upper()}={shlex.quote(credential[field])}")
+    if not isinstance(value, str):
+        sys.exit(f"{path}: {field} is not a string")
+    print(f"export BIGQUERY_ADBC_OAUTH_{field.upper()}={shlex.quote(value)}")
 PYTHON
     ) || exit 1
     eval "$exports"

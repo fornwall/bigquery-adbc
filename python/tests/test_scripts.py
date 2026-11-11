@@ -147,6 +147,70 @@ def test_one_live_test_runner_trusts_cargo_once_the_test_ran(
     assert result.returncode == status, result.stderr
 
 
+def run_oauth_runner(tmp_path: Path, document: str | None, cargo: str) -> subprocess.CompletedProcess[str]:
+    """Run the OAuth runner on an ADC file holding `document`, with `cargo` standing in for Cargo."""
+    credentials = tmp_path / "application_default_credentials.json"
+    if document is not None:
+        credentials.write_text(document, encoding="utf-8")
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("BIGQUERY_ADBC_OAUTH_")}
+    environment.update(
+        BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT="chosen-project",
+        BIGQUERY_ADBC_PYTHON=sys.executable,
+        GOOGLE_APPLICATION_CREDENTIALS=str(credentials),
+        PATH=fake_path(tmp_path, cargo=cargo),
+        FAKE_ROOT=str(tmp_path),
+    )
+    return subprocess.run(
+        [str(REPOSITORY_ROOT / "scripts/run-oauth-live-test.sh")],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+
+@posix
+@pytest.mark.parametrize(
+    ("document", "problem"),
+    [
+        (None, "No such file"),
+        ("{not json", "Expecting property name"),
+        ('["authorized_user"]', "holds a list, not"),
+        ('{"type": "service_account"}', "holds 'service_account' credentials"),
+        ('{"type": "authorized_user", "client_id": "id", "client_secret": "secret"}', "has no refresh_token"),
+        (
+            '{"type": "authorized_user", "client_id": 7, "client_secret": "s", "refresh_token": "t"}',
+            "client_id is not a string",
+        ),
+    ],
+)
+def test_oauth_runner_explains_an_unusable_adc_file(tmp_path: Path, document: str | None, problem: str) -> None:
+    # Reaching Cargo would be a failure to stop.
+    result = run_oauth_runner(tmp_path, document, cargo="#!/bin/sh\nexit 99\n")
+
+    assert result.returncode == 1, result.stderr
+    assert problem in result.stderr
+    assert "Traceback" not in result.stderr
+    assert "secret" not in result.stderr
+
+
+@posix
+def test_oauth_runner_passes_adc_fields_through_the_environment(tmp_path: Path) -> None:
+    fields = {"client_id": "id with 'quotes'", "client_secret": "$(touch pwned) secret", "refresh_token": "a\nb"}
+    variables = " ".join(f'"$BIGQUERY_ADBC_OAUTH_{field.upper()}"' for field in fields)
+    # The runner calls Cargo from the repository root.
+    cargo = f"#!/usr/bin/env bash\nprintf '%s\\0' {variables} > \"$FAKE_ROOT/seen\"\nexit 99\n"
+
+    result = run_oauth_runner(tmp_path, json.dumps({"type": "authorized_user", **fields}), cargo)
+
+    # The runner's first Cargo call saw the variables.
+    assert result.returncode == 99, result.stderr
+    assert (tmp_path / "seen").read_text(encoding="utf-8").split("\0")[:-1] == list(fields.values())
+    assert not (REPOSITORY_ROOT / "pwned").exists()
+    assert "secret" not in result.stdout + result.stderr
+
+
 FAKE_EMULATOR = """\
 import http.server
 import json
