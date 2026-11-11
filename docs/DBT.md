@@ -43,8 +43,8 @@ BigQuery driver in the same build:
 BIGQUERY_ADBC_USE_DBT_DRIVER=1 dbt-bigquery-adbc build
 ```
 
-Both drivers stay cached separately, and `dbt.log` records the choice as `BigQuery driver resolved:`.
-See [build details](../tools/dbt-build/README.md) for driver selection and packaging.
+Both drivers stay cached separately, and `dbt.log` records the choice as
+`BigQuery driver resolved:`. See [build details](../tools/dbt-build/README.md) for driver selection and packaging.
 
 ### Compatibility notes
 

@@ -22,7 +22,7 @@ changes.
 - `BIGQUERY:type` metadata naming an `ARRAY<...>`, `STRUCT<...>` or `RANGE<...>` type on a scalar
   parameter or ingest field returns `INVALID_ARGUMENT` as a mismatch with the Arrow type, instead
   of `NOT_IMPLEMENTED` claiming the driver lacks the type.
-- A CSV seed upload that BigQuery refuses reports `BigQuery rejected the CSV load job` and the
+- A dbt 2.0 seed upload that BigQuery refuses reports `BigQuery rejected the CSV load job` and the
   `bigquery.job.verdict` detail `not_created`, as other refused job submissions do.
 - A `jobs.insert` submission, including a dbt table copy, whose retry BigQuery refuses after an
   attempt whose answer was lost fetches the job that attempt may have created, as it does when

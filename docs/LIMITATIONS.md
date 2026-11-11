@@ -124,5 +124,6 @@ DB-API suites; the other client suites and the ignored FFI live tests have not b
   its 164,656 rows, and `creates_the_transaction_session_where_the_default_dataset_is` needs
   `bigquery-public-data.covid19_ecdc_eu.covid_19_geographic_distribution_worldwide` in `EU`, so
   these four need real BigQuery or full fixtures.
-- Tests that need real IAM, credentials, Cloud Storage, error responses, dataset metadata or regional
-  job placement call `require_real_bigquery` (`tests/bigquery/backend.rs`) and refuse emulator mode.
+- Tests that need real IAM, credentials, Cloud Storage, error responses, dataset metadata or
+  regional job placement call `require_real_bigquery` (`tests/bigquery/backend.rs`) and refuse
+  emulator mode.

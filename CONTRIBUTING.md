@@ -223,8 +223,8 @@ run one. `PYTEST_ADDOPTS` passes options to the pytest suites.
 ## BigQuery emulator
 
 The Rust and Python DB-API suites can use a local emulator instead of BigQuery; the runner needs
-Python 3.11 or newer. Run six smoke tests (queries, dry runs, nested results, parameters, Storage Read and
-Storage Write), or pass another command after `--`:
+Python 3.11 or newer. Run six smoke tests (queries, dry runs, nested results, parameters, Storage
+Read and Storage Write), or pass another command after `--`:
 
 ```sh
 export BIGQUERY_ADBC_INTEGRATION_TEST_GCP_PROJECT=my-emulator-project
@@ -292,7 +292,7 @@ metadata (Cargo may download their sources), including nested notices and source
 headers; the pinned compiler supplies `COPYRIGHT-library.html`. Source distributions include the
 bundle and its generator. A dependency without a license text fails generation: review its
 license, then add a copy to `tools/license-sources/` with its upstream revision and URL in
-`sources.json`. CI regenerates the bundle and packaging rejects a stale or damaged copy; neither
+`sources.json` (checked against Cargo VCS metadata). CI regenerates the bundle and packaging rejects a stale or damaged copy; neither
 replaces license review.
 
 ## Releasing

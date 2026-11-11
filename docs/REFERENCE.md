@@ -78,7 +78,7 @@ configuration.
 | Namespace | Contents |
 | --- | --- |
 | `bigquery.*` | The driver's own option keys. Use these. |
-| `adbc.bigquery.sql.*` | Aliases that the Go driver and [dbt 2.0](DBT.md) send: `adbc.bigquery.sql.<suffix>` for most `bigquery.<suffix>` keys, plus `api_endpoint`, `storage_read_api_endpoint` and `auth_credentials` for `bigquery.endpoint`, `bigquery.storage_endpoint` and `bigquery.auth.credentials`. `bigquery.auth_type` values also accept an `adbc.bigquery.sql.auth_type.` prefix. Getters return canonical values; errors name the key as the caller spelled it. |
+| `adbc.bigquery.sql.*` | Aliases that the Go driver and [dbt 2.0](DBT.md) send: `adbc.bigquery.sql.<suffix>` for most `bigquery.<suffix>` keys, plus `api_endpoint`, `storage_read_api_endpoint` and `auth_credentials` for `bigquery.endpoint`, `bigquery.storage_endpoint` and `bigquery.auth.credentials`. `bigquery.auth_type` values also accept an `adbc.bigquery.sql.auth_type.` prefix, and `bigquery.query.parameter_mode` accepts `adbc.bigquery.sql.query.parameter_mode_positional` and `adbc.bigquery.sql.query.parameter_mode_named`. Getters return canonical values; errors name the key as the caller spelled it. |
 | `adbc.bigquery.*` (no `sql`) | dbt 2.0 option-only operations with no `bigquery.*` equivalent; see [DBT.md](DBT.md). |
 
 [Standard ADBC options](#standard-adbc-options) are also accepted. Use one spelling per option
@@ -310,7 +310,8 @@ Conversion rules:
   requests, so a wait can overrun by one round: about ten minutes for a query and five for a copy or
   load, with every request at its 60-second timeout. The error carries the last failure and says
   the job's outcome is unknown, so check the job before running it again. The driver requests
-  cancellation of the unfinished job, except for a statement it runs outside any operation, such as a `COMMIT`.
+  cancellation of the unfinished job, except for a statement it runs outside any operation, such
+  as a `COMMIT`.
 - A job that `jobs.get` reports finished without an error completes without reading results when
   they could add nothing, as for DML and other statements that return no rows; its counts and
   statement type come from the job.
@@ -328,8 +329,8 @@ Conversion rules:
   answer to a retry, says the statement may still have run.
 - `jobs.insert` uses a driver-chosen job ID, stable across submission retries. If its answer is
   lost, the driver fetches the job, also when a retry is refused, since that refusal is no verdict
-  on the lost attempt. Without a configured location, recovery tries the location named by a duplicate-job response, US
-  and EU, and known dataset locations, then
+  on the lost attempt. Without a configured location, recovery tries the location named by a
+  duplicate-job response, US and EU, and known dataset locations, then
   [lists the caller's recent jobs](https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/jobs/list)
   across regions for the exact ID, within 30 seconds; this needs no extra IAM permission. If
   recovery fails, the error names the job that may still be running. Setting `bigquery.location`
@@ -491,8 +492,8 @@ REST is used instead when:
 
 `CreateReadSession` retries `UNAVAILABLE` and connection failures for up to a minute. Any other
 status not listed above fails the read, as does a call unanswered for two minutes (`TIMEOUT`), even
-by a stalled TLS handshake. Fallback happens before the first batch reaches the caller, so no row is repeated,
-and is reported only as a `warn` [diagnostic](#diagnostics). Readers never switch after delivering
+by a stalled TLS handshake. Fallback happens before the first batch reaches the caller, so no row
+is repeated, and is reported only as a `warn` [diagnostic](#diagnostics). Readers never switch after delivering
 rows, so with Storage Read disabled or unavailable, an oversized row on a later REST page fails the
 stream. If BigQuery refuses the first page, disabling Storage Read fails with `INVALID_ARGUMENT`,
 and a refused Storage Read attempt keeps that failure's status, vendor code, SQLSTATE and details
