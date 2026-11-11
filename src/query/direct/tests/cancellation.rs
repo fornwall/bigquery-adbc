@@ -70,6 +70,38 @@ fn cancellation_before_the_query_future_is_polled_sends_no_request() {
     assert_no_request(listener);
 }
 
+/// A cancel that finds the submission connecting returns at once, leaving the request to a
+/// detached continuation, so a connection that then fails, having sent nothing, cannot replace
+/// the caller's `CANCELLED` with its transport error.
+#[test]
+fn cancellation_during_a_connection_that_then_fails_reports_the_cancellation() {
+    let (endpoint, connecting, release) = crate::test_support::http::stalled_tls_handshake();
+    let (runtime, client) = job_client(&endpoint);
+    let cancellation = cancellation_at(&runtime, &endpoint);
+    let operation = cancellation.begin();
+    let decoder = QueryResponseDecoder::new(&runtime, QueryResultMode::Rows);
+    let canceller = thread::spawn(move || {
+        connecting.recv().unwrap();
+        OperationCancelHandle(cancellation).try_cancel().unwrap();
+        release.send(()).unwrap();
+    });
+
+    let failure = runtime
+        .block_on(submit_jobs_query(
+            client,
+            &decoder,
+            project("project"),
+            None,
+            Bytes::from_static(b"{}"),
+            Some(&operation),
+        ))
+        .unwrap_err();
+    canceller.join().unwrap();
+    operation.finish();
+
+    assert_eq!(failure.status, Status::Cancelled, "{}", failure.message);
+}
+
 #[test]
 fn cancellation_during_credentials_sends_no_request() {
     let (listener, endpoint) = mock_listener();
