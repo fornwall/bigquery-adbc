@@ -10,6 +10,9 @@ changes.
 - The dbt installer creates its destination directories only after the download matches
   `dbt-SHA256SUMS`, and with `SHELL` unset prints `PATH` instructions instead of guessing a shell
   startup file.
+- A dbt table copy under `bigquery.query.dry_run` returns `NOT_IMPLEMENTED` before its source and
+  destination are checked, as the other mutating dbt operations do, instead of `INVALID_STATE` for
+  a missing one.
 
 ### Fixed
 
