@@ -24,6 +24,8 @@ changes.
 - Python's `dbapi.connect()` takes `backend` as its only keyword beyond `autocommit`, so a
   misspelled keyword raises `TypeError` before the driver loads, instead of after opening the
   database and connection.
+- A bulk-ingest `Date64` value that is not a whole day is refused with its row in the bound stream,
+  like every other refused value.
 
 ### Fixed
 

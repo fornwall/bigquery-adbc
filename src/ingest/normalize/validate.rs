@@ -75,12 +75,7 @@ const CALENDAR_END_DAY: i64 = 2_932_897;
 pub(super) fn validate_scalar_values(column: &ArrayRef, site: &ValueSite<'_>) -> Result<()> {
     match column.data_type() {
         DataType::Date32 => validate_date_values(column, site),
-        // A `Date64` is milliseconds since the epoch and is checked here, before `to_date32`
-        // narrows it: that cast checks only day alignment and `i32` range, and every year past
-        // 9999 is comfortably inside `i32`.
-        DataType::Date64 => {
-            validate_epoch_unit::<Date64Type>(column, site, "date", MILLISECONDS_PER_DAY)
-        }
+        DataType::Date64 => validate_date64_values(column, site),
         DataType::Timestamp(unit, _) => validate_timestamp_values(column, site, *unit),
         // A `Time32` column counts the same day in the same unit, in a width the shared `i64`
         // constants do not have.
@@ -161,6 +156,44 @@ fn validate_date_values(column: &ArrayRef, site: &ValueSite<'_>) -> Result<()> {
         array,
         |&days| (!(CALENDAR_START_DAY..CALENDAR_END_DAY).contains(&i64::from(days))).then_some(()),
         |index, ()| out_of_calendar_range("date", site, index),
+    )
+}
+
+/// Checks a `Date64` column, milliseconds since the epoch, before `to_date32` narrows it. That
+/// cast checks only `i32` range, which every year past 9999 is comfortably inside, and refuses a
+/// value partway through a day without naming its row.
+fn validate_date64_values(column: &ArrayRef, site: &ValueSite<'_>) -> Result<()> {
+    #[derive(Clone, Copy)]
+    enum Misfit {
+        OutOfRange,
+        PartialDay,
+    }
+    let array = downcast_array::<PrimitiveArray<Date64Type>>(column, site.name())?;
+    let range = CALENDAR_START_DAY * MILLISECONDS_PER_DAY..CALENDAR_END_DAY * MILLISECONDS_PER_DAY;
+    validate_primitive_values(
+        array,
+        |value| {
+            if !range.contains(value) {
+                Some(Misfit::OutOfRange)
+            } else if value % MILLISECONDS_PER_DAY != 0 {
+                Some(Misfit::PartialDay)
+            } else {
+                None
+            }
+        },
+        |index, misfit| match misfit {
+            Misfit::OutOfRange => out_of_calendar_range("date", site, index),
+            Misfit::PartialDay => {
+                let (name, row) = (site.name(), site.row(index));
+                error(
+                    format!(
+                        "Arrow Date64 ingest field {name:?} holds a value at row {row} that is \
+                         not a whole day, which a BigQuery DATE cannot store"
+                    ),
+                    Status::InvalidData,
+                )
+            }
+        },
     )
 }
 

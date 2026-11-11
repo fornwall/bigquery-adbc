@@ -301,6 +301,25 @@ fn rejects_date64_values_outside_the_bigquery_calendar() {
     );
 }
 
+/// A `Date64` partway through a day has no DATE, and the refusal names its row in the bound
+/// stream as every other value check does, including one behind a NULL in the same column.
+#[test]
+fn a_date64_that_is_not_a_whole_day_is_refused_by_row() {
+    let days = Date64Array::from(vec![Some(86_400_000), None, Some(-86_400_000 + 1)]);
+    let batch = RecordBatch::try_new(
+        one_field("day", ArrowDataType::Date64, true),
+        vec![Arc::new(days)],
+    )
+    .unwrap();
+    let schema = one_field("day", ArrowDataType::Date32, true);
+    let error = super::normalize_rows(batch, schema, 40).unwrap_err();
+    assert_failure(
+        &error,
+        Status::InvalidData,
+        &["Arrow Date64 ingest field \"day\" holds a value at row 42 that is not a whole day"],
+    );
+}
+
 /// A sliced canonical list is judged only by the child values its offsets address, and passes
 /// through unchanged when those are valid.
 #[test]

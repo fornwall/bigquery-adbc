@@ -17,7 +17,7 @@ fn invalid_ingest_values_do_not_appear_in_errors() {
         (
             Arc::new(Date64Array::from(vec![86_411_223])),
             "86411223",
-            "not aligned",
+            "not a whole day",
         ),
         (
             Arc::new(Time32SecondArray::from(vec![123_456])),
