@@ -145,14 +145,18 @@ struct CopyStatistics {
     copied_rows: Option<i64>,
 }
 
+/// The row counts below become adbc.h's `rows_affected`, a count or -1 for unknown, so a negative
+/// count from the wire is unknown.
 impl LoadOrCopyJob {
     pub(super) fn output_rows(&self) -> Option<i64> {
-        self.statistics.as_ref()?.load.as_ref()?.output_rows
+        let rows = self.statistics.as_ref()?.load.as_ref()?.output_rows?;
+        (rows >= 0).then_some(rows)
     }
 
     /// BigQuery omits the count for metadata-only copies.
     pub(super) fn copied_rows(&self) -> Option<i64> {
-        self.statistics.as_ref()?.copy.as_ref()?.copied_rows
+        let rows = self.statistics.as_ref()?.copy.as_ref()?.copied_rows?;
+        (rows >= 0).then_some(rows)
     }
 }
 

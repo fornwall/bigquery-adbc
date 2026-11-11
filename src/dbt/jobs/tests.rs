@@ -218,13 +218,24 @@ fn a_completed_job_reports_its_authoritative_error_first() {
 }
 
 /// A load reports the rows it wrote and a copy the rows it copied, or ADBC's unknown count when
-/// BigQuery reports none (a copy it satisfies as metadata).
+/// BigQuery reports none (a copy it satisfies as metadata) or a negative one, which adbc.h's
+/// `rows_affected` cannot carry.
 #[test]
 fn a_completed_job_reports_its_row_count_when_bigquery_gives_one() {
     for (statistics, loaded, copied) in [
         (r#"{"load":{"outputRows":"9"}}"#, Some(9), None),
         (r#"{"copy":{"copiedRows":"7"}}"#, None, Some(7)),
+        (
+            r#"{"load":{"outputRows":"0"},"copy":{"copiedRows":"0"}}"#,
+            Some(0),
+            Some(0),
+        ),
         (r#"{"load":{},"copy":{}}"#, None, None),
+        (
+            r#"{"load":{"outputRows":"-5"},"copy":{"copiedRows":"-1"}}"#,
+            None,
+            None,
+        ),
     ] {
         let mut job = job(&format!(
             r#"{{"status":{{"state":"DONE"}},"statistics":{statistics}}}"#
