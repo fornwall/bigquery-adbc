@@ -22,8 +22,8 @@ use crate::rest::model::{JobOptions, JobStatus};
 ///
 /// Without `bigquery.location`, look up and cache the destination dataset's location: polling,
 /// reconciliation and cancellation need it outside US/EU (G48). Any failure forgets the cached
-/// location, in case the dataset was recreated elsewhere: the failed job is not resubmitted, but
-/// the next one looks the location up again.
+/// location, in case the dataset was recreated elsewhere, so the next job looks it up again. The
+/// failed job is not resubmitted, since a failure does not show that the location was wrong.
 pub(super) fn in_job_location<T>(
     context: &ExecutionContext,
     operation: &Operation,
