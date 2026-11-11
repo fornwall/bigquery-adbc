@@ -498,6 +498,17 @@ fn rejects_duplicate_struct_fields() {
         Status::InvalidArguments,
         &["children named \"Same\" and \"sAME\""],
     );
+    // Unlike parameter names, struct fields fold beyond ASCII: BigQuery refuses `é` and `É` as
+    // "Duplicate field name", and fails `ß` and `SS` with an internal error (observed).
+    for (first, second) in [("\u{e9}", "\u{c9}"), ("\u{df}", "SS")] {
+        let failure =
+            parameters_for_schema(&record(first, second), ParameterMode::Named).unwrap_err();
+        assert_failure(
+            &failure,
+            Status::InvalidArguments,
+            &[&format!("children named {first:?} and {second:?}")],
+        );
+    }
 }
 
 /// A type no BigQuery parameter covers is refused by the field that carries it, which inside a

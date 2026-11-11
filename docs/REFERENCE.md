@@ -416,11 +416,12 @@ and `-1` for any other SQL, a query included.
 
 Placeholders are positional (`?`) by default; with `bigquery.query.parameter_mode=named` (or
 `adbc.statement.bind_by_name=true`) each Arrow field binds the `@name` it is named after,
-case-insensitively. Each bound row runs as its own query job, and every row must yield the same
-result schema. `ExecuteQuery` of a statement that returns rows, including a stored-procedure `CALL`,
-runs the first row before it returns and each later row once the previous result is read, so
-results arrive in row order. DML, DDL, queries with an explicit destination table, and every other
-execute run all bound rows before returning; closing their empty result stream does not skip writes.
+ignoring ASCII case only, as BigQuery matches them (`é` and `É` are two parameters). Each bound
+row runs as its own query job, and every row must yield the same result schema. `ExecuteQuery` of
+a statement that returns rows, including a stored-procedure `CALL`, runs the first row before it
+returns and each later row once the previous result is read, so results arrive in row order. DML,
+DDL, queries with an explicit destination table, and every other execute run all bound rows before
+returning; closing their empty result stream does not skip writes.
 
 - An execute consumes the binding, so executing again returns `INVALID_STATE` until the statement is
   rebound. `ExecuteSchema` and dry runs read no row and keep the binding. On an unbound statement,

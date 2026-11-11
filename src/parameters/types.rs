@@ -8,8 +8,8 @@ use crate::rest::model::{QueryParameterStructType, QueryParameterType};
 use crate::types::decimal::{BigQueryDecimalType, decimal_mapping};
 use crate::types::{
     BIGQUERY_TYPE_METADATA_KEY, BigQueryType, PARAMETER_FIELD, array_item_field, case_duplicate,
-    decimal_metadata_type_hint, incompatible_metadata_error, metadata_type, nested_array_error,
-    range_field_element, scalar_arrow_field_type,
+    decimal_metadata_type_hint, folded_name, incompatible_metadata_error, metadata_type,
+    nested_array_error, range_field_element, scalar_arrow_field_type,
 };
 
 pub(super) fn parameter_type(field: &Field) -> Result<QueryParameterType> {
@@ -132,7 +132,7 @@ fn struct_parameter_type(parent: &Field, fields: &Fields) -> Result<QueryParamet
             parent.name()
         )));
     }
-    if let Some(((_, first), (_, duplicate))) = case_duplicate(fields) {
+    if let Some(((_, first), (_, duplicate))) = case_duplicate(fields, folded_name) {
         let named = if first == duplicate {
             format!("more than one child named {first:?}")
         } else {

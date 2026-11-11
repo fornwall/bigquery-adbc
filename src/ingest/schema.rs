@@ -23,7 +23,7 @@ use crate::types::decimal::{
 use crate::types::{
     ARROW_EXTENSION_METADATA_KEY, ARROW_EXTENSION_NAME_KEY, BIGQUERY_TYPE_METADATA_KEY,
     BigQueryType, INGEST_FIELD, RangeElement, array_item_field, canonical_scalar_data_type,
-    case_duplicate, decimal_metadata_type_hint, extension_overridden_by_metadata,
+    case_duplicate, decimal_metadata_type_hint, extension_overridden_by_metadata, folded_name,
     has_bigquery_extension, incompatible_metadata_error, nested_array_error, range_field_element,
     scalar_arrow_field_type, validate_schema_nesting,
 };
@@ -578,7 +578,7 @@ fn arrow_field_to_bigquery(field: &Field) -> Result<TableFieldSchema> {
 /// Rejects sibling fields BigQuery would read as one column: the Storage Write API resolves an
 /// Arrow field by name, so `id` and `ID` would both land in the same column of an existing table.
 fn reject_duplicate_names(fields: &Fields, owner: &str) -> Result<()> {
-    match case_duplicate(fields) {
+    match case_duplicate(fields, folded_name) {
         Some(((_, first), (_, second))) => Err(invalid_argument(format!(
             "BigQuery column names are case-insensitive, so {owner} cannot carry both {first:?} \
              and {second:?}; rename one of them"

@@ -195,11 +195,13 @@ fn validate_parameter_fields(fields: &Fields, mode: ParameterMode) -> Result<()>
             )));
         }
     }
-    if let Some(((first, first_name), (duplicate, duplicate_name))) = case_duplicate(fields) {
+    if let Some(((first, first_name), (duplicate, duplicate_name))) =
+        case_duplicate(fields, str::to_ascii_uppercase)
+    {
         return Err(invalid_argument(format!(
             "named BigQuery parameter field {duplicate_name:?} at parameter {duplicate} \
-             duplicates {first_name:?} at parameter {first}; BigQuery parameter names are \
-             case-insensitive and must be unique"
+             duplicates {first_name:?} at parameter {first}; BigQuery compares parameter names \
+             ignoring ASCII case, and they must be unique"
         )));
     }
     Ok(())

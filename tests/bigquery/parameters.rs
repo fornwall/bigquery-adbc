@@ -915,3 +915,28 @@ fn inferred_parameter_schemas_bind_back_as_typed_nulls() {
         "{schema:?}"
     );
 }
+
+/// BigQuery matches named parameters ignoring ASCII case only: `@A` finds a field named `a`, while
+/// `é` and `É`, or `ß` and `SS`, are separate parameters the driver must not refuse as duplicates.
+#[test]
+#[ignore = "requires Google Cloud ADC and access to the integration project"]
+fn named_parameters_match_ignoring_ascii_case_only() {
+    let mut connection = connect(project());
+    let mut statement = named_parameter_query(
+        &mut connection,
+        "SELECT @A, @`\u{e9}`, @`\u{c9}`, @`\u{df}`, @SS",
+    );
+    let columns: Vec<(&str, ArrayRef)> = ["a", "\u{e9}", "\u{c9}", "\u{df}", "SS"]
+        .into_iter()
+        .zip(1..)
+        .map(|(name, value)| (name, Arc::new(Int64Array::from(vec![value])) as ArrayRef))
+        .collect();
+    statement
+        .bind(RecordBatch::try_from_iter(columns).unwrap())
+        .unwrap();
+    let batch = single_batch(&mut statement);
+    let values = (0..batch.num_columns())
+        .map(|column| i64_at(&batch, column))
+        .collect::<Vec<_>>();
+    assert_eq!(values, [1, 2, 3, 4, 5]);
+}

@@ -42,7 +42,7 @@ fn validates_named_parameter_field_names() {
     let duplicate = "\"a\" at parameter 2 duplicates \"a\" at parameter 0";
     let case_duplicate = "\"A\" at parameter 2 duplicates \"a\" at parameter 0";
     let length = "128 characters long; it cannot exceed 127 characters";
-    let refusals: [(&[&str], &[&str]); 7] = [
+    let refusals: [(&[&str], &[&str]); 5] = [
         (&[&too_long], &[&too_long, length]),
         // BigQuery refuses 64 such characters as too long (observed).
         (
@@ -54,16 +54,25 @@ fn validates_named_parameter_field_names() {
         ),
         (&["a", ""], &["parameter 1 has an empty field name"]),
         (&["a", "b", "a"], &[duplicate]),
-        // BigQuery matches names case-insensitively, by full Unicode uppercase mapping.
-        (&["a", "b", "A"], &[case_duplicate, "case-insensitive"]),
-        (&["\u{e9}", "\u{c9}"], &["case-insensitive"]),
-        (&["\u{df}", "SS"], &["case-insensitive"]),
+        // BigQuery matches parameter names ignoring ASCII case ("Duplicate parameter name a").
+        (&["a", "b", "A"], &[case_duplicate, "ignoring ASCII case"]),
     ];
     for (names, fragments) in refusals {
         let error = validate_parameter_fields(&fields(names), ParameterMode::Named).unwrap_err();
         assert_failure(&error, Status::InvalidArguments, fragments);
     }
-    validate_parameter_fields(&fields(&["k", "\u{212a}"]), ParameterMode::Named).unwrap();
+    // Only ASCII case: BigQuery binds each of these pairs as two parameters, and `@É` does not
+    // reference a parameter named `é` (observed), unlike columns and STRUCT fields, which fold
+    // the full Unicode case mapping.
+    for pair in [
+        ["\u{e9}", "\u{c9}"],
+        ["\u{df}", "SS"],
+        ["\u{131}", "I"],
+        ["\u{fb01}", "FI"],
+        ["k", "\u{212a}"],
+    ] {
+        validate_parameter_fields(&fields(&pair), ParameterMode::Named).unwrap();
+    }
 
     // Positional parameters carry no names, so nothing is validated.
     validate_parameter_fields(&fields(&["", &"x".repeat(128)]), ParameterMode::Positional).unwrap();

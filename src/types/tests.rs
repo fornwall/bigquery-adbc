@@ -382,7 +382,7 @@ fn case_duplicates_are_reported_in_scan_order() {
             .iter()
             .map(|name| Field::new(*name, DataType::Int64, true))
             .collect();
-        case_duplicate(&fields).map(|(first, second)| (first.0, second.0))
+        case_duplicate(&fields, folded_name).map(|(first, second)| (first.0, second.0))
     };
     assert_eq!(duplicate(&["a", "b", "c"]), None);
     // BigQuery folds by full Unicode uppercase mapping, which these live probes pin.

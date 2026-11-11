@@ -39,23 +39,30 @@ pub(crate) const MAX_SCHEMA_NESTING_DEPTH: usize = 32;
 /// A field's position in its field list, and its name.
 pub(crate) type NamedField<'a> = (usize, &'a str);
 
-/// A column, STRUCT field or parameter name as BigQuery compares names case-insensitively: by
-/// full Unicode uppercase mapping (observed, not documented). `é` and `É`, `ı` and `I`, `ß` and
-/// `SS`, and `ﬁ` and `FI` collide, while `ß` and `ẞ`, `k` and the Kelvin sign `K`, and `İ` and `i`
-/// stay distinct, which lowercasing would get wrong in both directions.
+/// A column or STRUCT field name as BigQuery compares names case-insensitively: by full Unicode
+/// uppercase mapping (observed, not documented). `é` and `É`, `ı` and `I`, `ß` and `SS`, and `ﬁ`
+/// and `FI` collide, while `ß` and `ẞ`, `k` and the Kelvin sign `K`, and `İ` and `i` stay
+/// distinct, which lowercasing would get wrong in both directions.
+///
+/// A query parameter's own name folds only ASCII case (see [`str::to_ascii_uppercase`]): `é` and
+/// `É` are two parameters, and `@É` does not reference one named `é` (observed).
 pub(crate) fn folded_name(name: &str) -> String {
     name.to_uppercase()
 }
 
-/// The first field, in field order, whose name equals an earlier field's under [`folded_name`],
-/// paired with the earliest such field: what a left-to-right scan would report.
-pub(crate) fn case_duplicate(fields: &Fields) -> Option<(NamedField<'_>, NamedField<'_>)> {
+/// The first field, in field order, whose name equals an earlier field's under `fold`, either
+/// [`folded_name`] or ASCII uppercasing, paired with the earliest such field: what a left-to-right
+/// scan would report.
+pub(crate) fn case_duplicate(
+    fields: &Fields,
+    fold: fn(&str) -> String,
+) -> Option<(NamedField<'_>, NamedField<'_>)> {
     let mut seen = HashMap::with_capacity(fields.len());
     fields
         .iter()
         .map(|field| field.name().as_str())
         .enumerate()
-        .find_map(|named| match seen.entry(folded_name(named.1)) {
+        .find_map(|named| match seen.entry(fold(named.1)) {
             Entry::Occupied(first) => Some((*first.get(), named)),
             Entry::Vacant(slot) => {
                 slot.insert(named);

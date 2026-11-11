@@ -63,6 +63,8 @@ changes.
 - A Storage Read stream that BigQuery fails with `OUT_OF_RANGE`, for a value Arrow cannot hold
   such as an `INTERVAL` past 2,562,047 hours, reports `INVALID_DATA`, as REST does for the same
   value, instead of `INVALID_ARGUMENT`.
+- Named parameters whose names differ beyond ASCII case, such as `é` and `É`, bind as the separate
+  parameters BigQuery reads them as, instead of being refused as duplicates.
 
 ## [0.5.0] - 2026-11-09
 
