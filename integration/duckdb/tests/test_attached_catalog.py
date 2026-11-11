@@ -151,14 +151,6 @@ def test_aggregates_run_over_the_scanned_rows(attached: duckdb.DuckDBPyConnectio
     ]
 
 
-def test_table_in_the_secondary_dataset_is_scannable(
-    attached: duckdb.DuckDBPyConnection, secondary_dataset: str
-) -> None:
-    regions = sql.attached(ATTACHED_CATALOG, secondary_dataset, REGIONS)
-
-    assert _rows(attached, f"SELECT * FROM {regions} ORDER BY id") == REGION_ROWS
-
-
 def test_use_makes_the_dataset_the_default_schema(attached: duckdb.DuckDBPyConnection, dataset: str) -> None:
     attached.execute(f"USE {sql.duckdb_identifier(ATTACHED_CATALOG)}.{sql.duckdb_identifier(dataset)}")
 

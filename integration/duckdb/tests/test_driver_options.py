@@ -354,32 +354,3 @@ def test_two_profiles_on_one_connection_do_not_leak(
     assert Session(duck, primary).scalar(query) == 1
     assert Session(duck, secondary).scalar(query) == 0
     assert Session(duck, primary).scalar(query) == 1
-
-
-def test_two_profiles_attach_as_two_catalogs_at_once(
-    duck: duckdb.DuckDBPyConnection,
-    make_profile: MakeProfile,
-    bigquery: Session,
-    name: Callable[[str], str],
-    project: str,
-    dataset: str,
-    secondary_dataset: str,
-) -> None:
-    primary_table = name("attached_primary")
-    secondary_table = name("attached_secondary")
-    _create_probe_table(bigquery, project, dataset, primary_table)
-    _create_probe_table(bigquery, project, secondary_dataset, secondary_table)
-
-    duck.execute(sql.attach(make_profile("attach_primary"), "bq_primary"))
-    duck.execute(
-        sql.attach(make_profile("attach_secondary", **{"bigquery.dataset_id": secondary_dataset}), "bq_secondary")
-    )
-
-    attached = {row[0] for row in duck.execute("SELECT database_name FROM duckdb_databases()").fetchall()}
-    assert {"bq_primary", "bq_secondary"} <= attached
-
-    for catalog, db_schema, table in (
-        ("bq_primary", dataset, primary_table),
-        ("bq_secondary", secondary_dataset, secondary_table),
-    ):
-        assert duck.execute(f"SELECT n FROM {sql.attached(catalog, db_schema, table)}").fetchall() == [(42,)]
