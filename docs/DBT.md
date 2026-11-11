@@ -18,7 +18,7 @@ This installs the latest released `dbt-bigquery-adbc` into `~/.local/bin`, verif
 and adds it to your shell's `PATH`, leaving your normal `dbt` binary, aliases and drivers alone.
 The first BigQuery connection downloads and verifies the matching driver. Like
 [dbt's installer](https://public.cdn.getdbt.com/fs/install/install.sh), the script takes
-`--prefix /path/to/prefix` to change the location and `--version 0.6.0` to select a bigquery-adbc
+`--prefix /path/to/prefix` to change the location and `--version 0.7.0` to select a bigquery-adbc
 release. Rerun it, or run `dbt-bigquery-adbc system update`, to update. On Windows, extract the
 `dbt-bigquery-adbc-…-windows-x86_64.zip` from
 [GitHub releases](https://github.com/fornwall/bigquery-adbc/releases).
