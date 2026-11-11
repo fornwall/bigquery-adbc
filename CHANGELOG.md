@@ -45,6 +45,9 @@ changes.
   the job was created, when that submission ended just as the cancel claimed it.
 - A named parameter longer than BigQuery's 127-character limit is refused before sending when its
   name has characters beyond U+FFFF, which BigQuery counts twice.
+- In the Rust API, `bind` and `bind_stream` refuse a schema nested more than 32 levels with
+  `INVALID_ARGUMENT` and keep the previous binding, as the C API does, rather than accepting it
+  and failing the next execute.
 - A partition stream that fails, or is cancelled, before its first results read no longer asks
   BigQuery to cancel the partition's already finished job. That request could fail for a reader
   without permission to cancel the job, making `AdbcConnectionCancel` return `UNKNOWN`.

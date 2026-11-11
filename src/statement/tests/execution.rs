@@ -4,6 +4,7 @@
 use super::*;
 use crate::test_support::driver::unlocated_connection_at;
 use crate::test_support::http::{capture_requests_until_stopped, error_body};
+use crate::types::MAX_SCHEMA_NESTING_DEPTH;
 
 /// A staged finished statement of `statement_type`, reporting `count` as its affected rows.
 /// BigQuery reports DML with its target table's schema, though it returns no rows.
@@ -134,6 +135,46 @@ fn dry_run_partitions_are_rejected_before_any_request_and_keep_the_binding() {
         assert_failure(&failure, Status::InvalidState, &["bigquery.query.dry_run"]);
         assert_eq!(statement.parameters.schema().is_some(), bound);
     }
+}
+
+/// `bind` and `bind_stream` draw the C ABI import's line: the deepest schema
+/// `validate_schema_nesting` accepts binds, and one level more is refused at bind rather than at
+/// the first execute, keeping the previous binding.
+#[test]
+fn a_bind_past_the_nesting_limit_is_refused_and_keeps_the_previous_binding() {
+    let nested = |depth: usize| {
+        let mut data_type = DataType::Int64;
+        for _ in 1..depth {
+            data_type = DataType::Struct(vec![Field::new("child", data_type, true)].into());
+        }
+        Arc::new(Schema::new(vec![Field::new("parameter", data_type, true)]))
+    };
+    let stream = |schema: Arc<Schema>| {
+        Box::new(RecordBatchIterator::new(
+            std::iter::empty::<Result<RecordBatch, ArrowError>>(),
+            schema,
+        ))
+    };
+    let mut statement = test_statement();
+    statement.bind(int64_column("value", vec![1])).unwrap();
+    let previous = statement.parameters.schema();
+
+    let failure = statement
+        .bind_stream(stream(nested(MAX_SCHEMA_NESTING_DEPTH + 1)))
+        .unwrap_err();
+    assert_failure(
+        &failure,
+        Status::InvalidArguments,
+        &[&format!(
+            "is nested {} levels deep; the maximum is {MAX_SCHEMA_NESTING_DEPTH}",
+            MAX_SCHEMA_NESTING_DEPTH + 1
+        )],
+    );
+    assert_eq!(statement.parameters.schema(), previous);
+
+    let at_limit = nested(MAX_SCHEMA_NESTING_DEPTH);
+    statement.bind_stream(stream(at_limit.clone())).unwrap();
+    assert_eq!(statement.parameters.schema(), Some(at_limit));
 }
 
 /// A dry run executes nothing, so it types bound parameters from their schema and leaves the

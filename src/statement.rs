@@ -30,6 +30,7 @@ use crate::query::{
 };
 use crate::rest::model::QueryParameter;
 use crate::transaction::{TransactionContext, TransactionState};
+use crate::types::validate_schema_nesting;
 use crate::{
     BIGQUERY_SCHEMA_METADATA_NUM_DML_AFFECTED_ROWS, BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE,
     BigQueryStatementOption,
@@ -361,6 +362,9 @@ impl Statement for BigQueryStatement {
     }
 
     fn bind_stream(&mut self, reader: Box<dyn RecordBatchReader + Send>) -> Result<()> {
+        // The bound used everywhere the binding is read later, checked here as the C ABI's import
+        // checks it, so a refused schema keeps the previous binding instead of failing at execute.
+        validate_schema_nesting(reader.schema().fields(), "bound Arrow")?;
         self.parameters = ParameterBinding::Bound(reader);
         Ok(())
     }
