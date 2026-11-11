@@ -335,6 +335,46 @@ fn message_custom_metadata_is_not_walked() {
     ));
 }
 
+/// A body is its buffers written end to end, so a buffer starting before the previous one ends is
+/// refused: aliased ranges would let a small body be validated, copied or decompressed once for
+/// every buffer naming it. Empty buffers occupy nothing and may sit anywhere.
+#[test]
+fn buffers_out_of_body_order_are_refused() {
+    use crate::arrow_ipc_bigquery::format::{Buffer, FieldNode, encode_record_batch};
+
+    let nodes = [FieldNode {
+        length: 1,
+        null_count: 0,
+    }; 2];
+    let batch = |buffers: &[(i64, i64)]| {
+        let buffers = buffers
+            .iter()
+            .map(|&(offset, length)| Buffer { offset, length })
+            .collect::<Vec<_>>();
+        decode_message(&encode_record_batch(1, &nodes, &buffers, 64)).map(|_| ())
+    };
+    for disjoint in [
+        [(0, 0), (0, 8), (0, 0), (8, 8)],
+        [(0, 8), (4, 0), (16, 8), (64, 0)],
+    ] {
+        assert_eq!(batch(&disjoint), Ok(()), "{disjoint:?}");
+    }
+    for (overlapping, index, offset, end) in [
+        ([(0, 0), (0, 8), (0, 0), (0, 8)], 3, 0, 8),
+        ([(0, 0), (0, 16), (0, 0), (8, 8)], 3, 8, 16),
+        ([(0, 0), (8, 8), (0, 0), (0, 8)], 3, 0, 16),
+    ] {
+        assert_eq!(
+            batch(&overlapping).unwrap_err().to_string(),
+            format!(
+                "Arrow IPC buffer {index} starts at body offset {offset}, before the buffer \
+                 preceding it ends at {end}"
+            ),
+            "{overlapping:?}"
+        );
+    }
+}
+
 #[test]
 fn malformed_offsets_are_rejected_without_panicking() {
     let corruptions = [

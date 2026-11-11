@@ -311,13 +311,29 @@ fn parse_record_batch(
     let buffers = table
         .pair_vector(slot::RECORD_BUFFERS)?
         .ok_or_else(|| FormatError::missing("record-batch buffers"))?;
-    for (offset, length) in buffers.iter() {
-        let end = offset.checked_add(length);
-        if offset < 0 || length < 0 || end.is_none_or(|end| end > body_length) {
+    // A body is its buffers written end to end, in order. Holding writers to that bounds decoding
+    // by the body's size: buffers aliasing one range would have the reader validate, align or
+    // decompress the same bytes once per buffer. Empty buffers occupy nothing and may sit anywhere.
+    let mut previous_end = 0;
+    for (index, (offset, length)) in buffers.iter().enumerate() {
+        let Some(end) = offset
+            .checked_add(length)
+            .filter(|&end| offset >= 0 && length >= 0 && end <= body_length)
+        else {
             return Err(FormatError::invalid(
                 "Arrow IPC buffer lies outside the message body",
             ));
+        };
+        if length == 0 {
+            continue;
         }
+        if offset < previous_end {
+            return Err(FormatError::invalid(format!(
+                "Arrow IPC buffer {index} starts at body offset {offset}, before the buffer \
+                 preceding it ends at {previous_end}"
+            )));
+        }
+        previous_end = end;
     }
     let lz4_compressed = table
         .table(slot::RECORD_COMPRESSION)?
