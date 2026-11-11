@@ -348,9 +348,23 @@ pub(super) fn build_json_credentials(
     }
     // Only the error's position is reported: the full serde message quotes what it choked on.
     let value: Value = serde_json::from_slice(json.as_bytes()).map_err(|source| {
+        // An inline value that does not even open an object is most likely a file path, the
+        // converse of the mistake `credential_file_path` answers.
+        let remedy = if settings.authentication_type
+            == BigQueryAuthenticationType::JsonCredentialString
+            && !json.trim_start().starts_with('{')
+        {
+            format!(
+                "; to name a credential file instead, set {} to {:?}",
+                BigQueryDatabaseOption::AuthenticationType.as_str(),
+                BigQueryAuthenticationType::JsonCredentialFile.as_str(),
+            )
+        } else {
+            String::new()
+        };
         invalid_argument(format!(
             "BigQuery option {} must supply a JSON credential document, but it has a syntax error \
-             at line {} column {}",
+             at line {} column {}{remedy}",
             BigQueryDatabaseOption::AuthenticationCredentials.as_str(),
             source.line(),
             source.column()

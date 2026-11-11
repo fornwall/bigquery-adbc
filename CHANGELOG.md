@@ -20,6 +20,8 @@ changes.
 - A URL in a credential document naming a non-ASCII host is refused; write an internationalized
   host in Punycode (`xn--`). The credential URL options and the destinations checked in a document
   also refuse a percent-encoded host.
+- A `json_credential_string` credential that does not begin a JSON object, usually a file path,
+  is refused with how to select `json_credential_file` instead.
 - The dbt installer accepts dbt's Rust target triples with `--target`, and rejects unknown
   options and missing values before installing.
 - Python's `dbapi.connect()` takes `backend` as its only keyword beyond `autocommit`, so a

@@ -370,6 +370,30 @@ fn credential_type_rejections_name_the_types_involved() {
          has a syntax error at line 1 column 17"
     );
 
+    // A value that does not even begin a JSON object is most likely a file path given to the
+    // string mode (or to `OAuthType=2` in a URI), the converse of the file mode's remedy.
+    for path in ["/home/dbt/key.json", " C:\\keys\\key.json"] {
+        let error = ClientConfiguration::build(&json_credentials(path)).unwrap_err();
+        assert_eq!(error.status, Status::InvalidArguments);
+        assert!(
+            error.message.ends_with(
+                "; to name a credential file instead, set bigquery.auth_type to \
+                 \"json_credential_file\""
+            ),
+            "{}",
+            error.message
+        );
+        assert_message_omits(&error, &[path.trim()]);
+    }
+    // A file that holds no object is already in the file mode, so it gets no such remedy.
+    let not_a_document = TemporaryFile::new("credential-not-a-document", "/home/dbt/key.json");
+    let error = ClientConfiguration::build(&settings(|config| {
+        config.authentication_type = BigQueryAuthenticationType::JsonCredentialFile;
+        config.credentials = Some(Secret::from(not_a_document.path()));
+    }))
+    .unwrap_err();
+    assert_message_omits(&error, &["to name a credential file instead"]);
+
     // Option spellings match case-insensitively; the document's own `type` does not, because
     // Google matches it exactly and the builder's rejection would not mention case.
     let miscased = json_credentials(r#"{"type":"Service_Account"}"#);
