@@ -1,4 +1,5 @@
-//! Microbenchmark for the Arrow normalization path, over synthetic fixtures.
+//! Microbenchmark for the Arrow normalization path, over synthetic fixtures: normalization alone,
+//! and `encode`, which also sizes each request's window and frames it as Arrow IPC.
 
 mod support;
 
@@ -53,6 +54,16 @@ fn main() {
                         fixture
                             .normalize(input)
                             .expect("the benchmark fixture must normalize")
+                    },
+                );
+                run_case(
+                    &format!("{kind_name}/{width_name}/encode"),
+                    rows,
+                    || fixture.prepare_input(),
+                    |input| {
+                        fixture
+                            .encode(&input)
+                            .expect("the benchmark fixture must encode")
                     },
                 );
             }

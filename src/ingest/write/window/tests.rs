@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use arrow_array::types::Int8Type;
 use arrow_array::{
-    ArrayRef, DictionaryArray, Int8Array, Int64Array, LargeStringArray, ListArray, ListViewArray,
-    StringArray, StringViewArray, StructArray,
+    ArrayRef, BinaryArray, DictionaryArray, Int8Array, Int64Array, LargeBinaryArray,
+    LargeStringArray, ListArray, ListViewArray, StringArray, StringViewArray, StructArray,
 };
 use arrow_buffer::{NullBuffer, OffsetBuffer};
 use arrow_schema::Field;
@@ -115,6 +115,27 @@ fn dictionary_windows_count_selected_values_including_repeated_keys() {
     let slice = input.slice(2, 1_000);
     let rows = window_rows(&slice, &slice.schema(), 10, 990, 100_000);
     assert!((100..=200).contains(&rows), "the window took {rows} rows");
+}
+
+/// Every string and byte layout a dictionary can hold counts each row's value and offset, and a
+/// null key one offset.
+#[test]
+fn byte_dictionaries_count_each_rows_value() {
+    let keys = Int8Array::from(vec![Some(2), None, Some(0), Some(2), Some(1)]);
+    let texts = ["", "a", "long value"];
+    for values in [
+        Arc::new(StringArray::from_iter_values(texts)) as ArrayRef,
+        Arc::new(LargeStringArray::from_iter_values(texts)),
+        Arc::new(BinaryArray::from_iter_values(texts)),
+        Arc::new(LargeBinaryArray::from_iter_values(texts)),
+    ] {
+        let input = batch(Arc::new(DictionaryArray::<Int8Type>::new(
+            keys.clone(),
+            values,
+        )));
+        assert_eq!(window_bytes(&input, 0, 5), 14 + 4 + 4 + 14 + 5);
+        assert_eq!(window_bytes(&input, 1, 3), 4 + 4 + 14);
+    }
 }
 
 #[test]

@@ -37,6 +37,8 @@ use schema::{
     validate_existing_schema, validate_ingestible_target,
 };
 use target::resolve_target;
+#[cfg(feature = "benchmark")]
+pub(crate) use write::encode_for_benchmark;
 use write::{CommitFailure, FirstBatch, check_append_schema, read_batch, write_batches};
 
 #[derive(Clone, Debug, PartialEq, Eq)]

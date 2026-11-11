@@ -110,6 +110,12 @@ impl NormalizeFixture {
     pub fn normalize(&self, batch: RecordBatch) -> adbc_core::error::Result<RecordBatch> {
         crate::ingest::normalize::normalize_batch(batch, self.schema.clone())
     }
+
+    /// Encodes one prepared input batch into Storage Write requests: sizes each request's window
+    /// of rows, normalizes it and frames it as Arrow IPC. Returns the bytes framed.
+    pub fn encode(&self, batch: &RecordBatch) -> adbc_core::error::Result<usize> {
+        crate::ingest::encode_for_benchmark(self.schema.clone(), batch)
+    }
 }
 
 fn decimal_normalize_column(

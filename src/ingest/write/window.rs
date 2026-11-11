@@ -136,6 +136,50 @@ fn dictionary_bytes<K: ArrowDictionaryKeyType>(
     rows: usize,
     limit: usize,
 ) -> usize {
+    let values = array.values().as_ref();
+    // String and byte values, by far the most common, are sized straight from their offsets
+    // rather than through a downcast per row.
+    match values.data_type() {
+        DataType::Utf8 => {
+            let offsets = values.as_string::<i32>().value_offsets();
+            keyed_bytes(array, target, offset, rows, limit, |key| {
+                offset_span(offsets, key, 1).saturating_add(4)
+            })
+        }
+        DataType::LargeUtf8 => {
+            let offsets = values.as_string::<i64>().value_offsets();
+            keyed_bytes(array, target, offset, rows, limit, |key| {
+                offset_span(offsets, key, 1).saturating_add(4)
+            })
+        }
+        DataType::Binary => {
+            let offsets = values.as_binary::<i32>().value_offsets();
+            keyed_bytes(array, target, offset, rows, limit, |key| {
+                offset_span(offsets, key, 1).saturating_add(4)
+            })
+        }
+        DataType::LargeBinary => {
+            let offsets = values.as_binary::<i64>().value_offsets();
+            keyed_bytes(array, target, offset, rows, limit, |key| {
+                offset_span(offsets, key, 1).saturating_add(4)
+            })
+        }
+        _ => keyed_bytes(array, target, offset, rows, limit, |key| {
+            addressed_bytes(values, target, key, 1, limit)
+        }),
+    }
+}
+
+/// Sums `value_bytes` of the key of every row in `offset..offset + rows`, stopping above
+/// `limit`; a null key counts what normalization writes for a NULL.
+fn keyed_bytes<K: ArrowDictionaryKeyType>(
+    array: &DictionaryArray<K>,
+    target: &DataType,
+    offset: usize,
+    rows: usize,
+    limit: usize,
+    value_bytes: impl Fn(usize) -> usize,
+) -> usize {
     let mut bytes = 0_usize;
     let null_width = if array.null_count() == 0 {
         0
@@ -144,7 +188,7 @@ fn dictionary_bytes<K: ArrowDictionaryKeyType>(
     };
     for row in offset..offset + rows {
         let added = match array.key(row) {
-            Some(key) => addressed_bytes(array.values().as_ref(), target, key, 1, limit),
+            Some(key) => value_bytes(key),
             None => null_width,
         };
         bytes = bytes.saturating_add(added);

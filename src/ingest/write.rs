@@ -67,6 +67,24 @@ pub(super) fn check_append_schema(normalized_schema: SchemaRef) -> Result<()> {
     ChunkEncoder::new(normalized_schema).map(drop)
 }
 
+/// Encodes `batch` chunk by chunk as the appends after a stream's first carry it (window sizing,
+/// normalization and IPC framing, without the network), and returns the IPC bytes framed.
+#[cfg(feature = "benchmark")]
+pub(crate) fn encode_for_benchmark(
+    normalized_schema: SchemaRef,
+    batch: &RecordBatch,
+) -> Result<usize> {
+    let (mut encoder, _) = ChunkEncoder::new(normalized_schema)?;
+    let (mut offset, mut bytes) = (0, 0);
+    while offset < batch.num_rows() {
+        let window = encoder.window(batch, offset, offset, encoder.target_batch_bytes)?;
+        let chunk = encoder.encode(window, offset)?;
+        bytes += chunk.rows.serialized_record_batch.len();
+        offset += chunk.row_count;
+    }
+    Ok(bytes)
+}
+
 /// Appends every batch the reader yields to one pending Storage Write stream and finalizes it.
 ///
 /// None of the rows is visible until [`FinalizedStream::commit`]: that split is what lets a

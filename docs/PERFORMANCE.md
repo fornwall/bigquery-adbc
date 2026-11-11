@@ -38,6 +38,9 @@ network I/O and server time are outside every measured region.
   behind NULL entries) and `large-offsets` (sliced LargeUtf8/LargeBinary with NULL, empty, ASCII
   and non-ASCII values, also 65,536 rows). Dictionary fixtures cover ascending and scattered keys
   with sparse null runs, and scattered keys alternating with nulls, at 1, 1,024 and 65,536 rows.
+  Each case's `encode` row (`canonical/narrow/encode`) splits the batch into Storage Write
+  requests as an append after the stream's first does: it sizes each window of rows, normalizes
+  it and frames it as Arrow IPC.
 - `ipc` decodes a Storage Read record batch (aligned, misaligned, and `LZ4_FRAME` as BigQuery sends
   it: one frame of independent 64 KiB blocks per buffer, stored blocks where LZ4 cannot shrink) and
   encodes a Storage Write message. `scalar` has a nullable INT64 and a non-null STRING; `nested` and
@@ -233,6 +236,22 @@ offsets and translating error locations by the window origin. One paired `list-w
 
 The remaining allocations describe child slices. Check with
 `cargo test --locked --lib ingest::normalize::`.
+
+**Dictionary request windows.** Sizing a request's window reads a string or byte dictionary's
+value offsets once instead of dispatching on the value array for every row. User instructions for
+1,000 `encode` operations at 65,536 rows, including fixture construction, two runs each (equal to
+within 0.0001%); allocations are unchanged:
+
+| Case | Before, billions | After, billions | Change |
+| --- | ---: | ---: | ---: |
+| `dictionary-runs/wide/encode` | 195.09 | 147.59 | −24.3% |
+| `dictionary-scattered/narrow/encode` | 40.96 | 36.76 | −10.2% |
+| `dictionary-scattered/wide/encode` | 459.46 | 411.96 | −10.3% |
+| `dictionary-alternating/narrow/encode` | 36.01 | 33.59 | −6.7% |
+
+The normalization-only control `dictionary-scattered/narrow` stayed at 32.99. Expanding the
+values (`gather_dictionary` in `src/types/cast.rs`) is most of what remains. Check with
+`cargo test --locked --lib ingest::write::window::`.
 
 ### Storage Write encoding
 
