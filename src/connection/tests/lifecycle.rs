@@ -107,6 +107,34 @@ fn releasing_a_connection_rolls_back_and_aborts_its_open_transaction() {
     }
 }
 
+/// On a host thread, the release returns only once BigQuery has answered the rollback, so another
+/// transaction can change the rows at once. A rollback left running in the background would race
+/// that transaction and fail it with a concurrent-update conflict.
+#[test]
+fn releasing_a_connection_on_a_host_thread_waits_for_its_rollback() {
+    let (endpoint, requests, held) = holding("ROLLBACK TRANSACTION", 5);
+    let mut connection = test_connection_at(&endpoint);
+    set_option(&mut connection, OptionConnection::AutoCommit, false);
+    execute(&mut connection, "INSERT dataset.table VALUES (42)").unwrap();
+    let (released, release_returned) = std::sync::mpsc::channel();
+    let releaser = thread::spawn(move || {
+        drop(connection);
+        released.send(()).unwrap();
+    });
+
+    held.seen.recv().unwrap();
+    assert!(
+        release_returned
+            .recv_timeout(std::time::Duration::from_millis(300))
+            .is_err(),
+        "the release returned before BigQuery answered its rollback"
+    );
+    held.resume.send(()).unwrap();
+    release_returned.recv().unwrap();
+    releaser.join().unwrap();
+    assert_transaction_cleanup(requests, "ROLLBACK TRANSACTION");
+}
+
 /// A committed transaction leaves its session for the next one, so release still ends it, with
 /// nothing to roll back.
 #[test]

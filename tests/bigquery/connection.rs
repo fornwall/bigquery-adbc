@@ -390,9 +390,11 @@ fn manages_transactions_in_a_bigquery_session() {
     );
 }
 
-/// Releasing a manual-commit connection rolls back its open transaction before it returns, so
-/// another transaction can change the same rows at once. While the first transaction is open,
-/// BigQuery aborts a second one's conflicting `UPDATE` with "concurrent update".
+/// Releasing a manual-commit connection rolls back its open transaction, so another transaction
+/// can change the same rows. While the first transaction is open, BigQuery aborts a second one's
+/// conflicting `UPDATE` with "concurrent update". The next connection's own round trips leave
+/// time for a rollback still running in the background, so that the release waits for it is
+/// `releasing_a_connection_on_a_host_thread_waits_for_its_rollback` in the offline tests.
 #[test]
 #[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
 fn releasing_a_connection_rolls_back_its_open_transaction() {
