@@ -384,6 +384,63 @@ def test_emulator_runner_terminates_its_server_and_test_on_signal(tmp_path: Path
     assert_process_stopped(tmp_path / "child.pid")
 
 
+# Starts a process that ignores SIGTERM and records its PID once it does.
+IGNORE_SIGTERM = (
+    "import os, pathlib, signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+    'pathlib.Path(os.environ["FAKE_ROOT"], "{name}.pid").write_text(str(os.getpid())); time.sleep(60)'
+)
+
+
+@posix
+def test_emulator_runner_kills_a_test_descendant_that_ignores_sigterm(tmp_path: Path) -> None:
+    # The test command exits at once, leaving its child in the test's process group.
+    result = run_emulator(
+        "import os, pathlib, subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {IGNORE_SIGTERM.format(name='grandchild')!r}]); "
+        'pid = pathlib.Path(os.environ["FAKE_ROOT"], "grandchild.pid")\n'
+        "while not pid.exists(): time.sleep(0.01)",
+        emulator_environment(tmp_path),
+    )
+    assert result.returncode == 0, result.stderr
+    assert_process_stopped(tmp_path / "grandchild.pid")
+    assert_process_stopped(tmp_path / "server.pid")
+
+
+@posix
+def test_emulator_runner_finishes_cleanup_despite_a_second_signal(tmp_path: Path) -> None:
+    with subprocess.Popen(
+        [
+            str(REPOSITORY_ROOT / "scripts/run-emulator-tests.sh"),
+            "--",
+            sys.executable,
+            "-c",
+            IGNORE_SIGTERM.format(name="child"),
+        ],
+        env=emulator_environment(tmp_path),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ) as runner:
+        try:
+            deadline = time.monotonic() + 10
+            while not (tmp_path / "child.pid").exists():
+                assert runner.poll() is None, runner.communicate()
+                assert time.monotonic() < deadline, "test command did not start"
+                time.sleep(0.01)
+            runner.send_signal(signal.SIGTERM)
+            # Cleanup now waits out the child's ignored SIGTERM before killing it.
+            time.sleep(1)
+            runner.send_signal(signal.SIGINT)
+            runner.communicate(timeout=15)
+            assert runner.returncode == 143
+        finally:
+            if runner.poll() is None:
+                runner.kill()
+                runner.communicate(timeout=10)
+    assert_process_stopped(tmp_path / "child.pid")
+    assert_process_stopped(tmp_path / "server.pid")
+
+
 @posix
 @pytest.mark.parametrize("count", [0, 1, 2])
 @pytest.mark.parametrize("nullglob", ["-s", "-u"])

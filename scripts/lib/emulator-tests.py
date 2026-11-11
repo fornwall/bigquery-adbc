@@ -145,15 +145,24 @@ def bootstrap(rest: str, integration_project: str) -> None:
 
 
 def stop(process: subprocess.Popen[bytes] | None) -> None:
+    """End `process` and the rest of its process group, which can outlive it.
+
+    The group gets five seconds to exit after SIGTERM, then SIGKILL and five more to be gone.
+    """
     if process is None:
         return
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(process.pid, signal.SIGTERM)
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        process.wait()
+    for signum in (signal.SIGTERM, signal.SIGKILL):
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signum)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            # Reap the leader: its zombie would keep the group alive.
+            process.poll()
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
 
 
 def show_log(log: BinaryIO) -> None:
@@ -257,6 +266,9 @@ def main() -> int:
             print(f"error: {error}", file=sys.stderr, flush=True)
             return 1
         finally:
+            # A further signal must not abandon the processes cleanup is ending; it is bounded.
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
             stop(test)
             stop(server)
             stdout_stopped.set()
