@@ -715,7 +715,7 @@ in milliseconds. Jupyter shows these lines in the kernel's console, not the cell
 
 | Level | Events |
 | --- | --- |
-| `warn` | Storage Read fallbacks; failed `jobs.get` metadata reads; a failed background job cancel, naming the job that may keep running and billing; a script whose effect on the transaction could not be read; a failed session end; a transaction begun in a new session because BigQuery ended the previous one. |
+| `warn` | Storage Read fallbacks; failed `jobs.get` metadata reads; a credential that could not be rebuilt after a refused token exchange; a failed background job cancel, naming the job that may keep running and billing; a script whose effect on the transaction could not be read; a failed session end; a transaction begun in a new session because BigQuery ended the previous one. |
 | `debug` | The read path of a result that outgrows its first response, once per result and naming the job: further REST pages, or Storage Read. Request, poll and job-search retries, including replayed ingest appends and waits for a new ingest target to become visible to Storage Write; an unknown BigQuery table type reported as `TABLE`; a transaction session left for BigQuery to place because the default dataset's location could not be read. |
 
 REST and Storage Read requests, including every row-stream open and resume, send
