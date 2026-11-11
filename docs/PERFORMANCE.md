@@ -7,11 +7,11 @@ project. Library size is in [BINARY-SIZE.md](BINARY-SIZE.md).
 ## Reproducing
 
 ```sh
-cargo bench --locked --features benchmark --bench rest_rows   # REST result pages
+cargo bench --locked --features benchmark --bench rest_rows    # REST result pages
 cargo bench --locked --features benchmark --bench query_result # result scheduling and delivery
-cargo bench --locked --features benchmark --bench normalize   # ingest normalization
-cargo bench --locked --features benchmark --bench ipc         # Storage Read and Write IPC
-uv run --directory integration/dbt --locked benchmark.py      # live dbt workload, needs BigQuery access
+cargo bench --locked --features benchmark --bench normalize    # ingest normalization
+cargo bench --locked --features benchmark --bench ipc          # Storage Read and Write IPC
+uv run --directory integration/dbt --locked benchmark.py       # live dbt workload, needs BigQuery access
 ```
 
 Each native harness prints, per case, the median of seven samples and the allocation calls and
@@ -23,41 +23,42 @@ network I/O and server time are outside every measured region.
   TIMESTAMP, DATE, TIME, DATETIME, NUMERIC, BIGNUMERIC, BYTES, INTERVAL, a three-field STRUCT and
   a repeated INT64. `decode` is the `serde_json` pass into positional rows; `convert` is
   `rest_rows_to_record_batch` on a decoded page.
-- `query_result` measures request serialization of an already-built plan for 65-, 1,024- and
-  65,536-byte SQL (`query/request-*`), planning from stored SQL (`query/planning-*`), and the
-  production response decoder and reader at 0, 1, 32 and 1,024 rows of a dbt data-test result (an
-  integer and two booleans). Fixtures include a default dataset, location and dbt invocation label.
-  `decode` includes operation tracking, the conversion permit and task scheduling; `read` starts
-  from a decoded response and covers schema conversion, reader construction and draining; `complete`
-  is both. The warmed runtime and anonymous client make no network requests. Work spans runtime
-  threads, so do not pin it to one CPU when measuring scheduling.
+- `query_result` measures request serialization of a built plan for 65-, 1,024- and 65,536-byte
+  SQL (`query/request-*`), planning from stored SQL (`query/planning-*`), the job-client lookup
+  (`query/client`), and the production response decoder and reader at 0, 1, 32 and 1,024 rows of a
+  dbt data-test result (an integer and two booleans, with a default dataset, location and dbt
+  invocation label). `decode` includes operation tracking, the conversion permit and task
+  scheduling; `read` starts from a decoded response and covers schema conversion, reader
+  construction and draining; `complete` is both. The warmed runtime and anonymous client make no
+  network requests.
 - `normalize` runs 2-column (`narrow`) and 16-column (`wide`) batches at 1 and 1,024 rows:
   `canonical` (validation only), `calendar` (Date32, TimestampMicrosecond), `nested` (calendar
-  columns under three struct levels), `list-window` (sliced DATE/TIMESTAMP lists, also 65,536
-  rows), `coercing` (Int32 to Int64, LargeUtf8 to Utf8), `list-gather` (sliced lists with values
-  behind NULL entries) and `large-offsets` (sliced LargeUtf8/LargeBinary with NULL, empty, ASCII
-  and non-ASCII values, also 65,536 rows). Dictionary fixtures cover ascending and scattered keys
-  with sparse null runs, and scattered keys alternating with nulls, at 1, 1,024 and 65,536 rows;
+  columns under three struct levels), `coercing` (Int32 to Int64, LargeUtf8 to Utf8),
+  `list-gather` (sliced lists with values behind NULL entries), and these, also at 65,536 rows:
+  `list-window` (sliced DATE/TIMESTAMP lists), `large-offsets` (sliced LargeUtf8/LargeBinary with
+  NULL, empty, ASCII and non-ASCII values), `decimal-precision` and `decimal-scale`, and dictionary
+  keys in ascending runs (`dictionary-runs`) or scattered (`dictionary-scattered`), both with four
+  nulls per 32 rows, or scattered and alternating with nulls (`dictionary-alternating`).
   `dictionary-labels` puts 200-byte labels in a first column that holds nearly every byte, beside
-  BOOLEAN columns. Each case's `encode` row (`canonical/narrow/encode`) splits the batch into Storage Write
-  requests as an append after the stream's first does: it sizes each window of rows, normalizes
-  it and frames it as Arrow IPC.
+  BOOLEAN columns. Each `encode` row (`canonical/narrow/encode`) splits the batch into Storage
+  Write requests as an append after the stream's first does: it sizes each window of rows,
+  normalizes it and frames it as Arrow IPC.
 - `ipc` decodes a Storage Read record batch (aligned, misaligned, and `LZ4_FRAME` as BigQuery sends
   it: one frame of independent 64 KiB blocks per buffer, stored blocks where LZ4 cannot shrink) and
   encodes a Storage Write message. `scalar` has a nullable INT64 and a non-null STRING; `nested` and
-  `deep` wrap them in one and three levels of LIST<STRUCT>. Sliced encode cases keep nonzero
-  offsets at 1,024 and 65,536 rows.
+  `deep` wrap them in one and three levels of LIST<STRUCT>. `encode-sliced` cases, including
+  `boolean`, keep nonzero offsets.
 
 Measuring a change:
 
-- Compare before and after binaries in alternating runs. Pin CPU-only cases (`taskset -c 3`); let
-  `query_result` use several CPUs. Take the binary path from the `executable` field of
-  `cargo bench --locked --features benchmark --no-run --message-format=json`; it changes whenever
-  `Cargo.toml` does.
+- Compare before and after binaries in alternating runs. Pin CPU-only cases (`taskset -c 3`), but
+  let `query_result` use several CPUs, since its work spans runtime threads. Take the binary path
+  from the `executable` field of `cargo bench --locked --features benchmark --no-run
+  --message-format=json`; it changes whenever `Cargo.toml` does.
 - On a loaded machine count instructions: `BENCH_COUNT=wide/convert/1024 perf stat -e
   instructions:u <binary>` runs one case 1,000 times. Counts include fixture setup and harness
-  overhead, and a `convert` count includes its decode (subtract `decode`). Counts miss memory
-  traffic; confirm with pinned timings (see column-at-a-time conversion under
+  overhead (a `convert` count includes its decode) and miss memory traffic, so confirm them with
+  pinned timings (see column-at-a-time conversion under
   [rejected optimizations](#rejected-optimizations)).
 - Check timings as well as allocations; several changes below cut time with identical allocations.
 - The 1,024-row `coercing` cases sit in a ±12% code-alignment band (an unrelated dependency's
@@ -66,13 +67,13 @@ Measuring a change:
 
 ## Results
 
-Figures are historical comparisons, not necessarily this checkout; to reproduce one, build both
-source versions on the same machine, and record CPU and toolchain with new measurements. Unless
-stated otherwise, native comparisons used Rust 1.99.1, locked release builds, Linux x86-64, AMD Ryzen 9 7950X3D pinned to
-CPU 3, median of three alternating before/after runs of seven samples each. Affinity does not
-exclude other host activity. Native results exclude network and BigQuery work and establish no
-live dbt or upload speedup. Requested bytes include freed intermediates; ownership tests measure
-retained buffers; neither measures RSS, allocator retention or caller-held buffers.
+Each figure compares builds of one change and need not match this checkout; to reproduce one, build
+both source versions on one machine. Unless stated otherwise: Rust 1.99.1, locked release builds,
+Linux x86-64, AMD Ryzen 9 7950X3D pinned to CPU 3 (other host activity not excluded), median of
+three alternating before/after runs of seven samples each. Native results exclude network and
+BigQuery work, so they establish no live speedup. Requested bytes include freed intermediates;
+ownership tests measure retained buffers; neither measures RSS, allocator retention or caller-held
+buffers.
 
 ### Query results
 
@@ -89,21 +90,10 @@ three reports:
 | Inline decode and resident reader | 3.43 µs (3.24–5.36) | 94 | 10,040 |
 
 Responses are 335, 380, 1,807 and 47,441 JSON bytes at 0, 1, 32 and 1,024 rows. The 32-row case
-fell from 33.16 to 10.79 µs. The buffered 1,024-row control ranged 270–276 µs before and 273–436
-µs after (final sample 273 µs): no large-result change is established. The one-row saving is
-about 0.6 ms across 26 data tests before concurrency.
-
-Three alternating pairs of dbt `2.0.9` rebuilding existing relations (eight threads,
-`example-project` in `US`, preparation untimed; all six verified 13 CTAS jobs, 26 SELECT jobs,
-zero cache hits and the expected signature):
-
-| Library | Median dbt wall | Range | Median summed BigQuery service time |
-| --- | ---: | ---: | ---: |
-| Before | 8.86s | 8.51–11.00s | 17.11s |
-| After | 8.61s | 8.19–8.70s | 15.86s |
-
-Paired after/before median `0.963` (`0.783`–`0.982`); the small sample and changing service time
-and host load establish no whole-build speedup.
+fell from 33.16 to 10.79 µs; the buffered 1,024-row control showed no established change. The
+one-row saving is about 0.6 ms across 26 data tests before concurrency. Three alternating pairs of
+dbt `2.0.9` rebuilding existing relations (eight threads) establish no whole-build speedup: median
+wall 8.86 s before and 8.61 s after, paired ratio `0.963` (`0.783`–`0.982`).
 
 Later `query/complete` allocation cuts, as calls / requested bytes:
 
@@ -115,24 +105,24 @@ Later `query/complete` allocation cuts, as calls / requested bytes:
 | 1,024 (buffered) | 1,140 / 174,512 | 1,140 / 174,512 | 1,133 / 172,674 | 1,129 / 172,602 |
 
 - Job client deferred: the REST job-client wrapper is built only for metadata lookup or pagination.
-- Runtime bridge stack-pinned: the synchronous bridge stack-pins its type-erased future. Each
-  decode avoids one allocation; resident permits and buffered EOF joins avoid another; empty
-  readers skip the runtime. The 1,024-row comparison started from 1,135 / 174,322. The library
-  grew 1,088 bytes (0.013%). Check with `cargo test --locked --lib runtime::tests::`.
+- Runtime bridge stack-pinned: the synchronous bridge stack-pins its type-erased future, saving one
+  allocation per decode and another for resident permits and buffered EOF joins; empty readers
+  skip the runtime. Its 1,024-row comparison started from 1,135 / 174,322. The library grew 1,088
+  bytes (0.013%). Check with `cargo test --locked --lib runtime::tests::`.
 - Schema conversion: depth is checked during conversion and scalar type names are borrowed until
-  metadata insertion. Serialization and response decoding are unchanged.
+  metadata insertion; serialization and response decoding are unchanged.
 
 Concurrent builds prevented timing the job-client and schema-conversion changes.
 
 Caching the job-client wrapper with the database configuration took warmed `query/client` from
-3 allocations / 198 bytes to 0 / 0. One wrapper and URL stay resident per configuration
-generation; existing connections keep their generation after option changes, and request-local
-dataset resolvers stay outside the cache.
+3 allocations / 198 bytes to none. One wrapper and URL stay resident per configuration generation;
+existing connections keep their generation after option changes, and request-local dataset
+resolvers stay outside the cache.
 
-Statements, plans and lazy parameter readers share immutable SQL (replacing it leaves open
-readers' snapshots intact), and request serialization reserves SQL length plus 512 bytes
-(escaping, parameters or labels can still grow it). Calls / requested bytes, planning pinned to
-CPUs 8–15, serialization untimed because of host activity:
+Statements, plans and lazy parameter readers share immutable SQL (replacing it leaves open readers'
+snapshots intact), and request serialization reserves SQL length plus 512 bytes (escaping,
+parameters or labels can still grow it). Calls / requested bytes; host activity prevented timing
+serialization:
 
 | SQL bytes | `query/planning-*` before → after | `query/request-*` before → after |
 | ---: | ---: | ---: |
@@ -143,32 +133,32 @@ CPUs 8–15, serialization untimed because of host activity:
 Check snapshot lifetime with `cargo test --locked --lib statement::tests::execution::`.
 
 Resident results try to take a conversion permit before entering the runtime, keeping the
-cancellable wait and worker handoff. Three alternating pairs pinned to CPUs `8-15`:
+cancellable wait and worker handoff. Three alternating pairs pinned to CPUs `8-15`, allocations
+unchanged:
 
-| Case | Before ns | After ns | Allocation calls / bytes (unchanged) |
+| Case | Before ns | After ns | Allocation calls / bytes |
 | --- | ---: | ---: | ---: |
 | `query/read`, 1 row | 1,539 (1,532–1,583) | 1,432 (1,415–1,451) | 75 / 5,631 |
 | `query/complete`, 1 row | 2,881 (2,858–2,964) | 2,778 (2,754–2,791) | 89 / 7,458 |
 | `query/read`, 32 rows | 2,550 (2,514–2,569) | 2,418 (2,412–2,485) | 75 / 5,879 |
 | `query/complete`, 32 rows | 9,654 (9,607–9,684) | 9,589 (9,422–9,716) | 123 / 12,026 |
 
-Controls that skip this path: zero-row read 1,297 → 1,313 ns, buffered 1,024 rows 55,736 →
-57,470 ns. Process-wide instructions for 1,000 `query/read/1` calls (three pairs, including
-preparation and startup): 145,595,441 → 143,813,619.
+Controls that skip this path: zero-row read 1,297 → 1,313 ns, buffered 1,024 rows 55,736 → 57,470
+ns. Process-wide instructions for 1,000 `query/read/1` calls (three pairs, including preparation
+and startup) fell from 145,595,441 to 143,813,619.
 
 **REST decimal cells.** NUMERIC and BIGNUMERIC cells accumulate their significant digits eighteen
-at a time from one contiguous run, skipping leading zeros and appending the scale's zeros a chunk at
-a time, instead of walking the whole spelling digit by digit. `typed/convert` (one NUMERIC, one
-BIGNUMERIC and a struct's NUMERIC per row; allocations unchanged at 78 calls), CPU 5, three
-alternating runs:
+at a time from one contiguous run, skipping leading zeros and appending the scale's zeros a chunk
+at a time. `typed/convert` (one NUMERIC, one BIGNUMERIC and a struct's NUMERIC per row; 78
+allocation calls before and after), CPU 5, three alternating runs:
 
 | Rows | Before, ns | After, ns |
 | ---: | ---: | ---: |
 | 32 | 17,415–21,732 | 14,031–14,518 |
 | 1,024 | 494,009–709,059 | 395,310–399,486 |
 
-User instructions for 1,000 `typed/convert/1024` iterations fell from 23.43 to 20.91 billion
-(decode, which the count includes, stayed at 13.52), so conversion alone fell 25%. Check with
+User instructions for 1,000 `typed/convert/1024` iterations fell from 23.43 to 20.91 billion, of
+which decode is 13.52, so conversion alone fell 25%. Check with
 `cargo test --locked --lib rows::scalars::`.
 
 ### Ingest normalization
@@ -179,58 +169,44 @@ rows, columns alternating Decimal128(38, 9) and Decimal256(76, 38), one null per
 nonzero slice offsets:
 
 | Columns | Allocation calls before / after | Requested bytes before / after |
-| --- | ---: | ---: |
+| ---: | ---: | ---: |
 | 2 | 7 / 1 | 3,146,096 / 32 |
 | 16 | 49 / 1 | 25,168,768 / 256 |
 
-The remaining allocation holds column references. Unpaired timings under build/fuzz load
-establish no throughput gain; two instruction-count pairs over 1,000 calls rose 0.6–0.7%.
+The remaining allocation holds column references. No throughput gain is established: timings were
+unpaired and under build load, and two instruction-count pairs over 1,000 calls rose 0.6–0.7%.
 
-**Nullable dictionary expansion.** Keys and nulls are gathered by consecutive spans instead of
-per row when any key is null. `dictionary-*` at 65,536 rows, INT64 and STRING values alternating,
-input sliced by one row:
-
-| Dictionary keys | Columns | Before, ms | After, ms |
-| --- | ---: | ---: | ---: |
-| Ascending runs, four nulls per 32 rows | 2 | 2.787 | 1.474 |
-| Ascending runs, four nulls per 32 rows | 16 | 14.601 | 4.572 |
-| Scattered keys, four nulls per 32 rows | 2 | 1.688 | 1.474 |
-| Scattered keys, four nulls per 32 rows | 16 | 14.408 | 12.887 |
-| Scattered keys, alternating nulls | 2 | 1.280 | 1.347 |
-| Scattered keys, alternating nulls | 16 | 10.246 | 10.806 |
-
-Allocations are unchanged (two-column runs/scattered: 32 calls, 4,932,496 bytes; alternating: 31,
-2,835,344). Alternating nulls cost about 5–6% more; no null-density heuristic was added, and
-single-row valid-span and run-initialization special cases weakened the other gains. Two-column
-user instructions over 1,000 iterations, including harness, preparation and drops: ascending
-37.513→9.483 billion, scattered 37.512→32.850, alternating 28.789→30.263. Check against Arrow's
-`take` with `cargo test --locked --lib types::cast::tests::`.
+**Nullable dictionary expansion.** When any key is null, keys and nulls are gathered by
+consecutive spans instead of per row. For `dictionary-runs` at 65,536 rows (INT64 and STRING values
+alternating, input sliced by one row), 2 columns fell from 2.787 to 1.474 ms and 16 from 14.601 to
+4.572 ms, with unchanged allocations; two-column user instructions over 1,000 iterations fell from
+37.513 to 9.483 billion. Check against Arrow's `take` with
+`cargo test --locked --lib types::cast::tests::`.
 
 **Direct dictionary gathers.** Keys resolve once into value indices; primitive values (numeric,
 temporal and decimal) are then copied a run at a time and string or binary values row by row (or
 through `MutableArrayData` when runs average eight rows or more), instead of one type-erased
 `MutableArrayData` extend per run, which scattered keys make one per row. Boolean and
-`FixedSizeBinary` values keep the per-run extend. Same fixtures, CPU 5, median of three
-alternating runs:
+`FixedSizeBinary` values keep the per-run extend. Same fixtures, CPU 5:
 
 | Dictionary keys, 65,536 rows | Columns | Before, ms | After, ms |
 | --- | ---: | ---: | ---: |
-| Ascending runs, four nulls per 32 rows | 2 | 1.433 | 1.447 |
-| Ascending runs, four nulls per 32 rows | 16 | 4.437 | 4.402 |
-| Scattered keys, four nulls per 32 rows | 2 | 1.470 | 0.715 |
-| Scattered keys, four nulls per 32 rows | 16 | 12.699 | 5.822 |
-| Scattered keys, alternating nulls | 2 | 1.341 | 0.605 |
-| Scattered keys, alternating nulls | 16 | 10.738 | 4.871 |
+| `dictionary-runs` | 2 | 1.433 | 1.447 |
+| `dictionary-runs` | 16 | 4.437 | 4.402 |
+| `dictionary-scattered` | 2 | 1.470 | 0.715 |
+| `dictionary-scattered` | 16 | 12.699 | 5.822 |
+| `dictionary-alternating` | 2 | 1.341 | 0.605 |
+| `dictionary-alternating` | 16 | 10.738 | 4.871 |
 
 Two-column calls and requested bytes: scattered 32 / 4,932,496 → 20 / 2,974,292, alternating 31 /
 2,835,344 → 20 / 2,493,524, runs 32 / 4,932,496 → 30 / 5,981,104 (the index vector, 8 bytes a
-row). User instructions over 1,000 two-column iterations: scattered 32.99→16.37 billion,
-alternating 30.40→13.63, runs 9.63→10.06. Strings are checked as UTF-8 again when their array is
-built, since only `unsafe` skips that; a builder-based gather avoided it for another 25% but
-cost 21 KB more library. The library grew 18,672 bytes (0.22%).
+row). User instructions over 1,000 two-column iterations: scattered 32.99 → 16.37 billion,
+alternating 30.40 → 13.63, runs 9.63 → 10.06. Strings are checked as UTF-8 again when their array is
+built, since only `unsafe` skips that; a builder-based gather avoided it for another 25% but cost
+21 KB more library. The library grew 18,672 bytes (0.22%).
 
-Through request sizing and IPC framing (`encode`), and for the `dictionary-labels` column of
-200-byte labels behind `Int16` keys, 65,536 rows, medians of three alternating runs:
+Through request sizing and IPC framing (`encode`), and for `dictionary-labels` (200-byte labels
+behind `Int16` keys), 65,536 rows:
 
 | Case | Before, ms | After, ms | Requested bytes before → after |
 | --- | ---: | ---: | ---: |
@@ -239,8 +215,8 @@ Through request sizing and IPC framing (`encode`), and for the `dictionary-label
 | `dictionary-labels/narrow` | 1.293 | 0.856 | 33,751,560 → 13,902,308 |
 | `dictionary-labels/narrow/encode` | 1.739 | 1.401 | 47,166,988 → 27,285,492 |
 
-User instructions over 1,000 iterations: `dictionary-scattered/narrow/encode` 36.85→20.23
-billion, `dictionary-labels/narrow/encode` 26.46→23.06. Requested bytes fall because the gather
+User instructions over 1,000 iterations: `dictionary-scattered/narrow/encode` 36.85 → 20.23
+billion, `dictionary-labels/narrow/encode` 26.46 → 23.06. Requested bytes fall because the gather
 sizes its buffers from the keys up front, where `MutableArrayData` grows them as it copies.
 
 **Large-offset byte columns.** Narrowing LargeUtf8/Binary offsets preallocates one vector per
@@ -254,16 +230,16 @@ incremental growth:
 | 65,536 | narrow | 418.285 | 275.058 | 37 → 7 | 2,097,536 → 524,712 |
 | 65,536 | wide | 3,629.338 | 3,189.348 | 289 → 49 | 16,780,288 → 4,197,696 |
 
-65,536-row ranges: narrow 414.077–418.755 / 263.052–282.859 µs, wide 3,577.868–3,651.120 /
-3,178.662–3,210.377 µs (75% fewer bytes, 34.2% / 12.1% less time). The 1,024-row `coercing/wide`
-fixture fell from 20.303 to 17.411 µs, 121 to 49 calls and 199,616 to 101,472 bytes; canonical,
-calendar and list-gather wide controls kept their allocations and stayed within 0.7%. Three
-paired instruction counts for 1,000 wide operations fell from about 58.43 to 49.10 billion
-(16.0%), including fixture construction. Check with `cargo test --locked --lib types::cast::tests::`.
+The 65,536-row ranges did not overlap. The 1,024-row `coercing/wide` fixture fell from 20.303 to
+17.411 µs, 121 to 49 calls and 199,616 to 101,472 bytes; canonical, calendar and list-gather wide
+controls kept their allocations and stayed within 0.7%. Three paired instruction counts for 1,000
+wide operations, including fixture construction, fell 16.0%, from about 58.43 to 49.10 billion.
+Check with
+`cargo test --locked --lib types::cast::tests::`.
 
 **Sliced list windows.** Canonical sliced lists validate only referenced child values, keeping
-offsets and translating error locations by the window origin. One paired `list-window` run
-(concurrent builds make timings indicative):
+offsets and translating error locations by the window origin. One paired `list-window` run, under
+concurrent builds:
 
 | Columns / rows | Before, ns | After, ns | Allocation calls before → after | Requested bytes before → after |
 | --- | ---: | ---: | ---: | ---: |
@@ -278,7 +254,7 @@ The remaining allocations describe child slices. Check with
 **Dictionary request windows.** Sizing a request's window reads a string or byte dictionary's
 value offsets once instead of dispatching on the value array for every row. User instructions for
 1,000 `encode` operations at 65,536 rows, including fixture construction, two runs each (equal to
-within 0.0001%); allocations are unchanged:
+within 0.0001%), allocations unchanged:
 
 | Case | Before, billions | After, billions | Change |
 | --- | ---: | ---: | ---: |
@@ -288,14 +264,14 @@ within 0.0001%); allocations are unchanged:
 | `dictionary-alternating/narrow/encode` | 36.01 | 33.59 | −6.7% |
 
 The normalization-only control `dictionary-scattered/narrow` stayed at 32.99. Expanding the
-values (`expand_dictionary` in `src/types/cast.rs`, [direct gathers](#ingest-normalization)) is
-most of what remains. Check with `cargo test --locked --lib ingest::write::window::`.
+values (`expand_dictionary` in `src/types/cast.rs`) is most of what remains. Check with
+`cargo test --locked --lib ingest::write::window::`.
 
-**First request window.** A batch's first window, with no chunk before it to give a density,
-aims for the request target by the bytes its rows address, rather than taking up to twice the
-target and normalizing the rows past the cut again for the next chunk. Batches between one and
-two request targets gain; the 65,536-row wide fixtures are such batches. Same measurement as above,
-with pinned timings and allocations from one bench run each:
+**First request window.** A batch's first window, with no chunk before it to give a density, aims
+for the request target by the bytes its rows address, rather than taking up to twice the target and
+normalizing the rows past the cut again for the next chunk. Batches between one and two request
+targets gain, as the 65,536-row wide fixtures are. Instructions as above; timings and allocations
+from one pinned bench run each:
 
 | Case | Instructions before → after, billions | Before → after, ms | Requested bytes before → after |
 | --- | ---: | ---: | ---: |
@@ -304,17 +280,17 @@ with pinned timings and allocations from one bench run each:
 | `large-offsets/wide/encode` | 71.22 → 51.69 (−27.4%) | 3.21 → 2.47 | 20,097,476 → 18,549,572 |
 | `list-window/wide/encode` | 25.41 → 16.43 (−35.3%) | 1.36 → 0.96 | 16,847,788 → 16,832,940 |
 
-Controls, unchanged within 0.002%: `decimal-scale/wide/encode` at 65,536 rows (over twice the
-target), `dictionary-scattered/narrow/encode` and `large-offsets/narrow/encode` at 65,536 rows
-(under the target), `canonical/wide/encode` at 1,024 rows.
+Controls stayed within 0.002%: `decimal-scale/wide/encode` at 65,536 rows (over twice the target),
+`dictionary-scattered/narrow/encode` and `large-offsets/narrow/encode` at 65,536 rows (under it),
+and `canonical/wide/encode` at 1,024 rows.
 
-Sizing walks a dictionary's keys and a list view's ranges until the bytes pass a cap, and each
-refused pass walks them again. The walks stop above twice the target, which more than halves a
-refused window, and an estimate from exact bytes is trusted once, after which a refusal at least
-halves the window. Capped at the target itself, a column that held nearly every byte would stop
-each walk just past the target, so a pass shrank the window by a sliver: one 1,000,000-row
+**Request-window cap.** Sizing walks a dictionary's keys or a list view's ranges until the bytes
+pass a cap, and walks them again after each refusal. The cap is above twice the target, so a
+refusal more than halves the window; an estimate from exact bytes is trusted once, after which a
+refusal at least halves it. With the cap at the target, a column holding nearly every byte ended
+each walk just past the target, so each pass shrank the window by a sliver: a 1,000,000-row
 `Dictionary<Int16, Utf8>` of 100-byte labels took 41 s to size at the 9 MB target in a release
-build, where it takes 5 passes (8 at the 1 MB first-append target). User instructions for 1,000
+build; above twice the target it takes 5 passes (8 at the 1 MB first-append target). User instructions for 1,000
 `dictionary-labels` encodes of 65,536 rows, and one pinned timing run each:
 
 | Case | Instructions, cap at target → above twice it, billions | Cap at target → above twice it, ms |
@@ -326,20 +302,20 @@ The other `encode` cases above are the same under either cap. Check with
 `cargo test --locked --lib ingest::write::window::tests::a_window_without`.
 
 **First batch of an append.** `create` and `replace` normalize and size the whole first batch
-before changing the target, then normalize it again as it is sent. An append into an existing
-table skips that first pass. For one 1,000,000-row batch shaped like a pandas frame (INT64,
+before changing the target, then normalize it again as it is sent; an append into an existing
+table skips the first pass. For one 1,000,000-row batch shaped like a pandas frame (INT64,
 FLOAT64, STRING, nanosecond TIMESTAMP and a three-value `Dictionary<Int8, Utf8>`), in a release
-build, the skipped pass cost 238.0 million user instructions and sending's own pass 241.1 million
-(five passes each, two runs, fixture construction subtracted), so local conversion work is
-halved. Check with `cargo test --locked --lib ingest::tests::only_an`.
+build, the skipped pass cost 238.0 million user instructions and the sending pass 241.1 million
+(five passes each, two runs, fixture construction subtracted), so local conversion work halves.
+Check with `cargo test --locked --lib ingest::tests::only_an`.
 
 ### Storage Write encoding
 
-`encode-sliced` rows of `ipc`, identical fixtures. Two successive changes:
-copying and rebasing nonzero STRING/BYTES/LIST offsets in place after validation (replacing
-per-offset extension and checked subtraction), then validating against the smallest offset so the
-check vectorizes (the minimum must be at least the nonnegative first offset, so rebasing cannot
-overflow; failures precede body materialization). Allocations were unchanged throughout.
+`ipc`'s `encode-sliced` rows over two changes: copying and rebasing nonzero STRING/BYTES/LIST
+offsets in place after validation, instead of per-offset extension and checked subtraction; then
+validating against the smallest offset so the check vectorizes (the minimum must be at least the
+nonnegative first offset, so rebasing cannot overflow, and failures precede body
+materialization). Allocations were unchanged throughout.
 
 | Rows | Shape | Original µs | Rebase in place µs | Min-offset validation µs | Allocation calls / bytes |
 | ---: | --- | ---: | ---: | ---: | ---: |
@@ -350,16 +326,12 @@ overflow; failures precede body materialization). Allocations were unchanged thr
 | 65,536 | nested | 216.695 | 156.407 (159.263) | 97.141 | 10 / 3,032,368 |
 | 65,536 | deep | 985.749 | 688.309 (703.112) | 392.241 | 33 / 12,914,376 |
 
-The second comparison re-measured its baseline (in parentheses): reductions were 23.6–30.2% for
-the first change and 31.6–44.2% for the second. 65,536-row ranges, first change: scalar
-79.652–80.199 / 59.434–59.619, nested 216.604–216.832 / 156.330–156.552, deep 984.940–988.182 /
-687.386–688.561 µs, with nothing else running; second change, with visible jitter from other host work: scalar 60.103–60.967
-/ 40.986–53.750, nested 157.576–159.611 / 96.855–100.296, deep 693.673–706.400 / 391.180–404.297
-µs. Unsliced 1,024-row control medians: first change within 1.5% (scalar 0.573→0.576, nested
-1.111→1.113, deep 3.558→3.507 µs); second change scalar 0.584→0.565, nested 1.135→1.118, deep
-3.651→3.551 µs, with no unsliced speedup claimed. Three runs of 1,000 deep 65,536-row encodes fell from 11,892,573,353 to 4,141,286,435
-user instructions (65.2%) with the second change, including fixture construction. The largest deep
-fixture exceeds one AppendRows request and measures the codec without the chunk encoder's limits.
+The second change re-measured its baseline (in parentheses). Reductions were 23.6–30.2% for the
+first change and 31.6–44.2% for the second, whose runs showed jitter from other host work;
+unsliced 1,024-row controls moved by at most 3.3%, so no unsliced speedup is claimed. Three runs of
+1,000 deep 65,536-row encodes fell from 11,892,573,353 to 4,141,286,435 user instructions (65.2%)
+with the second change, including fixture construction. The largest deep fixture exceeds one
+AppendRows request, so it measures the codec without the chunk encoder's limits.
 
 **Sliced booleans.** Copying a bitmap's selected bytes once and shifting in place vectorizes
 without per-byte growth; partial final bytes stay masked. `boolean/encode-sliced`, nullable column
@@ -381,15 +353,15 @@ Ownership regressions; run each with `cargo test --locked --lib <filter>`.
 | Bound | Filter |
 | --- | --- |
 | The dataset-location cache keeps the newest 32 insertions across a database's connections; 64 inserts leave 32, with evicted entries released. | `clients::tests::` |
-| Result wrappers release their inner reader on EOF, error or observed cancellation, keeping the schema: a one-row INT64 slice of an 8,388,608-byte buffer has only the test's reference before `next()` returns (formerly two). Cancellation frees queued data at the caller's next poll. | `operation_readers_release_retained_buffers`, `cancellation::tests::` |
+| Result wrappers release their inner reader on EOF, error or observed cancellation, keeping the schema: a one-row INT64 slice of an 8,388,608-byte buffer has only the test's reference before `next()` returns. Cancellation frees queued data at the caller's next poll. | `operation_readers_release_retained_buffers`, `cancellation::tests::` |
 | A two-row Int64 parameter slice's 8,388,608-byte buffer is released before the final parameter row; empty batches before the next source callback. | `bound_parameter_batches` |
 | Storage Write drops consumed batches; written or discarded IPC plans release buffers but keep scratch capacity. A 12-row mock ingest holds no reference to a two-row slice's 8 MiB buffer before the next source read, including EOF. | `the_first_ingest_batch_is_released_before_reading_more_input`, `written_and_discarded_plans_release_their_input_buffers` |
 | A 1,048,576-row Float32 input normalizes to an 8,388,608-byte Float64 allocation, released before append or stream-creation retry, on success and rejection; the IPC payload still round-trips. | `encoded_chunks_release_their_normalized_window` |
 
 **Retained result buffers.** Completed batches are charged each backing allocation once per batch,
-including nested buffers and validity bitmaps, against the former logical-length charge:
+including nested buffers and validity bitmaps, rather than their logical length:
 
-| Fixture | Retained buffer bytes | Previous charge | Retained-capacity charge |
+| Fixture | Retained buffer bytes | Logical-length charge | Retained-capacity charge |
 | --- | ---: | ---: | ---: |
 | Nine 16-row INT64 columns sharing one 8 MiB allocation | 8,388,608 | 1,152 | 8,388,608 |
 | One INT64 row in an 8 KiB allocation | 8,192 | 8 | 8,192 |
@@ -403,10 +375,10 @@ it.
 
 **Retained REST conversion inputs.** Pending conversions charge owned row, cell and nested vectors
 and strings, including spare capacity, capped at 64 MiB (one batch may cross); resident pages and
-arrays being built are excluded. A 16,384-row fixture with an 8 MiB STRING in its first row: the
-first 1,024-row batch owns 8,446,048 bytes, which the former page-average wire charge put at
-543,744 (15.5 times too small). Eight such batches now fill the window; their former charges
-totalled 4,349,952. Filters: `a_skewed_page_charges_the_wide_batch_its_retained_allocation`,
+arrays being built are excluded. In a 16,384-row fixture with an 8 MiB STRING in its first row, the
+first 1,024-row batch owns 8,446,048 bytes, where a page-average wire charge gives 543,744 (15.5
+times too small); eight such batches fill the window, against 4,349,952 bytes under the wire
+charge. Filters: `a_skewed_page_charges_the_wide_batch_its_retained_allocation`,
 `retained_bytes_include_nested_allocations_and_spare_capacity`. Accounting and worker handoff,
 three pairs pinned to CPUs 0–7 under concurrent host activity:
 
@@ -431,30 +403,33 @@ excludes the decoder's current response, completed batches and SDK/HTTP bufferin
 
 ### Live dbt workload
 
-dbt `2.0.9`, default 13-model, 26-test workload (50,000 base rows, eight threads, fresh datasets),
-`example-project` in `US`, three rounds alternating dbt's opt-in [Foundry driver](DBT.md#installing)
-`0.21.0.dev+dbt0.1.5` with this driver before the metadata change below:
+dbt `2.0.9`, default 13-model, 26-test workload (50,000 base rows, eight threads), `example-project`
+in `US`, three rounds alternating dbt's opt-in [Foundry driver](DBT.md#installing)
+`0.21.0.dev+dbt0.1.5` with this driver. Fresh datasets ran before the metadata change below,
+`--existing` after it. Every invocation ran 13 CTAS and 26 SELECT jobs, no cache hits and the
+expected signature:
 
-| Driver | Median wall | Range | Median jobs/s | Median warehouse span |
-| --- | ---: | ---: | ---: | ---: |
-| Downloaded Foundry | 23.92s | 23.39–28.62s | 1.63 | 20.01s |
-| This driver, before the metadata change | 8.64s | 8.39–10.31s | 4.51 | 6.58s |
+| Workload | Driver | Median wall | Range | Median jobs/s | Median warehouse span |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Fresh datasets | Foundry | 23.92s | 23.39–28.62s | 1.63 | 20.01s |
+| Fresh datasets | This driver | 8.64s | 8.39–10.31s | 4.51 | 6.58s |
+| `--existing` | Foundry | 25.39s | 24.86–28.16s | 1.54 | 18.36s |
+| `--existing` | This driver | 10.23s | 9.78–17.43s | 3.81 | 8.36s |
 
-Paired local/Foundry wall ratio `0.359` (64.1% lower). Every invocation ran 13 CTAS and 26 SELECT
-jobs, no cache hits, expected signature. Median summed service time: 18.42s Foundry, 16.18s local.
+Paired local/Foundry wall ratios are `0.359` fresh (median summed service time 18.42s Foundry,
+16.18s local) and `0.403` with `--existing`.
 
-Against dbt's default `bigquery` driver: dbt `2.0.0-preview.212`, the default 13-model, 26-test
-workload, eight threads, three alternating rounds; every sample ran the same 39 jobs, no cache hits
-and the same warehouse results:
+Against dbt's default `bigquery` driver: dbt `2.0.0-preview.212`, the same default workload, three
+alternating rounds; every sample ran the same 39 jobs, no cache hits and the same warehouse results:
 
 | Driver | Median wall | Range | Median jobs/s | Median warehouse span | Median client envelope |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Bundled `bigquery` | 24.07s | 23.31–26.26s | 1.62 | 20.50s | 3.57s |
 | This driver, as `bigquery_foundry` | 10.74s | 9.50–11.29s | 3.63 | 8.99s | 1.76s |
 
-Paired wall ratio `0.461` (53.9% lower); median summed service time 25.00s bundled, 23.91s local.
-The bundled driver's per-node timings show client polling latency after short jobs. With 16
-threads, this driver's median wall fell to 8.29s (22.8%, three rounds).
+Paired wall ratio `0.461`; median summed service time 25.00s bundled, 23.91s local. The bundled
+driver's per-node timings show client polling latency after short jobs. With 16 threads, this
+driver's median wall fell to 8.29s (22.8%, three rounds).
 
 The metadata change makes `GetTableSchema` request
 [`tables.get(view=BASIC)`](https://docs.cloud.google.com/bigquery/docs/reference/rest/v2/tables/get#TableMetadataView)
@@ -469,28 +444,12 @@ all projected responses equal:
 | Materialized view | 254.7ms | 207.6ms | 52.9ms |
 
 A second 24-pair run with `benchmark_metadata.py` saved 57.6, 40.1 and 35.8ms respectively, also
-with equal configurations. These exclude Rust transport, and concurrent lookups' savings do not add
-to dbt wall time. The live `table_metadata_describes_what_defines_each_relation` test covers
-tables, views, materialized views and external tables.
-
-Five pairs with `--existing`, alternating order, each verifying 39 jobs, zero cache hits and the
-signature:
-
-| Library | Median wall | Range | Median summed BigQuery service time |
-| --- | ---: | ---: | ---: |
-| Before | 9.82s | 8.49–16.52s | 19.72s |
-| After | 9.88s | 8.53–10.86s | 17.93s |
-
-Paired after/before median `0.931` (`0.546`–`1.181`; three improved, two regressed): no end-to-end
-speedup is established, only cheaper configuration lookups. Three rounds of the updated driver
-against Foundry, both with `--existing`, same checks:
-
-| Driver | Median wall | Range | Median jobs/s | Median warehouse span |
-| --- | ---: | ---: | ---: | ---: |
-| Downloaded Foundry | 25.39s | 24.86–28.16s | 1.54 | 18.36s |
-| This driver | 10.23s | 9.78–17.43s | 3.81 | 8.36s |
-
-Paired local/Foundry ratio `0.403` (59.7% lower); this compares drivers, not the metadata change.
+with equal responses. These exclude Rust transport, and concurrent lookups' savings do not add to
+dbt wall time: five alternating `--existing` pairs, each verifying the jobs, cache hits and
+signature, had median walls of 9.82s before and 9.88s after and a paired after/before median of
+`0.931` (`0.546`–`1.181`, two regressed), so no end-to-end speedup is established. The live
+`table_metadata_describes_what_defines_each_relation` test covers tables, views, materialized views
+and external tables.
 
 ```sh
 uv run --directory integration/dbt --locked benchmark.py
@@ -505,13 +464,13 @@ See the [benchmark guide](../integration/dbt/PERFORMANCE.md) for workload contro
 
 dbt `2.0.9` listed datasets twice per connection: schema registration without a filter, then a
 table-depth relation-cache lookup, because dataset underscores are ADBC wildcards. Neither was a
-retry, and dbt set no options. `bigquery.get_objects.disable_wildcards=true` removed the second
-listing for populated relations; both diagnostic builds passed 39 jobs with no cache hits and the
-expected signature, without establishing a whole-build speedup. An empty dataset still needs
-`datasets.get` after `tables.list`, which has no table to report the name BigQuery resolved the
-filter to. A catalog filter naming another project, as with a separate execution project, sends
-its one-dataset existence probe only when the walk finds nothing, so a lookup that finds the
-dataset takes one request instead of two and a listing one fewer page. Mock tests:
+retry, and dbt set no options. `bigquery.get_objects.disable_wildcards=true` removes the second listing for populated relations;
+diagnostic builds with and without it each passed 39 jobs with no cache hits and the expected
+signature, without establishing a whole-build speedup. An empty dataset still needs `datasets.get`
+after `tables.list`, which has no table to report the name BigQuery resolved the filter to. A
+catalog filter naming another project, as with a separate execution project, sends its one-dataset
+existence probe only when the walk finds nothing, so a lookup that finds the dataset takes one
+request instead of two and a listing one page fewer. Mock tests:
 
 ```sh
 cargo test --locked --all-features disabling_wildcards_keeps_unfiltered_dataset_and_table_listings
@@ -523,42 +482,16 @@ enables literal filters best-effort on dbt `main`; the `2.0.9` binary lacks it. 
 [canonical](DBT.md#installing) `0.21.0.dev+dbt0.21.19` and opt-in Foundry `0.21.0.dev+dbt0.1.5`
 drivers return `NOT_IMPLEMENTED` for `disable_wildcards` and `skip_table_metadata`.
 
-### Result pages and Storage Read
+### REST page size
 
-Seconds to read a whole result in one Rust process against `example-project` with
-`bigquery.query.disable_query_cache`, two rounds per build, alternating. Narrow rows are
-`SELECT n FROM UNNEST(GENERATE_ARRAY(1, N)) AS n ORDER BY n`; padded rows add
-`REPEAT('x', 500) AS padding` (about 20,000 per 10 MB page). "Before" sent `jobs.query` without
-`maxResults` (a first response of up to 350,000 narrow rows), paged by 10,000 and used Storage Read
-from three pages left; "after" used 100,000-row responses and Storage Read from two pages or 80,000
-rows left. That threshold was later replaced by the
-[continuation-token rule](#choosing-storage-read-for-every-paginated-result).
-
-| Result | Before | After | REST only, before | REST only, after |
-| --- | ---: | ---: | ---: | ---: |
-| 1,000 narrow rows | 0.45–0.56 | 0.49–0.51 | | |
-| 50,000 narrow rows | 0.97–1.25 | 1.10–1.21 | | |
-| 100,000 narrow rows | 2.45–2.68 | 2.47–2.75 | | |
-| 200,000 narrow rows | 4.70–5.16 | 3.99–5.52 | 4.49–5.92 | 4.63–4.68 |
-| 600,000 narrow rows | 8.49–8.72 | 4.73–5.22 | 19.89–20.42 | 13.57–14.49 |
-| 60,000 padded rows | 3.33–3.68 | 3.55–3.63 | 4.76–4.85 | 3.84–4.37 |
-
-Same setup, 100,000-row pages, Storage Read forced at any size versus
-`bigquery.query.use_storage_api_disabled_client=true`:
-
-| Result | Pages after the first | Storage Read | REST |
-| --- | ---: | ---: | ---: |
-| 120,000 narrow rows | 1 (20,000 rows) | 4.35–4.97 | 3.25–3.29 |
-| 160,000 narrow rows | 1 (60,000 rows) | 4.50–4.56 | 4.02–4.20 |
-| 200,000 narrow rows | 1 (100,000 rows) | 4.08–4.12 | 4.72–4.80 |
-| 40,000 padded rows | 1 | 3.24–3.47 | 3.03–3.12 |
-| 50,000 padded rows | 2 | 3.45–3.71 | 3.88–4.09 |
-| 6,000 rows of 3,000 bytes | 1 | 2.67–3.33 | 2.23–2.42 |
-| 10,000 rows of 3,000 bytes | 2 | 3.08–4.61 | 2.89–2.99 |
-
-Storage Read's `jobs.get` and session setup took about a second before rereading the whole result.
-A REST page cost a round trip plus about 20 µs per narrow row: for 600,000 narrow rows the first
-`jobs.query` response took 8.4–8.5 s holding 350,000 rows and 3.1–3.2 s holding 100,000.
+`jobs.query` and later REST pages request 100,000 rows. In one Rust process against
+`example-project` with `bigquery.query.disable_query_cache`, two alternating rounds per build,
+reading 600,000 rows of
+`SELECT n FROM UNNEST(GENERATE_ARRAY(1, N)) AS n ORDER BY n` over REST alone took 13.57–14.49 s,
+against 19.89–20.42 s with no `maxResults` (a first response of up to 350,000 rows) and
+10,000-row pages after it. The first response took 3.1–3.2 s holding 100,000 rows and 8.4–8.5 s
+holding 350,000: a REST page costs a round trip plus about 20 µs per narrow row. Storage Read's
+`jobs.get` and session setup cost about a second before rows arrive.
 
 ### Choosing Storage Read for every paginated result
 
@@ -568,7 +501,7 @@ Complete first responses stay on REST; explicit disabling or an unavailable sess
 fallback.
 
 `example-project` in `US`, `adbc_driver_manager` 1.12.0, PyArrow 26.0.0, default-feature release
-`cdylib` builds of the row-count/width threshold (baseline) and the continuation-token rule. Each
+`cdylib` builds of a row-count/width threshold (baseline) and the continuation-token rule. Each
 connection was warmed by one query, then five pairs ran in one Python process, alternating order,
 query cache disabled; timings include execution, fetching every batch and checking counts, sums
 and padding lengths. The queries scan no tables.
@@ -579,11 +512,11 @@ and padding lengths. The queries scan no tables.
 | 120,000 narrow rows, one further REST page | 3.574 (3.415–3.936) | 4.011 (3.694–4.585) | +0.437 s, +12.2% |
 | 6,000 rows with 3,000-byte padding, one further REST page | 2.450 (2.351–2.547) | 2.981 (2.788–3.073) | +0.531 s, +21.7% |
 
-Debug diagnostics confirmed all ten baseline paginated reads used REST and all ten candidate reads
-Storage Read; the complete-response control stayed on REST, and its overlapping ranges establish
-no change. Small paginated results pay this setup for the guarantee that a later wide row cannot
-fail REST after earlier pages were delivered. The live regression reads 2,000 rows then one of
-thirty 800,000-byte strings (24 MB, beyond REST) and checks every row and string:
+Debug diagnostics confirmed that all ten baseline paginated reads used REST and all ten candidate
+reads Storage Read; the complete-response control stayed on REST. Small paginated results pay this
+setup so that a later wide row cannot fail REST after earlier pages were delivered. The live
+regression reads 2,000 rows then one of thirty 800,000-byte strings (24 MB, beyond REST) and checks
+every row and string:
 
 ```sh
 scripts/run-one-live-test.sh reads_a_later_row_too_large_for_rest_through_storage_read
@@ -591,10 +524,10 @@ scripts/run-one-live-test.sh reads_a_later_row_too_large_for_rest_through_storag
 
 ### Transaction start
 
-A transaction in a new session used to send `jobs.query` `SELECT 1` with `createSession`, then
-`BEGIN TRANSACTION` as a named `jobs.insert` and its `getQueryResults`; one `jobs.insert` of
-`BEGIN TRANSACTION` with `createSession` now does both (its RUNNING answer already names the
-session). 2026-11-11, `example-project` with `bigquery.location=US`, release Rust builds, one warmed
+A transaction in a new session sends one `jobs.insert` of `BEGIN TRANSACTION` with
+`createSession`, whose RUNNING answer already names the session, instead of a `jobs.query`
+`SELECT 1` with `createSession` followed by a named `BEGIN TRANSACTION` job and its
+`getQueryResults`. `example-project` with `bigquery.location=US`, release Rust builds, one warmed
 database, then five fresh connections per run with autocommit disabled, timing the first
 `SELECT 1` through `execute_update`; two alternating runs per build:
 
@@ -609,8 +542,8 @@ The mock tests in `src/connection/tests/lifecycle.rs` pin the request sequence; 
 ### Foundry validation build cache
 
 The [Foundry suite](../integration/foundry-validation/README.md) builds a new wheel each run,
-reusing Cargo's `target/` unless `CARGO_TARGET_DIR` overrides it. 2026-10-23, Linux x86-64, Rust
-1.99.1, uv 0.13.5, same checkout, dependencies cached, live suite running concurrently:
+reusing Cargo's `target/` unless `CARGO_TARGET_DIR` overrides it. Linux x86-64, Rust 1.99.1, uv
+0.13.5, dependencies cached, live suite running concurrently:
 
 | Cargo artifacts | Wheel build |
 | --- | ---: |
@@ -634,10 +567,10 @@ done
 cat "$timing_dir/"*.seconds
 ```
 
-One live sample the same day: the unfiltered suite passed 566 tests and 3 subtests with 86
-expected skips; pytest took 3443.71s and the wrapper (cached wheel build, datasets, cleanup)
-3452.38s. Slowest were stream binding cases, since each bound row submits a BigQuery job: INT32
-multiple batches 126.08s, INT16 interspersed empty batches 70.90s, INT16 one batch 65.39s.
+In one live run, the unfiltered suite passed 566 tests and 3 subtests with 86 expected skips in
+3443.71s of pytest (3452.38s with the wrapper's cached wheel build, datasets and cleanup). The
+slowest cases bind streams, since each bound row submits a BigQuery job: INT32 multiple batches
+126.08s, INT16 interspersed empty batches 70.90s, INT16 one batch 65.39s.
 
 ```sh
 PYTEST_ADDOPTS='-q --durations=15' \
@@ -646,20 +579,19 @@ PYTEST_ADDOPTS='-q --durations=15' \
 
 ### Sequential databases
 
-Each database used to build its own REST connection pool, so a process opening a database per
-connection, as Python's `dbapi.connect()` does, paid a TCP and TLS handshake and a reload of the
-system's root certificates before each first request; a closed database's pool now serves the
-driver's next database. 2026-11-11, Linux x86-64; "one pool per database" is the same code with
-`IdlePools::take` (`src/rest/client.rs`) returning `None`:
+A closed database's REST connection pool serves the driver's next database, so a process opening a
+database per connection, as Python's `dbapi.connect()` does, skips a TCP and TLS handshake and a
+reload of the system's root certificates before each first request. Linux x86-64; "one pool per
+database" is the same code with `IdlePools::take` (`src/rest/client.rs`) returning `None`:
 
 | Measurement | One pool per database | Pool reuse |
 | --- | ---: | ---: |
 | 50 databases in turn on one driver, each opening a connection and sending one request to a local keep-alive HTTP/1.1 mock, `instructions:u`, release build | 816 M | 23.8 M |
 | Live, ADC user credentials: a later database's first `SELECT 1` minus its second, median over 4 runs of each run's median of 11 databases | 160 ms | 125 ms |
 
-The local count is mostly root-certificate parsing, about 16 M instructions per pool. What remains
-of the live difference is the token each new database's credential mints; that request starts when
-the connection opens. Reproduce them with:
+The local count is mostly root-certificate parsing, about 16 M instructions per pool. The remaining
+live difference is the token each new database's credential mints, a request that starts when the
+connection opens. Reproduce them with:
 
 ```sh
 cargo test --locked --release --lib --no-run   # prints the unit-test executable
@@ -671,9 +603,9 @@ scripts/run-one-live-test.sh sequential_databases_measurement --nocapture
 ### Python package import
 
 `bigquery_adbc.__version__` reads the distribution metadata on first use: `importlib.metadata` and
-the email parser it loads cost more to import than the rest of the package. 2026-11-11, Linux
-x86-64, Python 3.15.1, the locked `python/` environment, medians of 25 `-X importtime` runs and 7
-`perf stat` runs:
+the email parser it loads cost more to import than the rest of the package. Linux x86-64, Python
+3.15.1, the locked `python/` environment, medians of 25 `-X importtime` runs and 7 `perf stat`
+runs:
 
 | `import bigquery_adbc` | Eager `__version__` | On first use |
 | --- | ---: | ---: |
@@ -690,16 +622,16 @@ perf stat -e instructions:u python/.venv/bin/python -c 'import bigquery_adbc'
 
 ### C ABI calls
 
-Every exported call, stream release, runtime wait and result batch checks whether the process is
-a `fork` child of the one that created the object. That check called `getpid`, a system call
-costing about 270 ns here, which was most of the export layer's overhead. From `AdbcDriverInit`
-on, a `pthread_atfork` handler keeps a cached process ID current instead; Rust callers, which
-register no handler, still call `getpid`. The library grew 496 bytes.
-[`benches/ffi_calls.c`](../benches/ffi_calls.c) calls the vtable directly with no driver manager or
-network, 200,000 iterations, three alternating runs on 2026-11-11 (machine shared with other
-builds, unpinned); instructions are per iteration, after subtracting a zero-iteration run:
+Every exported call, stream release, runtime wait and result batch checks whether the process is a
+`fork` child of the one that created the object. From `AdbcDriverInit` on, a `pthread_atfork`
+handler keeps a cached process ID current in place of a `getpid` call, a system call of about
+270 ns that was most of the export layer's overhead; Rust callers, which register no handler,
+still call `getpid`. The library grew 496 bytes. [`benches/ffi_calls.c`](../benches/ffi_calls.c) calls
+the vtable directly with no driver manager or network, 200,000 iterations, three alternating
+unpinned runs on a machine shared with other builds; instructions are per iteration, after
+subtracting a zero-iteration run:
 
-| Case | Before ns | After ns | User instructions | Kernel instructions |
+| Case | `getpid` ns | Cached ns | User instructions | Kernel instructions |
 | --- | ---: | ---: | ---: | ---: |
 | `StatementSetOption` | 402–406 | 77–82 | 1,615 → 1,613 | 483 → 1 |
 | `StatementGetOption` | 367–375 | 59–63 | 1,355 → 1,353 | 483 → 1 |
@@ -725,6 +657,7 @@ Re-evaluating one means rebuilding the rejected code and [measuring again](#repr
 | --- | --- |
 | Column-at-a-time REST conversion | Fewer instructions in `wide/convert/1024` but slower: regrouping per-row cell vectors moves the page through memory again. |
 | A flat per-page cell slab instead of a cell vector per row | About one allocation fewer per row, but typed decode and convert slowed slightly and requested bytes rose. |
+| Special cases for single-row valid spans and run initialization in nullable dictionary expansion | Weakened the span gather's other gains. |
 | Selecting Storage Read by total row count | Rereads rows a complete first response already held; 100,000 narrow rows took longer than staying on REST. |
 | At most three queued Storage Write requests | Much slower for 200 batches of 1,024 rows over a residential uplink: the stream waits on round trips. Appends queue up to 30 MB or 1,000 requests; `scripts/run-one-live-test.sh bulk_ingests_many_small_batches --nocapture` prints the elapsed time. |
 | A full-sized first Storage Write append | Slower than aiming for 1 MB for one 500,000-row batch: that append is sent alone while a new table may be invisible, and the rest waits on it. |
