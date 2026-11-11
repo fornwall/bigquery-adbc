@@ -33,7 +33,7 @@ fn offline_execution() -> ExecutionContext {
 }
 
 /// A query that completed with `body` as its only response.
-fn completed(body: &[u8], returns_rows: bool) -> direct::CompletedQuery {
+fn completed(body: &[u8]) -> direct::CompletedQuery {
     let mut response = response::QueryResponse::decode(body, "query response").unwrap();
     let mut metadata = response::QueryMetadata::default();
     metadata.absorb_query(&mut response);
@@ -41,7 +41,6 @@ fn completed(body: &[u8], returns_rows: bool) -> direct::CompletedQuery {
         metadata,
         page: response.page(),
         completed_job: None,
-        returns_rows,
     }
 }
 
@@ -53,7 +52,7 @@ fn integer_result(values: &[&str]) -> direct::CompletedQuery {
         "totalRows": values.len().to_string(),
         "rows": values.iter().map(|value| json!({"f": [{"v": value}]})).collect::<Vec<_>>()
     });
-    completed(&serde_json::to_vec(&body).unwrap(), true)
+    completed(&serde_json::to_vec(&body).unwrap())
 }
 
 fn assert_cancelled(failure: ArrowError) {
@@ -120,7 +119,7 @@ fn a_wide_resident_row_without_a_page_token_remains_readable() {
         "totalRows": "1",
         "rows": [{"f": [{"v": value}]}]
     });
-    let complete = completed(&serde_json::to_vec(&body).unwrap(), true);
+    let complete = completed(&serde_json::to_vec(&body).unwrap());
     let mut reader = reader_from_rest_query(&execution, complete, None, None).unwrap();
     let batch = reader.next().unwrap().unwrap();
     assert_eq!(batch.num_rows(), 1);
@@ -257,7 +256,6 @@ fn a_transient_failure_describing_the_job_is_retried() {
     // A completed, job-backed result that never named its statement type.
     let complete = completed(
         br#"{"jobComplete":true,"jobReference":{"projectId":"project","jobId":"job","location":"US"},"schema":{"fields":[{"name":"value","type":"INTEGER"}]},"rows":[{"f":[{"v":"7"}]}],"totalRows":"1"}"#,
-        true,
     );
 
     let reader = reader_from_rest_query(&execution, complete, None, None).unwrap();
@@ -267,27 +265,6 @@ fn a_transient_failure_describing_the_job_is_retried() {
         "SELECT"
     );
     assert_eq!(server.stop().len(), 2);
-}
-
-#[test]
-fn an_explicit_destination_keeps_schema_metadata_but_discards_result_pages() {
-    let complete = completed(
-        br#"{"jobComplete":true,"schema":{"fields":[{"name":"value","type":"INTEGER"}]},"rows":[{"f":[{"v":"7"}]}],"totalBytesProcessed":"3","statementType":"SELECT"}"#,
-        false,
-    );
-    let execution = offline_execution();
-
-    let mut reader = reader_from_rest_query(&execution, complete, None, None).unwrap();
-    assert_eq!(reader.schema().field(0).name(), "value");
-    assert_eq!(
-        reader
-            .schema()
-            .metadata()
-            .get(crate::BIGQUERY_SCHEMA_METADATA_QUERY_TOTAL_BYTES_PROCESSED)
-            .map(String::as_str),
-        Some("3")
-    );
-    assert!(reader.next().is_none());
 }
 
 #[test]
@@ -310,7 +287,7 @@ fn empty_results_keep_metadata_and_empty_pages_follow_their_token() {
         if paginated {
             body["pageToken"] = json!("next");
         }
-        let complete = completed(&serde_json::to_vec(&body).unwrap(), true);
+        let complete = completed(&serde_json::to_vec(&body).unwrap());
         let mut reader = reader_from_rest_query(&execution, complete, None, None).unwrap();
         assert_eq!(reader.schema().field(0).data_type(), &DataType::Int64);
         assert_eq!(
@@ -362,7 +339,7 @@ fn query_response_statistics_avoid_fetching_a_job_unless_the_statement_type_is_m
         if let Some(omitted) = omitted {
             body.as_object_mut().unwrap().remove(omitted);
         }
-        let complete = completed(&serde_json::to_vec(&body).unwrap(), true);
+        let complete = completed(&serde_json::to_vec(&body).unwrap());
         let mut reader = reader_from_rest_query(&execution, complete, None, None).unwrap();
         assert_eq!(
             reader.schema().metadata()[crate::BIGQUERY_SCHEMA_METADATA_STATEMENT_TYPE],
@@ -444,7 +421,7 @@ fn only_rows_still_to_page_through_justify_a_storage_read() {
         } else {
             body["rows"] = json!(vec![json!({"f":[{"v":"7"}]}); ROWS]);
         }
-        let complete = completed(&serde_json::to_vec(&body).unwrap(), true);
+        let complete = completed(&serde_json::to_vec(&body).unwrap());
         let reader = reader_from_rest_query(&execution, complete, None, None).unwrap();
         if page_token.is_none() {
             let rows = reader.map(|batch| batch.unwrap().num_rows()).sum::<usize>();
@@ -471,7 +448,6 @@ fn a_result_too_large_for_rest_fails_without_storage_read() {
     execution.result_options.use_storage_read = false;
     let mut complete = completed(
         br#"{"jobComplete":true,"jobReference":{"projectId":"project","jobId":"job","location":"US"},"statementType":"SELECT","schema":{"fields":[{"name":"big","type":"STRING"}]},"totalRows":"2"}"#,
-        true,
     );
     complete.metadata.rows_exceed_rest = true;
 
@@ -531,7 +507,7 @@ fn a_select_identified_by_job_metadata_requires_a_result_schema() {
         if query_schema {
             body["schema"] = json!({"fields":[{"name":"query_result","type":"INTEGER"}]});
         }
-        let complete = completed(&serde_json::to_vec(&body).unwrap(), true);
+        let complete = completed(&serde_json::to_vec(&body).unwrap());
 
         let result = reader_from_rest_query(&execution, complete, None, None);
         assert_eq!(server.stop().len(), 1);
@@ -580,7 +556,6 @@ fn a_result_read_over_further_rest_pages_reports_it_once() {
     execution.result_options.use_storage_read = false;
     let complete = completed(
         br#"{"jobComplete":true,"jobReference":{"projectId":"project","jobId":"paged-diag","location":"US"},"statementType":"SELECT","schema":{"fields":[{"name":"value","type":"INTEGER"}]},"rows":[{"f":[{"v":"7"}]}],"totalRows":"3","pageToken":"second"}"#,
-        true,
     );
 
     let (rows, events) = crate::diag::capture(|| {
@@ -671,7 +646,7 @@ fn a_paginated_result_uses_storage_read_before_emitting_any_rest_rows() {
         "rows":[{"f":[{"v":"first"}]}],
         "pageToken":"wide"
     });
-    let complete = completed(&serde_json::to_vec(&body).unwrap(), true);
+    let complete = completed(&serde_json::to_vec(&body).unwrap());
     let mut reader = reader_from_rest_query(&execution, complete, None, None).unwrap();
     let batch = reader.next().unwrap().unwrap();
     assert_eq!(
@@ -752,7 +727,6 @@ fn read_through_storage_read(
     // 100,000 rows still to page through: Storage Read rereads the result instead.
     let complete = completed(
         br#"{"jobComplete":true,"jobReference":{"projectId":"project","jobId":"storage-diag","location":"US"},"statementType":"SELECT","schema":{"fields":[{"name":"value","type":"INTEGER"}]},"rows":[{"f":[{"v":"1"}]}],"totalRows":"100001","pageToken":"next"}"#,
-        true,
     );
 
     let (rows, events) = crate::diag::capture(|| {

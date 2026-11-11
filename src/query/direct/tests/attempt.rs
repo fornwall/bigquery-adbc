@@ -116,7 +116,6 @@ fn jobs_query_metadata_only_requests_no_rows_and_drops_an_unexpected_page() {
     drop(permit);
     execute.join().unwrap();
 
-    assert!(!completed.returns_rows);
     assert!(completed.metadata.schema.is_some());
     assert!(completed.page.rows.is_empty());
     assert!(completed.page.page_token.is_none());
@@ -409,7 +408,6 @@ fn destination_insert_requests_no_rows_and_drops_an_unexpected_page() {
     )
     .unwrap();
 
-    assert!(!completed.returns_rows);
     assert!(completed.metadata.schema.is_some());
     assert!(completed.page.rows.is_empty());
     assert!(completed.page.page_token.is_none());

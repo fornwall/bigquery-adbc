@@ -191,7 +191,6 @@ impl QueryResultFixture {
             metadata,
             page: response.page(),
             completed_job: None,
-            returns_rows: true,
         };
         let reader =
             reader_from_rest_query(&self.execution, complete, Some(operation.clone()), None)

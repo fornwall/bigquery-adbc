@@ -26,7 +26,6 @@ pub(super) fn reader_from_rest_query(
         mut metadata,
         page,
         completed_job,
-        returns_rows,
     } = complete;
     let result_options = execution.result_options;
     let rest_reference = metadata.job_reference.clone();
@@ -37,12 +36,11 @@ pub(super) fn reader_from_rest_query(
         "BigQuery query",
     )
     .map_err(link)?;
-    let rows_exceed_rest = returns_rows && metadata.rows_exceed_rest;
+    let rows_exceed_rest = metadata.rows_exceed_rest;
     // Later rows can exceed REST's row limit even when the first page is narrow. Choose the
     // reader before emitting any rows: switching midway would require matching row order across
     // the two APIs to avoid omissions or duplicates.
-    let storage_read = returns_rows
-        && (rows_exceed_rest || page.page_token.is_some())
+    let storage_read = (rows_exceed_rest || page.page_token.is_some())
         && rest_reference.as_ref().is_some_and(|reference| {
             crate::storage_read::eligible(
                 &execution.state,
@@ -95,9 +93,9 @@ pub(super) fn reader_from_rest_query(
     };
     let schema = schema_with_rest_metadata(schema, &metadata);
 
-    // DML, DDL and empty SELECT results need no producer, queue or conversion permits.
-    // An empty page with a continuation token can still lead to rows.
-    if !returns_rows || (page.rows.is_empty() && page.page_token.is_none() && !rows_exceed_rest) {
+    // DML, DDL, metadata-only and empty SELECT results need no producer, queue or conversion
+    // permits. An empty page with a continuation token can still lead to rows.
+    if page.rows.is_empty() && page.page_token.is_none() && !rows_exceed_rest {
         return Ok(empty_reader(schema));
     }
 

@@ -46,10 +46,9 @@ const MAX_JOB_REISSUES: usize = 3;
 pub(super) struct CompletedQuery {
     pub(super) metadata: QueryMetadata,
     pub(super) page: QueryPage,
-    /// A final `jobs.insert` response can avoid the metadata GET used by Storage Read.
+    /// The finished job's resource, when the attempt already has it, sparing the reader its
+    /// `jobs.get`.
     pub(super) completed_job: Option<JobResponse>,
-    /// Whether the caller requested an ADBC result stream rather than completion metadata alone.
-    pub(super) returns_rows: bool,
 }
 
 pub(super) fn complete_statement_query(
@@ -305,7 +304,6 @@ pub(super) async fn complete_attached_query(
             metadata,
             page,
             completed_job: None,
-            returns_rows: true,
         }),
         Err(AttemptFailure::Request(failure)) => Err(failure),
         Err(AttemptFailure::Terminal(terminal)) => {

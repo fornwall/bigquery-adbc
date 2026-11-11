@@ -270,23 +270,22 @@ async fn execute_jobs_insert(
     Ok(completed(decoder, metadata, page, completed_job))
 }
 
-/// A page is kept only where the caller asked for rows; `maxResults=0` returns none to keep.
+/// A metadata-only completion keeps no page, which leaves its reader empty: `maxResults=0`
+/// returns no rows, but can still return a page token.
 fn completed(
     decoder: &QueryResponseDecoder,
     metadata: QueryMetadata,
     page: QueryPage,
     completed_job: Option<JobResponse>,
 ) -> CompletedQuery {
-    let returns_rows = decoder.result_mode.returns_rows();
     CompletedQuery {
         metadata,
-        page: if returns_rows {
+        page: if decoder.result_mode.returns_rows() {
             page
         } else {
             QueryPage::default()
         },
         completed_job,
-        returns_rows,
     }
 }
 
