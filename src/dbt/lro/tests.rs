@@ -17,7 +17,7 @@ use tokio::time::Instant;
 use super::{Delivery, PollBackoff};
 use crate::rest::client::rest_client;
 use crate::rest::request::Request;
-use crate::rest::retry::MAX_ATTEMPTS;
+use crate::rest::retry::{MAX_ATTEMPTS, RetryDelays};
 use crate::test_support::errors::assert_failure;
 use crate::test_support::http::{capture_requests, capture_requests_until_stopped, ok};
 
@@ -388,6 +388,39 @@ fn a_cancel_during_a_connection_that_then_fails_reports_the_cancellation() {
             "{}",
             failure.message
         );
+    }
+}
+
+/// A submission whose connections could not be established sent nothing, so it started nothing:
+/// its error never says the work may have started, and even a submission that is never resent
+/// after a failure that may have reached the service is resent after this one.
+#[test]
+fn an_unconnected_submission_started_nothing_and_is_resent() {
+    let endpoint = crate::test_support::UNREACHABLE_ENDPOINT;
+    for delivery in [Delivery::Once, Delivery::Deduplicated] {
+        let runtime = crate::runtime::new_runtime().unwrap();
+        let (_cancellation, operation) = poller_operation(&runtime);
+        let credentials = anonymous::Builder::new().build();
+        let mut poller = test_poller(&operation, &credentials, endpoint.to_owned());
+        poller.resend_delays = RetryDelays::flat(Duration::from_millis(1));
+        let url = format!("{endpoint}/v1/submit");
+        let attempts = std::cell::Cell::new(0);
+        let factory = || {
+            attempts.set(attempts.get() + 1);
+            Request::post_json(&url, &b"{}"[..], "submit the work")
+        };
+
+        let failure = runtime
+            .block_on(poller.request(delivery, &factory))
+            .unwrap_err();
+
+        assert_eq!(failure.status, Status::IO, "{}", failure.message);
+        assert!(
+            !failure.message.contains("may have started"),
+            "{}",
+            failure.message
+        );
+        assert_eq!(attempts.get(), MAX_ATTEMPTS, "{}", failure.message);
     }
 }
 

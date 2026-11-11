@@ -88,6 +88,8 @@ pub(super) struct LroPoller<'a> {
     name: Option<String>,
     /// How long [`Self::poll`] outlasts consecutive failures. See [`JOB_WAIT_OUTAGE`].
     outage: Duration,
+    /// The backoff before [`Self::request`] resends.
+    resend_delays: RetryDelays,
 }
 
 /// Backoff, deadline, and the names a long-running operation's messages use.
@@ -122,6 +124,7 @@ impl<'a> LroPoller<'a> {
             seconds: budget.seconds,
             name: None,
             outage: JOB_WAIT_OUTAGE,
+            resend_delays: RetryDelays::SERVICE,
         }
     }
 
@@ -182,8 +185,8 @@ impl<'a> LroPoller<'a> {
 
     /// Sends `request` under `delivery`, within the deadline and the [`MAX_ATTEMPTS`] limit. A
     /// submission that ends without a verdict says the work may have started, since nothing names
-    /// it yet. Errors must not expose raw response bodies. The factory is a `dyn` so that one
-    /// retry loop serves every caller.
+    /// it yet, unless no attempt that failed transiently left the client. Errors must not expose
+    /// raw response bodies. The factory is a `dyn` so that one retry loop serves every caller.
     pub(super) async fn request<'r>(
         &self,
         delivery: Delivery,
@@ -197,15 +200,20 @@ impl<'a> LroPoller<'a> {
                 if self.backoff.expired() {
                     return Err(self.timeout());
                 }
-                let (class, failure) = match Box::pin(self.attempt(delivery, request())).await {
+                let start = RequestStart::default();
+                let attempt = self.attempt(delivery, request(), &start);
+                let (class, failure) = match Box::pin(attempt).await {
                     Ok(answer) => return Ok(answer),
                     Err(rejected) => rejected,
                 };
                 failures += 1;
-                unsettled |= class == RetryClass::Transient;
+                // A submission whose connection could not be established, or that never reached
+                // the network, sent nothing: it started no work, so even `Once` may resend it.
+                let sent = start.started();
+                unsettled |= class == RetryClass::Transient && sent;
                 let resend = match class {
                     RetryClass::Final => false,
-                    RetryClass::Transient => delivery != Delivery::Once,
+                    RetryClass::Transient => delivery != Delivery::Once || !sent,
                     RetryClass::RateLimited => true,
                 };
                 if !resend || failures >= MAX_ATTEMPTS || self.backoff.expired() {
@@ -216,7 +224,7 @@ impl<'a> LroPoller<'a> {
                     "resending a request after transient failure {failures}: {}",
                     failure.message
                 );
-                let delay = RetryDelays::SERVICE.delay(class, failures);
+                let delay = self.resend_delays.delay(class, failures);
                 let wake = Instant::now() + delay;
                 let wake = self
                     .backoff
@@ -240,17 +248,19 @@ impl<'a> LroPoller<'a> {
 
     /// One send, with the failure classified for a retry loop. A 2xx body that does not decode
     /// may be cut short, so it is transient; a JSON document of the wrong shape is final.
+    /// A submission sets `start` once it may have left; a read leaves it unset.
     async fn attempt(
         &self,
         delivery: Delivery,
         request: Request<'_>,
+        start: &RequestStart,
     ) -> std::result::Result<JsonValue, (RetryClass, Error)> {
         let context = request.context;
         let answer = match delivery {
             Delivery::Idempotent => {
                 send(Some(self.operation), self.credentials, &self.http, request).await
             }
-            Delivery::Deduplicated | Delivery::Once => self.submit(request).await,
+            Delivery::Deduplicated | Delivery::Once => self.submit(request, start).await,
         };
         let body = classify(answer, &format!("failed to {context}"))?;
         let value: JsonValue = decode_json(&body, &format!("the response to {context}"))
@@ -270,11 +280,14 @@ impl<'a> LroPoller<'a> {
 
     /// Sends a submission, which a cancel stops only until it may have left: nothing exists before
     /// that, and only its answer names the work afterwards. A connection that could not be
-    /// established clears the start signal, since it sent nothing, so that failure after a cancel
-    /// reports the cancellation.
-    async fn submit(&self, request: Request<'_>) -> Result<(reqwest::StatusCode, bytes::Bytes)> {
-        let start = RequestStart::default();
-        let request = request.with_start_signal(&start);
+    /// established clears `start`, since it sent nothing, so that failure after a cancel reports
+    /// the cancellation.
+    async fn submit(
+        &self,
+        request: Request<'_>,
+        start: &RequestStart,
+    ) -> Result<(reqwest::StatusCode, bytes::Bytes)> {
+        let request = request.with_start_signal(start);
         let mut sending = Box::pin(send(None, self.credentials, &self.http, request));
         tokio::select! {
             biased;
@@ -322,7 +335,8 @@ impl<'a> LroPoller<'a> {
             if !self.backoff.pause(self.operation, quota).await? {
                 return Err(self.timeout());
             }
-            let poll = self.attempt(Delivery::Idempotent, Request::get(url, context));
+            let start = RequestStart::default();
+            let poll = self.attempt(Delivery::Idempotent, Request::get(url, context), &start);
             let (class, failure) = match Box::pin(poll).await {
                 Ok(polled) => return Ok(polled),
                 Err(rejected) => rejected,

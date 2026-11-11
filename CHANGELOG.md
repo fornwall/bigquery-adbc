@@ -77,6 +77,9 @@ changes.
 - A dbt 2.0 Dataproc or Vertex AI submission cancelled while it was connecting, whose connection
   then failed, reports `CANCELLED` instead of the connect failure and no longer says the work may
   have started.
+- A dbt 2.0 Dataproc or Vertex AI submission that could not connect no longer says the work may
+  have started, and a Vertex AI notebook execution is resent after such a failure, since nothing
+  was sent.
 - A `create` bulk ingest whose commit is refused says it kept the table it created and suggests
   retrying with `append`, rather than suggesting a retry that would fail on that table. A commit
   that ends without an answer may have committed every row, so it says to check the table first.
