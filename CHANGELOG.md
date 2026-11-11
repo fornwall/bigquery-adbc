@@ -59,6 +59,9 @@ changes.
 - A bulk-ingest append into an existing table converts each row of its first batch once, as it is
   sent, instead of also checking the whole batch first; a refused value still fails the ingest
   with nothing committed. `create` and `replace` still check it before changing the target.
+- Bulk ingest expands dictionary-encoded string, binary and fixed-width columns about twice as
+  fast when their keys are scattered, as a pandas categorical's are, and refuses a dictionary whose
+  expansion exceeds 32-bit offsets before copying any of it.
 - The patched dbt is built from dbt's `main` at `ef0aa4db3a` (2026-11-11).
 - The driver uses `google-cloud-bigquery` 1.0.0 for Storage Read and Write, which
   `ADBC_INFO_VENDOR_VERSION` reports.

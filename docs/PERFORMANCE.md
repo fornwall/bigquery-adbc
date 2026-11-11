@@ -206,6 +206,28 @@ user instructions over 1,000 iterations, including harness, preparation and drop
 37.513→9.483 billion, scattered 37.512→32.850, alternating 28.789→30.263. Check against Arrow's
 `take` with `cargo test --locked --lib types::cast::tests::`.
 
+**Direct dictionary gathers.** Keys resolve once into value indices; fixed-width values are then
+copied a run at a time and string or binary values row by row (or through `MutableArrayData`
+when runs average eight rows or more), instead of one type-erased `MutableArrayData` extend per
+run, which scattered keys make one per row. Same fixtures, CPU 5, median of three alternating
+runs:
+
+| Dictionary keys, 65,536 rows | Columns | Before, ms | After, ms |
+| --- | ---: | ---: | ---: |
+| Ascending runs, four nulls per 32 rows | 2 | 1.433 | 1.447 |
+| Ascending runs, four nulls per 32 rows | 16 | 4.437 | 4.402 |
+| Scattered keys, four nulls per 32 rows | 2 | 1.470 | 0.715 |
+| Scattered keys, four nulls per 32 rows | 16 | 12.699 | 5.822 |
+| Scattered keys, alternating nulls | 2 | 1.341 | 0.605 |
+| Scattered keys, alternating nulls | 16 | 10.738 | 4.871 |
+
+Two-column calls and requested bytes: scattered 32 / 4,932,496 → 20 / 2,974,292, alternating 31 /
+2,835,344 → 20 / 2,493,524, runs 32 / 4,932,496 → 30 / 5,981,104 (the index vector, 8 bytes a
+row). User instructions over 1,000 two-column iterations: scattered 32.99→16.37 billion,
+alternating 30.40→13.63, runs 9.63→10.06. Strings are checked as UTF-8 again when their array is
+built, since only `unsafe` skips that; a builder-based gather avoided it for another 25% but
+cost 21 KB more library. The library grew 18,672 bytes (0.22%).
+
 **Large-offset byte columns.** Narrowing LargeUtf8/Binary offsets preallocates one vector per
 column after validating the span, keeping payload buffers shared. `large-offsets` versus
 incremental growth:

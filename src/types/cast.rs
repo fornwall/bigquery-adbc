@@ -21,9 +21,14 @@ use arrow_array::types::{
 };
 use arrow_array::{
     Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType, BinaryArray, FixedSizeBinaryArray,
-    GenericByteArray, GenericByteViewArray, PrimitiveArray, downcast_dictionary_array,
+    GenericByteArray, GenericByteViewArray, OffsetSizeTrait, PrimitiveArray,
+    downcast_dictionary_array,
 };
-use arrow_buffer::{IntervalMonthDayNano, NullBuffer, OffsetBuffer, ScalarBuffer};
+use arrow_buffer::{
+    BooleanBuffer, Buffer, IntervalMonthDayNano, MutableBuffer, NullBuffer, OffsetBuffer,
+    ScalarBuffer,
+};
+use arrow_data::ArrayData;
 use arrow_data::transform::MutableArrayData;
 use arrow_schema::{DataType, IntervalUnit, TimeUnit};
 
@@ -132,9 +137,10 @@ fn out_of_range() -> String {
 
 /// Materializes a dictionary as its value type, the shape the Storage Write API expects.
 ///
-/// This is `arrow_select::take::take(values, keys)` narrowed to the one gather the driver needs.
-/// `MutableArrayData` copies whole rows type-erased, so every value type stays supported without
-/// linking arrow-select's per-type take kernels.
+/// This is `arrow_select::take::take(values, keys)` narrowed to the one gather the driver needs,
+/// without linking arrow-select's per-type take kernels. Fixed-width values are copied a run of
+/// ascending keys at a time and byte values row by row; other value types, and byte values in
+/// long runs, go through `MutableArrayData`, one type-erased extend per run.
 fn unpack_dictionary(column: &ArrayRef) -> CastResult {
     downcast_dictionary_array!(
         column => expand_dictionary(column.values(), column.keys()),
@@ -169,79 +175,228 @@ where
             return Ok(values.slice(start, keys.len()));
         }
     }
-    gather_dictionary(values, keys.len(), keys.nulls(), &|row| {
-        let key = keys.value(row);
-        key.to_usize().ok_or_else(|| key.to_string())
-    })
+    // Only reading the keys is generic, so every gather below is instantiated once.
+    let mut indices = keys
+        .values()
+        .iter()
+        .map(|key| key.to_usize().unwrap_or(NULL_ROW))
+        .collect::<Vec<_>>();
+    if let Err(row) = resolve_indices(&mut indices, keys.nulls(), values) {
+        return Err(key_out_of_bounds(&keys.value(row), values.len()));
+    }
+    match values.data_type() {
+        DataType::Utf8 => {
+            let text = values.as_string::<i32>();
+            gather_bytes(values, text.value_offsets(), text.value_data(), &indices)
+        }
+        DataType::LargeUtf8 => {
+            let text = values.as_string::<i64>();
+            gather_bytes(values, text.value_offsets(), text.value_data(), &indices)
+        }
+        DataType::Binary => {
+            let bytes = values.as_binary::<i32>();
+            gather_bytes(values, bytes.value_offsets(), bytes.value_data(), &indices)
+        }
+        DataType::LargeBinary => {
+            let bytes = values.as_binary::<i64>();
+            gather_bytes(values, bytes.value_offsets(), bytes.value_data(), &indices)
+        }
+        data_type if data_type.primitive_width().is_some() => gather_fixed_width(values, &indices),
+        _ => gather_runs(values, &indices),
+    }
 }
 
-/// Gathers `values` by the keys of `len` rows, `nulls` marking the null ones. `index` reads a
-/// row's key as an index, or spells a negative key; it is the only step per key type, so the
-/// gather is instantiated once.
-fn gather_dictionary(
+/// A row whose key, or the value its key names, is NULL, among the indices a gather copies.
+const NULL_ROW: usize = usize::MAX;
+
+/// Turns each row's key, read as an index (or [`NULL_ROW`] for a negative one), into the value
+/// index the gathers copy, or [`NULL_ROW`] where the key or its value is NULL.
+///
+/// Every key is checked before anything is copied, so a bad one fails first, naming its row:
+/// Arrow validates dictionary keys on construction, but arrays imported over the C data interface
+/// arrive with whatever keys the producer wrote.
+fn resolve_indices(
+    indices: &mut [usize],
+    key_nulls: Option<&NullBuffer>,
     values: &ArrayRef,
-    len: usize,
-    nulls: Option<&NullBuffer>,
-    index: &dyn Fn(usize) -> std::result::Result<usize, String>,
-) -> CastResult {
-    let expand_failed =
-        |source: arrow_schema::ArrowError| format!("failed to expand the dictionary: {source}");
+) -> std::result::Result<(), usize> {
     let value_count = values.len();
-    // Arrow validates dictionary keys on construction, but arrays imported over the C data
-    // interface arrive with whatever keys the producer wrote.
-    let resolve = |row| {
-        match index(row) {
-            Ok(index) if index < value_count => Ok(index),
-            Ok(index) => Err(index.to_string()),
-            Err(key) => Err(key),
+    let key_nulls = key_nulls.filter(|nulls| nulls.null_count() > 0);
+    let value_nulls = values.nulls().filter(|nulls| nulls.null_count() > 0);
+    for (row, index) in indices.iter_mut().enumerate() {
+        if key_nulls.is_some_and(|nulls| nulls.is_null(row)) {
+            *index = NULL_ROW;
+        } else if *index >= value_count {
+            return Err(row);
+        } else if value_nulls.is_some_and(|nulls| nulls.is_null(*index)) {
+            *index = NULL_ROW;
         }
-        .map_err(|key| {
-            format!("dictionary key {key} is out of bounds for {value_count} dictionary values")
-        })
-    };
-    let nulls = nulls.filter(|nulls| nulls.null_count() > 0);
+    }
+    Ok(())
+}
+
+#[cold]
+#[inline(never)]
+fn key_out_of_bounds(key: &dyn std::fmt::Display, value_count: usize) -> String {
+    format!("dictionary key {key} is out of bounds for {value_count} dictionary values")
+}
+
+/// How many rows from `row` on continue the ascending run of value indices `row` starts; one for
+/// a lone index, and for a [`NULL_ROW`].
+fn run_length(indices: &[usize], row: usize) -> usize {
+    match indices.get(row..) {
+        Some([first, rest @ ..]) if *first != NULL_ROW => {
+            1 + rest
+                .iter()
+                .zip(first + 1..)
+                .take_while(|&(&index, expected)| index == expected)
+                .count()
+        }
+        _ => 1,
+    }
+}
+
+/// Gathers any value type by its value indices, one `MutableArrayData` extend per run of
+/// ascending indices and one per run of [`NULL_ROW`]s.
+fn gather_runs(values: &ArrayRef, indices: &[usize]) -> CastResult {
     let data = values.to_data();
-    let mut expanded = MutableArrayData::new(vec![&data], nulls.is_some(), len);
-    let gather_valid = |expanded: &mut MutableArrayData<'_>, rows: std::ops::Range<usize>| {
-        // `try_extend` copies a range from every value buffer, so gather each ascending run of
-        // keys in one call.
-        let mut run: Option<(usize, usize)> = None;
-        for row in rows {
-            let index = resolve(row)?;
-            match run {
-                Some((start, end)) if index == end => run = Some((start, end + 1)),
-                Some((start, end)) => {
-                    expanded.try_extend(0, start, end).map_err(expand_failed)?;
-                    run = Some((index, index + 1));
-                }
-                None => run = Some((index, index + 1)),
-            }
-        }
-        if let Some((start, end)) = run {
-            expanded.try_extend(0, start, end).map_err(expand_failed)?;
-        }
-        Ok::<_, String>(())
-    };
-    if let Some(nulls) = nulls {
-        let mut end = 0;
-        for (start, valid_end) in nulls.valid_slices() {
-            if start != end {
-                expanded
-                    .try_extend_nulls(start - end)
-                    .map_err(expand_failed)?;
-            }
-            gather_valid(&mut expanded, start..valid_end)?;
-            end = valid_end;
-        }
-        if end != len {
-            expanded
-                .try_extend_nulls(len - end)
-                .map_err(expand_failed)?;
-        }
-    } else {
-        gather_valid(&mut expanded, 0..len)?;
+    let mut expanded =
+        MutableArrayData::new(vec![&data], indices.contains(&NULL_ROW), indices.len());
+    let mut row = 0;
+    while let Some(&index) = indices.get(row) {
+        let extended = if index == NULL_ROW {
+            let nulls = indices
+                .get(row..)
+                .unwrap_or_default()
+                .iter()
+                .take_while(|&&index| index == NULL_ROW)
+                .count();
+            row += nulls;
+            expanded.try_extend_nulls(nulls)
+        } else {
+            let length = run_length(indices, row);
+            row += length;
+            expanded.try_extend(0, index, index + length)
+        };
+        extended.map_err(|source| format!("failed to expand the dictionary: {source}"))?;
     }
     Ok(arrow_array::make_array(expanded.freeze()))
+}
+
+/// The average run of ascending keys from which one `MutableArrayData` extend per run beats
+/// appending a run's byte values one at a time.
+const MIN_RUN_ROWS: usize = 8;
+
+/// Gathers the string or binary `values`, whose offsets and bytes these are, refusing an expansion
+/// past `O`'s offsets before copying any. Building the array checks it again, UTF-8 included,
+/// which only a constructor without the checks, and so `unsafe`, would skip.
+fn gather_bytes<O: OffsetSizeTrait>(
+    values: &ArrayRef,
+    offsets: &[O],
+    bytes: &[u8],
+    indices: &[usize],
+) -> CastResult {
+    let value = |index: usize| {
+        let start = offsets.get(index)?.as_usize();
+        bytes.get(start..offsets.get(index + 1)?.as_usize())
+    };
+    let mut length = 0_usize;
+    let mut runs = 0_usize;
+    let mut previous = NULL_ROW;
+    for &index in indices {
+        if index != NULL_ROW {
+            let value = value(index).ok_or_else(out_of_range)?;
+            length = length.checked_add(value.len()).ok_or_else(out_of_range)?;
+            // `previous + 1` cannot overflow: a value index is below the value count.
+            runs += usize::from(previous == NULL_ROW || index != previous + 1);
+        }
+        previous = index;
+    }
+    if O::from_usize(length).is_none() {
+        return Err(format!(
+            "{length} bytes of expanded dictionary values do not fit {}-bit offsets",
+            size_of::<O>() * 8
+        ));
+    }
+    if runs.saturating_mul(MIN_RUN_ROWS) <= indices.len() {
+        return gather_runs(values, indices);
+    }
+    let mut gathered_offsets = Vec::with_capacity(indices.len() + 1);
+    let mut gathered = Vec::with_capacity(length);
+    gathered_offsets.push(O::usize_as(0));
+    for &index in indices {
+        if index != NULL_ROW {
+            gathered.extend_from_slice(value(index).unwrap_or_default());
+        }
+        // Every prefix of the checked total fits `O`.
+        gathered_offsets.push(O::usize_as(gathered.len()));
+    }
+    ArrayData::builder(values.data_type().clone())
+        .len(indices.len())
+        .add_buffer(Buffer::from_vec(gathered_offsets))
+        .add_buffer(Buffer::from_vec(gathered))
+        .nulls(gathered_nulls(indices))
+        .build()
+        .map(arrow_array::make_array)
+        .map_err(|source| format!("failed to expand the dictionary: {source}"))
+}
+
+/// The NULL rows of a gather by `indices`.
+fn gathered_nulls(indices: &[usize]) -> Option<NullBuffer> {
+    // Sixty-four rows a word, the first in the lowest bit, as Arrow's bitmaps order them.
+    let words = indices
+        .chunks(64)
+        .map(|rows| {
+            rows.iter()
+                .rev()
+                .fold(0_u64, |word, &index| {
+                    word << 1 | u64::from(index != NULL_ROW)
+                })
+                .to_le()
+        })
+        .collect::<Vec<_>>();
+    let valid = BooleanBuffer::new(Buffer::from_vec(words), 0, indices.len());
+    Some(NullBuffer::new(valid)).filter(|nulls| nulls.null_count() > 0)
+}
+
+/// Gathers primitive values, which share one layout per byte width whatever their type, copying
+/// each run of ascending value indices at once.
+fn gather_fixed_width(values: &ArrayRef, indices: &[usize]) -> CastResult {
+    let data = values.to_data();
+    let width = data.data_type().primitive_width().ok_or_else(unsupported)?;
+    let source = data
+        .buffers()
+        .first()
+        .and_then(|buffer| buffer.as_slice().get(data.offset().checked_mul(width)?..))
+        .ok_or_else(out_of_range)?;
+    let values_at = |index: usize, count: usize| {
+        source.get(index.checked_mul(width)?..index.checked_add(count)?.checked_mul(width)?)
+    };
+    let mut gathered =
+        MutableBuffer::new(indices.len().checked_mul(width).ok_or_else(out_of_range)?);
+    let mut row = 0;
+    while let Some(&index) = indices.get(row) {
+        if index == NULL_ROW {
+            gathered.extend_zeros(width);
+            row += 1;
+            continue;
+        }
+        // A lone index, as scattered keys make every one, skips measuring a run.
+        let length = if indices.get(row + 1) == Some(&(index + 1)) {
+            run_length(indices, row)
+        } else {
+            1
+        };
+        gathered.extend_from_slice(values_at(index, length).ok_or_else(out_of_range)?);
+        row += length;
+    }
+    ArrayData::builder(values.data_type().clone())
+        .len(indices.len())
+        .add_buffer(gathered.into())
+        .nulls(gathered_nulls(indices))
+        .build()
+        .map(arrow_array::make_array)
+        .map_err(|source| format!("failed to expand the dictionary: {source}"))
 }
 
 fn to_int64(column: &ArrayRef) -> CastResult {

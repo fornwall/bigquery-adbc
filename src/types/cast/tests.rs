@@ -538,11 +538,22 @@ fn dictionary_expansion_matches_arrow_select_take() {
     use arrow_array::{Int8Array, ListArray};
     use arrow_select::take::take;
 
-    // One representative per value layout the type-erased gather must copy correctly:
-    // variable-width bytes, primitives, decimals with parameters, zoned timestamps, lists.
+    // One representative per value layout the gathers must copy correctly: each byte type, with
+    // values sliced away from their buffers' start, primitives, decimals with parameters, zoned
+    // timestamps, lists.
     let value_arrays: Vec<ArrayRef> = vec![
         Arc::new(StringArray::from(vec![Some("a"), None, Some("bcd")])),
+        Arc::new(
+            StringArray::from(vec![Some("skipped"), Some("a"), None, Some("bcd")]).slice(1, 3),
+        ),
+        Arc::new(LargeStringArray::from(vec![Some("a"), None, Some("bcd")])),
+        Arc::new(LargeBinaryArray::from_opt_vec(vec![
+            Some(b"ab".as_slice()),
+            None,
+            Some(b""),
+        ])),
         Arc::new(Int64Array::from(vec![Some(1), None, Some(i64::MAX)])),
+        Arc::new(Int64Array::from(vec![Some(9), Some(1), None, Some(i64::MAX)]).slice(1, 3)),
         Arc::new(BinaryArray::from_opt_vec(vec![
             Some(b"ab".as_slice()),
             None,
@@ -652,42 +663,67 @@ fn noncontiguous_dictionary_keys_match_arrow_take() {
 
 #[test]
 fn nullable_dictionary_runs_match_arrow_take_across_slices() {
-    let values: ArrayRef = Arc::new(StringArray::from(vec![
-        Some("zero"),
-        None,
-        Some("two"),
-        Some("three"),
-        Some("four"),
-    ]));
-    for valid in [
-        vec![false; 160],
-        (0..160).map(|row| row % 32 < 28).collect(),
-        (0..160).map(|row| row % 2 == 0).collect(),
-    ] {
-        let keys = Int32Array::new(
-            valid
-                .iter()
-                .enumerate()
-                .map(|(row, &valid)| {
-                    if valid {
-                        i32::try_from(row % 5).unwrap()
-                    } else {
-                        -1
-                    }
-                })
-                .collect::<Vec<_>>()
-                .into(),
-            Some(NullBuffer::from(valid)),
-        );
-        for start in [0, 1, 7, 8, 31, 63, 64] {
-            for length in [0, 1, 3, 32, 65] {
-                let keys = keys.slice(start, length);
-                let expanded = super::expand_dictionary(&values, &keys).unwrap();
-                let expected = arrow_select::take::take(values.as_ref(), &keys, None).unwrap();
-                assert_eq!(expanded.as_ref(), expected.as_ref(), "{start}/{length}");
+    // Five values make ascending key runs too short for `MutableArrayData`, so they are copied row
+    // by row; sixty-four make them long enough for it. A NULL value inside a run ends it.
+    let text = |count: usize| -> ArrayRef {
+        Arc::new(StringArray::from_iter(
+            (0..count).map(|index| (index % 7 != 1).then(|| format!("value {index}"))),
+        ))
+    };
+    let numbers = |count: usize| -> ArrayRef {
+        Arc::new(Int64Array::from_iter((0..count).map(|index| {
+            (index % 7 != 1).then(|| i64::try_from(index).unwrap())
+        })))
+    };
+    for values in [text(5), numbers(5), text(64), numbers(64)] {
+        for valid in [
+            vec![false; 160],
+            (0..160).map(|row| row % 32 < 28).collect(),
+            (0..160).map(|row| row % 2 == 0).collect(),
+        ] {
+            let keys = Int32Array::new(
+                valid
+                    .iter()
+                    .enumerate()
+                    .map(|(row, &valid)| {
+                        if valid {
+                            i32::try_from(row % values.len()).unwrap()
+                        } else {
+                            -1
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .into(),
+                Some(NullBuffer::from(valid)),
+            );
+            for start in [0, 1, 7, 8, 31, 63, 64] {
+                for length in [0, 1, 3, 32, 65] {
+                    let keys = keys.slice(start, length);
+                    let expanded = super::expand_dictionary(&values, &keys).unwrap();
+                    let expected = arrow_select::take::take(values.as_ref(), &keys, None).unwrap();
+                    assert_eq!(
+                        expanded.as_ref(),
+                        expected.as_ref(),
+                        "{} values, {start}/{length}",
+                        values.len()
+                    );
+                }
             }
         }
     }
+}
+
+/// Repeating one value can expand a small dictionary past 32-bit offsets. That is refused from the
+/// keys alone, before gigabytes are copied into a buffer that could never be an array.
+#[test]
+fn dictionary_expansion_past_32_bit_offsets_is_refused_before_copying() {
+    let values: ArrayRef = Arc::new(StringArray::from(vec!["x".repeat(1 << 20)]));
+    let keys = Int32Array::from(vec![0; 2048]);
+    let message = super::expand_dictionary(&values, &keys).unwrap_err();
+    assert_eq!(
+        message,
+        "2147483648 bytes of expanded dictionary values do not fit 32-bit offsets"
+    );
 }
 
 #[test]
