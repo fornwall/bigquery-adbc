@@ -379,6 +379,52 @@ fn contains_reader_panics_in_release() {
     assert!(stream.private_data().is_null());
 }
 
+/// A reader that records when it is dropped.
+struct DropRecorder(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for DropRecorder {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Iterator for DropRecorder {
+    type Item = Result<RecordBatch, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        None
+    }
+}
+
+impl RecordBatchReader for DropRecorder {
+    fn schema(&self) -> SchemaRef {
+        Arc::new(Schema::empty())
+    }
+}
+
+/// A `fork` child releasing an inherited stream empties it without dropping its reader, whose
+/// destructors could wait on a lock held by a thread the child lacks. In the process that
+/// exported it, release drops the reader.
+#[test]
+fn releasing_an_inherited_stream_does_not_drop_its_reader() {
+    for (inherited, expect_dropped) in [(false, true), (true, false)] {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut stream = export_reader(Box::new(DropRecorder(dropped.clone())));
+        if inherited {
+            // SAFETY: The live stream's private data is the `PrivateData` export_reader boxed,
+            // and nothing else accesses it here. No process has ID 0.
+            unsafe { (*stream.private_data().cast::<PrivateData>()).process = 0 };
+        }
+        release(&mut stream);
+        assert!(stream.release().is_none() && stream.private_data().is_null());
+        assert_eq!(
+            dropped.load(std::sync::atomic::Ordering::SeqCst),
+            expect_dropped,
+            "inherited: {inherited}"
+        );
+    }
+}
+
 /// A nonconforming host may release a stream twice, or call callback pointers it copied before
 /// the release. The driver must survive both.
 #[test]

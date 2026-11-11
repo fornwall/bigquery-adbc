@@ -58,7 +58,9 @@ Open limitations and missing test coverage. Behavior is documented in the
 - Handles and result streams do not survive `fork`, because the runtime's worker threads do not; a
   child must open its own database. Through the C API, an inherited handle returns `INVALID_STATE`,
   but a call can block forever if another thread was creating or releasing a handle during the
-  fork, since that lock stays held. In Rust, a blocking call panics.
+  fork, since that lock stays held. Releasing an inherited handle or result stream leaks it, since
+  its destructors could wait on locks held by threads the fork did not copy. In Rust, a blocking
+  call panics.
 - FFI imports trust the producer's memory. The C Data Interface carries no allocation lengths, so
   even `validate_full` can read out of bounds if producer-supplied offsets overstate an allocation.
 

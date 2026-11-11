@@ -338,15 +338,16 @@ fn cancel_without_an_installed_handle_is_an_invalid_state() {
 }
 
 /// `fork` leaves a child no runtime workers. Using the object is the caller's mistake, so it is
-/// refused as one: no panic, nothing poisoned, and `Release` still works.
+/// refused as one: no panic, nothing poisoned, and `Release` still empties the slot. It does not
+/// drop the object, whose destructors could wait on a lock held by a thread the child lacks.
 #[test]
-fn an_object_inherited_across_fork_is_refused_and_can_still_be_released() {
-    let cancelled = Arc::new(AtomicBool::new(false));
+fn an_object_inherited_across_fork_is_refused_and_released_without_dropping_it() {
+    let (cancelled, dropped) = (Arc::new(AtomicBool::new(false)), Arc::default());
     let mut slot = Box::new(std::ptr::null_mut());
     let inherited = Exported {
         process: 0,
         ..Exported::new(
-            0_u32,
+            DropFlag(Arc::clone(&dropped)),
             Some(Box::new(RecordingCancel(cancelled.clone()))),
             None,
         )
@@ -356,13 +357,27 @@ fn an_object_inherited_across_fork_is_refused_and_can_still_be_released() {
 
     for _ in 0..2 {
         let (status, message) = call(|error| {
-            // SAFETY: The slot holds a `u32` object and the error output is fresh.
-            unsafe { dispatch::<u32, _>(&raw const *slot, "statement", error, |_| Ok(())) }
+            // SAFETY: The slot holds a `DropFlag` object and the error output is fresh.
+            unsafe { dispatch::<DropFlag, _>(&raw const *slot, "statement", error, |_| Ok(())) }
         });
         assert_eq!(status, ADBC_STATUS_INVALID_STATE, "{message:?}");
         assert_eq!(message.as_deref(), Some(INHERITED_ACROSS_FORK));
     }
-    assert_eq!(cancel_slot(&mut slot), ADBC_STATUS_INVALID_STATE);
+    // SAFETY: As above; cancellation and release take no state lock.
+    unsafe {
+        assert_eq!(
+            cancel::<DropFlag>(&raw const *slot, "statement", null()),
+            ADBC_STATUS_INVALID_STATE
+        );
+        assert_eq!(
+            release::<DropFlag>(&raw mut *slot, "statement", null()),
+            ADBC_STATUS_OK
+        );
+    }
     assert!(!cancelled.load(Ordering::SeqCst));
-    assert_eq!(release_slot(&mut slot), ADBC_STATUS_OK);
+    assert!(slot.is_null(), "Release empties the slot");
+    assert!(
+        !dropped.load(Ordering::SeqCst),
+        "a fork child ran the inherited object's destructors"
+    );
 }

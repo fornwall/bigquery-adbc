@@ -357,7 +357,17 @@ pub(crate) unsafe fn release<S>(
         }
         // SAFETY: taken is the handle's Arc::into_raw reference for S, which emptying the slot
         // transferred to this call exactly once.
-        drop(unsafe { Arc::from_raw(taken.cast_const().cast::<Exported<S>>()) });
+        let exported = unsafe { Arc::from_raw(taken.cast_const().cast::<Exported<S>>()) };
+        if exported.process != std::process::id() {
+            // A `fork` child lacks the threads that may hold the locks the object's destructors
+            // take, such as Tokio's scheduler and the cancellation registry, so it leaks the
+            // object rather than risk waiting on them forever.
+            #[expect(
+                clippy::mem_forget,
+                reason = "dropping in a fork child can wait on a lock no thread will release"
+            )]
+            std::mem::forget(exported);
+        }
         Ok(())
     });
     // SAFETY: the caller supplies a valid optional error output for this call.

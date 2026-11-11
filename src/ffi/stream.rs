@@ -63,6 +63,9 @@ struct PrivateData {
     /// pointer: a field would share the borrow and invalidate the caller's pointer.
     exported_error: *mut AdbcError,
     panicked: bool,
+    /// The process that exported the stream. A `fork` child that releases it leaks this struct,
+    /// as `handle::release` does an inherited object.
+    process: u32,
 }
 
 impl Drop for PrivateData {
@@ -85,6 +88,7 @@ pub(super) fn export_reader(reader: Box<dyn RecordBatchReader + Send>) -> FFI_Ar
         last_error: None,
         exported_error: Box::into_raw(Box::new(ADBC_ERROR_INIT)),
         panicked: false,
+        process: std::process::id(),
     });
     // SAFETY: each callback reads `private_data` as the `PrivateData` boxed here, which `release`
     // alone frees, once, before marking the stream released.
@@ -260,14 +264,17 @@ unsafe extern "C" fn release(stream: *mut FFI_ArrowArrayStream) {
     // SAFETY: The caller grants exclusive stream access. Overwrite without Drop to prevent
     // recursive release.
     unsafe { std::ptr::write(stream, FFI_ArrowArrayStream::empty()) };
-    if !private_data.is_null() {
-        // A reader can own arbitrary client code. Its destructor must not unwind through `release`.
-        let _ = catch_unwind(AssertUnwindSafe(|| {
-            // SAFETY: export_reader created this box; clearing the stream first transfers its sole
-            // release ownership.
-            drop(unsafe { Box::from_raw(private_data.cast::<PrivateData>()) });
-        }));
+    let private_data = private_data.cast::<PrivateData>();
+    // SAFETY: A non-null pointer is the live box export_reader created, and clearing the stream
+    // first transferred its sole release ownership to this call.
+    if private_data.is_null() || unsafe { (*private_data).process } != std::process::id() {
+        return;
     }
+    // A reader can own arbitrary client code. Its destructor must not unwind through `release`.
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: As above; nothing else frees this box.
+        drop(unsafe { Box::from_raw(private_data) });
+    }));
 }
 
 /// # Safety
