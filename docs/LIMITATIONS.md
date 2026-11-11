@@ -10,8 +10,9 @@ Open limitations and missing test coverage. Behavior is documented in the
 
 - Manual-commit mode can silently become autocommit when SQL ends the transaction undetected: a
   script commits or rolls back and then fails, credentials lack `bigquery.jobs.list` for inspecting
-  its child jobs, or `jobs.query` loses the response to a transaction-ending statement and the
-  follow-up `jobs.get` fails. Later statements then autocommit until an ADBC commit, rollback or
+  its child jobs, a cancel interrupts that inspection (the script then reports `CANCELLED` though it
+  ran), or `jobs.query` loses the response to a transaction-ending statement and the follow-up
+  `jobs.get` fails. Later statements then autocommit until an ADBC commit, rollback or
   autocommit change receives "No active transaction found" (`INVALID_STATE`) and ends the session.
 - In manual-commit mode without `bigquery.location`, the transaction session is created in the
   default dataset's location, or where BigQuery places it (the US) without one. A query on data in
