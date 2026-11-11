@@ -710,13 +710,16 @@ def dbt_release(tmp_path: Path) -> Iterator[tuple[str, Path]]:
             worker.join()
 
 
-def run_dbt_installer(tmp_path: Path, releases_url: str, *args: str) -> subprocess.CompletedProcess[str]:
+def run_dbt_installer(
+    tmp_path: Path, releases_url: str, *args: str, environment: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     # Isolate shell startup changes and the default prefix from the developer's installation.
     return subprocess.run(
         ["sh", "-s", "--", *args],
         input=DBT_INSTALLER.read_text(),
         env={
             **os.environ,
+            **(environment or {}),
             "HOME": str(tmp_path),
             "SHELL": "/bin/bash",
             "BIGQUERY_ADBC_RELEASES_URL": releases_url,
@@ -817,3 +820,36 @@ def test_dbt_installer_rejects_invalid_arguments_before_network_access(tmp_path:
     assert result.returncode != 0
     assert "Unknown option" in result.stdout or "requires a value" in result.stdout
     assert not (tmp_path / ".local").exists()
+
+
+@posix
+def test_dbt_installer_ignores_variables_from_the_environment(tmp_path: Path, dbt_release: tuple[str, Path]) -> None:
+    # sh imports every environment variable, and the exit trap removes the temporary paths these
+    # name, even when an installation that is already current exits before choosing its own.
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    (unrelated / "kept").touch()
+    environment = {
+        "td": str(unrelated),
+        "tmp_bin": str(unrelated / "kept"),
+        "prefix": str(tmp_path / "inherited-prefix"),
+        "version": "9.9.9",
+        "target": "unsupported-target",
+        "package": "unsupported-package",
+    }
+    binary = tmp_path / ".local/bin/dbt-bigquery-adbc"
+    for expected in ("Successfully installed", "already installed"):
+        result = run_dbt_installer(tmp_path, dbt_release[0], "--update", environment=environment)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert expected in result.stdout
+        assert "1.2.3" in binary.read_text()
+        assert (unrelated / "kept").exists()
+    assert not (tmp_path / "inherited-prefix").exists()
+
+    # An inherited --to destination would conflict with --prefix.
+    chosen = tmp_path / "chosen"
+    environment["dest"] = str(tmp_path / "inherited-destination")
+    result = run_dbt_installer(tmp_path, dbt_release[0], "--update", "--prefix", str(chosen), environment=environment)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (chosen / "bin/dbt-bigquery-adbc").is_file()
+    assert not (tmp_path / "inherited-destination").exists()

@@ -8,12 +8,17 @@
 # Apache License, Version 2.0. Changes: it downloads from bigquery-adbc's releases and checks them
 # against dbt-SHA256SUMS; it names the binary dbt-bigquery-adbc, so that it does not replace dbt;
 # it reads the latest version from GitHub instead of with jq; it drops dbt-db-runner, dbt-lsp, the
-# dbt logo and the dbtf alias; --to is not deprecated, because `system update` uses it; and a shell
-# it cannot configure no longer fails an installation that succeeded.
+# dbt logo and the dbtf alias; --to is not deprecated, because `system update` uses it; a shell it
+# cannot configure no longer fails an installation that succeeded; and it reads no option or
+# temporary path from the environment.
 
 # Exit immediately if a command exits with a non-zero status.
 # Treat unset variables as an error when substituting.
 set -eu
+
+# sh imports the environment as variables, so an inherited td would be what cleanup removes, and an
+# inherited prefix or version would choose the installation.
+version="" package="" target="" prefix="" dest="" td="" tmp_bin=""
 
 # Function to be called on script exit for cleanup purposes.
 cleanup() {

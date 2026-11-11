@@ -103,6 +103,9 @@ changes.
 - When an ingest's table creation reached BigQuery but failed without its verdict, such as a lost
   response, the error says the table may exist, and in `create` mode suggests retrying with
   `create_append`. A creation that could not connect says nothing more.
+- The dbt installer takes no option or temporary path from the environment. A `td` variable named
+  a directory it deleted on exit, even when the installed dbt was already current, and `prefix`,
+  `dest`, `version`, `target` or `package` changed what it installed where.
 
 ## [0.5.0] - 2026-11-09
 
