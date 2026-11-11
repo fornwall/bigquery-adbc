@@ -33,6 +33,10 @@ Open limitations and missing test coverage. Behavior is documented in the
 - All Storage Read traffic on a database shares one HTTP/2 connection, so three paused readers can
   starve its other reads and new read sessions into `TIMEOUT`, even though BigQuery is healthy
   ([flow control](REFERENCE.md#reading-large-results-through-the-storage-read-api)).
+- A REST request must finish, response body included, within 60 seconds, so a REST result page
+  needs its size over 60 seconds of bandwidth: about 1.4 Mbit/s for an ordinary 10 MB page, but
+  16 Mbit/s for one row of control characters, `<` or `>` near the 20 MiB limit, which BigQuery
+  sends as 120 MB of JSON. A completion read that BigQuery answered late leaves less time.
 - An `INTERVAL` whose time part exceeds 2,562,047:47:16.854775, the most Arrow's nanosecond field
   holds, fails the read with `INVALID_DATA` on both paths, though BigQuery allows 87,840,000
   hours. Select it as `CAST(x AS STRING)` or as the `EXTRACT` parts you need.
