@@ -62,7 +62,8 @@ impl<K, S> Staged<K, S> {
 /// concurrent cancellation and option getters; a reference to the whole struct must not be mutable.
 pub(crate) struct Exported<S> {
     /// The process that created the object. A `fork` child inherits it without the runtime's
-    /// workers and with any lock another thread held, so [`acquire`] refuses it before locking.
+    /// workers and with any lock another thread held, so [`acquire`] refuses it before locking
+    /// and [`release`] leaks it.
     process: u32,
     /// Set once, by construction or `Init`; accessible while execution holds the state lock.
     cancel: OnceLock<Box<dyn CancelHandle>>,
@@ -330,7 +331,7 @@ pub(crate) unsafe fn dispatch_init<S>(
 
 /// Empty the handle's slot and drop its reference, so a second release is an error rather than a
 /// double free. A call in flight holds its own reference, and the last one to finish frees the
-/// object.
+/// object. A `fork` child leaks the object instead.
 ///
 /// # Safety
 /// `slot` must satisfy [`acquire`]'s contract and permit writes under the slot lock; `error` must
