@@ -9,7 +9,9 @@ use arrow_schema::Schema;
 
 use crate::BigQueryStatementOption;
 use crate::cancellation::Cancellation;
-use crate::error::{driver_defect, invalid_argument, invalid_state, wrong_option_type};
+use crate::error::{
+    driver_defect, invalid_argument, invalid_state, not_implemented, wrong_option_type,
+};
 use crate::options::{bytes_value, enum_value, integer_value, string_value};
 use crate::query::{ExecutionContext, QualifiedTableName, QueryDefaults, StatementQueryOptions};
 use crate::statement::OptionOnlyOutcome;
@@ -501,6 +503,7 @@ impl DbtStatementState {
         statement
             .transaction
             .require_autocommit("view authorization")?;
+        refuse_dry_run(statement, DbtOperation::DatasetAuthorization.subject())?;
         statement
             .cancellation
             .run(|operation| {
@@ -550,6 +553,7 @@ impl DbtStatementState {
         statement
             .transaction
             .require_autocommit("table metadata updates")?;
+        refuse_dry_run(statement, DbtOperation::TableMutation.subject())?;
         let table = statement
             .query_options
             .destination_table
@@ -590,6 +594,7 @@ impl DbtStatementState {
         statement
             .transaction
             .require_autocommit(selected.subject())?;
+        refuse_dry_run(statement, selected.subject())?;
         let job = statement.cancellation.run(|operation| match selected {
             PythonModelOperation::DataprocBatch => self
                 .dataproc
@@ -677,6 +682,20 @@ fn parse_pooling_timeout(key: &str, value: OptionValue) -> Result<Option<i64>> {
         )));
     }
     Ok((seconds > 0).then_some(seconds))
+}
+
+/// Refuses an operation that changes something under `bigquery.query.dry_run`, before any
+/// request: a dry run validates without executing, and none of these services can validate such
+/// a change without making it. A table copy refuses its own; a CSV seed validates locally.
+fn refuse_dry_run(statement: &DbtExecution<'_>, subject: &str) -> Result<()> {
+    if statement.query_options.dry_run {
+        return Err(not_implemented(format!(
+            "a BigQuery {subject} cannot be dry-run, since only running it can validate it; clear \
+             BigQuery option {} to run it",
+            BigQueryStatementOption::DryRun.as_str()
+        )));
+    }
+    Ok(())
 }
 
 /// A python-model text option [`dbt_statement_option`] lists but no slot table claims. Unreachable

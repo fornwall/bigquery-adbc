@@ -36,6 +36,9 @@ changes.
   without permission to cancel the job, making `AdbcConnectionCancel` return `UNKNOWN`.
 - The `AdbcError` that `AdbcErrorFromArrayStream` returns stays valid when other stream callbacks
   run before the caller reads it; Rust's aliasing rules had invalidated the pointer.
+- With `bigquery.query.dry_run`, the dbt authorized-view, table metadata and python-model
+  operations return `NOT_IMPLEMENTED` before any request instead of making their change, as a
+  table copy already did.
 
 ## [0.5.0] - 2026-11-09
 
