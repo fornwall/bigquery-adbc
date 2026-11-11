@@ -877,14 +877,21 @@ fn an_unavailable_token_endpoint_is_an_io_failure_and_a_refusal_is_not() {
 /// A refused ADC credential is rebuilt from ADC discovered again, but not once the file it came
 /// from is gone: off Google Cloud the metadata server would then fail transiently, a failure the
 /// token cache retries for the database's life, in place of the refusal. The child process owns
-/// `HOME` and points the metadata server at a closed port.
+/// the variable ADC's well-known path starts from and points the metadata server at a closed port.
 #[test]
 fn a_refused_adc_credential_is_not_rebuilt_from_the_metadata_server() {
     const CHILD: &str = "BIGQUERY_ADBC_ADC_SOURCE_TEST_CHILD";
+    // ADC's well-known file, relative to the directory this variable names.
+    let (root, directory) = if cfg!(windows) {
+        ("APPDATA", "gcloud")
+    } else {
+        ("HOME", ".config/gcloud")
+    };
 
     if std::env::var_os(CHILD).is_some() {
-        let file = std::path::Path::new(&std::env::var_os("HOME").unwrap())
-            .join(".config/gcloud/application_default_credentials.json");
+        let file = std::path::Path::new(&std::env::var_os(root).unwrap())
+            .join(directory)
+            .join("application_default_credentials.json");
         let runtime = crate::runtime::new_runtime().unwrap();
         let configuration = {
             let _guard = runtime.enter();
@@ -911,7 +918,7 @@ fn a_refused_adc_credential_is_not_rebuilt_from_the_metadata_server() {
         4
     ]);
     let home = std::env::temp_dir().join(format!("bigquery-adbc-adc-home-{}", std::process::id()));
-    let gcloud = home.join(".config/gcloud");
+    let gcloud = home.join(directory);
     std::fs::create_dir_all(&gcloud).unwrap();
     let mut document = crate::test_support::credentials::authorized_user_json();
     document["token_uri"] = serde_json::json!(format!("{endpoint}/token"));
@@ -924,7 +931,7 @@ fn a_refused_adc_credential_is_not_rebuilt_from_the_metadata_server() {
              a_refused_adc_credential_is_not_rebuilt_from_the_metadata_server",
         ])
         .env(CHILD, "1")
-        .env("HOME", &home)
+        .env(root, &home)
         .env("GCE_METADATA_HOST", "127.0.0.1:1")
         .env_remove("GOOGLE_APPLICATION_CREDENTIALS")
         .env_remove("GOOGLE_CLOUD_QUOTA_PROJECT")
