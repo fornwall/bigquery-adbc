@@ -35,7 +35,7 @@ pub(crate) const fn truncate_to_microsecond_precision(nanoseconds: i64) -> i64 {
 /// BigQuery bounds an INTERVAL to ±10,000 years: 120,000 months and 3,660,000 days.
 const BIGQUERY_MAX_INTERVAL_MONTHS: u32 = 120_000;
 /// See [`BIGQUERY_MAX_INTERVAL_MONTHS`].
-pub(crate) const BIGQUERY_MAX_INTERVAL_DAYS: u32 = 3_660_000;
+const BIGQUERY_MAX_INTERVAL_DAYS: u32 = 3_660_000;
 /// The same ±10,000 years as a time component: ±87,840,000 hours exactly.
 ///
 /// BigQuery documents the second range as ±316,224,000,000.999999, but the service refuses
