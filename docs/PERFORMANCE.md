@@ -152,6 +152,21 @@ Controls that skip this path: zero-row read 1,297 → 1,313 ns, buffered 1,024 r
 57,470 ns. Process-wide instructions for 1,000 `query/read/1` calls (three pairs, including
 preparation and startup): 145,595,441 → 143,813,619.
 
+**REST decimal cells.** NUMERIC and BIGNUMERIC cells accumulate their significant digits eighteen
+at a time from one contiguous run, skipping leading zeros and appending the scale's zeros a chunk at
+a time, instead of walking the whole spelling digit by digit. `typed/convert` (one NUMERIC, one
+BIGNUMERIC and a struct's NUMERIC per row; allocations unchanged at 78 calls), CPU 5, three
+alternating runs:
+
+| Rows | Before, ns | After, ns |
+| ---: | ---: | ---: |
+| 32 | 17,415–21,732 | 14,031–14,518 |
+| 1,024 | 494,009–709,059 | 395,310–399,486 |
+
+User instructions for 1,000 `typed/convert/1024` iterations fell from 23.43 to 20.91 billion
+(decode, which the count includes, stayed at 13.52), so conversion alone fell 25%. Check with
+`cargo test --locked --lib rows::scalars::`.
+
 ### Ingest normalization
 
 **Decimal buffer reuse.** Decimal128/256 validation reuses value and null buffers when width and

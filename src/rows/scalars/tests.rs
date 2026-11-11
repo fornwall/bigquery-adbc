@@ -359,6 +359,8 @@ fn parses_numeric_spellings_at_their_arrow_scale() {
     }
     rejects_decimal::<i128>("0.0000000001", EXCESS_SCALE);
     rejects_decimal::<i128>("1.2300000001", EXCESS_SCALE);
+    // A dropped fractional digit is reported before the precision the value also exceeds.
+    rejects_decimal::<i128>(&format!("1{}.0000000001", "0".repeat(60)), EXCESS_SCALE);
     rejects_decimal::<i256>("not a number", "is not a valid BIGNUMERIC");
 }
 

@@ -281,7 +281,7 @@ const CHUNK_DIGITS: u32 = 18;
     clippy::indexing_slicing,
     reason = "an out-of-bounds index in a const initializer fails the build, not the driver"
 )]
-const POWERS_OF_TEN: [i128; CHUNK_DIGITS as usize + 1] = {
+const POWERS_OF_TEN: [u64; CHUNK_DIGITS as usize + 1] = {
     let mut powers = [1; CHUNK_DIGITS as usize + 1];
     let mut index = 1;
     while index < powers.len() {
@@ -324,7 +324,7 @@ impl DecimalDigits for i128 {
     const ZERO: Self = 0;
 
     fn push_chunk(self, chunk: u64, width: u32, negative: bool) -> Option<Self> {
-        let shifted = self.checked_mul(*POWERS_OF_TEN.get(width as usize)?)?;
+        let shifted = self.checked_mul(Self::from(*POWERS_OF_TEN.get(width as usize)?))?;
         if negative {
             shifted.checked_sub(Self::from(chunk))
         } else {
@@ -341,7 +341,8 @@ impl DecimalDigits for i256 {
     const ZERO: Self = Self::ZERO;
 
     fn push_chunk(self, chunk: u64, width: u32, negative: bool) -> Option<Self> {
-        let shifted = self.checked_mul(Self::from_i128(*POWERS_OF_TEN.get(width as usize)?))?;
+        let power = i128::from(*POWERS_OF_TEN.get(width as usize)?);
+        let shifted = self.checked_mul(Self::from_i128(power))?;
         let chunk = Self::from_i128(i128::from(chunk));
         if negative {
             shifted.checked_sub(chunk)
@@ -370,22 +371,21 @@ pub(super) fn parse_scaled_decimal<T: DecimalDigits>(value: &[u8]) -> Result<T, 
     };
     let exponent = exponent.ok_or_else(|| invalid_scalar(T::BIGQUERY_TYPE))?;
     let (whole, fractional) = split_byte(coefficient, b'.').unwrap_or((coefficient, b""));
-    let digits = || whole.iter().copied().chain(fractional.iter().copied());
-    // The grammar and the all-zero shortcut share one pass over the digits.
-    let digit_count = whole.len() + fractional.len();
-    let mut all_zero = true;
-    for byte in digits() {
-        if !byte.is_ascii_digit() {
-            return Err(invalid_scalar(T::BIGQUERY_TYPE));
-        }
-        all_zero &= byte == b'0';
-    }
-    if digit_count == 0 {
+    // One run of every digit, the fractional ones last; the length cap above bounds it.
+    let mut buffer = [0_u8; MAX_DECIMAL_RESPONSE_LENGTH];
+    let digits = buffer
+        .get_mut(..whole.len() + fractional.len())
+        .ok_or_else(|| invalid_scalar(T::BIGQUERY_TYPE))?;
+    let (integer, fraction) = digits.split_at_mut(whole.len());
+    integer.copy_from_slice(whole);
+    fraction.copy_from_slice(fractional);
+    let digits = &*digits;
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
         return Err(invalid_scalar(T::BIGQUERY_TYPE));
     }
-    if all_zero {
+    let Some(first) = digits.iter().position(|&digit| digit != b'0') else {
         return Ok(T::ZERO);
-    }
+    };
 
     let unsupported_exponent = || {
         ArrowError::ParseError(format!(
@@ -417,67 +417,61 @@ pub(super) fn parse_scaled_decimal<T: DecimalDigits>(value: &[u8]) -> Result<T, 
     };
 
     // A negative shift drops that many trailing digits, which must all be zero; a positive shift
-    // appends that many zeros, which must leave the value within its significant digits.
-    let keep = if shift < 0 {
-        let remove = usize::try_from(shift.unsigned_abs()).map_err(|_| excessive_scale())?;
-        digit_count
-            .checked_sub(remove)
-            .ok_or_else(excessive_scale)?
-    } else {
-        digit_count
-    };
-    let mut magnitude = T::ZERO;
-    let mut significant = 0_usize;
-    let mut chunk = 0_u64;
-    let mut width = 0_u32;
-    for (index, byte) in digits().enumerate() {
-        if index >= keep {
-            if byte != b'0' {
+    // appends that many zeros. The leading zeros before `first` carry no value.
+    let (significant, zeros) = match usize::try_from(shift) {
+        Ok(zeros) => (digits.get(first..).unwrap_or_default(), zeros),
+        Err(_) => {
+            let (kept, dropped) = usize::try_from(shift.unsigned_abs())
+                .ok()
+                .and_then(|remove| digits.len().checked_sub(remove))
+                .filter(|&end| end > first)
+                .and_then(|end| digits.split_at_checked(end))
+                .ok_or_else(excessive_scale)?;
+            if dropped.iter().any(|&digit| digit != b'0') {
                 return Err(excessive_scale());
             }
-            continue;
+            (kept.get(first..).unwrap_or_default(), 0)
         }
-        if significant > 0 || byte != b'0' {
-            significant += 1;
-        }
-        chunk = chunk * 10 + u64::from(byte - b'0');
-        width += 1;
-        if width == CHUNK_DIGITS {
-            magnitude = magnitude
-                .push_chunk(chunk, width, negative)
-                .ok_or_else(excessive_precision)?;
-            (chunk, width) = (0, 0);
-        }
-    }
-    if shift >= 0 {
-        let maximum_shift = usize::from(T::SIGNIFICANT_DIGITS)
-            .checked_sub(significant)
-            .ok_or_else(excessive_precision)?;
-        let shift = usize::try_from(shift).map_err(|_| excessive_precision())?;
-        if shift > maximum_shift {
-            return Err(excessive_precision());
-        }
-        // The trailing zeros the scale appends are the same shift, taken a chunk at a time.
-        for _ in 0..shift {
-            chunk *= 10;
-            width += 1;
-            if width == CHUNK_DIGITS {
-                magnitude = magnitude
-                    .push_chunk(chunk, width, negative)
-                    .ok_or_else(excessive_precision)?;
-                (chunk, width) = (0, 0);
-            }
-        }
-    } else if significant > usize::from(T::SIGNIFICANT_DIGITS) {
+    };
+    if significant.len().saturating_add(zeros) > usize::from(T::SIGNIFICANT_DIGITS) {
         return Err(excessive_precision());
     }
-    if width > 0 {
-        magnitude = magnitude
-            .push_chunk(chunk, width, negative)
-            .ok_or_else(excessive_precision)?;
-    }
+    // Within `SIGNIFICANT_DIGITS`, only BIGNUMERIC's 77th digit can still overflow.
+    accumulate(significant, zeros, negative).ok_or_else(excessive_precision)
+}
 
-    Ok(magnitude)
+/// `digits`, validated ASCII digits, then `zeros` zeros, accumulated into a `T` a chunk at a time;
+/// `None` if the value overflows `T`.
+fn accumulate<T: DecimalDigits>(digits: &[u8], mut zeros: usize, negative: bool) -> Option<T> {
+    let fold = |digits: &[u8]| {
+        digits
+            .iter()
+            .fold(0_u64, |chunk, digit| chunk * 10 + u64::from(digit - b'0'))
+    };
+    let (full, rest) = digits.as_chunks::<{ CHUNK_DIGITS as usize }>();
+    let mut magnitude = T::ZERO;
+    for chunk in full {
+        magnitude = magnitude.push_chunk(fold(chunk), CHUNK_DIGITS, negative)?;
+    }
+    // The zeros fill the partial chunk first, then whole chunks of their own.
+    let mut chunk = fold(rest);
+    let mut width = u32::try_from(rest.len()).ok()?;
+    loop {
+        let step = u32::try_from(zeros).map_or(CHUNK_DIGITS, |zeros| zeros.min(CHUNK_DIGITS));
+        let step = step.min(CHUNK_DIGITS - width);
+        chunk *= POWERS_OF_TEN.get(step as usize)?;
+        width += step;
+        zeros -= step as usize;
+        if zeros == 0 {
+            break;
+        }
+        magnitude = magnitude.push_chunk(chunk, width, negative)?;
+        (chunk, width) = (0, 0);
+    }
+    if width == 0 {
+        return Some(magnitude);
+    }
+    magnitude.push_chunk(chunk, width, negative)
 }
 
 #[cfg(test)]
