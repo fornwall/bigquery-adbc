@@ -339,13 +339,15 @@ Conversion rules:
 the next query that needs one.
 
 - A `COMMIT TRANSACTION` or `ROLLBACK TRANSACTION` in SQL, alone or in a script, ends the
-  transaction, and the next statement starts a new one.
+  transaction, and the next statement starts a new one. A statement that fails, including one
+  BigQuery aborts for a concurrent update, leaves the transaction and its earlier work open.
 - Commit and rollback ignore cancellation for up to a minute, plus ten seconds to end the session
-  after a failure.
+  after a failure. Releasing a connection with a transaction open rolls it back and ends the
+  session, which the release waits for within the same limits, except on a Tokio worker thread.
 - A commit keeps the transaction open only when BigQuery provably refused it, which
   `bigquery.job.verdict` shows. Any other commit or rollback failure ends the session, or says that
-  could not be done or confirmed; a commit without a verdict returns `IO` and says its outcome is
-  unknown.
+  could not be done or confirmed; a commit without a verdict returns `IO` or `TIMEOUT` and says
+  its outcome is unknown.
 - Bulk ingest and dbt 2.0 option-only operations other than `bigquery.dataset.get_location` are
   refused in manual mode, and a statement that outlives a manual-mode connection returns
   `INVALID_STATE`.
