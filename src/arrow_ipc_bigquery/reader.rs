@@ -208,7 +208,7 @@ fn decode_field(encoded: format::Field<'_>) -> Result<Field, ArrowError> {
 /// Builds the Arrow type for one parsed IPC field from its already-decoded children, whose count
 /// the format parser has already validated for the type.
 fn decode_data_type(encoded: IpcType<'_>, children: Vec<Field>) -> Result<DataType, ArrowError> {
-    let data_type = match encoded {
+    Ok(match encoded {
         IpcType::List => {
             let [child] = <[Field; 1]>::try_from(children).unwrap_or_else(|children| {
                 unreachable!(
@@ -216,9 +216,9 @@ fn decode_data_type(encoded: IpcType<'_>, children: Vec<Field>) -> Result<DataTy
                     children.len()
                 )
             });
-            return Ok(DataType::List(Arc::new(child)));
+            DataType::List(Arc::new(child))
         }
-        IpcType::Struct => return Ok(DataType::Struct(Fields::from(children))),
+        IpcType::Struct => DataType::Struct(Fields::from(children)),
         IpcType::Bool => DataType::Boolean,
         IpcType::Int {
             bit_width,
@@ -292,8 +292,7 @@ fn decode_data_type(encoded: IpcType<'_>, children: Vec<Field>) -> Result<DataTy
             }
         }
         IpcType::Interval(unit) => DataType::Interval(unit),
-    };
-    Ok(data_type)
+    })
 }
 
 fn decode_metadata(encoded: Vec<format::KeyValue<'_>>) -> HashMap<String, String> {
@@ -424,7 +423,9 @@ impl BatchDecoder<'_> {
         }
     }
 
-    /// The next field node's `(length, null_count)`.
+    /// The next field node's `(length, null_count)`. Metadata parsing validated every node and
+    /// buffer already; the checks here and in [`Self::next_buffer`] keep this decoder sound
+    /// without relying on that.
     fn next_node(&mut self, field: &Field) -> Result<(usize, usize), ArrowError> {
         let (length, null_count) = self.nodes.get(self.node_index).ok_or_else(|| {
             ipc_error(format!(
@@ -433,25 +434,17 @@ impl BatchDecoder<'_> {
             ))
         })?;
         self.node_index += 1;
-        let length = usize::try_from(length).map_err(|_| {
-            ipc_error(format!(
-                "field {:?} has invalid Arrow IPC length {length}",
-                field.name()
-            ))
-        })?;
-        let null_count = usize::try_from(null_count).map_err(|_| {
-            ipc_error(format!(
-                "field {:?} has invalid Arrow IPC null count {null_count}",
-                field.name()
-            ))
-        })?;
-        if null_count > length {
-            return Err(ipc_error(format!(
-                "field {:?} has null count {null_count} greater than length {length}",
-                field.name()
-            )));
-        }
-        Ok((length, null_count))
+        usize::try_from(length)
+            .ok()
+            .zip(usize::try_from(null_count).ok())
+            .filter(|(length, null_count)| null_count <= length)
+            .ok_or_else(|| {
+                ipc_error(format!(
+                    "field {:?} has an invalid Arrow IPC field node of length {length} with \
+                     {null_count} nulls",
+                    field.name()
+                ))
+            })
     }
 
     fn next_buffer(&mut self, field: &Field) -> Result<Buffer, ArrowError> {
@@ -463,32 +456,23 @@ impl BatchDecoder<'_> {
             ))
         })?;
         self.buffer_index += 1;
-        let offset = usize::try_from(offset).map_err(|_| {
-            ipc_error(format!(
-                "field {:?} has invalid Arrow IPC buffer offset {offset}",
-                field.name()
-            ))
-        })?;
-        let length = usize::try_from(length).map_err(|_| {
-            ipc_error(format!(
-                "field {:?} has invalid Arrow IPC buffer length {length}",
-                field.name()
-            ))
-        })?;
-        let end = offset.checked_add(length).ok_or_else(|| {
-            ipc_error(format!(
-                "field {:?} has an Arrow IPC buffer range {offset}+{length} that overflows usize",
-                field.name()
-            ))
-        })?;
-        if end > self.body.len() {
+        let Some((start, length)) = usize::try_from(offset)
+            .ok()
+            .zip(usize::try_from(length).ok())
+            .filter(|&(start, length)| {
+                start
+                    .checked_add(length)
+                    .is_some_and(|end| end <= self.body.len())
+            })
+        else {
             return Err(ipc_error(format!(
-                "field {:?} has an Arrow IPC buffer range {offset}..{end} beyond the {}-byte message body",
+                "field {:?} has an Arrow IPC buffer of {length} bytes at {offset}, beyond the \
+                 {}-byte message body",
                 field.name(),
                 self.body.len()
             )));
-        }
-        let buffer = self.body.slice_with_length(offset, length);
+        };
+        let buffer = self.body.slice_with_length(start, length);
         if !self.lz4_compressed {
             return Ok(buffer);
         }
