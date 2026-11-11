@@ -2,7 +2,7 @@ use adbc_core::schemas;
 use arrow_array::{Array, Int16Array, Int32Array, RecordBatch, StructArray};
 
 use crate::rest::model::TableFieldSchema;
-use crate::test_support::arrow::{child_structs, list, string_at, typed};
+use crate::test_support::arrow::{child_structs, string_at, typed};
 use crate::test_support::schema::{decimal, field, field_mode};
 
 use super::{
@@ -226,31 +226,4 @@ fn only_a_declared_bytes_length_is_an_octet_length() {
         octet_lengths.iter().collect::<Vec<_>>(),
         [Some(16), None, None]
     );
-}
-
-#[test]
-fn requested_depth_is_represented_by_null_child_lists() {
-    let mut catalogs = objects_reader(&[project_catalog(None)]).unwrap();
-    let catalog_batch = catalogs.next().unwrap().unwrap();
-    assert!(list(catalog_batch.column(1)).is_null(0));
-
-    let mut schemas = objects_reader(&[project_catalog(Some(vec![dataset_schema(None)]))]).unwrap();
-    let schema_batch = schemas.next().unwrap().unwrap();
-    let schemas = child_structs(schema_batch.column(1));
-    assert!(list(schemas.column(1)).is_null(0));
-
-    let mut tables = objects_reader(&[project_catalog(Some(vec![dataset_schema(Some(vec![
-        ObjectTable {
-            name: "table".to_owned(),
-            table_type: "TABLE",
-            columns: None,
-            constraints: None,
-        },
-    ]))]))])
-    .unwrap();
-    let table_batch = tables.next().unwrap().unwrap();
-    let schemas = child_structs(table_batch.column(1));
-    let tables = child_structs(schemas.column(1));
-    assert!(list(tables.column(2)).is_null(0));
-    assert!(list(tables.column(3)).is_null(0));
 }

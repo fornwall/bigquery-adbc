@@ -217,13 +217,13 @@ fn releasing_the_connection_while_a_statement_opens_its_transaction_ends_the_ses
     );
 }
 
+/// Every execute refuses an ingest in manual-commit mode, before it looks for bound data.
 #[test]
 fn ingest_inside_a_transaction_is_rejected_by_every_execute_entrypoint() {
     for execute in EXECUTE_ENTRIES {
         let mut statement = test_statement();
         statement.transaction.disable_autocommit().unwrap();
         set_option(&mut statement, OptionStatement::TargetTable, "events");
-        statement.bind(int64_column("value", vec![1])).unwrap();
         let error = execute(&mut statement).unwrap_err();
         assert_failure(
             &error,
@@ -231,20 +231,6 @@ fn ingest_inside_a_transaction_is_rejected_by_every_execute_entrypoint() {
             &["transaction", "adbc.connection.autocommit"],
         );
     }
-}
-
-#[test]
-fn ingest_transaction_rejection_precedes_the_unbound_data_error() {
-    let mut statement = test_statement();
-    statement.transaction.disable_autocommit().unwrap();
-    set_option(&mut statement, OptionStatement::TargetTable, "events");
-
-    let error = statement.execute_update().unwrap_err();
-    assert_failure(
-        &error,
-        Status::InvalidState,
-        &["adbc.connection.autocommit"],
-    );
 }
 
 /// A read has nothing a later commit or rollback could appear to cover, so it runs where the

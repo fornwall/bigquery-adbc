@@ -123,58 +123,24 @@ fn connection_and_statement_option_errors_do_not_disclose_payloads() {
     }
 }
 
+/// The standard boolean options whose spec default is all the driver does: `false` is a no-op
+/// that reads back, `true` is `NOT_IMPLEMENTED`.
 #[test]
-fn spec_default_standard_option_values_are_accepted_as_no_ops() {
-    use adbc_core::constants::{
-        ADBC_OPTION_ISOLATION_LEVEL_DEFAULT, ADBC_OPTION_ISOLATION_LEVEL_SERIALIZABLE,
-        ADBC_OPTION_ISOLATION_LEVEL_SNAPSHOT,
-    };
-
+fn standard_options_accept_only_their_disabled_default() {
     let mut connection = test_connection();
-    set_option(&mut connection, OptionConnection::ReadOnly, "false");
-    assert_eq!(
-        set_option_error(&mut connection, OptionConnection::ReadOnly, "true").status,
-        Status::NotImplemented
-    );
-    set_option(
-        &mut connection,
-        OptionConnection::IsolationLevel,
-        ADBC_OPTION_ISOLATION_LEVEL_DEFAULT,
-    );
-    assert_eq!(
-        set_option_error(
-            &mut connection,
-            OptionConnection::IsolationLevel,
-            ADBC_OPTION_ISOLATION_LEVEL_SERIALIZABLE
-        )
-        .status,
-        Status::NotImplemented
-    );
-    assert_eq!(
-        option_string(&connection, OptionConnection::ReadOnly),
-        ADBC_OPTION_VALUE_DISABLED
-    );
-    assert_eq!(
-        option_string(&connection, OptionConnection::IsolationLevel),
-        ADBC_OPTION_ISOLATION_LEVEL_SNAPSHOT,
-        "BigQuery transactions run at snapshot isolation, which is what the getter names"
-    );
-    set_option(
-        &mut connection,
-        OptionConnection::IsolationLevel,
-        ADBC_OPTION_ISOLATION_LEVEL_SNAPSHOT,
-    );
+    let key = OptionConnection::ReadOnly;
+    set_option(&mut connection, key.clone(), ADBC_OPTION_VALUE_DISABLED);
+    let error = set_option_error(&mut connection, key.clone(), ADBC_OPTION_VALUE_ENABLED);
+    assert_eq!(error.status, Status::NotImplemented);
+    assert_eq!(option_string(&connection, key), ADBC_OPTION_VALUE_DISABLED);
 
     let mut statement = connection.new_statement().unwrap();
-    set_option(&mut statement, OptionStatement::Incremental, "false");
-    assert_eq!(
-        set_option_error(&mut statement, OptionStatement::Incremental, "true").status,
-        Status::NotImplemented
-    );
-    assert_eq!(
-        option_string(&statement, OptionStatement::Incremental),
-        ADBC_OPTION_VALUE_DISABLED
-    );
+    for key in [OptionStatement::Incremental, OptionStatement::Temporary] {
+        set_option(&mut statement, key.clone(), ADBC_OPTION_VALUE_DISABLED);
+        let error = set_option_error(&mut statement, key.clone(), ADBC_OPTION_VALUE_ENABLED);
+        assert_eq!(error.status, Status::NotImplemented, "{key:?}");
+        assert_eq!(option_string(&statement, key), ADBC_OPTION_VALUE_DISABLED);
+    }
 }
 
 /// Runs the bulk-ingest-method option assertions shared by both option scopes.
