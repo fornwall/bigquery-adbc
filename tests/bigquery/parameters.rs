@@ -20,11 +20,11 @@ use arrow_schema::{DataType, Field, IntervalUnit, Metadata, Schema};
 
 use crate::support::{
     DropTable, assert_bignumeric_extremes, assert_decimal_domain_result, bignumeric_extremes_batch,
-    bignumeric_extremes_select, bool_at, connect, connect_at_location, connect_with_dataset_at,
-    count_rows, date_value, decimal_domain_batch, decimal_domain_select, execute_sql, i64_at,
-    int64_batch, interval_at, list_at, named_parameter_query, prepare_query, project,
-    schema_without_job_metadata, scratch_table, set_option, single_batch, str_at, struct_at,
-    ts_value, typed,
+    bignumeric_extremes_select, bool_at, concatenated, connect, connect_at_location,
+    connect_with_dataset_at, count_rows, date_value, decimal_domain_batch, decimal_domain_select,
+    execute_sql, i64_at, int64_batch, interval_at, list_at, named_parameter_query, prepare_query,
+    project, read_all, schema_without_job_metadata, scratch_table, set_option, single_batch,
+    str_at, struct_at, ts_value, typed,
 };
 
 #[test]
@@ -135,24 +135,22 @@ fn executes_named_parameters_for_each_bound_row() {
     assert_eq!(schema.field(0).data_type(), &DataType::Int64);
     assert_eq!(schema.field(1).data_type(), &DataType::Utf8);
 
-    let mut reader = statement.execute().unwrap();
-    let mut doubled = Vec::new();
-    let mut strings = Vec::new();
-    let mut timestamps = Vec::new();
-    for batch in &mut reader {
-        let batch = batch.unwrap();
-        let integer_array = typed::<Int64Array>(batch.column(0).as_ref());
-        let string_array = typed::<StringArray>(batch.column(1).as_ref());
-        let timestamp_array = typed::<TimestampMicrosecondArray>(batch.column(2).as_ref());
-        for row in 0..batch.num_rows() {
-            doubled.push(integer_array.value(row));
-            strings.push((!string_array.is_null(row)).then(|| string_array.value(row).to_owned()));
-            timestamps.push(timestamp_array.value(row));
-        }
-    }
-    assert_eq!(doubled, [42, -10]);
-    assert_eq!(strings, [Some("first".to_owned()), None]);
-    assert_eq!(timestamps, [1_000_001, 2_000_002]);
+    let (schema, batches) = read_all(&mut statement);
+    let columns = concatenated(&schema, &batches);
+    assert_eq!(
+        typed::<Int64Array>(columns[0].as_ref()).values(),
+        &[42, -10]
+    );
+    assert_eq!(
+        typed::<StringArray>(columns[1].as_ref())
+            .iter()
+            .collect::<Vec<_>>(),
+        [Some("first"), None]
+    );
+    assert_eq!(
+        typed::<TimestampMicrosecondArray>(columns[2].as_ref()).values(),
+        &[1_000_001, 2_000_002]
+    );
 
     let mut positional = prepare_query(&mut connection, "SELECT ? AS value");
     let batches = [7, 8].map(|value| int64_batch("", vec![value]));

@@ -16,8 +16,9 @@ use arrow_schema::{ArrowError, DataType, Schema};
 
 use crate::support::{
     DropTable, assert_harvested_job_statistics, concatenated, connect, connect_with_dataset_at,
-    db_option, execute_sql, int64_column, open_database, prepare_query, project, read_all,
-    row_count, schema_without_job_metadata, scratch_fixture, scratch_table, set_option, typed,
+    db_option, execute_failure, execute_sql, int64_column, open_database, prepare_query, project,
+    read_all, row_count, schema_without_job_metadata, scratch_fixture, scratch_table, set_option,
+    typed,
 };
 
 /// Fixture row count. With [`PADDING`], the first `jobs.query` response (about 10 MB of JSON)
@@ -167,25 +168,32 @@ fn read_only_partition(
         .unwrap()
 }
 
+/// A statement for `sql` with Storage Read explicitly permitted or disabled.
+fn storage_path_statement(
+    connection: &mut BigQueryConnection,
+    sql: &str,
+    storage_read: bool,
+) -> BigQueryStatement {
+    let mut statement = prepare_query(connection, sql);
+    set_option(
+        &mut statement,
+        BigQueryStatementOption::UseStorageApiDisabledClient,
+        if storage_read {
+            ADBC_OPTION_VALUE_DISABLED
+        } else {
+            ADBC_OPTION_VALUE_ENABLED
+        },
+    );
+    statement
+}
+
 /// Reads `sql` with Storage Read explicitly permitted or disabled.
 fn read_storage_path(
     connection: &mut BigQueryConnection,
     sql: &str,
     storage_read: bool,
 ) -> (Arc<Schema>, Vec<RecordBatch>) {
-    let value = if storage_read {
-        ADBC_OPTION_VALUE_DISABLED
-    } else {
-        ADBC_OPTION_VALUE_ENABLED
-    };
-    let mut statement = connection.new_statement().unwrap();
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::UseStorageApiDisabledClient,
-        value,
-    );
-    statement.set_sql_query(sql).unwrap();
-    read_all(&mut statement)
+    read_all(&mut storage_path_statement(connection, sql, storage_read))
 }
 
 /// Detects a fallback from Storage Read to REST by batch boundaries: REST assembles fixed-size
@@ -396,11 +404,10 @@ fn reads_a_storage_read_sized_query_partition() {
 #[ignore = "requires Google Cloud ADC and access to the integration project"]
 fn a_partition_keeps_the_result_options_of_its_statement() {
     let mut connection = connect(project());
-    let mut statement = prepare_query(&mut connection, &storage_read_row_sequence(" ORDER BY n"));
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::UseStorageApiDisabledClient,
-        ADBC_OPTION_VALUE_ENABLED,
+    let mut statement = storage_path_statement(
+        &mut connection,
+        &storage_read_row_sequence(" ORDER BY n"),
+        false,
     );
     let batches = read_only_partition(&connection, &mut statement);
     assert_eq!(row_count(&batches), STORAGE_READ_ROWS);
@@ -674,19 +681,11 @@ fn reads_a_row_too_large_for_rest_through_storage_read() {
     let big = typed::<arrow_array::StringArray>(columns[1].as_ref());
     assert!((0..2).all(|row| big.value(row).len() == 21_000_000));
 
-    let mut statement = prepare_query(&mut connection, LARGE_ROWS);
-    set_option(
-        &mut statement,
-        BigQueryStatementOption::UseStorageApiDisabledClient,
-        ADBC_OPTION_VALUE_ENABLED,
-    );
-    let failure = match statement.execute() {
-        Ok(reader) => reader
-            .collect::<Result<Vec<_>, ArrowError>>()
-            .expect_err("REST cannot return the row")
-            .to_string(),
-        Err(error) => error.message,
-    };
+    let (_, failure) = execute_failure(&mut storage_path_statement(
+        &mut connection,
+        LARGE_ROWS,
+        false,
+    ));
     assert!(
         failure.contains("20 MiB") && failure.contains("use_storage_api_disabled_client"),
         "{failure}"
@@ -769,18 +768,7 @@ fn an_interval_past_arrows_time_part_is_invalid_data_on_both_paths() {
 
     let past = sql("2562048:0:0");
     for storage_read in [true, false] {
-        let mut statement = connection.new_statement().unwrap();
-        set_option(
-            &mut statement,
-            BigQueryStatementOption::UseStorageApiDisabledClient,
-            if storage_read {
-                ADBC_OPTION_VALUE_DISABLED
-            } else {
-                ADBC_OPTION_VALUE_ENABLED
-            },
-        );
-        statement.set_sql_query(&past).unwrap();
-        let failure = statement
+        let failure = storage_path_statement(&mut connection, &past, storage_read)
             .execute()
             .unwrap()
             .find_map(Result::err)
