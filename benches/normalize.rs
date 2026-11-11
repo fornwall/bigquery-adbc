@@ -26,6 +26,7 @@ fn main() {
                 "dictionary-alternating",
                 NormalizeKind::DictionaryAlternating,
             ),
+            ("dictionary-labels", NormalizeKind::DictionaryLabels),
         ] {
             if rows > 1024
                 && !matches!(
@@ -37,6 +38,7 @@ fn main() {
                         | NormalizeKind::DictionaryRuns
                         | NormalizeKind::DictionaryScattered
                         | NormalizeKind::DictionaryAlternating
+                        | NormalizeKind::DictionaryLabels
                 )
             {
                 continue;

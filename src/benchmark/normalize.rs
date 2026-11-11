@@ -2,11 +2,12 @@
 
 use std::sync::Arc;
 
-use arrow_array::types::{Int32Type, Int64Type};
+use arrow_array::types::{Int16Type, Int32Type, Int64Type};
 use arrow_array::{
-    Array, ArrayRef, Date32Array, Decimal128Array, Decimal256Array, DictionaryArray, Int32Array,
-    Int64Array, IntervalMonthDayNanoArray, LargeBinaryArray, LargeStringArray, ListArray,
-    RecordBatch, StringArray, StructArray, Time64MicrosecondArray, TimestampMicrosecondArray,
+    Array, ArrayRef, BooleanArray, Date32Array, Decimal128Array, Decimal256Array, DictionaryArray,
+    Int16Array, Int32Array, Int64Array, IntervalMonthDayNanoArray, LargeBinaryArray,
+    LargeStringArray, ListArray, RecordBatch, StringArray, StructArray, Time64MicrosecondArray,
+    TimestampMicrosecondArray,
 };
 use arrow_buffer::{IntervalMonthDayNano, NullBuffer, OffsetBuffer, i256};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
@@ -34,6 +35,9 @@ pub enum NormalizeKind {
     DictionaryScattered,
     /// Scattered dictionary keys alternating with null rows.
     DictionaryAlternating,
+    /// A first column of 200-byte dictionary labels holds nearly every byte, beside BOOLEAN
+    /// columns: the first request window is sized by walking its keys.
+    DictionaryLabels,
     /// Decimal columns already at their wire scale declare a narrower precision.
     DecimalPrecision,
     /// Decimal columns already at their wire scale declare fewer fractional digits.
@@ -77,6 +81,7 @@ impl NormalizeFixture {
                 | NormalizeKind::DictionaryAlternating => {
                     dictionary_normalize_column(index, row_count, kind)
                 }
+                NormalizeKind::DictionaryLabels => dictionary_labels_column(index, row_count),
                 NormalizeKind::DecimalPrecision | NormalizeKind::DecimalScale => {
                     decimal_normalize_column(index, row_count, kind)
                 }
@@ -194,6 +199,29 @@ fn dictionary_normalize_column(
     }));
     let dictionary = DictionaryArray::<Int32Type>::new(keys, values).slice(1, row_count);
     (Arc::new(dictionary), field)
+}
+
+fn dictionary_labels_column(index: usize, row_count: usize) -> (ArrayRef, Field) {
+    let column: ArrayRef = if index == 0 {
+        let labels =
+            StringArray::from_iter_values((0..1_000).map(|label| format!("{label:0>200}")));
+        let keys = Int16Array::from_iter_values((0..row_count).map(|row| {
+            i16::try_from(row * 7 % 1_000).expect("the benchmark keys index 1,000 labels")
+        }));
+        Arc::new(DictionaryArray::<Int16Type>::new(keys, Arc::new(labels)))
+    } else {
+        Arc::new(BooleanArray::from_iter(
+            (0..row_count).map(|row| Some(row.is_multiple_of(3))),
+        ))
+    };
+    let data_type = match column.data_type() {
+        DataType::Dictionary(_, values) => values.as_ref().clone(),
+        data_type => data_type.clone(),
+    };
+    (
+        column,
+        Field::new(format!("column_{index}"), data_type, true),
+    )
 }
 
 fn nested_normalize_column(index: usize, row_count: usize) -> (ArrayRef, Field) {

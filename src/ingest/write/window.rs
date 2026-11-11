@@ -18,6 +18,10 @@ use arrow_schema::{DataType, Schema};
 /// encoder to make the exact cut. With no suggestion, the bytes the rows address are the only
 /// estimate, so the window aims for `target_size` itself: rows normalized past the cut are
 /// normalized again for the next chunk.
+///
+/// Each pass sizes the window again, and a dictionary or list-view column walks its rows to do
+/// so, so the passes stay logarithmic in the rows: every walk stops above twice the target, which
+/// leaves an estimate under half the rows, and below that only the first estimate is trusted.
 pub(super) fn window_rows(
     input: &RecordBatch,
     schema: &Schema,
@@ -25,25 +29,46 @@ pub(super) fn window_rows(
     suggested: Option<usize>,
     target_size: usize,
 ) -> usize {
-    let (suggested, limit) = match suggested {
-        Some(rows) => (rows, target_size.saturating_mul(2)),
+    let cap = target_size.saturating_mul(2);
+    let (suggested, accepted) = match suggested {
+        Some(rows) => (rows, cap),
         None => (usize::MAX, target_size),
     };
     let mut rows = suggested.clamp(1, input.num_rows() - offset);
+    let mut estimated_below_cap = false;
     loop {
+        #[cfg(test)]
+        SIZING_PASSES.with(|passes| passes.set(passes.get() + 1));
         let bytes = input
             .columns()
             .iter()
             .zip(schema.fields())
             .map(|(column, field)| {
-                addressed_bytes(column.as_ref(), field.data_type(), offset, rows, limit)
+                addressed_bytes(column.as_ref(), field.data_type(), offset, rows, cap)
             })
             .fold(0, usize::saturating_add);
-        if rows == 1 || bytes <= limit {
+        if rows == 1 || bytes <= accepted {
             return rows;
         }
-        rows = scaled(rows, target_size, bytes).clamp(1, rows - 1);
+        // At most twice the target, no walk stopped early, so the bytes are exact. Rows of very
+        // different sizes can still leave an estimate a sliver over the target every time, so
+        // after the first such estimate the window at least halves.
+        let below_cap = bytes <= cap;
+        let estimate = scaled(rows, target_size, bytes);
+        rows = if below_cap && estimated_below_cap {
+            estimate.min(rows / 2)
+        } else {
+            estimate
+        }
+        .clamp(1, rows - 1);
+        estimated_below_cap |= below_cap;
     }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    /// The sizing passes [`window_rows`] has made on this thread.
+    static SIZING_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// `rows * target / actual`, rounded down.

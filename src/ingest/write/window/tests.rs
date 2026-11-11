@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use arrow_array::types::Int8Type;
+use arrow_array::types::{Int8Type, Int16Type};
 use arrow_array::{
-    ArrayRef, BinaryArray, DictionaryArray, Int8Array, Int64Array, LargeBinaryArray,
+    ArrayRef, BinaryArray, DictionaryArray, Int8Array, Int16Array, Int64Array, LargeBinaryArray,
     LargeStringArray, ListArray, ListViewArray, StringArray, StringViewArray, StructArray,
 };
 use arrow_buffer::{NullBuffer, OffsetBuffer};
@@ -62,6 +62,50 @@ fn a_window_without_a_density_aims_for_the_target() {
     );
     assert_eq!(window_rows(&input, &input.schema(), 0, None, 5_000), 625);
     assert_eq!(window_rows(&input, &input.schema(), 900, None, 5_000), 100);
+}
+
+/// Sizing a window walks a dictionary's keys or a list view's ranges on every pass, so the passes
+/// must stay logarithmic in the rows when no density bounds the first one: with a dictionary of
+/// 100-byte labels or a list view of them holding every byte, and with a few long values ahead of
+/// many empty ones, which leave each estimate a sliver over the target.
+#[test]
+fn a_window_without_a_density_settles_in_logarithmically_many_passes() {
+    const ROWS: i32 = 1_000_000;
+    let labels = Arc::new(StringArray::from_iter_values(
+        (0..1_000).map(|label| format!("{label:0>100}")),
+    ));
+    let label_of = |row: i32| row * 7 % 1_000;
+    let keys = Int16Array::from_iter_values(
+        (0..ROWS).map(|row| i16::try_from(label_of(row)).expect("the keys index 1,000 labels")),
+    );
+    let labelled = batch(Arc::new(DictionaryArray::<Int16Type>::new(
+        keys,
+        labels.clone(),
+    )));
+    let viewed = batch(Arc::new(ListViewArray::new(
+        Arc::new(Field::new("item", DataType::Utf8, false)),
+        (0..ROWS).map(label_of).collect::<Vec<_>>().into(),
+        vec![1; 1_000_000].into(),
+        labels,
+        None,
+    )));
+    let long = "x".repeat(9_900);
+    let skewed = batch(Arc::new(StringArray::from_iter_values(
+        std::iter::repeat_n(long.as_str(), 10).chain(std::iter::repeat_n("", 11_000)),
+    )));
+    for (input, target, expected_rows) in [
+        (&labelled, 1_000_000, 9_615),
+        (&labelled, 9_000_000, 86_538),
+        (&viewed, 1_000_000, 9_259),
+        (&skewed, 100_000, 240),
+    ] {
+        SIZING_PASSES.with(|passes| passes.set(0));
+        let rows = window_rows(input, &input.schema(), 0, None, target);
+        let passes = SIZING_PASSES.with(std::cell::Cell::get);
+        assert_eq!(rows, expected_rows, "for {target}");
+        assert!(window_bytes(input, 0, rows) <= target);
+        assert!(passes <= 12, "{passes} passes for {target}");
+    }
 }
 
 /// Fixed-width values count at their width, not at the capacity of a buffer a slice shares with

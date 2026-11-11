@@ -37,8 +37,9 @@ network I/O and server time are outside every measured region.
   rows), `coercing` (Int32 to Int64, LargeUtf8 to Utf8), `list-gather` (sliced lists with values
   behind NULL entries) and `large-offsets` (sliced LargeUtf8/LargeBinary with NULL, empty, ASCII
   and non-ASCII values, also 65,536 rows). Dictionary fixtures cover ascending and scattered keys
-  with sparse null runs, and scattered keys alternating with nulls, at 1, 1,024 and 65,536 rows.
-  Each case's `encode` row (`canonical/narrow/encode`) splits the batch into Storage Write
+  with sparse null runs, and scattered keys alternating with nulls, at 1, 1,024 and 65,536 rows;
+  `dictionary-labels` puts 200-byte labels in a first column that holds nearly every byte, beside
+  BOOLEAN columns. Each case's `encode` row (`canonical/narrow/encode`) splits the batch into Storage Write
   requests as an append after the stream's first does: it sizes each window of rows, normalizes
   it and frames it as Arrow IPC.
 - `ipc` decodes a Storage Read record batch (aligned, misaligned, and `LZ4_FRAME` as BigQuery sends
@@ -269,6 +270,23 @@ with pinned timings and allocations from one bench run each:
 Controls, unchanged within 0.002%: `decimal-scale/wide/encode` at 65,536 rows (over twice the
 target), `dictionary-scattered/narrow/encode` and `large-offsets/narrow/encode` at 65,536 rows
 (under the target), `canonical/wide/encode` at 1,024 rows.
+
+Sizing walks a dictionary's keys and a list view's ranges until the bytes pass a cap, and each
+refused pass walks them again. With the cap at the target itself, a column that held nearly
+every byte stopped each walk just past the target, so a pass shrank the window by a sliver: one
+1,000,000-row `Dictionary<Int16, Utf8>` of 100-byte labels took 41 s to size at the 9 MB target
+in a release build. The walks now stop above twice the target, which more than halves a refused
+window, and an estimate from exact bytes is trusted once, after which a refusal at least halves
+the window. That case now takes 5 passes (8 at the 1 MB first-append target). User instructions
+for 1,000 `dictionary-labels` encodes of 65,536 rows, and one pinned timing run each:
+
+| Case | Instructions before → after, billions | Before → after, ms |
+| --- | ---: | ---: |
+| `dictionary-labels/narrow/encode` | 1,082.96 → 26.46 (−97.6%) | 42.77 → 1.67 |
+| `dictionary-labels/wide/encode` | 98.73 → 26.63 (−73.0%) | 4.35 → 1.69 |
+
+The other `encode` cases above are unchanged. Check with
+`cargo test --locked --lib ingest::write::window::tests::a_window_without`.
 
 **First batch of an append.** `create` and `replace` normalize and size the whole first batch
 before changing the target, then normalize it again as it is sent. An append into an existing
