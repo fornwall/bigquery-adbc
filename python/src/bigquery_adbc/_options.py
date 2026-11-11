@@ -270,7 +270,8 @@ class StatementOptions(enum.StrEnum):
     QUERY_DEFAULT_PROJECT_ID = "bigquery.query.default_project_id"
 
     #: Where the query writes its result, as `[[project.]dataset.]table` completed from the
-    #: effective defaults; empty clears it.
+    #: effective defaults, or `project.catalog.namespace.table` for a BigLake Iceberg table;
+    #: empty clears it.
     QUERY_DESTINATION_TABLE = "bigquery.query.destination_table"
 
     #: Boolean string: when true the query does not use BigQuery's query cache.

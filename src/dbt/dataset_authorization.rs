@@ -196,8 +196,9 @@ fn authorized_view(entry: &serde_json::value::RawValue) -> Option<TableReference
         .view
 }
 
-/// Parses `{"[[project.]dataset.]view": [{"project": ..., "dataset": ...}, ...]}`, resolving
-/// every view name against the statement defaults exactly as a destination table resolves.
+/// Parses `{"[[project.]dataset.]view": [{"project": ..., "dataset": ...}, ...]}`, where a view
+/// may also be `project.catalog.namespace.view`, resolving every view name against the statement
+/// defaults exactly as a destination table resolves.
 ///
 /// An empty payload clears the option, as does one whose every view lists no source dataset.
 pub(crate) fn parse_view_authorizations(

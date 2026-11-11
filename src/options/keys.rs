@@ -308,9 +308,11 @@ string_enum! {
         ),
         /// The bulk-ingest implementation: a `BigQueryBulkIngestMethod` value.
         BulkIngestMethod => ("bigquery.bulk_ingest.method", [], String),
-        /// The destination of a copy-table job, as `[[project.]dataset.]table`.
+        /// The destination of a copy-table job, as `[[project.]dataset.]table` or
+        /// `project.catalog.namespace.table`.
         CopyTableDestination => ("adbc.bigquery.copy_table.destination", [], String),
-        /// The source of a copy-table job, as `[[project.]dataset.]table`.
+        /// The source of a copy-table job, as `[[project.]dataset.]table` or
+        /// `project.catalog.namespace.table`.
         ///
         /// Setting it selects the copy operation; the table ID passes through as given, so a
         /// partition decorator survives.
@@ -386,7 +388,8 @@ string_enum! {
             String
         ),
         /// Where the query writes its result, as `[[project.]dataset.]table` completed from the
-        /// effective defaults; empty clears it.
+        /// effective defaults, or `project.catalog.namespace.table` for a BigLake Iceberg table;
+        /// empty clears it.
         DestinationTable => (
             "bigquery.query.destination_table",
             ["adbc.bigquery.sql.query.destination_table"],
