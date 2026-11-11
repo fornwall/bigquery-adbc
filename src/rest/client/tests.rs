@@ -520,3 +520,69 @@ fn every_request_names_the_driver_and_asks_for_compact_json() {
         );
     }
 }
+
+/// A pool dropped by the last client of one database's generation serves the next database on the
+/// same runtime, connection included, with that database's own user agent. A pool still in use is
+/// not shared, and another runtime, such as a `fork` child's, never takes it.
+#[test]
+fn a_closed_databases_pool_serves_the_next_database_on_its_runtime() {
+    use super::pooled_rest_client;
+
+    let runtime = crate::runtime::new_runtime().unwrap();
+    let other_runtime = crate::runtime::new_runtime().unwrap();
+    let (endpoint, finish) = crate::test_support::http::keep_alive_server();
+    let credentials = anonymous();
+    let get = |runtime: &crate::runtime::SharedRuntime, client: &super::RestClient| {
+        runtime
+            .block_on(send(
+                None,
+                &credentials,
+                client,
+                Request::get(&format!("{endpoint}/agent"), "describe it"),
+            ))
+            .unwrap();
+    };
+
+    let first = pooled_rest_client("test", "first-agent", Some(&runtime)).unwrap();
+    get(&runtime, &first);
+    let clone = first.clone();
+    drop(first);
+    // A clone keeps the pool in use, so a database opened now gets a pool of its own.
+    let concurrent = pooled_rest_client("test", "concurrent-agent", Some(&runtime)).unwrap();
+    get(&runtime, &concurrent);
+    get(&runtime, &clone);
+    drop(clone);
+    let next = pooled_rest_client("test", "next-agent", Some(&runtime)).unwrap();
+    get(&runtime, &next);
+    let elsewhere = pooled_rest_client("test", "elsewhere-agent", Some(&other_runtime)).unwrap();
+    get(&other_runtime, &elsewhere);
+    drop((concurrent, next, elsewhere));
+
+    let requests = finish();
+    let agent = |agent: &str| Some(agent.to_owned());
+    assert_eq!(
+        requests,
+        [
+            (0, agent("first-agent")),
+            (1, agent("concurrent-agent")),
+            (0, agent("first-agent")),
+            (0, agent("next-agent")),
+            (2, agent("elsewhere-agent")),
+        ]
+    );
+}
+
+/// A runtime a `fork` child inherited drives no connection, so its pools are not kept for reuse.
+#[test]
+fn an_orphaned_runtimes_pool_is_not_kept() {
+    use super::{check_out, pooled_rest_client};
+
+    let runtime = crate::runtime::orphaned_runtime();
+    drop(pooled_rest_client("test", "agent", Some(&runtime)).unwrap());
+    assert!(check_out(&runtime).is_none());
+
+    let live = crate::runtime::new_runtime().unwrap();
+    drop(pooled_rest_client("test", "agent", Some(&live)).unwrap());
+    assert!(check_out(&live).is_some());
+    assert!(check_out(&live).is_none());
+}

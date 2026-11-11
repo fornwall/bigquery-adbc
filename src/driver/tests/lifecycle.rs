@@ -110,3 +110,49 @@ fn warmed_job_clients_keep_their_configuration_after_database_changes() {
         }
     }
 }
+
+/// A database opened after another closed reuses the connection its REST pool left idle, as one
+/// per Python DB-API `connect()` does, while two open together keep connections of their own.
+#[test]
+fn a_database_reuses_the_connections_a_closed_one_left_idle() {
+    use crate::rest::request::{Request, send};
+
+    let (endpoint, finish) = crate::test_support::http::keep_alive_server();
+    let mut driver = BigQueryDriver::try_new().unwrap();
+    let mut open = || {
+        let mut database = driver.new_database().unwrap();
+        set_option(
+            &mut database,
+            BigQueryDatabaseOption::AuthenticationType,
+            BigQueryAuthenticationType::Anonymous,
+        );
+        database
+    };
+    let get = |database: &BigQueryDatabase| {
+        let state = database.clients();
+        let configuration = state.configuration(&database.runtime).unwrap();
+        database
+            .runtime
+            .block_on(send(
+                None,
+                &configuration.credentials,
+                &state.rest_client().unwrap(),
+                Request::get(&format!("{endpoint}/ping"), "ping"),
+            ))
+            .unwrap();
+    };
+
+    let first = open();
+    get(&first);
+    drop(first);
+    let (second, third) = (open(), open());
+    get(&second);
+    get(&third);
+    drop((second, third));
+
+    let connections: Vec<_> = finish()
+        .into_iter()
+        .map(|(connection, _)| connection)
+        .collect();
+    assert_eq!(connections, [0, 0, 1]);
+}

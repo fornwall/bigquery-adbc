@@ -1,12 +1,14 @@
 //! Shared HTTP connection pool with per-request deadlines and upload progress timeouts.
 
 use std::borrow::Cow;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
 use adbc_core::error::{Error, Result, Status};
+use reqwest::header::{HeaderValue, USER_AGENT as USER_AGENT_HEADER};
 
 use crate::error::{driver_defect, error, failed_to, request_error};
+use crate::runtime::{DriverRuntime, SharedRuntime};
 
 #[cfg(test)]
 mod tests;
@@ -70,11 +72,76 @@ impl TimeoutBudget {
 /// Clones share one connection pool for all direct REST operations.
 #[derive(Clone)]
 pub(crate) struct RestClient {
-    http: reqwest::Client,
+    transport: Arc<Transport>,
+    /// Sent with each request rather than set on the pool, so a pool can serve any database.
+    user_agent: HeaderValue,
     /// HTTP 401 remedy for credentials without token-minting diagnostics.
     unauthenticated_remedy: Option<Arc<str>>,
     /// [`UPLOAD_PROGRESS_TIMEOUT`], which tests shorten.
     upload_progress_timeout: Duration,
+}
+
+/// A connection pool, which the databases of one runtime reuse one after another.
+///
+/// When the last client of a database's client generation drops it, the pool and its open
+/// connections join the runtime's idle pools, and the next database the runtime opens takes one
+/// instead of building its own: a process that opens a database per connection, as the Python
+/// DB-API does, then skips the TCP and TLS handshakes and reloading the system's root
+/// certificates. A pool serves one generation at a time, so databases open together still get
+/// connections of their own, as they did with a pool each: an HTTP/2 connection carries at most
+/// the server's stream limit. A pool holds nothing that differs between databases, not even a
+/// credential, which each request carries; its proxy settings are read when it is built, as Go
+/// reads them once per process. Hyper closes a connection idle for 90 seconds.
+struct Transport {
+    http: reqwest::Client,
+    /// The runtime whose tasks drive the pool's connections, which alone may reuse them, so a
+    /// `fork` child, whose databases each get a runtime of their own, never writes to its parent's
+    /// sockets. Dangling for a pool no runtime shares.
+    owner: Weak<DriverRuntime>,
+}
+
+/// The idle pools, at most [`IDLE_TRANSPORTS`] per runtime, each with the runtime that owns it.
+static IDLE: Mutex<Vec<(Weak<DriverRuntime>, reqwest::Client)>> = Mutex::new(Vec::new());
+
+/// Enough for a few workers that each open and close databases in turn.
+const IDLE_TRANSPORTS: usize = 4;
+
+/// The lock is held only to move an entry, so a poisoned one is recovered.
+fn idle() -> MutexGuard<'static, Vec<(Weak<DriverRuntime>, reqwest::Client)>> {
+    IDLE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// An idle pool of `runtime`'s, if there is one. The pools of dropped runtimes are discarded.
+fn check_out(runtime: &SharedRuntime) -> Option<reqwest::Client> {
+    let owner = Arc::downgrade(runtime);
+    let mut idle = idle();
+    idle.retain(|(candidate, _)| candidate.strong_count() > 0);
+    let index = idle
+        .iter()
+        .position(|(candidate, _)| candidate.ptr_eq(&owner))?;
+    Some(idle.swap_remove(index).1)
+}
+
+impl Drop for Transport {
+    fn drop(&mut self) {
+        // A runtime that is gone, or that a `fork` child inherited, drives no connection.
+        let Some(owner) = self.owner.upgrade().filter(|owner| !owner.orphaned()) else {
+            return;
+        };
+        let mut idle = idle();
+        idle.retain(|(candidate, _)| candidate.strong_count() > 0);
+        let pooled = idle
+            .iter()
+            .filter(|(candidate, _)| candidate.ptr_eq(&self.owner))
+            .count();
+        if pooled < IDLE_TRANSPORTS {
+            idle.push((self.owner.clone(), self.http.clone()));
+        }
+        drop(idle);
+        // Released after the lock: were this the runtime's last reference, its shutdown must not
+        // run under it.
+        drop(owner);
+    }
 }
 
 impl RestClient {
@@ -106,8 +173,10 @@ impl RestClient {
     ) -> reqwest::RequestBuilder {
         let separator = if url.contains('?') { '&' } else { '?' };
         let request = self
+            .transport
             .http
-            .request(method, format!("{url}{separator}prettyPrint=false"));
+            .request(method, format!("{url}{separator}prettyPrint=false"))
+            .header(USER_AGENT_HEADER, self.user_agent.clone());
         match budget {
             TimeoutBudget::Request => request.timeout(REQUEST_TIMEOUT),
             TimeoutBudget::MediaUpload => request,
@@ -210,13 +279,37 @@ pub(super) fn transport_error(
     )
 }
 
+/// A client on a pool of its own, which no other client reuses.
 #[cfg(test)]
 pub(crate) fn rest_client(what: &str) -> Result<RestClient> {
-    rest_client_with_user_agent(what, USER_AGENT)
+    build_client(what, reqwest::Client::builder())
 }
 
-pub(crate) fn rest_client_with_user_agent(what: &str, user_agent: &str) -> Result<RestClient> {
-    build_client(what, reqwest::Client::builder().user_agent(user_agent))
+/// A client sending `user_agent`. With a `runtime`, it takes an idle pool of the runtime's, or
+/// builds one that becomes idle once the client and its clones are dropped.
+pub(crate) fn pooled_rest_client(
+    what: &str,
+    user_agent: &str,
+    runtime: Option<&SharedRuntime>,
+) -> Result<RestClient> {
+    let user_agent = HeaderValue::from_str(user_agent).map_err(|_| {
+        driver_defect(format_args!(
+            "the BigQuery {what} user agent is not an HTTP header value"
+        ))
+    })?;
+    let http = match runtime.and_then(check_out) {
+        Some(http) => http,
+        None => build_http(what, reqwest::Client::builder())?,
+    };
+    Ok(RestClient {
+        transport: Arc::new(Transport {
+            http,
+            owner: runtime.map_or_else(Weak::new, Arc::downgrade),
+        }),
+        user_agent,
+        unauthenticated_remedy: None,
+        upload_progress_timeout: UPLOAD_PROGRESS_TIMEOUT,
+    })
 }
 
 /// The driver and its version, which Cloud Audit Logs record as `callerSuppliedUserAgent`.
@@ -230,9 +323,23 @@ pub(crate) fn user_agent(caller: Option<&str>) -> Cow<'static, str> {
     }
 }
 
+/// A client on a pool built from `builder`, which no other client reuses.
+#[cfg(test)]
+fn build_client(what: &str, builder: reqwest::ClientBuilder) -> Result<RestClient> {
+    Ok(RestClient {
+        transport: Arc::new(Transport {
+            http: build_http(what, builder)?,
+            owner: Weak::new(),
+        }),
+        user_agent: HeaderValue::from_static(USER_AGENT),
+        unauthenticated_remedy: None,
+        upload_progress_timeout: UPLOAD_PROGRESS_TIMEOUT,
+    })
+}
+
 /// Responses are not gzip-encoded: Google pads gzip responses in ways that make `h2` end the
 /// shared connection (UP-94).
-fn build_client(what: &str, builder: reqwest::ClientBuilder) -> Result<RestClient> {
+fn build_http(what: &str, builder: reqwest::ClientBuilder) -> Result<reqwest::Client> {
     builder
         // Redirects can replay SQL and upload bodies outside the configured endpoint.
         .redirect(reqwest::redirect::Policy::none())
@@ -244,11 +351,6 @@ fn build_client(what: &str, builder: reqwest::ClientBuilder) -> Result<RestClien
         .http2_keep_alive_timeout(HTTP2_PING_INTERVAL / 2)
         .connect_timeout(CONNECT_TIMEOUT)
         .build()
-        .map(|http| RestClient {
-            http,
-            unauthenticated_remedy: None,
-            upload_progress_timeout: UPLOAD_PROGRESS_TIMEOUT,
-        })
         .map_err(|source| {
             driver_defect(format_args!(
                 "failed to initialize the BigQuery {what} HTTP client: {source}"

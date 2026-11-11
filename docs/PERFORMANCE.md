@@ -545,6 +545,23 @@ PYTEST_ADDOPTS='-q --durations=15' \
   cargo test --locked --test clients foundry::suite_passes -- --ignored
 ```
 
+### Sequential databases
+
+Each database used to build its own REST connection pool, so a process opening a database per
+connection, as Python's `dbapi.connect()` does, paid a TCP and TLS handshake and a reload of the
+system's root certificates before each first request; a closed database's pool now serves the next
+database on the runtime. 2026-11-11, Linux x86-64, release builds of both versions on one machine:
+
+| Measurement | One pool per database | Pool reuse |
+| --- | ---: | ---: |
+| 50 sequential databases on one driver, each reading one table schema from a local keep-alive HTTP/1.1 mock, `instructions:u` | 820 M | 27.7 M |
+| Live, ADC user credentials: a new database's first `SELECT 1` minus its second, median of 33 databases after the first in each of 6 alternating 12-database runs | 158 ms | 104 ms |
+
+The local count is mostly root-certificate parsing, about 16 M instructions per pool. What remains
+of the live difference is the token the new database's credential mints (ADC is read again for each
+database, as Go reads it); the token request starts when the connection opens. Each harness loops
+`new_database_with_opts`, `new_connection` and one request, dropping all three each round.
+
 ### Python package import
 
 `bigquery_adbc.__version__` reads the distribution metadata on first use: `importlib.metadata` and

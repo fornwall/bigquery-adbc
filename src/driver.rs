@@ -110,7 +110,8 @@ impl BigQueryDatabase {
     }
 
     fn clients(&self) -> &Arc<ClientState> {
-        self.clients.get_or_init(|| ClientState::new(&self.config))
+        self.clients
+            .get_or_init(|| ClientState::for_database(&self.config, &self.runtime))
     }
 
     /// A copy sharing this database's runtime and client generation, from which connections can

@@ -640,6 +640,10 @@ somewhere new, but an explicit option can. Unless `bigquery.allow_untrusted_endp
   file of at most 1 MiB, which the library reads whole at every token fetch. This holds at any
   `source_credentials` depth. Set `bigquery.auth.credentials` as an option to go beyond it;
   `bigquery.allow_untrusted_endpoint` concerns hosts and does not lift it.
+- REST requests from one driver's databases reuse connection pools: a database opened after
+  another closed takes the pool it left, open connections included, while databases open together
+  keep pools of their own. Proxy variables are read when a pool is built, as Go reads them once per
+  process, and an idle connection can outlive its database by 90 seconds.
 - Hosts are ASCII. Endpoint options and proxy variables accept only ASCII host names. Every other
   URL the driver hands the auth library, the URL options above and a document's destinations and
   `credential_source` URLs, is refused if its host is non-ASCII (an internationalized or fullwidth

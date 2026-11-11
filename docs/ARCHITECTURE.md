@@ -62,7 +62,7 @@ BigQuery sends and accepts. It replaces `arrow-ipc` to keep the library small
 | `src/config`, `src/driver/uri.rs` | Options, URIs, credentials and endpoint trust. |
 | `src/options` | Option keys and values; `src/python_options.rs` generates the Python enums from them. |
 | `src/identifiers.rs`, `src/duration.rs` | Identifier validation and quoting; Go-style durations. |
-| `src/clients.rs` | Lazily created REST and Storage clients sharing one configuration snapshot. |
+| `src/clients.rs` | Lazily created REST and Storage clients sharing one configuration snapshot; a closed database's REST connection pool passes to the next database on its runtime (`src/rest/client.rs`). |
 | `src/rest` | REST client, wire models and retry rules; `src/rest/rejection` classifies BigQuery's errors. |
 | `src/connection` | Metadata: `GetObjects`, `GetTableSchema`, `GetStatistics` and `GetInfo`. |
 | `src/transaction.rs` | Manual-commit state over BigQuery sessions, shared by a connection and its statements. |

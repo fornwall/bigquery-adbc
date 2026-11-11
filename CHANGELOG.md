@@ -16,6 +16,11 @@ changes.
 
 - C API calls no longer make a `getpid` system call each to detect `fork`. On x86-64 Linux that
   was most of their overhead: setting or getting an option takes about a fifth of the time.
+- A database opened after another on the same driver closed reuses the REST connection pool the
+  closed one left, so a process that opens a database per connection, as Python's
+  `dbapi.connect()` does, skips the TCP and TLS handshake and the reload of the system's root
+  certificates: in a live measurement the first query of each later database started 54 ms
+  sooner. Databases open at the same time keep connections of their own.
 - The native library is 3% smaller (250 KB on x86-64 Linux): IAM impersonation refusals decode
   without the SDK's generic `google.rpc.Status` parser, URL parsing links no Unicode host-name
   tables, and `adbc_core`, `tokio-util` and `flatbuffers` compile for size.

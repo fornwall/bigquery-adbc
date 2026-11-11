@@ -541,6 +541,41 @@ pub(crate) fn retire(listener: TcpListener) {
     });
 }
 
+/// A keep-alive HTTP/1.1 server answering `{}` to every request, which records each request's
+/// connection and `User-Agent`. Stopped and joined by the returned closure.
+pub(crate) fn keep_alive_server() -> (String, impl FnOnce() -> Vec<(usize, Option<String>)>) {
+    let (listener, endpoint) = mock_listener();
+    let (stop, stopped) = mpsc::channel::<()>();
+    let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = requests.clone();
+    let server = thread::spawn(move || {
+        let mut connections = Vec::new();
+        while let Some(mut stream) = accept(&listener, Some(&stopped)) {
+            let connection = connections.len();
+            let requests = recorded.clone();
+            connections.push(thread::spawn(move || {
+                while let Some(request) = read_captured_request(&mut stream) {
+                    let agent = request.header("user-agent").map(str::to_owned);
+                    requests.lock().unwrap().push((connection, agent));
+                    let answer = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                                  Content-Length: 2\r\n\r\n{}";
+                    if stream.write_all(answer.as_bytes()).is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
+        connections
+    });
+    let finish = move || {
+        stop.send(()).unwrap();
+        // The handlers end as the clients holding their connections go.
+        drop(server.join().unwrap());
+        std::mem::take(&mut *requests.lock().unwrap())
+    };
+    (endpoint, finish)
+}
+
 #[test]
 fn a_panicking_mock_still_retires_its_port() {
     let (endpoint, server) =
