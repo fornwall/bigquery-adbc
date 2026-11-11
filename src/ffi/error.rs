@@ -28,7 +28,7 @@ unsafe extern "C" fn release_error_v100(error: *mut AdbcErrorV100) {
         drop(unsafe { CString::from_raw(error.message) });
         error.message = std::ptr::null_mut();
     }
-    // Clearing this makes the callback idempotent, which the header requires.
+    // Callers test `release` to see whether an error still needs releasing.
     error.release = None;
 }
 

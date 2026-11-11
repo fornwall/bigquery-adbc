@@ -414,7 +414,7 @@ unsafe extern "C" fn release_partitions(partitions: *mut AdbcPartitions) {
     partitions.num_partitions = 0;
     partitions.partitions = std::ptr::null_mut();
     partitions.partition_lengths = std::ptr::null_mut();
-    // Clearing this makes the callback idempotent, which the header requires.
+    // Callers test `release` to see whether partitions still need releasing.
     partitions.release = None;
 }
 

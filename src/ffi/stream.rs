@@ -91,8 +91,8 @@ pub(super) fn export_reader(reader: Box<dyn RecordBatchReader + Send>) -> FFI_Ar
         panicked: false,
         process: process_id(),
     });
-    // SAFETY: each callback reads `private_data` as the `PrivateData` boxed here, which `release`
-    // alone frees, once, before marking the stream released.
+    // SAFETY: each callback reads `private_data` as the `PrivateData` boxed here, which only
+    // `release` frees, once, after marking the stream released.
     unsafe {
         FFI_ArrowArrayStream::new_unchecked(
             Some(get_schema),

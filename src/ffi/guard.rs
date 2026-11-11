@@ -213,7 +213,7 @@ pub(crate) fn missing_argument(name: &str) -> Error {
 /// Write a value into a caller-provided out parameter, rejecting a null pointer.
 ///
 /// # Safety
-/// `dst` must be null or point to a writable, correctly aligned `T`.
+/// `dst` must be null or point to writable storage for a `T`, which need not be aligned.
 pub(crate) unsafe fn write_out<T>(dst: *mut T, value: T, name: &str) -> Result<()> {
     required_output(dst, name)?;
     // SAFETY: null was rejected and the caller guarantees writable storage for T.
