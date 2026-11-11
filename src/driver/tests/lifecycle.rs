@@ -159,3 +159,37 @@ fn a_database_reuses_the_connections_a_closed_one_left_idle() {
         .collect();
     assert_eq!(connections, [0, 0, 1]);
 }
+
+/// The harness `docs/PERFORMANCE.md` (Sequential databases) counts with `perf stat`, not a
+/// regression test: 50 databases opened in turn on one driver, each opening a connection and
+/// sending one request to a local keep-alive mock, then dropped with it.
+#[test]
+#[ignore = "a measurement, run on its own under perf stat"]
+fn sequential_databases_measurement() {
+    use crate::rest::request::{Request, send};
+
+    let (endpoint, finish) = crate::test_support::http::keep_alive_server();
+    let mut driver = BigQueryDriver::try_new().unwrap();
+    for _ in 0..50 {
+        let mut database = driver.new_database().unwrap();
+        set_option(
+            &mut database,
+            BigQueryDatabaseOption::AuthenticationType,
+            BigQueryAuthenticationType::Anonymous,
+        );
+        let connection = database.new_connection().unwrap();
+        let state = database.clients();
+        let configuration = state.configuration(&database.runtime).unwrap();
+        database
+            .runtime
+            .block_on(send(
+                None,
+                &configuration.credentials,
+                &state.rest_client().unwrap(),
+                Request::get(&format!("{endpoint}/ping"), "ping"),
+            ))
+            .unwrap();
+        drop((connection, database));
+    }
+    assert_eq!(finish().len(), 50);
+}

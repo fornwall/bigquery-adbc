@@ -612,17 +612,24 @@ PYTEST_ADDOPTS='-q --durations=15' \
 Each database used to build its own REST connection pool, so a process opening a database per
 connection, as Python's `dbapi.connect()` does, paid a TCP and TLS handshake and a reload of the
 system's root certificates before each first request; a closed database's pool now serves the
-driver's next database. 2026-11-11, Linux x86-64, release builds of both versions on one machine:
+driver's next database. 2026-11-11, Linux x86-64; "one pool per database" is the same code with
+`IdlePools::take` (`src/rest/client.rs`) returning `None`:
 
 | Measurement | One pool per database | Pool reuse |
 | --- | ---: | ---: |
-| 50 sequential databases on one driver, each reading one table schema from a local keep-alive HTTP/1.1 mock, `instructions:u` | 820 M | 27.7 M |
-| Live, ADC user credentials: a new database's first `SELECT 1` minus its second, median of 33 databases after the first in each of 6 alternating 12-database runs | 158 ms | 104 ms |
+| 50 databases in turn on one driver, each opening a connection and sending one request to a local keep-alive HTTP/1.1 mock, `instructions:u`, release build | 816 M | 23.8 M |
+| Live, ADC user credentials: a later database's first `SELECT 1` minus its second, median over 4 runs of each run's median of 11 databases | 160 ms | 125 ms |
 
 The local count is mostly root-certificate parsing, about 16 M instructions per pool. What remains
-of the live difference is the token the new database's credential mints (ADC is read again for each
-database, as Go reads it); the token request starts when the connection opens. Each harness loops
-`new_database_with_opts`, `new_connection` and one request, dropping all three each round.
+of the live difference is the token each new database's credential mints; that request starts when
+the connection opens. Reproduce them with:
+
+```sh
+cargo test --locked --release --lib --no-run   # prints the unit-test executable
+perf stat -e instructions:u <executable> --ignored --exact \
+  driver::tests::lifecycle::sequential_databases_measurement
+scripts/run-one-live-test.sh sequential_databases_measurement --nocapture
+```
 
 ### Python package import
 
