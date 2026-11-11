@@ -26,6 +26,30 @@ fn execution_at(runtime: &SharedRuntime, endpoint: &str) -> ExecutionContext {
     }
 }
 
+/// An execution whose REST requests reach `endpoint` and whose read sessions reach `storage`.
+fn execution_with_storage(
+    runtime: &SharedRuntime,
+    endpoint: &str,
+    storage: &str,
+) -> ExecutionContext {
+    let mut config = crate::config::DatabaseConfig {
+        authentication_type: crate::BigQueryAuthenticationType::Anonymous,
+        ..crate::config::DatabaseConfig::default()
+    };
+    for kind in ServiceEndpointKind::ALL {
+        let endpoint = match kind {
+            ServiceEndpointKind::BigQuery => endpoint,
+            ServiceEndpointKind::Storage => storage,
+            _ => crate::test_support::UNREACHABLE_ENDPOINT,
+        };
+        config.endpoints.set(kind, Some(Arc::from(endpoint)));
+    }
+    ExecutionContext {
+        state: ClientState::new(&config),
+        ..execution_at(runtime, endpoint)
+    }
+}
+
 /// An execution for results that need no further request.
 fn offline_execution() -> ExecutionContext {
     let runtime = crate::runtime::new_runtime().unwrap();
@@ -622,22 +646,7 @@ fn a_paginated_result_uses_storage_read_before_emitting_any_rest_rows() {
             },
         )
     });
-    let mut config = crate::config::DatabaseConfig {
-        authentication_type: crate::BigQueryAuthenticationType::Anonymous,
-        ..crate::config::DatabaseConfig::default()
-    };
-    config.endpoints.set(
-        ServiceEndpointKind::BigQuery,
-        Some(Arc::from(endpoint.as_str())),
-    );
-    config.endpoints.set(
-        ServiceEndpointKind::Storage,
-        Some(Arc::from(storage.endpoint())),
-    );
-    let execution = ExecutionContext {
-        state: ClientState::new(&config),
-        ..execution_at(&runtime, &endpoint)
-    };
+    let execution = execution_with_storage(&runtime, &endpoint, storage.endpoint());
     let body = json!({
         "jobComplete":true,
         "jobReference":{"projectId":"project","jobId":"job","location":"US"},
@@ -708,22 +717,7 @@ fn read_through_storage_read(
         "configuration":{"query":{"destinationTable":
             {"projectId":"project","datasetId":"_anon","tableId":"results"}}}
     }))]);
-    let mut config = crate::config::DatabaseConfig {
-        authentication_type: crate::BigQueryAuthenticationType::Anonymous,
-        ..crate::config::DatabaseConfig::default()
-    };
-    for kind in ServiceEndpointKind::ALL {
-        let endpoint = match kind {
-            ServiceEndpointKind::BigQuery => endpoint.as_str(),
-            ServiceEndpointKind::Storage => storage.endpoint(),
-            _ => crate::test_support::UNREACHABLE_ENDPOINT,
-        };
-        config.endpoints.set(kind, Some(Arc::from(endpoint)));
-    }
-    let execution = ExecutionContext {
-        state: ClientState::new(&config),
-        ..execution_at(&runtime, &endpoint)
-    };
+    let execution = execution_with_storage(&runtime, &endpoint, storage.endpoint());
     // 100,000 rows still to page through: Storage Read rereads the result instead.
     let complete = completed(
         br#"{"jobComplete":true,"jobReference":{"projectId":"project","jobId":"storage-diag","location":"US"},"statementType":"SELECT","schema":{"fields":[{"name":"value","type":"INTEGER"}]},"rows":[{"f":[{"v":"1"}]}],"totalRows":"100001","pageToken":"next"}"#,
