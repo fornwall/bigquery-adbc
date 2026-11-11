@@ -40,8 +40,10 @@ impl BigQueryDatabase {
                     error
                 })?;
         }
-        // Applying the authority above went through the option path, which marks it explicit.
+        // Applying the authority and credentials above went through the option path, which marks
+        // them explicit.
         staged.endpoint_from_uri = true;
+        staged.credentials_from_uri = staged.credentials.is_some();
         self.config = staged;
         // Never retain credentials in the read-back URI.
         self.uri = Some(Secret::from(redact_uri(uri)));
@@ -97,7 +99,10 @@ fn apply_option(
         O::AuthenticationType => {
             config.authentication_type = enum_value(key, OptionValue::String(value))?;
         }
-        O::AuthenticationCredentials => config.credentials = nonempty_secret(value),
+        O::AuthenticationCredentials => {
+            config.credentials = nonempty_secret(value);
+            config.credentials_from_uri = false;
+        }
         O::AuthenticationCredentialsType => {
             config.credentials_type = optional_enum_value(key, OptionValue::String(value))?;
         }

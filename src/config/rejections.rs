@@ -230,6 +230,17 @@ pub(super) fn untrusted_document_destination(
     ))
 }
 
+/// Reject a document a URI supplied that names a command for the auth library to run. `field` is
+/// the JSON field path; the command itself is never quoted.
+pub(super) fn executable_source_from_uri(field: &str) -> adbc_core::error::Error {
+    invalid_argument(format!(
+        "the JSON credential document the connection URI supplied names a command to run in its \
+         {field} field (value not echoed); a URI cannot make the driver run a command, so set {} \
+         as a database option to use an executable-sourced credential",
+        BigQueryDatabaseOption::AuthenticationCredentials.as_str(),
+    ))
+}
+
 /// Reject a credential document destination that names no host the trust rule can judge.
 pub(super) fn malformed_document_destination(field: &str, google: &str) -> adbc_core::error::Error {
     invalid_argument(format!(

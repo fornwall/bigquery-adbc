@@ -590,14 +590,16 @@ On a connection these options read the current catalog and schema, as in Go, and
 returns `NOT_IMPLEMENTED`. On a statement, reading them returns `NOT_FOUND` naming
 `bigquery.query.default_project_id` or `bigquery.query.default_dataset_id`; Go asks the connection.
 
-### G68. The connection URI rejects contradictory and ambiguous inputs
+### G68. The connection URI rejects contradictory and ambiguous inputs, and cannot run a command
 
 The URI returns `INVALID_ARGUMENT` for unused credential parameters, repeated parameters, user
 information, a fragment, extra path segments, and impersonation parameters without a target. Go
 ignores or drops these, or folds extra segments into the project ID, and decodes `AuthCredentials`
 twice, so an encoded `+` becomes a space. An IPv6 host without a port keeps its brackets here
 (`bigquery://[::1]/p` is `https://[::1]:443`); Go drops them and builds `::1:443`, which it cannot
-dial.
+dial. A credential document from `AuthCredentials` that names a `credential_source.executable`
+returns `INVALID_ARGUMENT`, so a URI cannot run a command; Go runs it once the machine sets
+`GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`.
 
 ### G76. Scopes can shape the credential, not only the impersonated token
 

@@ -41,6 +41,10 @@ changes.
 
 ### Fixed
 
+- A credential document that a URI supplies through `AuthCredentials`, inline or by path, can no
+  longer name a `credential_source.executable`, which the auth library runs when
+  `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`; set `bigquery.auth.credentials` as an option for
+  an executable-sourced credential.
 - A `bigquery.auth.credentials` file over 1 MiB is refused after reading that much instead of
   being read whole, so a path such as `/dev/zero`, which a URI's `AuthCredentials` can name, no
   longer exhausts memory.

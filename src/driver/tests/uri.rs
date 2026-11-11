@@ -491,6 +491,89 @@ fn a_uri_cannot_smuggle_a_credential_document_past_the_destination_check() {
     assert_message_omits(&error, &["uri-secret", "uri-token", "uri-key"]);
 }
 
+/// An executable credential source makes the auth library run its command once the machine sets
+/// `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`. A URI is often assembled from input the
+/// application does not control, so a document it supplies may not name one, at any depth, and
+/// the host opt-in does not lift that. The same document set as an option builds, and an option
+/// set after the URI takes the credential over.
+#[test]
+fn a_uri_cannot_supply_a_credential_document_that_runs_a_command() {
+    const COMMAND: &str = "/usr/local/bin/uri-supplied-command";
+    let external = serde_json::json!({
+        "type": "external_account",
+        "audience": "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/provider",
+        "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+        "token_url": "https://sts.googleapis.com/v1/token",
+        "credential_source": {"executable": {"command": COMMAND, "timeout_millis": 5000}},
+    });
+    let impersonated = serde_json::json!({
+        "type": "impersonated_service_account",
+        "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/sa@p.iam.gserviceaccount.com:generateAccessToken",
+        "source_credentials": external,
+    });
+    let uri_with = |document: &serde_json::Value| {
+        let encoded = percent_encoding::utf8_percent_encode(
+            &document.to_string(),
+            percent_encoding::NON_ALPHANUMERIC,
+        )
+        .to_string();
+        format!("bigquery:///test-project?OAuthType=2&AuthCredentials={encoded}")
+    };
+
+    for (document, field) in [
+        (&external, "credential_source.executable"),
+        (
+            &impersonated,
+            "source_credentials.credential_source.executable",
+        ),
+    ] {
+        let mut database = new_database();
+        set_option(
+            &mut database,
+            OptionDatabase::Uri,
+            uri_with(document).as_str(),
+        );
+        set_option(
+            &mut database,
+            BigQueryDatabaseOption::AllowUntrustedEndpoint,
+            "true",
+        );
+        let error = connection_error(&database);
+        assert_failure(
+            &error,
+            Status::InvalidArguments,
+            &[
+                "the JSON credential document the connection URI supplied names a command to \
+                 run",
+                &format!("its {field} field"),
+            ],
+        );
+        assert_message_omits(&error, &[COMMAND, "uri-supplied"]);
+
+        // Set as an option, the same document is the application's own configuration.
+        set_option(
+            &mut database,
+            BigQueryDatabaseOption::AuthenticationCredentials,
+            document.to_string().as_str(),
+        );
+        database
+            .new_connection()
+            .unwrap_or_else(|error| panic!("{field}: {error}"));
+    }
+
+    // A URI document whose subject token comes from a file runs nothing.
+    let mut file_sourced = impersonated.clone();
+    file_sourced["source_credentials"]["credential_source"] =
+        serde_json::json!({"file": "/var/run/secrets/token"});
+    let mut database = new_database();
+    set_option(
+        &mut database,
+        OptionDatabase::Uri,
+        uri_with(&file_sourced).as_str(),
+    );
+    database.new_connection().unwrap();
+}
+
 /// A URI may still name Google's own hosts and ports with real credentials.
 #[test]
 fn a_google_api_host_in_a_uri_is_allowed_with_real_credentials() {

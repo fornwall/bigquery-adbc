@@ -329,6 +329,84 @@ fn a_credential_file_over_one_mebibyte_is_refused_after_a_bounded_read() {
     assert_message_omits(&error, &[oversized.path()]);
 }
 
+/// A URI naming a credential file supplies that document as much as one carrying it inline: the
+/// path can be any file the process reads. The refusal follows the credential, not the
+/// authentication type, and an explicit initialization option replaces the URI's credential
+/// whatever the order, as it does every other URI value.
+#[test]
+fn a_uri_cannot_name_a_credential_file_that_runs_a_command() {
+    use adbc_core::Driver as _;
+    use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+
+    let document = serde_json::json!({
+        "type": "external_account",
+        "audience": "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/provider",
+        "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+        "token_url": "https://sts.googleapis.com/v1/token",
+        "credential_source": {"executable": {"command": "/usr/local/bin/file-named-command"}},
+    })
+    .to_string();
+    let file = TemporaryFile::new("uri-executable-source", &document);
+    let uri = format!(
+        "bigquery:///data-project?OAuthType=1&AuthCredentials={}",
+        utf8_percent_encode(file.path(), NON_ALPHANUMERIC)
+    );
+    let mut driver = crate::BigQueryDriver::try_new().unwrap();
+    let credentials = || OptionDatabase::Other("bigquery.auth.credentials".to_owned());
+    let credentials_type = || OptionDatabase::Other("bigquery.auth.credentials_type".to_owned());
+    let allow_untrusted = || OptionDatabase::Other("bigquery.allow_untrusted_endpoint".to_owned());
+
+    let refused = |database: &crate::BigQueryDatabase| {
+        let error = database.new_connection().unwrap_err();
+        assert_failure(
+            &error,
+            Status::InvalidArguments,
+            &["its credential_source.executable field"],
+        );
+        assert_message_omits(&error, &["file-named-command", file.path()]);
+    };
+    refused(
+        &driver
+            .new_database_with_opts([(OptionDatabase::Uri, uri.as_str().into())])
+            .unwrap(),
+    );
+    // Other explicit options, including the credential type assertion, leave the URI's credential
+    // where it came from, and a URI set later takes back a credential an option had set.
+    let mut database = driver
+        .new_database_with_opts([
+            (OptionDatabase::Uri, uri.as_str().into()),
+            (credentials_type(), "external_account".into()),
+            (allow_untrusted(), "true".into()),
+        ])
+        .unwrap();
+    refused(&database);
+    database
+        .set_option(credentials(), file.path().into())
+        .unwrap();
+    database.new_connection().unwrap();
+    database
+        .set_option(OptionDatabase::Uri, uri.as_str().into())
+        .unwrap();
+    refused(&database);
+
+    for options in [
+        [
+            (credentials(), file.path().into()),
+            (OptionDatabase::Uri, uri.as_str().into()),
+        ],
+        [
+            (OptionDatabase::Uri, uri.as_str().into()),
+            (credentials(), file.path().into()),
+        ],
+    ] {
+        driver
+            .new_database_with_opts(options)
+            .unwrap()
+            .new_connection()
+            .unwrap();
+    }
+}
+
 /// Both halves of a credential-type rejection are type names rather than secrets: the assertion
 /// the operator made, what the document turned out to be, and the set that exists at all. The auth
 /// library's own error is dropped because it can quote the document, so a document it could not

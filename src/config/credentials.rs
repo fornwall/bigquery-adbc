@@ -26,8 +26,8 @@ use crate::{BigQueryAuthenticationType, BigQueryCredentialsType, BigQueryDatabas
 use super::DatabaseConfig;
 use super::endpoints::{is_trusted_credential_url, parse_credential_url};
 use super::rejections::{
-    malformed_document_destination, oversized_credential_file, required_option,
-    unreadable_credential_file, untrusted_document_destination,
+    executable_source_from_uri, malformed_document_destination, oversized_credential_file,
+    required_option, unreadable_credential_file, untrusted_document_destination,
 };
 
 /// Applies the quota project and effective base scopes to a credential builder.
@@ -308,9 +308,7 @@ fn validate_document_destinations(settings: &DatabaseConfig, document: &Value) -
             legacy_oauth_host,
         ))
     };
-    let mut prefix = String::new();
-    let mut next = Some(document);
-    while let Some(document) = next {
+    for (prefix, document) in document_chain(document) {
         for (field, google, legacy_oauth_host) in DOCUMENT_DESTINATIONS {
             // A value of another JSON type names no destination; the builder refuses it.
             if let Some(value) = document.get(field).and_then(Value::as_str) {
@@ -329,8 +327,42 @@ fn validate_document_destinations(settings: &DatabaseConfig, document: &Value) -
                 false,
             )?;
         }
-        prefix.push_str("source_credentials.");
-        next = document.get("source_credentials");
+    }
+    Ok(())
+}
+
+/// A credential document and each `source_credentials` nested in it, with the field-path prefix
+/// that names the nested one in a refusal.
+fn document_chain(document: &Value) -> impl Iterator<Item = (String, &Value)> {
+    std::iter::successors(Some((String::new(), document)), |(prefix, document)| {
+        let source = document.get("source_credentials")?;
+        Some((format!("{prefix}source_credentials."), source))
+    })
+}
+
+/// Refuses a document from a URI's `AuthCredentials` whose `credential_source` names an
+/// executable, which the auth library runs once the machine sets
+/// `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`.
+///
+/// A URI is often assembled from input the application does not control, so it may not make the
+/// driver run a command, as it may not send a credential to a new host. Only an option trusts
+/// such a document: `bigquery.allow_untrusted_endpoint` is about hosts and does not apply, and
+/// the other credential sources are left alone because their subject token goes to the checked
+/// `token_url`. A null `executable` names no command, so the auth library reads another source.
+fn reject_executable_source_from_uri(settings: &DatabaseConfig, document: &Value) -> Result<()> {
+    if !settings.credentials_from_uri {
+        return Ok(());
+    }
+    for (prefix, document) in document_chain(document) {
+        if document
+            .get("credential_source")
+            .and_then(|source| source.get("executable"))
+            .is_some_and(|executable| !executable.is_null())
+        {
+            return Err(executable_source_from_uri(&format!(
+                "{prefix}credential_source.executable"
+            )));
+        }
     }
     Ok(())
 }
@@ -399,6 +431,7 @@ pub(super) fn build_json_credentials(
         )));
     }
 
+    reject_executable_source_from_uri(settings, &value)?;
     validate_document_destinations(settings, &value)?;
 
     // Read before a builder consumes the value. Only a standard IAM URL identifies a target we

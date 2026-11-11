@@ -74,6 +74,11 @@ pub(crate) struct DatabaseConfig {
     pub(crate) dataset_id: Option<Arc<str>>,
     pub(crate) authentication_type: BigQueryAuthenticationType,
     pub(crate) credentials: Option<Secret>,
+    /// Whether `credentials` is a `bigquery://` URI's `AuthCredentials` rather than an explicit
+    /// option. A URI is often assembled from input the application does not control, so the
+    /// document it supplies, inline or by path, may not name a command for the auth library to
+    /// run; see [`Self::endpoint_from_uri`] for the same rule about hosts.
+    pub(crate) credentials_from_uri: bool,
     pub(crate) credentials_type: Option<BigQueryCredentialsType>,
     pub(crate) user_authentication: UserAuthenticationConfig,
     pub(crate) external_account: ExternalAccountConfig,
