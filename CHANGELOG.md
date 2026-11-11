@@ -72,6 +72,9 @@ changes.
   a revoked OAuth refresh token, no longer fails every later request from the database: each
   request asks again with a rebuilt credential, as the Go driver does, so a refusal resolved after
   the connection opened lets the next request through.
+- A process forked while another thread was in a C API call no longer hangs in the child: the
+  child could inherit the driver's handle lock held, so creating or releasing any handle there,
+  including a new database, waited forever.
 - A credential document that a URI supplies through `AuthCredentials`, inline or by path, can no
   longer name a `credential_source.executable`, which the auth library runs when
   `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`, nor a `credential_source.file` other than a

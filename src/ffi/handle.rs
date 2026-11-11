@@ -122,11 +122,13 @@ fn poisoned(kind: &str) -> Error {
 /// Orders every read of a handle's `private_data` with the writes of `New` and `Release`. Readers
 /// hold it only while taking their reference, and `Release` only while emptying the slot, so the
 /// object a slot names cannot be freed between a reader loading the pointer and counting itself.
+/// No holder waits on anything but the allocator, which lets [`track_forks`] hold it across `fork`.
 static SLOTS: RwLock<()> = RwLock::new(());
 
-/// Let the `fork` checks read a cached process ID instead of calling `getpid`, by refreshing it
-/// in every child (see [`crate::runtime::process_id`]). `AdbcDriverInit` calls this before any
-/// handle exists.
+/// Register the `fork` handlers: they keep a child from inheriting [`SLOTS`] held by a thread the
+/// child lacks, which would block every later call, and refresh the cached process ID the fork
+/// checks read instead of calling `getpid` (see [`crate::runtime::process_id`]). `AdbcDriverInit`
+/// calls this before any handle exists.
 ///
 /// It never waits, so a `fork` racing it cannot leave the child blocked; a child forked before
 /// the cache is filled keeps calling `getpid`. A child that bypasses `pthread_atfork` (`_Fork`, a
@@ -136,29 +138,75 @@ static SLOTS: RwLock<()> = RwLock::new(());
 pub(crate) fn track_forks() {
     static REGISTERED: AtomicBool = AtomicBool::new(false);
 
-    if !REGISTERED.swap(true, Ordering::Relaxed) && refresh_in_fork_children() {
+    if !REGISTERED.swap(true, Ordering::Relaxed) && fork_handlers::register() {
         crate::runtime::cache_process_id();
     }
 }
 
-/// Have every `fork` child refresh the cached process ID, reporting whether it will.
+/// [`track_forks`]'s handlers.
 #[cfg(unix)]
-fn refresh_in_fork_children() -> bool {
+mod fork_handlers {
+    use std::cell::Cell;
+    use std::mem::ManuallyDrop;
+    use std::sync::{PoisonError, RwLockWriteGuard};
+
+    use super::SLOTS;
+
+    thread_local! {
+        /// [`SLOTS`] as the prepare handler took it, until the parent or child handler, which run
+        /// on the same thread, releases it. `ManuallyDrop` spares the slot a thread-exit
+        /// destructor, whose registration could allocate and lock inside the handlers.
+        static HELD_ACROSS_FORK: Cell<Option<ManuallyDrop<RwLockWriteGuard<'static, ()>>>> =
+            const { Cell::new(None) };
+    }
+
+    /// Waits for the current holders of [`SLOTS`], as glibc's own prepare handler does for the
+    /// allocator's locks. This runs in the parent, where waiting is allowed.
+    extern "C" fn before_fork() {
+        // Locks inside the slot access: a thread's first one can allocate its thread-local
+        // storage, which takes the loader's lock, and a thread loading a library can be waiting
+        // for `SLOTS` while holding that.
+        HELD_ACROSS_FORK.with(|slot| {
+            let held = SLOTS.write().unwrap_or_else(PoisonError::into_inner);
+            slot.set(Some(ManuallyDrop::new(held)));
+        });
+    }
+
+    extern "C" fn after_fork_in_parent() {
+        if let Some(held) = HELD_ACROSS_FORK.with(Cell::take) {
+            drop(ManuallyDrop::into_inner(held));
+        }
+    }
+
     /// Runs in the child before `fork` returns there, which permits only async-signal-safe work:
-    /// `getpid` and an atomic store.
-    extern "C" fn refresh_process_id() {
+    /// unlocking (atomics, and a futex wake for waiters the child lacks), `getpid` and an atomic
+    /// store. The prepare handler already reached the thread's storage.
+    extern "C" fn after_fork_in_child() {
+        after_fork_in_parent();
         crate::runtime::cache_process_id();
     }
-    // SAFETY: the handler is async-signal-safe and cannot unwind. It stays mapped because the
-    // library must never be unloaded (see `AdbcDriverBigqueryInit`); glibc also unregisters it if
-    // the library is.
-    unsafe { libc::pthread_atfork(None, None, Some(refresh_process_id)) == 0 }
+
+    /// Register the handlers, reporting whether they will run.
+    pub(super) fn register() -> bool {
+        // SAFETY: the handlers cannot unwind, and the child's is async-signal-safe. They stay
+        // mapped because the library must never be unloaded (see `AdbcDriverBigqueryInit`);
+        // glibc also unregisters them if the library is.
+        unsafe {
+            libc::pthread_atfork(
+                Some(before_fork),
+                Some(after_fork_in_parent),
+                Some(after_fork_in_child),
+            ) == 0
+        }
+    }
 }
 
 /// Without `fork` (Windows), a cached process ID never goes stale.
 #[cfg(not(unix))]
-fn refresh_in_fork_children() -> bool {
-    true
+mod fork_handlers {
+    pub(super) fn register() -> bool {
+        true
+    }
 }
 
 /// Install `exported` in an empty slot, as `New` does.

@@ -409,3 +409,48 @@ fn a_fork_child_sees_its_own_process_id() {
         "the child kept its parent's process ID (wait status {status})"
     );
 }
+
+/// A child must not inherit the slot lock from a thread it lacks: every later call, even on a new
+/// handle, would wait on it forever. A thread here holds the lock most of the time, so without the
+/// prepare handler nearly every child would.
+#[test]
+#[cfg(unix)]
+#[cfg_attr(miri, ignore = "Miri cannot fork")]
+fn a_fork_child_never_inherits_the_slot_lock() {
+    track_forks();
+    let stop = Arc::new(AtomicBool::new(false));
+    let holder = std::thread::spawn({
+        let stop = Arc::clone(&stop);
+        move || {
+            while !stop.load(Ordering::Relaxed) {
+                let held = SLOTS.write().unwrap_or_else(PoisonError::into_inner);
+                for _ in 0..1_000 {
+                    std::hint::spin_loop();
+                }
+                drop(held);
+                std::thread::yield_now();
+            }
+        }
+    });
+    for _ in 0..20 {
+        // SAFETY: The child makes only async-signal-safe calls (atomics, a futex wake and
+        // `_exit`), which is all a child of this multithreaded test process may do.
+        let child = unsafe { libc::fork() };
+        if child == 0 {
+            let free = SLOTS.try_write().is_ok();
+            // SAFETY: `_exit` ends the child without running exit handlers or the parent's
+            // destructors.
+            unsafe { libc::_exit(i32::from(!free)) };
+        }
+        assert!(child > 0, "fork failed");
+        let mut status = 0;
+        // SAFETY: `child` is this process's own unreaped child, and `status` a writable local.
+        assert_eq!(unsafe { libc::waitpid(child, &raw mut status, 0) }, child);
+        assert!(
+            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+            "the child inherited the slot lock held (wait status {status})"
+        );
+    }
+    stop.store(true, Ordering::Relaxed);
+    holder.join().unwrap();
+}
