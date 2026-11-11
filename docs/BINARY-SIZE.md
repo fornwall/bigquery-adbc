@@ -58,14 +58,14 @@ size -A libadbc_driver_bigquery.so
 | Metric | Value |
 | --- | ---: |
 | Rust/Cargo | 1.99.1 |
-| Artifact bytes | 8,557,544 |
-| `.text` | 6,323,910 |
-| `.eh_frame` | 741,948 |
+| Artifact bytes | 8,566,616 |
+| `.text` | 6,332,870 |
+| `.eh_frame` | 741,996 |
 | `.rodata` | 647,845 |
-| `.gcc_except_table` | 337,388 |
-| `.rela.dyn` | 231,072 |
-| `.data.rel.ro` | 155,256 |
-| `.eh_frame_hdr` | 102,428 |
+| `.gcc_except_table` | 337,440 |
+| `.rela.dyn` | 231,120 |
+| `.data.rel.ro` | 155,304 |
+| `.eh_frame_hdr` | 102,436 |
 | `.got` | 1,816 |
 
 The x86-64 Linux wheel is smaller by its

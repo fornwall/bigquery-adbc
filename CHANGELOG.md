@@ -14,7 +14,7 @@ changes.
 
 ### Changed
 
-- The native library is 3% smaller (259 KB on x86-64 Linux): IAM impersonation refusals decode
+- The native library is 3% smaller (250 KB on x86-64 Linux): IAM impersonation refusals decode
   without the SDK's generic `google.rpc.Status` parser, URL parsing links no Unicode host-name
   tables, and `adbc_core`, `tokio-util` and `flatbuffers` compile for size.
 - A URL in a credential document naming a non-ASCII host is refused; write an internationalized
