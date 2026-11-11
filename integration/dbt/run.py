@@ -202,7 +202,7 @@ def dbt_command(
             )
 
 
-def captured_dbt_command(*arguments: str, target_dir: Path, log_dir: Path, env: dict[str, str]) -> str:
+def captured_dbt_command(*arguments: str, target_dir: Path, log_dir: Path, env: dict[str, str] | None = None) -> str:
     command = make_dbt_command(*arguments, target_dir=target_dir, log_dir=log_dir)
     show_command(command)
     result = subprocess.run(command, cwd=PROJECT_DIR, env=env, text=True, capture_output=True, check=False)
@@ -503,9 +503,6 @@ def install_dbt(archive: Path, directory: Path) -> Path:
     with tarfile.open(archive) as source:
         source.extractall(directory, filter="data")
     (install,) = directory.iterdir()
-    # 0.4.0's archives named the binary dbt.
-    if not (install / DBT_EXECUTABLE).exists() and (install / "dbt").is_file():
-        (install / "dbt").rename(install / DBT_EXECUTABLE)
     return install
 
 
@@ -1306,10 +1303,7 @@ def capture_show_results(*, target_dir: Path, log_dir: Path) -> None:
     results = {}
     for model in SHOW_MODELS:
         stdout = captured_dbt_command(
-            *("show", "--select", model, "--output", "json", "--quiet"),
-            target_dir=target_dir,
-            log_dir=log_dir,
-            env=os.environ.copy(),
+            *("show", "--select", model, "--output", "json", "--quiet"), target_dir=target_dir, log_dir=log_dir
         )
         # `dbt show --quiet --output json` emits exactly one JSON array of row objects.
         candidates = []
@@ -1577,10 +1571,9 @@ def main() -> int:
 
     os.environ.setdefault("DBT_BIGQUERY_LOCATION", "US")
     os.environ.setdefault("DBT_BIGQUERY_SCHEMA", f"bigquery_adbc_integration_{mode}")
-    # Match profiles.yml so upload and submission assertions inspect the configured resources.
+    # profiles.yml's defaults, which the upload and submission assertions inspect.
     os.environ.setdefault("DBT_BIGQUERY_GCS_BUCKET", f"{project}-adbc-scratch")
     os.environ.setdefault("DBT_BIGQUERY_DATAPROC_CLUSTER", "bigquery-adbc-integration-absent-cluster")
-    os.environ.setdefault("DBT_BIGQUERY_COMPUTE_REGION", "us-central1")
     location = os.environ["DBT_BIGQUERY_LOCATION"]
     schema = os.environ["DBT_BIGQUERY_SCHEMA"]
     _validate_integration_schema(schema)

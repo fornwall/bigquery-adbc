@@ -104,9 +104,7 @@ class CanonicalIncrementalResponseTest(unittest.TestCase):
 
     @staticmethod
     def check(response: dict[str, object]) -> None:
-        assert_canonical_incremental_adapter_response(
-            response, expected_project="project", expected_location="US"
-        )
+        assert_canonical_incremental_adapter_response(response, expected_project="project", expected_location="US")
 
     def test_the_known_incomplete_response_passes(self) -> None:
         self.check(self.RESPONSE)
@@ -123,19 +121,17 @@ class BuiltDbtTest(unittest.TestCase):
         self.root = Path(directory.name)
         self.cache = self.root / "cache"
 
-    def archive(self, *, library: bool, executable: str = DBT_EXECUTABLE) -> Path:
+    def install(self, *, library: bool) -> Path:
+        """Pack a tools/dbt-build archive and install it as run.py does."""
         package = self.root / "package" / "dbt-bigquery-adbc-1.2.3-linux-x86_64"
         (package / "lib" / "bigquery-adbc").mkdir(parents=True)
-        (package / executable).write_text("dbt")
+        (package / DBT_EXECUTABLE).write_text("dbt")
         if library:
             (package / "lib" / "bigquery-adbc" / LIBRARY_NAME).write_text("driver")
         archive = self.root / "dbt.tar.gz"
         with tarfile.open(archive, "w:gz") as output:
             output.add(package, arcname=package.name)
-        return archive
-
-    def install(self, *, library: bool) -> Path:
-        return install_dbt(self.archive(library=library), self.root / "install")
+        return install_dbt(archive, self.root / "install")
 
     def test_identifier_names_the_driver_of_releases_and_commits(self) -> None:
         for driver in ("0.3.0", "0.3.0-2-g5f7f5be", "0.3.0-2-g5f7f5be-dirty"):
@@ -184,11 +180,6 @@ class BuiltDbtTest(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(RuntimeError, "its own BigQuery driver"):
                         assert_dbt_driver_resolution(self.root)
-
-    def test_an_archive_that_names_the_binary_dbt_still_installs(self) -> None:
-        install = install_dbt(self.archive(library=False, executable="dbt"), self.root / "old")
-        self.assertEqual((install / DBT_EXECUTABLE).read_text(), "dbt")
-        self.assertFalse((install / "dbt").exists())
 
     def test_a_run_that_used_another_driver_fails(self) -> None:
         driver = built_driver(self.install(library=True), self.cache, "1.2.3-1-gabc")
