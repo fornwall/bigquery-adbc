@@ -1144,16 +1144,46 @@ impl InferredSubmission {
         self.operation.as_ref().is_some_and(Operation::is_cancelled)
     }
 
-    /// Finds a job that BigQuery may have accepted, at steps 2–4 of [`InferredSubmission`].
+    /// Finds a job that BigQuery may have accepted, at steps 2–4 of [`InferredSubmission`]. If no
+    /// step finds it, `original` is reported, and if one fails, its failure; either way the job
+    /// may still run.
     async fn locate(&self, original: adbc_core::error::Error) -> Located {
+        let mut failure = match self.search().await {
+            Ok(Some(located)) => return Ok(located),
+            Ok(None) => original,
+            Err(failure) => failure,
+        };
+        append_remedy(
+            &mut failure,
+            &format!(
+                "BigQuery may still run job {}; recovery did not complete; \
+                 check the job before running it again, or set {}",
+                job_name(&self.reference),
+                BigQueryDatabaseOption::Location.as_str()
+            ),
+        );
+        Err(Unlocated::unknown(with_job_link(
+            failure,
+            Some(&self.reference),
+        )))
+    }
+
+    /// Steps 2–4: the job with its location and resource, `None` if no step found it, or the
+    /// failure that ended the search.
+    async fn search(&self) -> Result<Option<(JobReference, bytes::Bytes)>> {
+        let fetched = |candidate: &JobReference, body| {
+            found(candidate, body)
+                .map(Some)
+                .map_err(|unlocated| unlocated.failure)
+        };
         match self
             .client
             .reconcile_submission(None, &self.reference, &self.what, None)
             .await
         {
-            Ok(body) => return found(&self.reference, body),
+            Ok(body) => return fetched(&self.reference, body),
             Err(failure) if failure.status == Status::NotFound => {}
-            Err(failure) => return Err(Unlocated::unknown(failure)),
+            Err(failure) => return Err(failure),
         }
         if let Some(locations) = &self.client.dataset_locations {
             let mut searched = Vec::with_capacity(self.datasets.len());
@@ -1191,30 +1221,13 @@ impl InferredSubmission {
                     .reconcile_submission(None, &candidate, &self.what, None)
                     .await
                 {
-                    Ok(body) => return found(&candidate, body),
+                    Ok(body) => return fetched(&candidate, body),
                     Err(failure) if failure.status == Status::NotFound => {}
-                    Err(failure) => return Err(Unlocated::unknown(failure)),
+                    Err(failure) => return Err(failure),
                 }
             }
         }
-        let mut failure = match self.locate_by_listing().await {
-            Ok(Some((reference, body))) => return Ok((reference, body)),
-            Ok(None) => original,
-            Err(failure) => failure,
-        };
-        append_remedy(
-            &mut failure,
-            &format!(
-                "BigQuery may still run job {}; recovery did not complete; \
-                 check the job before running it again, or set {}",
-                job_name(&self.reference),
-                BigQueryDatabaseOption::Location.as_str()
-            ),
-        );
-        Err(Unlocated::unknown(with_job_link(
-            failure,
-            Some(&self.reference),
-        )))
+        self.locate_by_listing().await
     }
 
     async fn locate_by_listing(&self) -> Result<Option<(JobReference, bytes::Bytes)>> {

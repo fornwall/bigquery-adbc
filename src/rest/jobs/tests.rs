@@ -448,6 +448,47 @@ fn a_job_without_a_location_that_cannot_be_found_may_still_run() {
     captured.served(MAX_ATTEMPTS + 3 * MAX_RECONCILIATION_ATTEMPTS + 1);
 }
 
+/// A lookup that fails rather than finding nothing ends the search at any step, and the failure
+/// still names the job that may run, as one found nowhere does.
+#[test]
+fn a_failed_job_lookup_without_a_location_says_the_job_may_still_run() {
+    let unavailable = || vec![(503, error_body("backendError", "lookup failed")); 3];
+    let mut multi_region = lost_submissions();
+    multi_region.extend(unavailable());
+    let mut regional = lost_submissions();
+    regional.extend(not_found_here());
+    regional.push(ok(json!({"location": "asia-northeast1"})));
+    regional.extend(unavailable());
+    for responses in [multi_region, regional] {
+        let count = responses.len();
+        let (endpoint, captured) = capture_requests(responses);
+        let runtime = new_runtime().unwrap();
+        let (client, _state) = locating_client(&runtime, &endpoint);
+        let request = request("job-e", None, false).locatable_in([dataset("in_asia")]);
+
+        let failure = insert_query(&runtime, &client, &request).unwrap_err();
+
+        assert_eq!(failure.status, Status::IO, "{}", failure.message);
+        assert!(
+            failure.message.ends_with(
+                "backendError: lookup failed (HTTP 503); BigQuery may still run job \
+                 billing/project:job-e; recovery did not complete; check the job before running \
+                 it again, or set bigquery.location"
+            ),
+            "{}",
+            failure.message
+        );
+        assert!(!has_job_verdict(&failure));
+        assert!(
+            failure
+                .details
+                .unwrap()
+                .contains(&(DETAIL_JOB_ID.to_owned(), b"billing/project:job-e".to_vec()))
+        );
+        captured.served(count);
+    }
+}
+
 #[test]
 fn a_lost_regional_job_is_recovered_from_a_later_list_page() {
     use std::time::{SystemTime, UNIX_EPOCH};
