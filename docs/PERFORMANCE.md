@@ -228,6 +228,20 @@ alternating 30.40→13.63, runs 9.63→10.06. Strings are checked as UTF-8 again
 built, since only `unsafe` skips that; a builder-based gather avoided it for another 25% but
 cost 21 KB more library. The library grew 18,672 bytes (0.22%).
 
+Through request sizing and IPC framing (`encode`), and for the `dictionary-labels` column of
+200-byte labels behind `Int16` keys, 65,536 rows, medians of three alternating runs:
+
+| Case | Before, ms | After, ms | Requested bytes before → after |
+| --- | ---: | ---: | ---: |
+| `dictionary-scattered/narrow/encode` | 1.744 | 1.001 | 6,860,484 → 4,902,280 |
+| `dictionary-scattered/wide/encode` | 14.518 | 9.016 | 55,127,516 → 39,357,772 |
+| `dictionary-labels/narrow` | 1.293 | 0.856 | 33,751,560 → 13,902,308 |
+| `dictionary-labels/narrow/encode` | 1.739 | 1.401 | 47,166,988 → 27,285,492 |
+
+User instructions over 1,000 iterations: `dictionary-scattered/narrow/encode` 36.85→20.23
+billion, `dictionary-labels/narrow/encode` 26.46→23.06. Requested bytes fall because the gather
+sizes its buffers from the keys up front, where `MutableArrayData` grows them as it copies.
+
 **Large-offset byte columns.** Narrowing LargeUtf8/Binary offsets preallocates one vector per
 column after validating the span, keeping payload buffers shared. `large-offsets` versus
 incremental growth:
