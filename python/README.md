@@ -52,17 +52,22 @@ with dbapi.connect("bigquery:///my-gcp-project", autocommit=True) as connection:
 [more examples](https://github.com/fornwall/bigquery-adbc#more-examples) of bulk ingestion and
 query parameters.
 
-The low-level ADBC API can take its whole configuration as options:
+The low-level ADBC API can take its whole configuration as options. It returns Arrow streams, which
+PyArrow or any library supporting the Arrow PyCapsule interface can read:
 
 ```python
+import adbc_driver_manager
+import pyarrow
 import bigquery_adbc as bigquery
 
-with bigquery.connect(
-    db_kwargs={
-        bigquery.DatabaseOptions.PROJECT_ID: "my-gcp-project",
-    }
-) as database:
-    print(database.get_option(bigquery.DatabaseOptions.PROJECT_ID))
+with (
+    bigquery.connect(db_kwargs={bigquery.DatabaseOptions.PROJECT_ID: "my-gcp-project"}) as database,
+    adbc_driver_manager.AdbcConnection(database) as connection,
+    adbc_driver_manager.AdbcStatement(connection) as statement,
+):
+    statement.set_sql_query("SELECT 1 AS n")
+    stream, _ = statement.execute_query()
+    print(pyarrow.RecordBatchReader.from_stream(stream).read_all())
 ```
 
 `bigquery.connect()` returns an `adbc_driver_manager.AdbcDatabase`; `dbapi.connect()` returns a
@@ -101,17 +106,13 @@ Configure database and connection options when connecting, and statement options
 | `ConnectionOptions` | `dbapi.connect(conn_kwargs={...})` | Catalog, schema and result reading. |
 | `StatementOptions` | `cursor.adbc_statement.set_options(**{...})` | Parameters, query limits and ingestion. |
 
-Pass `autocommit` as a keyword to `dbapi.connect()`, not in `conn_kwargs`. New statements inherit
-their connection's read controls and bulk-ingest method.
+Pass `autocommit` as a keyword to `dbapi.connect()`, not in `conn_kwargs`. A new statement copies
+the connection's value of each option both accept, such as `QUERY_PREFETCH_CONCURRENCY`.
 
 Option enums are `StrEnum`s and work directly as keys and values:
 `str(DatabaseOptions.PROJECT_ID)` is `"bigquery.project_id"`.
 The manager's typed getters need `.value`, for example
 `statement.get_option_float(StatementOptions.PROGRESS.value)`.
-
-`BulkIngestMethod.STORAGE_WRITE` is the only supported bulk-ingest method; the raw value `"load"`
-returns `NOT_IMPLEMENTED`. `StatementOptions.QUERY_MAXIMUM_BILLING_TIER` also returns
-`NOT_IMPLEMENTED`; use `QUERY_MAXIMUM_BYTES_BILLED` to cap query cost.
 
 See the [option reference](https://github.com/fornwall/bigquery-adbc/blob/main/docs/REFERENCE.md#options)
 for defaults, constraints, and write-only credential options. Reading `uri` returns the configured
