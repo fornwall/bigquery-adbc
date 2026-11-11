@@ -5,15 +5,16 @@ use adbc_core::error::Status;
 use adbc_core::options::{OptionConnection, OptionDatabase, OptionStatement, OptionValue};
 use adbc_core::{Connection, Database, Optionable, Statement};
 use adbc_driver_bigquery::{
-    BigQueryAuthenticationType, BigQueryCredentialsType, BigQueryDatabaseOption,
-    BigQueryStatementOption,
+    BigQueryAuthenticationType, BigQueryConnection, BigQueryCredentialsType,
+    BigQueryDatabaseOption, BigQueryStatementOption,
 };
 use arrow_schema::DataType;
 
 use crate::support::{
-    DropTable, SCRATCH_DATASET, SHAKESPEARE_ROWS, TempFile, connect, db_option, execute_failure,
-    execute_sql, i64_at, int64_batch, open_database, option_string, prepare_query, project,
-    project_and_dataset_options, read_single_i64, read_single_string, scratch_table, set_option,
+    DropTable, SCRATCH_DATASET, SHAKESPEARE_ROWS, TempFile, connect, connect_with_dataset,
+    db_option, execute_failure, execute_sql, i64_at, int64_batch, open_database, option_string,
+    prepare_query, project, project_and_dataset_options, read_single_i64, read_single_string,
+    scratch_fixture, scratch_table, set_option,
 };
 
 /// BigQuery resolves a numeric project to its assigned ID in returned job references. Both
@@ -387,6 +388,42 @@ fn manages_transactions_in_a_bigquery_session() {
         connection.rollback().unwrap_err().status,
         Status::InvalidState
     );
+}
+
+/// Releasing a manual-commit connection rolls back its open transaction before it returns, so
+/// another transaction can change the same rows at once. While the first transaction is open,
+/// BigQuery aborts a second one's conflicting `UPDATE` with "concurrent update".
+#[test]
+#[ignore = "requires Google Cloud ADC and write access to the integration project scratch dataset"]
+fn releasing_a_connection_rolls_back_its_open_transaction() {
+    let (table, _guard, mut setup) = scratch_fixture("released_transaction");
+    execute_sql(
+        &mut setup,
+        &format!("CREATE TABLE `{table}` AS SELECT 1 AS value"),
+    );
+    let update = |connection: &mut BigQueryConnection, value: i64| {
+        set_option(
+            connection,
+            OptionConnection::AutoCommit,
+            ADBC_OPTION_VALUE_DISABLED,
+        );
+        prepare_query(
+            connection,
+            &format!("UPDATE `{table}` SET value = {value} WHERE true"),
+        )
+        .execute_update()
+        .unwrap()
+    };
+
+    let mut released = connect_with_dataset();
+    assert_eq!(update(&mut released, 2), Some(1));
+    drop(released);
+
+    let mut next = connect_with_dataset();
+    assert_eq!(update(&mut next, 3), Some(1));
+    next.commit().unwrap();
+    let mut check = prepare_query(&mut setup, &format!("SELECT value FROM `{table}`"));
+    assert_eq!(read_single_i64(&mut check), 3);
 }
 
 /// A committed transaction leaves its session for the next one. Once BigQuery ends that session
