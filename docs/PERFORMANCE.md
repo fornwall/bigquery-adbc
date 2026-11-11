@@ -393,11 +393,15 @@ dbt `2.0.9` listed datasets twice per connection: schema registration without a 
 table-depth relation-cache lookup, because dataset underscores are ADBC wildcards. Neither was a
 retry, and dbt set no options. `bigquery.get_objects.disable_wildcards=true` removed the second
 listing for populated relations; both diagnostic builds passed 39 jobs with no cache hits and the
-expected signature, without establishing a whole-build speedup. Empty datasets still need
-`datasets.get` after `tables.list` to tell them from missing ones. Mock test:
+expected signature, without establishing a whole-build speedup. An empty dataset still needs
+`datasets.get` after `tables.list`, which has no table to report the name BigQuery resolved the
+filter to. A catalog filter naming another project, as with a separate execution project, sends
+its one-dataset existence probe only when the walk finds nothing, so a lookup that finds the
+dataset takes one request instead of two and a listing one fewer page. Mock tests:
 
 ```sh
 cargo test --locked --all-features disabling_wildcards_keeps_unfiltered_dataset_and_table_listings
+cargo test --locked --all-features a_foreign_catalog_whose_lookups_find_something_is_not_probed
 ```
 
 [dbt commit `7f6844449`](https://github.com/dbt-labs/dbt/commit/7f6844449b13b920dc9ea4da49806d1d835f718b)
