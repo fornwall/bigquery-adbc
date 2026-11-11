@@ -25,6 +25,7 @@ use crate::cancellation::{self, Operation};
 use crate::diag::diag;
 use crate::error::{error, named};
 use crate::rest::client::RestClient;
+use crate::rest::jobs::may_have_created;
 use crate::rest::json::{JsonInt, JsonIntValue, decode_json, encode_json};
 use crate::rest::projects_prefix;
 use crate::rest::rejection::{precondition_error, service_error, service_failure};
@@ -234,8 +235,8 @@ enum Call<'a> {
         body: &'a bytes::Bytes,
     },
     /// A `POST` of `body` that creates a resource. `start` records whether any attempt may have
-    /// reached BigQuery, the only way a caller can tell an insert that sent nothing from one
-    /// whose answer was lost.
+    /// created it, the only way a caller can tell an insert that created nothing, because it was
+    /// never sent or BigQuery refused it, from one whose answer was lost.
     Create {
         body: &'a bytes::Bytes,
         start: &'a RequestStart,
@@ -414,14 +415,21 @@ impl MetadataClient {
         let mut attempt = 1;
         let mut last_failure: Option<MetadataError> = None;
         loop {
+            // A creation's attempts each carry their own signal: one that was rate-limited reached
+            // BigQuery but created nothing, so it must not set the caller's.
+            let mut created = None;
             let request = match call {
                 Call::Get => Request::get(url, ""),
                 Call::Patch { etag, body } => Request::patch(url, etag, body.clone(), ""),
-                Call::Create { body, start } => {
-                    Request::post_json(url, body.clone(), "").with_start_signal(start)
-                }
+                Call::Create { body, .. } => Request::post_json(url, body.clone(), "")
+                    .with_start_signal(created.insert(RequestStart::default())),
             };
             let answer = send(operation, &self.credentials, &self.http, request).await;
+            if let (Call::Create { start, .. }, Some(created)) = (call, &created)
+                && may_have_created(created, &answer)
+            {
+                start.set();
+            }
             let (class, failure) = match answer {
                 Ok((status, body)) if status.is_success() => return Ok(body),
                 Ok((status, body)) => {
@@ -477,8 +485,8 @@ impl MetadataClient {
     }
 
     /// `tables.insert` of an empty table with `schema`, resent only after a rate-limit
-    /// rejection. The response is ignored. `start` is set once an attempt may have reached
-    /// BigQuery, so a failure that left it unset created nothing.
+    /// rejection. The response is ignored. `start` is set once an attempt may have created the
+    /// table, so a failure that left it unset created nothing.
     pub(crate) async fn insert_table(
         &self,
         operation: Option<&Operation>,

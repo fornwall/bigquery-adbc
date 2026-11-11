@@ -239,6 +239,11 @@ impl RequestStart {
     pub(crate) fn started(&self) -> bool {
         self.0.load(Ordering::Acquire)
     }
+
+    /// Sets the signal for a request that carried another, such as one per attempt.
+    pub(super) fn set(&self) {
+        self.0.store(true, Ordering::Release);
+    }
 }
 
 impl<'a> Request<'a> {

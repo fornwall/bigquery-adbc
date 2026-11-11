@@ -27,6 +27,8 @@ changes.
   fetched, the error says it may still run.
 - A malformed Storage Read session schema fails with `INVALID_DATA`, as a malformed record batch or
   REST response does, instead of `INTERNAL`.
+- A bulk ingest whose table creation BigQuery refuses as rate-limited on every attempt no longer
+  says the table may have been created.
 
 ## [0.6.0] - 2026-11-11
 

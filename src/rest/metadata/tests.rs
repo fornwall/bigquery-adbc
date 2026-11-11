@@ -657,41 +657,45 @@ fn an_unanswered_read_is_named_only_by_the_callers_context() {
 }
 
 /// `tables.insert` is resent only after a rate-limit rejection, which applied nothing: a replay
-/// after a 5xx might follow an unseen success and turn it into a 409.
+/// after a 5xx might follow an unseen success and turn it into a 409. Only an attempt that may
+/// have created the table sets the start signal, so rate limits alone leave it unset.
 #[test]
 fn a_table_insert_is_resent_only_after_a_rate_limit() {
     let schema = crate::rest::model::TableSchema::default();
-    for (responses, expected) in [
+    let limited = || (429, error_body("rateLimitExceeded", "slow down"));
+    let budget = usize::try_from(crate::rest::retry::MAX_ATTEMPTS).unwrap();
+    for (responses, expected, may_exist) in [
         (
             vec![
-                (429, error_body("rateLimitExceeded", "slow down")),
+                limited(),
                 (403, error_body("rateLimitExceeded", "slow down")),
                 ok(serde_json::json!({"etag": "e"})),
             ],
             None,
+            true,
         ),
         (
-            vec![(503, error_body("backendError", "unavailable"))],
+            vec![limited(), (503, error_body("backendError", "unavailable"))],
             Some(Status::IO),
+            true,
         ),
+        (vec![limited(); budget], Some(Status::IO), false),
         (
             vec![(409, error_body("duplicate", "Already Exists: Table p:d.t"))],
             Some(Status::AlreadyExists),
+            true,
         ),
     ] {
         let runtime = crate::runtime::new_runtime().unwrap();
         let requests = responses.len();
         let (endpoint, captured) = capture_requests(responses);
+        let start = RequestStart::default();
         let status = runtime
-            .block_on(client_at(&endpoint).insert_table(
-                None,
-                TABLE,
-                &schema,
-                &RequestStart::default(),
-            ))
+            .block_on(client_at(&endpoint).insert_table(None, TABLE, &schema, &start))
             .err()
             .map(|failure| failure.into_error("failed to create p.d.t").status);
         assert_eq!(status, expected);
+        assert_eq!(start.started(), may_exist, "{expected:?} after {requests}");
         let captured = captured.join().unwrap();
         assert_eq!(captured.len(), requests, "{expected:?}");
         for request in &captured {
