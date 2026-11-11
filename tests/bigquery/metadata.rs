@@ -218,7 +218,7 @@ fn lists_filtered_public_objects() {
     let names = typed::<StringArray>(tables.column(0).as_ref());
     let shakespeare = (0..tables.len())
         .find(|row| names.value(*row) == "shakespeare")
-        .unwrap_or_else(|| panic!("the `shake%` filter did not match shakespeare"));
+        .expect("the `shake%` filter did not match shakespeare");
     for row in 0..tables.len() {
         assert!(
             names.value(row).starts_with("shake"),
@@ -433,38 +433,55 @@ fn gets_public_table_statistics() {
     assert!(reader.next().is_none());
 }
 
+/// Drops a dataset a test created, including during unwinding.
+struct DropSchema(BigQueryStatement, String);
+
+impl Drop for DropSchema {
+    fn drop(&mut self) {
+        if let Err(error) = self.0.execute_update() {
+            report_failed_cleanup(&format!("drop dataset `{}`", self.1), &error);
+        }
+    }
+}
+
+/// Creates `dataset` in `US`, with `options` appended to its option list, holding a one-row table
+/// `events`. The returned guard is armed first: a create whose response was lost still made the
+/// dataset.
+#[track_caller]
+fn dataset_with_events(
+    connection: &mut BigQueryConnection,
+    dataset: &str,
+    options: &str,
+) -> DropSchema {
+    let qualified = format!("{}.{dataset}", project());
+    let guard = DropSchema(
+        prepare_query(
+            connection,
+            &format!("DROP SCHEMA IF EXISTS `{qualified}` CASCADE"),
+        ),
+        qualified.clone(),
+    );
+    execute_sql(
+        connection,
+        &format!(
+            "CREATE SCHEMA `{qualified}` \
+             OPTIONS(location='US', default_table_expiration_days=1{options})"
+        ),
+    );
+    execute_sql(
+        connection,
+        &format!("CREATE TABLE `{qualified}.events` AS SELECT 42 AS id"),
+    );
+    guard
+}
+
 #[test]
 #[ignore = "requires Google Cloud ADC and access to the integration project"]
 fn gets_hidden_dataset_objects_and_statistics() {
     let project = project();
-    // Own a unique dataset and clean up even when an assertion fails.
-    struct DropSchema(BigQueryStatement);
-    impl Drop for DropSchema {
-        fn drop(&mut self) {
-            if let Err(error) = self.0.execute_update() {
-                report_failed_cleanup("drop the hidden statistics test dataset", &error);
-            }
-        }
-    }
-
     let mut connection = connect_at_location(project, "US");
     let dataset = format!("_{}", scratch_table("statistics"));
-    let qualified_dataset = format!("{project}.{dataset}");
-    // Armed first: a create whose response was lost still made the dataset.
-    let _cleanup = DropSchema(prepare_query(
-        &mut connection,
-        &format!("DROP SCHEMA IF EXISTS `{qualified_dataset}` CASCADE"),
-    ));
-    execute_sql(
-        &mut connection,
-        &format!(
-            "CREATE SCHEMA `{qualified_dataset}` OPTIONS(location='US', default_table_expiration_days=1)"
-        ),
-    );
-    execute_sql(
-        &mut connection,
-        &format!("CREATE TABLE `{qualified_dataset}.events` AS SELECT 42 AS id"),
-    );
+    let _cleanup = dataset_with_events(&mut connection, &dataset, "");
 
     let mut objects = connection
         .get_objects(
@@ -479,10 +496,10 @@ fn gets_hidden_dataset_objects_and_statistics() {
     let batch = objects.next().unwrap().unwrap();
     let db_schemas = all_struct_values(batch.column(1));
     assert_eq!(db_schemas.len(), 1);
-    assert_eq!(typed::<StringArray>(db_schemas.column(0)).value(0), dataset);
+    assert_eq!(str_value(db_schemas.column(0)), dataset);
     let tables = all_struct_values(db_schemas.column(1));
     assert_eq!(tables.len(), 1);
-    assert_eq!(typed::<StringArray>(tables.column(0)).value(0), "events");
+    assert_eq!(str_value(tables.column(0)), "events");
     assert!(objects.next().is_none());
 
     for approximate in [false, true] {
@@ -512,34 +529,9 @@ fn gets_hidden_dataset_objects_and_statistics() {
 #[ignore = "requires Google Cloud ADC and write access to the integration project"]
 fn exact_filters_in_a_case_insensitive_dataset_report_the_resolved_names() {
     let project = project();
-    struct DropSchema(BigQueryStatement);
-    impl Drop for DropSchema {
-        fn drop(&mut self) {
-            if let Err(error) = self.0.execute_update() {
-                report_failed_cleanup("drop the case-insensitive test dataset", &error);
-            }
-        }
-    }
-
     let mut connection = connect_at_location(project, "US");
     let dataset = scratch_table("case_insensitive");
-    let qualified_dataset = format!("{project}.{dataset}");
-    // Armed first: a create whose response was lost still made the dataset.
-    let _cleanup = DropSchema(prepare_query(
-        &mut connection,
-        &format!("DROP SCHEMA IF EXISTS `{qualified_dataset}` CASCADE"),
-    ));
-    execute_sql(
-        &mut connection,
-        &format!(
-            "CREATE SCHEMA `{qualified_dataset}` OPTIONS(location='US', \
-             default_table_expiration_days=1, is_case_insensitive=TRUE)"
-        ),
-    );
-    execute_sql(
-        &mut connection,
-        &format!("CREATE TABLE `{qualified_dataset}.events` AS SELECT 42 AS id"),
-    );
+    let _cleanup = dataset_with_events(&mut connection, &dataset, ", is_case_insensitive=TRUE");
     connection
         .set_option(
             BigQueryConnectionOption::GetObjectsDisableWildcards.into(),
