@@ -3,7 +3,9 @@
 
 use super::*;
 use crate::test_support::cancellation::cancellation_at;
-use crate::test_support::http::{job_reference, mock_listener, ok, retire};
+use crate::test_support::http::{
+    CapturedRequest, capture_requests_until_stopped, job_reference, mock_listener, ok, retire,
+};
 use crate::test_support::identifiers::project;
 
 fn assert_no_request(listener: TcpListener) {
@@ -157,4 +159,43 @@ fn cancellation_after_the_post_keeps_the_late_response_and_cancels_its_job() {
         "/bigquery/v2/projects/project/jobs/late-job/cancel?location=EU"
     );
     assert!(captured[1].raw_body.is_empty());
+}
+
+/// A partition descriptor names a job that `ExecutePartitions` already ran to completion, perhaps
+/// for another principal. Its reader stops locally, but asks BigQuery to cancel nothing, even when
+/// it fails or is cancelled before a results read reports the job done: there is nothing left to
+/// stop, and a refused cancel would make `AdbcConnectionCancel` report `UNKNOWN`.
+#[test]
+fn a_partition_reader_never_cancels_the_job_it_reads() {
+    let (endpoint, server) = capture_requests_until_stopped(vec![
+        (
+            403,
+            error_body("accessDenied", "no access to the job's results"),
+        ),
+        ok(json!({})),
+    ]);
+    let (runtime, client) = job_client(&endpoint);
+    let cancellation = cancellation_at(&runtime, &endpoint);
+    let operation = cancellation.begin_concurrent();
+
+    let failure = runtime
+        .block_on(complete_attached_query(
+            &runtime,
+            client,
+            JobReference::new("project", Some("EU"), "partition-job".to_owned()),
+            Some(&operation),
+            "test",
+        ))
+        .unwrap_err();
+    assert_eq!(failure.status, Status::Unauthorized, "{failure}");
+    OperationCancelHandle(cancellation).try_cancel().unwrap();
+    operation.finish();
+
+    let requests = server.stop();
+    let paths = requests
+        .iter()
+        .map(CapturedRequest::path)
+        .collect::<Vec<_>>();
+    assert_eq!(paths.len(), 1, "only the results read: {paths:?}");
+    assert!(paths[0].contains("/queries/partition-job"), "{paths:?}");
 }

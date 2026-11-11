@@ -270,6 +270,9 @@ fn explain_job_timeout(mut failure: Error, job_timeout_ms: i64) -> Error {
 }
 
 /// Completes a query job named by a partition descriptor without ever reissuing its SQL.
+///
+/// The job is registered as finished: `ExecutePartitions` ran it to completion before returning
+/// the descriptor, so the reader, possibly another principal's, has nothing to cancel remotely.
 pub(super) async fn complete_attached_query(
     runtime: &SharedRuntime,
     client: JobClient,
@@ -279,7 +282,7 @@ pub(super) async fn complete_attached_query(
 ) -> Result<CompletedQuery> {
     if let Some(operation) = operation {
         operation
-            .register_job(&reference)
+            .register_completed_job(&reference)
             .map_err(|failure| with_job_link(failure, Some(&reference)))?;
     }
     let mut metadata = QueryMetadata {

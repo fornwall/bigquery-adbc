@@ -31,6 +31,9 @@ changes.
   the job was created, when that submission ended just as the cancel claimed it.
 - A named parameter longer than BigQuery's 127-character limit is refused before sending when its
   name has characters beyond U+FFFF, which BigQuery counts twice.
+- A partition stream that fails, or is cancelled, before its first results read no longer asks
+  BigQuery to cancel the partition's already finished job. That request could fail for a reader
+  without permission to cancel the job, making `AdbcConnectionCancel` return `UNKNOWN`.
 
 ## [0.5.0] - 2026-11-09
 
