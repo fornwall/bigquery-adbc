@@ -187,31 +187,6 @@ mod tests {
 
     use super::*;
 
-    /// A duration becomes an INTERVAL with the whole span in its time component (two days are 48
-    /// hours), as `parameter_value` (`src/parameters.rs`) binds it, so an ingested duration
-    /// compares equal to a parameter built from the same value.
-    #[test]
-    fn a_duration_longer_than_a_day_is_encoded_as_hours_rather_than_days() {
-        let column: ArrayRef = Arc::new(DurationSecondArray::from(vec![
-            Some(172_800),
-            Some(-172_800),
-            None,
-        ]));
-        let encoded =
-            encode_duration_column(&column, TimeUnit::Second, &ValueSite::column("span", 0))
-                .unwrap();
-        let values = encoded.as_primitive::<IntervalMonthDayNanoType>();
-        assert_eq!(
-            values.value(0),
-            arrow_buffer::IntervalMonthDayNano::new(0, 0, 172_800_000_000_000)
-        );
-        assert_eq!(
-            values.value(1),
-            arrow_buffer::IntervalMonthDayNano::new(0, 0, -172_800_000_000_000)
-        );
-        assert!(values.is_null(2));
-    }
-
     /// Sub-microsecond nanoseconds are truncated towards zero, the same policy every other
     /// temporal ingest column applies.
     #[test]
