@@ -835,3 +835,46 @@ fn binds_durations_as_interval_time_up_to_bigquerys_bound() {
     assert_eq!(str_at(&batch, 2), "0-0 0 -87840000:0:0");
     assert!(bool_at(&batch, 3));
 }
+
+/// BigQuery counts no parameters: it ignores bound ones the SQL never references, in either mode,
+/// and refuses a placeholder nothing binds. The driver sends what is bound and reports the
+/// refusal as `INVALID_ARGUMENT`, naming the placeholder.
+#[test]
+#[ignore = "requires Google Cloud ADC and access to the integration project"]
+fn unreferenced_parameters_are_ignored_and_unbound_placeholders_refused() {
+    let mut connection = connect(project());
+    let two_columns = || {
+        RecordBatch::try_from_iter([
+            ("a", Arc::new(Int64Array::from(vec![1])) as ArrayRef),
+            ("b", Arc::new(Int64Array::from(vec![2])) as ArrayRef),
+        ])
+        .unwrap()
+    };
+    for mut statement in [
+        prepare_query(&mut connection, "SELECT ?"),
+        named_parameter_query(&mut connection, "SELECT @a"),
+    ] {
+        statement.bind(two_columns()).unwrap();
+        assert_eq!(i64_at(&single_batch(&mut statement), 0), 1);
+    }
+    for (mut statement, refusal) in [
+        (
+            prepare_query(&mut connection, "SELECT ?, ?, ?"),
+            "Query parameter number 3 is not defined (2 provided)",
+        ),
+        (
+            named_parameter_query(&mut connection, "SELECT @a, @c"),
+            "Query parameter 'c' not found",
+        ),
+    ] {
+        statement.bind(two_columns()).unwrap();
+        let failure = statement.execute().err().unwrap();
+        assert_eq!(
+            failure.status,
+            Status::InvalidArguments,
+            "{}",
+            failure.message
+        );
+        assert!(failure.message.contains(refusal), "{}", failure.message);
+    }
+}
