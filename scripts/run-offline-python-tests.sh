@@ -26,14 +26,11 @@ if [ -n "${BIGQUERY_ADBC_WHEEL_PYTHON:-}" ]; then
 fi
 
 echo ">> python/tests: offline wheel tests"
+# Every file but these two, which need BigQuery and an installed wheel, so a new one runs here too.
 uv run --quiet --project python --locked ${wheel_python[@]+"${wheel_python[@]}"} \
-  python -m pytest -q -p no:cacheprovider \
-  python/tests/test_api.py \
-  python/tests/test_build_backend.py \
-  python/tests/test_options.py \
-  python/tests/test_native_wheel.py \
-  python/tests/test_bigquery_backend.py \
-  python/tests/test_scripts.py
+  python -m pytest -q -p no:cacheprovider python/tests \
+  --ignore=python/tests/test_bigquery.py \
+  --ignore=python/tests/test_installed_wheel.py
 
 echo ">> integration/foundry-validation: query-fixture lint"
 uv run --quiet --project integration/foundry-validation --locked \
