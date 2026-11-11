@@ -447,7 +447,7 @@ int AdminDataset(bool create) {
   };
   struct AdbcError error{};
   if (run(&error) == ADBC_STATUS_OK) return 0;
-  std::cerr << "BigQuery administration SQL failed: "
+  std::cerr << "BigQuery dataset administration failed: "
             << (error.message == nullptr ? "no error detail" : error.message)
             << "\nSQL: " << sql << '\n';
   if (error.release != nullptr) error.release(&error);
