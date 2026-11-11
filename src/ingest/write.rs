@@ -314,12 +314,6 @@ impl CommitFailure {
     }
 }
 
-impl From<CommitFailure> for adbc_core::error::Error {
-    fn from(failure: CommitFailure) -> Self {
-        failure.error
-    }
-}
-
 impl FinalizedStream {
     /// Commits all rows atomically and returns their count. Callers check cancellation before
     /// entering; an in-flight commit completes independently (see [`close_stream_call`]).

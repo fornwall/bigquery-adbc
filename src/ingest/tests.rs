@@ -237,6 +237,18 @@ fn fails_after_first_batch() -> Box<dyn RecordBatchReader + Send> {
     ))
 }
 
+/// A Storage Write mock whose commit BigQuery refuses.
+fn refusing_commit() -> MockPlan {
+    MockPlan {
+        commit_errors: Some(vec![
+            StorageError::new()
+                .set_code(StorageErrorCode::InvalidStreamState)
+                .set_error_message("stream not finalized"),
+        ]),
+        ..MockPlan::default()
+    }
+}
+
 #[test]
 fn a_failed_create_retains_the_table_and_reports_how_to_retry() {
     // The source fails after the first batch was written. A DROP job would receive a valid
@@ -267,14 +279,7 @@ fn a_failed_create_retains_the_table_and_reports_how_to_retry() {
     // only meet the table: the remedy is the same.
     let (outcome, _requests, storage) = ingest_against_mocks(
         vec![ok(json!({})), ddl_answer()],
-        MockPlan {
-            commit_errors: Some(vec![
-                StorageError::new()
-                    .set_code(StorageErrorCode::InvalidStreamState)
-                    .set_error_message("stream not finalized"),
-            ]),
-            ..MockPlan::default()
-        },
+        refusing_commit(),
         IngestMode::Create,
         reading(one_id_batch()),
     );
@@ -323,14 +328,6 @@ fn a_create_whose_commit_outcome_is_unknown_suggests_no_append() {
 #[test]
 fn a_replace_that_fails_after_recreating_the_target_says_its_old_rows_are_gone() {
     let differing = table(&json!([{"name": "other", "type": "STRING", "mode": "NULLABLE"}]));
-    let refused_commit = MockPlan {
-        commit_errors: Some(vec![
-            StorageError::new()
-                .set_code(StorageErrorCode::InvalidStreamState)
-                .set_error_message("stream not finalized"),
-        ]),
-        ..MockPlan::default()
-    };
     for (plan, reader, status, cause) in [
         (
             MockPlan::default(),
@@ -339,7 +336,7 @@ fn a_replace_that_fails_after_recreating_the_target_says_its_old_rows_are_gone()
             "the source broke",
         ),
         (
-            refused_commit,
+            refusing_commit(),
             reading(one_id_batch()),
             Status::InvalidState,
             "stream not finalized",
@@ -1033,6 +1030,10 @@ fn a_create_over_an_existing_table_names_the_modes_that_write_into_it() {
 #[test]
 fn a_create_without_a_verdict_says_the_table_may_exist() {
     let schema = table_schema([field_mode("id", "INTEGER", "NULLABLE")]);
+    let create = |context: &IngestContext<'_>, mode| {
+        let client = context.state.metadata_client(context.runtime)?;
+        prepare_table(context, &client, TARGET, mode, &schema, TablePlan::Create)
+    };
     for (mode, answer, remedies) in [
         (
             IngestMode::Create,
@@ -1053,10 +1054,8 @@ fn a_create_without_a_verdict_says_the_table_may_exist() {
             &[][..],
         ),
     ] {
-        let (outcome, requests) = against_bigquery(vec![answer.clone()], |context| {
-            let client = context.state.metadata_client(context.runtime)?;
-            prepare_table(context, &client, TARGET, mode, &schema, TablePlan::Create)
-        });
+        let (outcome, requests) =
+            against_bigquery(vec![answer.clone()], |context| create(context, mode));
         let failure = outcome.unwrap_err();
         assert_message(
             &failure,
@@ -1075,17 +1074,7 @@ fn a_create_without_a_verdict_says_the_table_may_exist() {
 
     // The insert landed, but its answer never arrived.
     let (endpoint, server) = capture_requests_gated(vec![ok(json!({}))], || false);
-    let outcome = at_bigquery(&endpoint, |context| {
-        let client = context.state.metadata_client(context.runtime)?;
-        prepare_table(
-            context,
-            &client,
-            TARGET,
-            IngestMode::Create,
-            &schema,
-            TablePlan::Create,
-        )
-    });
+    let outcome = at_bigquery(&endpoint, |context| create(context, IngestMode::Create));
     assert_message(
         &outcome.unwrap_err(),
         &[
@@ -1097,15 +1086,7 @@ fn a_create_without_a_verdict_says_the_table_may_exist() {
 
     // An insert that could not connect sent nothing, so it created nothing either.
     let outcome = at_bigquery(crate::test_support::UNREACHABLE_ENDPOINT, |context| {
-        let client = context.state.metadata_client(context.runtime)?;
-        prepare_table(
-            context,
-            &client,
-            TARGET,
-            IngestMode::Create,
-            &schema,
-            TablePlan::Create,
-        )
+        create(context, IngestMode::Create)
     });
     let failure = outcome.unwrap_err();
     assert_failure(
@@ -1222,7 +1203,7 @@ fn ingest_from(
     let result = runtime.block_on(async {
         let stream =
             write_batches(&client, TABLE, schema.clone(), first, reader, &operation).await?;
-        Ok(stream.commit(TABLE).await?)
+        stream.commit(TABLE).await.map_err(|failure| failure.error)
     });
     operation.finish();
     result
@@ -1512,33 +1493,6 @@ fn a_row_refused_in_a_later_batch_is_named_by_its_stream_row() {
         let reader = RecordBatchIterator::new(batches.map(Ok), schema.clone());
         let failure = ingest_from(&runtime, &mock, &schema, Box::new(reader)).unwrap_err();
         assert_message(&failure, &[cause]);
-        assert!(!mock.finalized().1);
-    }
-}
-
-#[test]
-fn commit_refusals_and_missing_commit_time_remain_distinct() {
-    for (errors, status, message) in [
-        (
-            vec![
-                StorageError::new()
-                    .set_code(StorageErrorCode::InvalidStreamState)
-                    .set_error_message("stream not finalized"),
-            ],
-            Status::InvalidState,
-            "none of its 10 rows",
-        ),
-        (
-            vec![],
-            Status::IO,
-            "whether its 10 rows were committed is unknown",
-        ),
-    ] {
-        let (outcome, mock) = ingest(MockPlan {
-            commit_errors: Some(errors),
-            ..MockPlan::default()
-        });
-        assert_failure(&outcome.unwrap_err(), status, &[message]);
         assert!(!mock.finalized().1);
     }
 }
