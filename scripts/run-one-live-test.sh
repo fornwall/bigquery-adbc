@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Usage: run-one-live-test.sh <test name> [cargo test arguments...]
+# Usage: run-one-live-test.sh <test name> [test binary arguments...]
 #
 # Runs one ignored test by bare or module-qualified name, from tests/bigquery/ or the Cargo test
 # target BIGQUERY_ADBC_TEST_TARGET names. Cargo also succeeds when nothing matches, so this
-# requires that the test ran.
+# requires that the test ran. Arguments after the name, such as --nocapture, go to the test binary.
 set -euo pipefail
 
-usage="usage: run-one-live-test.sh <test name> [cargo test arguments...]"
+usage="usage: run-one-live-test.sh <test name> [test binary arguments...]"
 case ${1:-} in
     -h | --help) echo "$usage" && exit 0 ;;
     "") echo "$usage" >&2 && exit 2 ;;

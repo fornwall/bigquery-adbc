@@ -82,6 +82,5 @@ scripts/run-python-tests.sh -k select_through_low_level_and_dbapi
 
 A partial or invalid configuration fails before the build. The runner then skips ADC checks and
 sends all requests to the emulator with anonymous authentication; the package itself does not read
-these variables. Cleanup still checks ownership labels, but emulator fixtures omit table
-expiration. Without `-k` the complete suite runs, and emulator incompatibilities stay test
-failures.
+these variables. Cleanup still checks ownership labels. Without `-k` the complete suite runs, and
+emulator incompatibilities stay test failures.
