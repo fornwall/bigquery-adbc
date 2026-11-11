@@ -290,8 +290,8 @@ refusal more than halves the window; an estimate from exact bytes is trusted onc
 refusal at least halves it. With the cap at the target, a column holding nearly every byte ended
 each walk just past the target, so each pass shrank the window by a sliver: a 1,000,000-row
 `Dictionary<Int16, Utf8>` of 100-byte labels took 41 s to size at the 9 MB target in a release
-build; above twice the target it takes 5 passes (8 at the 1 MB first-append target). User instructions for 1,000
-`dictionary-labels` encodes of 65,536 rows, and one pinned timing run each:
+build; above twice the target it takes 5 passes (8 at the 1 MB first-append target). User
+instructions for 1,000 `dictionary-labels` encodes of 65,536 rows, and one pinned timing run each:
 
 | Case | Instructions, cap at target → above twice it, billions | Cap at target → above twice it, ms |
 | --- | ---: | ---: |
@@ -464,13 +464,14 @@ See the [benchmark guide](../integration/dbt/PERFORMANCE.md) for workload contro
 
 dbt `2.0.9` listed datasets twice per connection: schema registration without a filter, then a
 table-depth relation-cache lookup, because dataset underscores are ADBC wildcards. Neither was a
-retry, and dbt set no options. `bigquery.get_objects.disable_wildcards=true` removes the second listing for populated relations;
-diagnostic builds with and without it each passed 39 jobs with no cache hits and the expected
-signature, without establishing a whole-build speedup. An empty dataset still needs `datasets.get`
-after `tables.list`, which has no table to report the name BigQuery resolved the filter to. A
-catalog filter naming another project, as with a separate execution project, sends its one-dataset
-existence probe only when the walk finds nothing, so a lookup that finds the dataset takes one
-request instead of two and a listing one page fewer. Mock tests:
+retry, and dbt set no options. `bigquery.get_objects.disable_wildcards=true` removes the second
+listing for populated relations; diagnostic builds with and without it each passed 39 jobs with no
+cache hits and the expected signature, without establishing a whole-build speedup. An empty
+dataset still needs `datasets.get` after `tables.list`, which has no table to report the name
+BigQuery resolved the filter to. A catalog filter naming another project, as with a separate
+execution project, sends its one-dataset existence probe only when a one-dataset lookup finds
+nothing or fails as missing, so a lookup that finds the dataset takes one request instead of two
+and a listing one request fewer. Mock tests:
 
 ```sh
 cargo test --locked --all-features disabling_wildcards_keeps_unfiltered_dataset_and_table_listings
@@ -626,8 +627,8 @@ Every exported call, stream release, runtime wait and result batch checks whethe
 `fork` child of the one that created the object. From `AdbcDriverInit` on, a `pthread_atfork`
 handler keeps a cached process ID current in place of a `getpid` call, a system call of about
 270 ns that was most of the export layer's overhead; Rust callers, which register no handler,
-still call `getpid`. The library grew 496 bytes. [`benches/ffi_calls.c`](../benches/ffi_calls.c) calls
-the vtable directly with no driver manager or network, 200,000 iterations, three alternating
+still call `getpid`. The library grew 496 bytes. [`benches/ffi_calls.c`](../benches/ffi_calls.c)
+calls the vtable directly with no driver manager or network, 200,000 iterations, three alternating
 unpinned runs on a machine shared with other builds; instructions are per iteration, after
 subtracting a zero-iteration run:
 
