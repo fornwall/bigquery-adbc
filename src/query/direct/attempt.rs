@@ -199,10 +199,9 @@ async fn execute_jobs_insert(
             )
         })
         .transpose()?;
-    if response.is_done()
-        && let (Some(operation), Some(reference)) = (operation, canonical.as_ref())
-    {
-        operation.register_completed_job(reference)?;
+    if let (Some(operation), Some(reference)) = (operation, canonical.as_ref()) {
+        register_query_job(operation, reference, response.is_done())
+            .map_err(|failure| with_job_link(failure, Some(reference)))?;
     }
     if let (Some(progress), Some(value)) = (progress, response.total_bytes_processed()) {
         progress.publish_current(value);
@@ -247,11 +246,6 @@ async fn execute_jobs_insert(
     }
     let canonical = canonical
         .expect("a successful non-dry jobs.insert response was required to carry a job reference");
-    if let Some(operation) = operation {
-        operation
-            .register_job(&canonical)
-            .map_err(|failure| with_job_link(failure, Some(&canonical)))?;
-    }
     let page = poll_until_complete(
         client,
         decoder,
@@ -289,7 +283,7 @@ fn completed(
     }
 }
 
-/// Registers the job a `jobs.query` response names for cancellation, as already finished when the
+/// Registers the job a query response names for cancellation, as already finished when the
 /// response completed it.
 fn register_query_job(
     operation: &Operation,
