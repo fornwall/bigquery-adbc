@@ -37,6 +37,19 @@ fn implied_scalar_type(
     let Some(name) = field.metadata().get(BIGQUERY_TYPE_METADATA_KEY) else {
         return Ok(implied);
     };
+    // BigQuery takes a NULL of a composite type, but nothing parses one out of metadata; a null
+    // List or Struct field carries its shape instead.
+    if data_type == &DataType::Null
+        && ["ARRAY<", "STRUCT<", "RANGE<"]
+            .iter()
+            .any(|head| name.starts_with(head))
+    {
+        return Err(not_implemented(format!(
+            "Arrow parameter field {:?} has type Null, which binds only a scalar BigQuery type, \
+             not {name:?}; bind a null List or Struct field of that type instead",
+            field.name()
+        )));
+    }
     let implied = match data_type {
         DataType::Null => BigQueryType::from_sql(name),
         _ => Some(implied),

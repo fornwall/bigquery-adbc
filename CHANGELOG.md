@@ -35,6 +35,9 @@ changes.
 - The patched dbt is built from dbt's `main` at `ef0aa4db3a` (2026-11-11).
 - The driver uses `google-cloud-bigquery` 1.0.0 for Storage Read and Write, which
   `ADBC_INFO_VENDOR_VERSION` reports.
+- An Arrow `Null` parameter annotated `ARRAY<...>`, `STRUCT<...>` or `RANGE<...>` still returns
+  `NOT_IMPLEMENTED`, but the error now says to bind a null `List` or `Struct` field of that type
+  instead of calling the type unimplemented.
 
 ### Fixed
 

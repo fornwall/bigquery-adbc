@@ -228,6 +228,24 @@ fn duration_and_null_parameters_resolve_their_type_metadata() {
         assert_message(&failure, &["is incompatible with Arrow field"]);
     }
 
+    // A composite NULL is a parameter BigQuery takes, but only from a null List or Struct field:
+    // a Null field reads no composite type out of its metadata. That is the driver's limit, as
+    // ingest's refusal of every Null column it would create is, so the status stays
+    // NOT_IMPLEMENTED, but the message must not claim the type itself is unimplemented.
+    for rich_type in ["ARRAY<INT64>", "STRUCT<`a` INT64>", "RANGE<DATE>"] {
+        let failure = parameter_type(&annotated(DataType::Null, rich_type)).unwrap_err();
+        assert_failure(
+            &failure,
+            Status::NotImplemented,
+            &[
+                &format!(
+                    "has type Null, which binds only a scalar BigQuery type, not {rich_type:?}"
+                ),
+                "bind a null List or Struct field",
+            ],
+        );
+    }
+
     // A name no BigQuery type spells is still unimplemented rather than incompatible, and a REST
     // spelling still points at its GoogleSQL name.
     assert_eq!(
