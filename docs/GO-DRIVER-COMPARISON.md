@@ -593,7 +593,9 @@ returns `NOT_IMPLEMENTED`. On a statement, reading them returns `NOT_FOUND` nami
 The URI returns `INVALID_ARGUMENT` for unused credential parameters, repeated parameters, user
 information, a fragment, extra path segments, and impersonation parameters without a target. Go
 ignores or drops these, or folds extra segments into the project ID, and decodes `AuthCredentials`
-twice, so an encoded `+` becomes a space.
+twice, so an encoded `+` becomes a space. An IPv6 host without a port keeps its brackets here
+(`bigquery://[::1]/p` is `https://[::1]:443`); Go drops them and builds `::1:443`, which it cannot
+dial.
 
 ### G76. Scopes can shape the credential, not only the impersonated token
 

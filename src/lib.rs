@@ -12,8 +12,10 @@
 //! impersonation query parameters. [`BigQueryDatabaseOption::DatasetId`] sets the initial dataset.
 //! The standard ADBC current catalog and schema options override both query defaults per
 //! connection, and [`BigQueryStatementOption`] overrides them per statement. Authentication uses
-//! Google Cloud Application Default Credentials (ADC) unless the URI or authentication-type option
-//! selects JSON credentials, OAuth user credentials, or anonymous access for an emulator or mock.
+//! Google Cloud Application Default Credentials (ADC) unless the URI or
+//! [`BigQueryDatabaseOption::AuthenticationType`] selects JSON credentials, OAuth user
+//! credentials, workload identity federation, a temporary access token, or anonymous access for
+//! an emulator or mock.
 //!
 //! `examples/query.rs` is a complete program, and `docs/ARCHITECTURE.md` describes how the code
 //! fits together.
