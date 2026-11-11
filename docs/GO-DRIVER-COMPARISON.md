@@ -45,8 +45,8 @@ For `append` and `create_append`, a bound schema the existing table cannot accep
 ([rules](REFERENCE.md#bulk-ingest)). Decimal and length-limited string values are also checked,
 because Storage Write silently rounds and stores overlong values. Go never compares schemas: after
 preparing the table it reports BigQuery's rejection as `ALREADY_EXISTS` only for a load job's
-`Provided Schema does not match Table` or Storage Write's `SCHEMA_MISMATCH_EXTRA_FIELDS`, and as
-`IO` otherwise.
+`Provided Schema does not match Table` or Storage Write's `SCHEMA_MISMATCH_EXTRA_FIELDS`; otherwise
+Storage Write reports `IO`, and a load job maps its error reason, usually to `INVALID_ARGUMENT`.
 
 ### G11. Arrow interval bulk ingestion is supported
 
@@ -104,9 +104,9 @@ only the RPC status message.
 
 Ingest widens `Int8`, `UInt8`, `UInt16` and `UInt32` to `INT64` and `Float16` to `FLOAT64`, and
 rejects `UInt64` (cast it to `Int64` or `Decimal128(20, 0)`); Go cannot create a table from any of
-them. Both drivers bind them as `INT64` or `FLOAT64` parameters, but a `Float32` or `Float16` binds
-as its exact value here (`0.1f32` as `0.10000000149011612`), where Go sends the shortest decimal
-(`0.1`).
+them. Both drivers bind them as `INT64` or `FLOAT64` parameters, but a `UInt64` above `i64::MAX`
+fails locally here, where Go sends it to BigQuery, and a `Float32` or `Float16` binds as its exact
+value (`0.1f32` as `0.10000000149011612`), where Go sends the shortest decimal (`0.1`).
 
 ### G63. Storage Write ingestion uses the configured credentials and Storage endpoint
 
@@ -245,8 +245,9 @@ and `SCRIPT` with one).
 ### G32. Row counts: DDL, dry runs and destination queries stay unknown
 
 DDL reports `-1` rows affected, where Go reports `0`. Dry runs, scripts that do not end in a query
-and destination-table queries also report `-1`, where Go reports a dry run's bytes processed and a
-destination table's estimated row count ([row counts](REFERENCE.md#row-counts)). DML reports
+and destination-table queries also report `-1`, where Go's `ExecuteQuery` reports a dry run's bytes
+processed and a destination table's estimated row count ([row counts](REFERENCE.md#row-counts)).
+DML reports
 `numDmlAffectedRows`, as Go does; the fork's `ExecuteQuery` returns the target table's size
 afterwards.
 
@@ -500,7 +501,8 @@ driver also accepts, makes filters literal, so such names get direct lookups.
 ### G75. A catalog filter naming one project enumerates that project
 
 A wildcard-free catalog filter naming a valid project lists it; a one-result `datasets.list` tells a
-missing project from an empty one only at catalogs depth or when a one-dataset lookup finds nothing.
+missing project from an empty one only at catalogs depth, when a one-dataset lookup finds nothing,
+or when a lookup or listing fails as missing.
 Go lists only the project its client was built with, even after `adbc.connection.catalog` changes
 (G84). A wildcard filter, or none, covers only that project in Go and the current catalog here
 ([metadata catalogs](REFERENCE.md#metadata-catalogs)).
