@@ -1,7 +1,9 @@
 //! The ADBC status and message of queries BigQuery refuses.
 
-use adbc_core::Database;
+use std::ffi::c_char;
+
 use adbc_core::error::Status;
+use adbc_core::{Database, Statement as _};
 use adbc_driver_bigquery::{
     BigQueryAuthenticationType, BigQueryDatabaseOption, BigQueryQueryPriority,
     BigQueryStatementOption,
@@ -9,7 +11,7 @@ use adbc_driver_bigquery::{
 
 use crate::support::{
     SCRATCH_DATASET, connect, connect_at_location, db_option, execute_failure, open_database,
-    prepare_query, project, set_option,
+    outcome, prepare_query, project, set_option,
 };
 
 /// The `src/error.rs` status classification, which dbt 2.0 branches on, for real refusals:
@@ -52,6 +54,64 @@ fn reports_the_adbc_status_of_a_failing_query() {
         let (status, message) = execute_failure(&mut statement);
         assert_eq!(status, expected, "{what}: {message}");
         assert!(message.contains(fragment), "{what}: {message}");
+    }
+}
+
+/// The SQLSTATE and structured details a consumer branches on, from real refusals: BigQuery's
+/// first `reason` and the HTTP status, outside the message.
+#[test]
+#[ignore = "requires Google Cloud ADC and access to the integration project"]
+fn a_refused_query_carries_its_sqlstate_and_structured_details() {
+    crate::backend::require_real_bigquery();
+    let project = project();
+    let missing_table =
+        format!("SELECT * FROM `{project}.{SCRATCH_DATASET}.__bigquery_adbc_missing_table__`");
+    // `42000` as ASCII code points, which fit `c_char` whatever its signedness.
+    let syntax_error_or_access_rule_violation: [c_char; 5] = [0x34, 0x32, 0x30, 0x30, 0x30];
+    for (billing_project, sql, reason, http_status, sqlstate) in [
+        (
+            project,
+            "SELECT FROM WHERE",
+            "invalidQuery",
+            400,
+            syntax_error_or_access_rule_violation,
+        ),
+        (project, missing_table.as_str(), "notFound", 404, [0; 5]),
+        // Nobody outside Google can create jobs in `bigquery-public-data`.
+        (
+            "bigquery-public-data",
+            "SELECT 1",
+            "accessDenied",
+            403,
+            syntax_error_or_access_rule_violation,
+        ),
+    ] {
+        let mut connection = connect(billing_project);
+        let mut statement = prepare_query(&mut connection, sql);
+        let failure = outcome(statement.execute()).expect_err(sql);
+        let details = failure.details.clone().unwrap_or_default();
+        let detail = |key: &str| {
+            details
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| String::from_utf8_lossy(value).into_owned())
+        };
+        assert_eq!(
+            detail("bigquery.error.reason").as_deref(),
+            Some(reason),
+            "{sql}: {failure:?}"
+        );
+        assert_eq!(
+            detail("bigquery.error.http_status"),
+            Some(http_status.to_string()),
+            "{sql}: {failure:?}"
+        );
+        assert_eq!(failure.vendor_code, http_status, "{sql}: {failure:?}");
+        assert_eq!(failure.sqlstate, sqlstate, "{sql}: {failure:?}");
+        assert!(
+            failure.message.contains(&format!("{reason}: ")),
+            "{sql}: {failure:?}"
+        );
     }
 }
 
