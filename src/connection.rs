@@ -69,6 +69,18 @@ pub struct BigQueryConnection {
     cancellation: Arc<Cancellation>,
 }
 
+/// The project a metadata listing enumerates.
+struct MetadataCatalog {
+    project_id: ProjectIdentifier,
+    /// Whether the project needs no existence check: it is the current catalog. A foreign one
+    /// named by the filter is checked by [`BigQueryConnection::scan_catalog`].
+    confirmed: bool,
+}
+
+/// One dataset a metadata listing covers, with the tables its scan kept, or `None` at schema
+/// depth.
+type ScannedSchema = (String, Option<Vec<ScannedTable>>);
+
 impl BigQueryConnection {
     pub(crate) fn new(
         runtime: SharedRuntime,
@@ -120,41 +132,88 @@ impl BigQueryConnection {
 
     /// The single catalog the metadata listings enumerate, or `None` when they list nothing.
     ///
-    /// A wildcard-free filter enumerates that project, current or not (G75); a foreign project is
-    /// first probed with a one-item dataset listing so an absent one yields no catalog rather than
-    /// an empty one. A wildcard filter, or none, considers only the current project (G34):
-    /// discovering visible projects needs the Resource Manager API. The current project is
-    /// [`Self::name_catalog`], the one `adbc.connection.catalog` reads back.
-    fn metadata_catalog(
-        &self,
-        operation: &Operation,
-        catalog: Option<SqlPattern<'_>>,
-    ) -> Result<Option<ProjectIdentifier>> {
+    /// A wildcard-free filter enumerates that project, current or not (G75). A wildcard filter,
+    /// or none, considers only the current project (G34): discovering visible projects needs the
+    /// Resource Manager API. The current project is [`Self::name_catalog`], the one
+    /// `adbc.connection.catalog` reads back.
+    fn metadata_catalog(&self, catalog: Option<SqlPattern<'_>>) -> Option<MetadataCatalog> {
         let current = self.name_catalog();
+        let confirmed = |project_id: &ProjectIdentifier| MetadataCatalog {
+            project_id: project_id.clone(),
+            confirmed: true,
+        };
         let Some(pattern) = catalog else {
-            return Ok(current.cloned());
+            return current.map(confirmed);
         };
         // An empty filter matches no name, so it lists nothing rather than failing validation.
         if let Some(literal) = pattern.exact().filter(|it| !it.is_empty()) {
-            if current.is_some_and(|project| project.as_str() == literal) {
-                return Ok(current.cloned());
+            if let Some(project_id) = current.filter(|project| project.as_str() == literal) {
+                return Some(confirmed(project_id));
             }
             // Structurally unsafe names cannot identify a catalog. BigQuery validates other
             // spellings, including numeric and domain-scoped projects.
-            let Some(project_id) = ProjectIdentifier::try_new(literal) else {
-                return Ok(None);
-            };
-            return match self.probe_project(operation, &project_id) {
-                Ok(()) => Ok(Some(project_id)),
-                Err(source) if source.is_not_found() || source.is_invalid_project() => Ok(None),
-                Err(source) => Err(source.into_error(&format!(
-                    "failed to validate the BigQuery catalog filter {project_id}"
-                ))),
-            };
+            return ProjectIdentifier::try_new(literal).map(|project_id| MetadataCatalog {
+                project_id,
+                confirmed: false,
+            });
         }
-        Ok(current
+        current
             .filter(|project_id| pattern.matches(project_id))
-            .cloned())
+            .map(confirmed)
+    }
+
+    /// Whether a foreign catalog exists, from a one-item dataset listing: `false` when BigQuery
+    /// answers that the project is missing or not a project ID, so that an absent catalog yields
+    /// no row rather than an empty one.
+    fn catalog_exists(
+        &self,
+        operation: &Operation,
+        project_id: &ProjectIdentifier,
+    ) -> Result<bool> {
+        match self.probe_project(operation, project_id) {
+            Ok(()) => Ok(true),
+            Err(source) if source.is_not_found() || source.is_invalid_project() => Ok(false),
+            Err(source) => Err(source.into_error(&format!(
+                "failed to validate the BigQuery catalog filter {project_id}"
+            ))),
+        }
+    }
+
+    /// [`Self::scan_schema_objects`] in `catalog`, or `None` when the catalog does not exist.
+    ///
+    /// An unconfirmed catalog is probed only when the scan cannot have proved it exists, which
+    /// saves the probe whenever the listing finds something. A dataset listing that succeeds, or
+    /// any dataset found, proves it. A lookup of one dataset does not: BigQuery answers 404 for a
+    /// missing project as for a missing dataset, and 400 for a malformed project ID (verified
+    /// live), so an empty result or such a failure is settled by the probe.
+    fn scan_catalog(
+        &self,
+        operation: &Operation,
+        catalog: &MetadataCatalog,
+        db_schema: Option<SqlPattern<'_>>,
+        scan: Option<TableScan<'_>>,
+    ) -> Result<Option<Vec<ScannedSchema>>> {
+        let scanned = self.scan_schema_objects(operation, &catalog.project_id, db_schema, scan);
+        if catalog.confirmed {
+            return scanned.map(Some);
+        }
+        let one_dataset = db_schema.and_then(SqlPattern::exact).is_some();
+        match scanned {
+            Ok(schemas) if !one_dataset || !schemas.is_empty() => Ok(Some(schemas)),
+            Ok(_) => Ok(self
+                .catalog_exists(operation, &catalog.project_id)?
+                .then(Vec::new)),
+            Err(failure)
+                if matches!(failure.status, Status::NotFound | Status::InvalidArguments)
+                    && matches!(
+                        self.catalog_exists(operation, &catalog.project_id),
+                        Ok(false)
+                    ) =>
+            {
+                Ok(None)
+            }
+            Err(failure) => Err(failure),
+        }
     }
 
     /// The datasets a metadata listing covers, each with the tables `scan` kept from it, or with
@@ -170,7 +229,7 @@ impl BigQueryConnection {
         project_id: &ProjectIdentifier,
         db_schema: Option<SqlPattern<'_>>,
         scan: Option<TableScan<'_>>,
-    ) -> Result<Vec<(String, Option<Vec<ScannedTable>>)>> {
+    ) -> Result<Vec<ScannedSchema>> {
         // A scan that can match nothing sends no request, so it proves nothing about the dataset.
         let direct = scan.filter(|scan| !scan.matches_nothing());
         let exact_dataset = db_schema
@@ -265,14 +324,18 @@ impl Connection for BigQueryConnection {
         } else {
             SqlPattern::new
         };
-        let Some(project_id) = self.metadata_catalog(&operation, catalog.map(filter))? else {
-            return Ok(buffered_operation_reader(objects_reader(&[])?, operation));
+        let empty = |operation| Ok(buffered_operation_reader(objects_reader(&[])?, operation));
+        let Some(catalog) = self.metadata_catalog(catalog.map(filter)) else {
+            return empty(operation);
         };
 
         if depth == ObjectDepth::Catalogs {
+            if !catalog.confirmed && !self.catalog_exists(&operation, &catalog.project_id)? {
+                return empty(operation);
+            }
             return Ok(buffered_operation_reader(
                 objects_reader(&[ObjectCatalog {
-                    name: project_id.to_string(),
+                    name: catalog.project_id.to_string(),
                     db_schemas: None,
                 }])?,
                 operation,
@@ -293,8 +356,11 @@ impl Connection for BigQueryConnection {
             item: "table metadata",
         });
         let column_name = column_name.map(filter);
-        let db_schemas = self
-            .scan_schema_objects(&operation, &project_id, db_schema.map(filter), scan)?
+        let Some(scanned) = self.scan_catalog(&operation, &catalog, db_schema.map(filter), scan)?
+        else {
+            return empty(operation);
+        };
+        let db_schemas = scanned
             .into_iter()
             .map(|(name, tables)| {
                 let tables = tables
@@ -319,7 +385,7 @@ impl Connection for BigQueryConnection {
 
         Ok(buffered_operation_reader(
             objects_reader(&[ObjectCatalog {
-                name: project_id.to_string(),
+                name: catalog.project_id.to_string(),
                 db_schemas: Some(db_schemas),
             }])?,
             operation,
@@ -402,12 +468,14 @@ impl Connection for BigQueryConnection {
         _approximate: bool,
     ) -> Result<Box<dyn RecordBatchReader + Send + 'static>> {
         let operation = self.cancellation.begin();
-        let Some(project_id) = self.metadata_catalog(&operation, catalog.map(SqlPattern::new))?
-        else {
-            return Ok(buffered_operation_reader(
+        let empty = |operation| {
+            Ok(buffered_operation_reader(
                 statistics_reader(&[])?,
                 operation,
-            ));
+            ))
+        };
+        let Some(catalog) = self.metadata_catalog(catalog.map(SqlPattern::new)) else {
+            return empty(operation);
         };
 
         // BigQuery describes views and external tables with zero rows and zero bytes, even over
@@ -419,13 +487,16 @@ impl Connection for BigQueryConnection {
             describe: Some(TableView::StorageStats),
             item: "table statistics",
         };
-        let db_schemas = self
-            .scan_schema_objects(
-                &operation,
-                &project_id,
-                db_schema.map(SqlPattern::new),
-                Some(scan),
-            )?
+        let Some(scanned) = self.scan_catalog(
+            &operation,
+            &catalog,
+            db_schema.map(SqlPattern::new),
+            Some(scan),
+        )?
+        else {
+            return empty(operation);
+        };
+        let db_schemas = scanned
             .into_iter()
             .map(|(name, tables)| {
                 let mut statistics = Vec::new();
@@ -440,7 +511,7 @@ impl Connection for BigQueryConnection {
 
         Ok(buffered_operation_reader(
             statistics_reader(&[StatisticCatalog {
-                name: project_id.to_string(),
+                name: catalog.project_id.to_string(),
                 db_schemas,
             }])?,
             operation,

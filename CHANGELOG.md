@@ -41,6 +41,9 @@ changes.
 - An Arrow `Null` parameter annotated `ARRAY<...>`, `STRUCT<...>` or `RANGE<...>` still returns
   `NOT_IMPLEMENTED`, but the error now says to bind a null `List` or `Struct` field of that type
   instead of calling the type unimplemented.
+- `GetObjects` and `GetStatistics` with a catalog filter naming another project no longer check
+  that the project exists before walking it, saving a request whenever the walk finds a dataset.
+  A walk that finds nothing still checks, so a missing project still yields no catalog row.
 
 ### Fixed
 

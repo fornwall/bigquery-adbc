@@ -305,6 +305,91 @@ fn an_exact_filter_that_is_not_an_id_matches_nothing() {
     }
 }
 
+/// A foreign catalog is enumerated without a probe when its walk finds something, and probed when
+/// it finds nothing. BigQuery answers a missing project with 404 and a malformed project ID with
+/// 400 on every lookup, so neither may leave a catalog row, while a missing dataset in an existing
+/// project leaves one with no schemas.
+#[test]
+#[ignore = "requires Google Cloud ADC and access to bigquery-public-data"]
+fn foreign_catalogs_are_enumerated_only_where_they_exist() {
+    let connection = connect(project());
+    let objects = |depth, catalog: &str, db_schema: Option<&str>, table: Option<&str>| {
+        let mut reader = connection
+            .get_objects(depth, Some(catalog), db_schema, table, None, None)
+            .unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        assert!(reader.next().is_none());
+        batch
+    };
+    let statistics = |catalog: &str, db_schema: Option<&str>, table: Option<&str>| {
+        let mut reader = connection
+            .get_statistics(Some(catalog), db_schema, table, true)
+            .unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        assert!(reader.next().is_none());
+        batch
+    };
+
+    for (db_schema, table) in [
+        (Some("samples"), Some("shakespeare")),
+        (Some("samples"), None),
+    ] {
+        for batch in [
+            objects(
+                ObjectDepth::Tables,
+                "bigquery-public-data",
+                db_schema,
+                table,
+            ),
+            statistics("bigquery-public-data", db_schema, table),
+        ] {
+            assert_eq!(str_at(&batch, 0), "bigquery-public-data");
+            let schemas = all_struct_values(batch.column(1));
+            assert_eq!(schemas.len(), 1);
+            assert_eq!(str_value(schemas.column(0)), "samples");
+            assert!(!all_struct_values(schemas.column(1)).is_empty());
+        }
+    }
+
+    for batch in [
+        objects(
+            ObjectDepth::Schemas,
+            "bigquery-public-data",
+            Some("no_such_dataset_adbc"),
+            None,
+        ),
+        objects(
+            ObjectDepth::Tables,
+            "bigquery-public-data",
+            Some("no_such_dataset_adbc"),
+            None,
+        ),
+        statistics("bigquery-public-data", Some("no_such_dataset_adbc"), None),
+    ] {
+        assert_eq!(str_at(&batch, 0), "bigquery-public-data");
+        assert_eq!(all_struct_values(batch.column(1)).len(), 0);
+    }
+
+    for catalog in ["adbc-no-such-project-7f3k2", "Nope"] {
+        for (db_schema, table) in [
+            (None, None),
+            (Some("samples"), None),
+            (Some("samples"), Some("shakespeare")),
+        ] {
+            for depth in [ObjectDepth::Catalogs, ObjectDepth::All] {
+                let batch = objects(depth, catalog, db_schema, table);
+                assert_eq!(
+                    batch.num_rows(),
+                    0,
+                    "{catalog} {depth:?} {db_schema:?} {table:?}"
+                );
+            }
+            let batch = statistics(catalog, db_schema, table);
+            assert_eq!(batch.num_rows(), 0, "{catalog} {db_schema:?} {table:?}");
+        }
+    }
+}
+
 /// The table name, value and approximation flag of the row-count statistic in a
 /// `get_statistics` batch with one catalog and schema.
 #[track_caller]

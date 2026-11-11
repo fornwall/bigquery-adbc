@@ -482,9 +482,10 @@ literal, so such names get direct lookups.
 
 ### G75. A catalog filter naming one project enumerates that project
 
-A wildcard-free catalog filter naming a valid project lists it after a one-result `datasets.list`
-confirms it exists. Go lists only the connection's project. In both drivers a wildcard filter, or
-none, covers only the current project ([metadata catalogs](REFERENCE.md#metadata-catalogs)).
+A wildcard-free catalog filter naming a valid project lists it. Only a walk that finds nothing
+sends a one-result `datasets.list` to tell a missing project from an empty one. Go lists only the
+connection's project. In both drivers a wildcard filter, or none, covers only the current project
+([metadata catalogs](REFERENCE.md#metadata-catalogs)).
 
 ### G77. `xdbc_type_name` reports the GoogleSQL type, not the REST spelling
 

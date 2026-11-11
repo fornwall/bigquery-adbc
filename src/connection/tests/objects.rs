@@ -775,6 +775,7 @@ fn metadata_listings_answer_an_unmatched_catalog_with_an_empty_result() {
 /// A catalog filter naming one project enumerates it, even a foreign one: `datasets.list` takes
 /// the project in its URL, and refusing would cost dbt 2.0 a billed
 /// `INFORMATION_SCHEMA.TABLES` query per schema. The connection's own project need not exist.
+/// The listing itself proves that the project exists, so no probe precedes it.
 #[test]
 fn an_exactly_named_catalog_is_enumerated_even_when_it_is_not_the_current_one() {
     for configured_project in [Some("test-project"), None] {
@@ -783,29 +784,92 @@ fn an_exactly_named_catalog_is_enumerated_even_when_it_is_not_the_current_one() 
             ("123456789012", "123456789012"),
             ("example.com:project", "example.com%3Aproject"),
         ] {
-            let (endpoint, requests) = capture_requests(vec![
-                (200, json!({})),
-                ok(json!({"datasets": [{"datasetReference": {"datasetId": "analytics"}}]})),
-            ]);
-            let connection =
-                anonymous_connection_at_with_defaults(&endpoint, configured_project, None);
-            let mut reader = connection
-                .get_objects(ObjectDepth::Schemas, Some(catalog), None, None, None, None)
-                .unwrap();
-            let batch = reader.next().unwrap().unwrap();
-            assert_eq!(string_at(batch.column(0), 0), catalog);
-            let schemas = child_structs(batch.column(1));
-            assert_eq!(string_at(schemas.column(0), 0), "analytics");
+            for listed in [
+                json!({"datasets": [{"datasetReference": {"datasetId": "analytics"}}]}),
+                json!({}),
+            ] {
+                let (endpoint, requests) = capture_requests(vec![ok(listed.clone())]);
+                let connection =
+                    anonymous_connection_at_with_defaults(&endpoint, configured_project, None);
+                let mut reader = connection
+                    .get_objects(ObjectDepth::Schemas, Some(catalog), None, None, None, None)
+                    .unwrap();
+                let batch = reader.next().unwrap().unwrap();
+                assert_eq!(string_at(batch.column(0), 0), catalog);
+                let schemas = child_structs(batch.column(1));
+                if listed == json!({}) {
+                    assert_eq!(schemas.len(), 0);
+                } else {
+                    assert_eq!(strings(schemas.column(0)), ["analytics"]);
+                }
 
-            let requests = requests.join().unwrap();
-            assert_eq!(requests.len(), 2, "{configured_project:?}");
-            assert!(requests[0].path().contains("maxResults=1&"));
+                let requests = requests.served(1);
+                assert!(
+                    requests[0].path().starts_with(&format!(
+                        "/bigquery/v2/projects/{encoded_catalog}/datasets?maxResults=1000&"
+                    )),
+                    "{}",
+                    requests[0].path()
+                );
+            }
+        }
+    }
+}
+
+/// A foreign catalog's probe runs only when the walk could not prove that the project exists:
+/// any dataset it finds does, so an exact dataset or table costs its own lookups alone. Each case
+/// is answered as an existing dataset with one table.
+#[test]
+fn a_foreign_catalog_whose_lookups_find_something_is_not_probed() {
+    let table = json!({
+        "type": "TABLE",
+        "tableReference": {"datasetId": "dataset", "tableId": "events"},
+        "schema": {"fields": [{"name": "id", "type": "INTEGER"}]},
+        "numRows": "42"
+    });
+    let dataset = json!({"datasetReference": {"datasetId": "dataset"}});
+    let listing = json!({"tables": [{
+        "tableReference": {"datasetId": "dataset", "tableId": "events"},
+        "type": "TABLE"
+    }]});
+    for depth in [
+        Some(ObjectDepth::Schemas),
+        Some(ObjectDepth::Tables),
+        Some(ObjectDepth::All),
+        None,
+    ] {
+        for table_name in [None, Some("events")] {
+            let mut responses = match (depth, table_name) {
+                (Some(ObjectDepth::Schemas), _) => vec![ok(dataset.clone())],
+                (_, Some(_)) => Vec::new(),
+                (_, None) => vec![ok(listing.clone())],
+            };
+            if depth != Some(ObjectDepth::Schemas)
+                && (table_name.is_some() || depth != Some(ObjectDepth::Tables))
+            {
+                responses.push(ok(table.clone()));
+            }
+            let count = responses.len();
+            let (endpoint, requests) = capture_requests(responses);
+            let connection = anonymous_connection_at(&endpoint);
+            let batch = first_batch(discover_metadata(
+                &connection,
+                depth,
+                FOREIGN,
+                Some("dataset"),
+                table_name,
+            ));
+            assert_eq!(strings(batch.column(0)), ["other-project"]);
+            assert_eq!(
+                strings(child_structs(batch.column(1)).column(0)),
+                ["dataset"]
+            );
+            let requests = requests.served(count);
             assert!(
-                requests[1]
-                    .path()
-                    .starts_with(&format!("/bigquery/v2/projects/{encoded_catalog}/datasets")),
-                "{}",
-                requests[1].path()
+                requests
+                    .iter()
+                    .all(|request| !request.path().contains("/datasets?")),
+                "{depth:?} {table_name:?}"
             );
         }
     }
@@ -815,6 +879,10 @@ const FOREIGN: Option<&str> = Some("other-project");
 
 /// Missing descendants must not manufacture a foreign catalog, and catalog-depth discovery
 /// must establish existence even though it never fetches any descendants.
+///
+/// BigQuery answers every lookup in a missing project with 404, so a walk that found nothing
+/// ends with the probe that tells a missing project from an empty one: after the dataset listing
+/// or lookup, or after an exact table's `tables.get` and the `datasets.get` it falls back to.
 #[test]
 fn an_absent_foreign_catalog_leaves_no_metadata_at_any_depth() {
     for configured_project in [Some("test-project"), None] {
@@ -831,16 +899,22 @@ fn an_absent_foreign_catalog_leaves_no_metadata_at_any_depth() {
                 (Some("dataset"), None),
                 (Some("dataset"), Some("events")),
             ] {
-                let (endpoint, requests) = capture_requests(vec![(404, not_found_response())]);
+                let count = match (depth, schema, table) {
+                    (Some(ObjectDepth::Catalogs), ..) => 1,
+                    (Some(ObjectDepth::Schemas), ..) | (_, _, None) => 2,
+                    (_, _, Some(_)) => 3,
+                };
+                let (endpoint, requests) =
+                    capture_requests(vec![(404, not_found_response()); count]);
                 let connection =
                     anonymous_connection_at_with_defaults(&endpoint, configured_project, None);
                 let mut reader =
                     discover_metadata(&connection, depth, FOREIGN, schema, table).unwrap();
                 assert_eq!(reader.next().unwrap().unwrap().num_rows(), 0, "{depth:?}");
                 assert!(reader.next().is_none());
-                let requests = requests.served(1);
+                let requests = requests.served(count);
                 assert!(
-                    requests[0]
+                    requests[count - 1]
                         .path()
                         .contains("/other-project/datasets?maxResults=1&")
                 );
@@ -856,11 +930,12 @@ fn a_foreign_catalog_can_exist_without_any_matching_schemas() {
         Some(ObjectDepth::Schemas),
         None,
     ] {
-        // The probe, then the missing dataset's `datasets.get` or `tables.list`.
-        let mut responses = vec![(200, json!({}))];
+        // The missing dataset's `datasets.get` or `tables.list`, then the probe.
+        let mut responses = Vec::new();
         if depth != Some(ObjectDepth::Catalogs) {
             responses.push((404, not_found_response()));
         }
+        responses.push((200, json!({})));
         let (endpoint, requests) = capture_requests(responses);
         let connection = anonymous_connection_at(&endpoint);
         let batch = first_batch(discover_metadata(
@@ -878,7 +953,11 @@ fn a_foreign_catalog_can_exist_without_any_matching_schemas() {
             assert_eq!(child_structs(batch.column(1)).len(), 0);
         }
         let requests = requests.join().unwrap();
-        assert!(requests[0].path().contains("maxResults=1&"));
+        let probe = requests.last().unwrap().path();
+        assert!(
+            probe.contains("/other-project/datasets?maxResults=1&"),
+            "{probe}"
+        );
         assert_eq!(
             requests.len(),
             if depth == Some(ObjectDepth::Catalogs) {
@@ -890,67 +969,78 @@ fn a_foreign_catalog_can_exist_without_any_matching_schemas() {
     }
 }
 
-#[test]
-fn exact_foreign_table_metadata_remains_discoverable_after_catalog_validation() {
-    for depth in [Some(ObjectDepth::All), None] {
-        let mut table = described_table();
-        table["numRows"] = json!("42");
-        let (endpoint, requests) = capture_requests(vec![(200, json!({})), (200, table)]);
-        let connection = anonymous_connection_at(&endpoint);
-        let batch = first_batch(discover_metadata(
-            &connection,
-            depth,
-            FOREIGN,
-            Some("dataset"),
-            Some("events"),
-        ));
-        assert_eq!(string_at(batch.column(0), 0), "other-project");
-        let schemas = child_structs(batch.column(1));
-        assert_eq!(string_at(schemas.column(0), 0), "dataset");
-        assert!(!child_structs(schemas.column(1)).is_empty());
-        let requests = requests.served(2);
-        assert!(requests[0].path().contains("maxResults=1&"));
-        assert!(
-            requests[1]
-                .path()
-                .contains("/other-project/datasets/dataset/tables/events?")
-        );
-    }
-}
-
+/// The probe of a foreign catalog reports a failure that leaves its existence unknown, rather
+/// than calling the catalog missing. At catalog depth the probe is the only request; deeper, it
+/// runs once the walk found nothing (here a missing dataset), and the walk's own failures that
+/// cannot mean a missing project (403, 5xx) are reported without one.
 #[test]
 fn foreign_catalog_validation_preserves_permission_quota_and_service_errors() {
+    let refusals = [
+        (400, "invalid", Status::InvalidArguments),
+        (403, "accessDenied", Status::Unauthorized),
+        (403, "quotaExceeded", Status::IO),
+        (500, "backendError", Status::IO),
+    ];
+    let refusal = |code: u16, reason: &str| {
+        (
+            code,
+            json!({"error": {"code": code, "message": "Refused", "errors": [{"reason": reason}]}}),
+        )
+    };
     for depth in [Some(ObjectDepth::Catalogs), Some(ObjectDepth::All), None] {
-        for (code, reason, status) in [
-            (400, "invalid", Status::InvalidArguments),
-            (403, "accessDenied", Status::Unauthorized),
-            (403, "quotaExceeded", Status::IO),
-            (500, "backendError", Status::IO),
-        ] {
+        for (code, reason, status) in refusals {
             // One answer per attempt the retry policy can make; a final failure is answered once.
-            let (endpoint, server) = crate::test_support::http::capture_requests_until_stopped(
-                vec![
-                    (
-                        code,
-                        json!({"error": {"code": code, "message": "Refused", "errors": [{"reason": reason}]}}),
-                    );
-                    crate::rest::retry::MAX_ATTEMPTS as usize
-                ],
-            );
+            let mut responses = Vec::new();
+            if depth != Some(ObjectDepth::Catalogs) {
+                responses.push((404, not_found_response()));
+            }
+            responses.extend(std::iter::repeat_n(
+                refusal(code, reason),
+                crate::rest::retry::MAX_ATTEMPTS as usize,
+            ));
+            let (endpoint, server) =
+                crate::test_support::http::capture_requests_until_stopped(responses);
             let connection = anonymous_connection_at(&endpoint);
-            let failure =
-                discover_metadata(&connection, depth, FOREIGN, Some("dataset"), Some("events"))
-                    .err()
-                    .expect("only a missing project produces empty metadata");
+            let failure = discover_metadata(&connection, depth, FOREIGN, Some("dataset"), None)
+                .err()
+                .expect("only a missing project produces empty metadata");
             assert_eq!(failure.status, status, "{depth:?} {reason}");
             assert_message(&failure, &["catalog filter other-project", reason]);
             let requests = server.stop();
-            assert!(!requests.is_empty());
-            assert!(requests.iter().all(|request| {
+            let probes = usize::from(depth != Some(ObjectDepth::Catalogs))..requests.len();
+            assert!(!probes.is_empty());
+            assert!(requests[probes].iter().all(|request| {
                 request
                     .path()
                     .starts_with("/bigquery/v2/projects/other-project/datasets?maxResults=1&")
             }));
+        }
+    }
+
+    for depth in [Some(ObjectDepth::All), None] {
+        for (code, reason, status) in &refusals[1..] {
+            let (endpoint, server) =
+                crate::test_support::http::capture_requests_until_stopped(vec![
+                    refusal(
+                        *code, reason
+                    );
+                    crate::rest::retry::MAX_ATTEMPTS
+                        as usize
+                ]);
+            let connection = anonymous_connection_at(&endpoint);
+            let failure = discover_metadata(&connection, depth, FOREIGN, Some("dataset"), None)
+                .err()
+                .expect("a refused table listing is reported");
+            assert_eq!(failure.status, *status, "{depth:?} {reason}");
+            assert_message(&failure, &["other-project.dataset", reason]);
+            let requests = server.stop();
+            assert!(!requests.is_empty());
+            assert!(
+                requests
+                    .iter()
+                    .all(|request| request.path().contains("/datasets/dataset")),
+                "{depth:?} {reason}"
+            );
         }
     }
 }
@@ -1033,8 +1123,9 @@ fn a_catalog_filter_that_is_not_a_project_id_lists_nothing() {
                 "message": format!("Invalid project ID '{catalog}'.")
             }]
         }});
-        let (endpoint, requests) =
-            capture_requests(vec![(400, rejection.clone()), (400, rejection)]);
+        // Each call's dataset listing, then the probe that tells a malformed project from a
+        // failed listing.
+        let (endpoint, requests) = capture_requests(vec![(400, rejection); 4]);
         let connection = anonymous_connection_at(&endpoint);
         let mut reader = connection
             .get_objects(ObjectDepth::All, Some(catalog), None, None, None, None)
@@ -1046,14 +1137,16 @@ fn a_catalog_filter_that_is_not_a_project_id_lists_nothing() {
             .unwrap();
         assert_eq!(reader.next().unwrap().unwrap().num_rows(), 0, "{catalog}");
         assert!(reader.next().is_none());
-        let requests = requests.served(2);
-        assert!(
-            requests
-                .iter()
-                .all(|request| request.path().starts_with(&format!(
-                    "/bigquery/v2/projects/{encoded_catalog}/datasets?maxResults=1&"
-                )))
-        );
+        let requests = requests.served(4);
+        for (request, page_size) in requests.iter().zip([1000, 1, 1000, 1]) {
+            assert!(
+                request.path().starts_with(&format!(
+                    "/bigquery/v2/projects/{encoded_catalog}/datasets?maxResults={page_size}&"
+                )),
+                "{}",
+                request.path()
+            );
+        }
     }
 }
 
