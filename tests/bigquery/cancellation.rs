@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::time::{Duration, Instant};
 
 use adbc_core::constants::{ADBC_OPTION_VALUE_DISABLED, ADBC_OPTION_VALUE_ENABLED};
 use adbc_core::error::{Error, Status};
@@ -44,11 +45,11 @@ fn assert_cancels(
         });
 
         let mut in_flight = Some(in_flight);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             if !started.load(Ordering::Acquire) {
                 assert!(
-                    std::time::Instant::now() < deadline,
+                    Instant::now() < deadline,
                     "the BigQuery {what} never started"
                 );
                 std::thread::yield_now();
@@ -81,7 +82,7 @@ fn assert_cancels(
                         return false;
                     }
                     assert!(
-                        std::time::Instant::now() < deadline,
+                        Instant::now() < deadline,
                         "the BigQuery {what} refused the cancellation for 30s while still running"
                     );
                     std::thread::yield_now();
@@ -164,7 +165,7 @@ fn await_labelled_job(
     what: &str,
     accept: impl Fn(&str) -> bool,
 ) -> (String, String) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let seen = labelled_job(connection, label);
         if let Some((state, reason)) = seen.clone()
@@ -173,14 +174,14 @@ fn await_labelled_job(
             return (state, reason);
         }
         assert!(
-            std::time::Instant::now() < deadline,
+            Instant::now() < deadline,
             "the labelled BigQuery job never {what}; it was {}",
             seen.map_or_else(
                 || "never reported at all".to_owned(),
                 |(state, _)| format!("last seen {state}")
             )
         );
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        std::thread::sleep(Duration::from_secs(1));
     }
 }
 
@@ -274,7 +275,7 @@ fn cancels_a_running_bulk_ingest() {
             }
             // Unpaced, the whole stream commits in well under a second.
             if self.produced > 0 {
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                std::thread::sleep(Duration::from_millis(100));
             }
             self.produced += 1;
             self.read.store(self.produced, Ordering::Release);
@@ -312,13 +313,13 @@ fn cancels_a_running_bulk_ingest() {
         "ingest",
         cancellation.as_ref(),
         || {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            let deadline = Instant::now() + Duration::from_secs(60);
             while read.load(Ordering::Acquire) < APPENDING_BATCH {
                 assert!(
-                    std::time::Instant::now() < deadline,
+                    Instant::now() < deadline,
                     "the BigQuery ingest never reached batch {APPENDING_BATCH}"
                 );
-                std::thread::sleep(std::time::Duration::from_millis(10));
+                std::thread::sleep(Duration::from_millis(10));
             }
         },
         || ingest.execute_update().map(drop),

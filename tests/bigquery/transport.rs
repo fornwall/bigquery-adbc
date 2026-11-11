@@ -8,7 +8,8 @@ use adbc_driver_bigquery::{BigQueryDatabaseOption, BigQueryDriver, BigQueryState
 use arrow_array::Array as _;
 
 use crate::support::{
-    concatenated, connect, db_option, prepare_query, project, read_all, set_option, typed,
+    concatenated, connect, db_option, prepare_query, project, read_all, row_count, set_option,
+    typed,
 };
 
 /// BigQuery's 20 MiB row limit counts a string's own bytes, but its JSON spells a control
@@ -63,10 +64,7 @@ fn sequential_databases_measurement() {
             let started = Instant::now();
             let mut statement = prepare_query(&mut connection, "SELECT 1 AS n");
             let (_, batches) = read_all(&mut statement);
-            assert_eq!(
-                batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
-                1
-            );
+            assert_eq!(row_count(&batches), 1);
             *query = started.elapsed();
         }
         if round > 0 {

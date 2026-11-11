@@ -8,9 +8,6 @@
 #![cfg(unix)]
 #![allow(
     clippy::unwrap_used,
-    reason = "test helpers panic on failure by design; only the library must never panic"
-)]
-#![allow(
     clippy::panic,
     reason = "test helpers panic on failure by design; only the library must never panic"
 )]
