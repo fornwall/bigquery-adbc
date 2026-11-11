@@ -132,8 +132,7 @@ async fn submit_csv_load<'r>(
         // Unlike `jobs.insert`'s, this 409 creates no job: BigQuery refuses a `WRITE_EMPTY` load
         // into a table with rows with `duplicate: Already Exists: Table` before creating one.
         // Nor can it name this upload's job, since only an attempt that created nothing is resent.
-        let refused =
-            matches!(&answer, Ok((status, _)) if *status == reqwest::StatusCode::CONFLICT);
+        let refused = matches!(answer, Ok((reqwest::StatusCode::CONFLICT, _)));
         let may_exist = may_have_created(&start, &answer) && !refused;
         let (class, failure) = match classify(answer, &format!("failed to {context}")) {
             Ok(body) => {
