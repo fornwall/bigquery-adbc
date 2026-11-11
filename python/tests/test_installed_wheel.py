@@ -107,7 +107,7 @@ def test_native_database_reports_an_unset_uri_as_not_found() -> None:
             "&DatasetId=dummydataset"
             "&Location=dummylocation",
             {
-                driver.DatabaseOptions.AUTHENTICATION_TYPE: (driver.AuthenticationType.USER_AUTHENTICATION),
+                driver.DatabaseOptions.AUTHENTICATION_TYPE: driver.AuthenticationType.USER_AUTHENTICATION,
                 driver.DatabaseOptions.URI: (
                     "bigquery:///dummyproject?OAuthType=3&AuthClientId=test-client-id"
                     "&AuthClientSecret=<redacted>&AuthRefreshToken=<redacted>"
@@ -123,7 +123,7 @@ def test_native_database_reports_an_unset_uri_as_not_found() -> None:
         pytest.param(
             "bigquery://bigquery.dummyapis.com:445/dummyproject?DatasetId=dummydataset&QuotaProject=billing-project",
             {
-                driver.DatabaseOptions.AUTHENTICATION_TYPE: (driver.AuthenticationType.APPLICATION_DEFAULT),
+                driver.DatabaseOptions.AUTHENTICATION_TYPE: driver.AuthenticationType.APPLICATION_DEFAULT,
                 driver.DatabaseOptions.PROJECT_ID: "dummyproject",
                 driver.DatabaseOptions.DATASET_ID: "dummydataset",
                 driver.DatabaseOptions.AUTHENTICATION_QUOTA_PROJECT: "billing-project",
@@ -134,7 +134,7 @@ def test_native_database_reports_an_unset_uri_as_not_found() -> None:
         pytest.param(
             "bigquery:///dummyproject",
             {
-                driver.DatabaseOptions.AUTHENTICATION_TYPE: (driver.AuthenticationType.APPLICATION_DEFAULT),
+                driver.DatabaseOptions.AUTHENTICATION_TYPE: driver.AuthenticationType.APPLICATION_DEFAULT,
                 driver.DatabaseOptions.PROJECT_ID: "dummyproject",
                 driver.DatabaseOptions.ENDPOINT: "https://bigquery.googleapis.com:443",
             },

@@ -52,7 +52,7 @@ select = [
 #   D     - no docstring convention is in force in this repository.
 #   TRY   - exception messages are kept at their raise sites.
 #   T20   - integration harnesses print CLI output.
-#   ICN   - would force `import pyarrow as pa`-style aliases the code does not use.
+#   ICN   - would force conventional aliases such as `import pyarrow as pa` everywhere.
 #   PERF  - PERF203 flags try/except inside loops, which the retry helpers need.
 #   COM/Q/ISC - these overlap or conflict with the Ruff formatter.
 #   A     - `python/src/bigquery_adbc/dbapi.py` shadows a builtin by DB-API design.
