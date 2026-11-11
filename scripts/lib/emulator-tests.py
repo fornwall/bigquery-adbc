@@ -43,9 +43,12 @@ def endpoints(server: subprocess.Popen[bytes], log: BinaryIO) -> tuple[str, str]
     with selectors.DefaultSelector() as selector:
         selector.register(server.stdout, selectors.EVENT_READ)
         while output.count(b"\n") < 2:
+            check_interrupted()
             remaining = deadline - time.monotonic()
-            if remaining <= 0 or not selector.select(remaining):
+            if remaining <= 0:
                 raise RuntimeError("emulator did not announce both endpoints within 30 seconds")
+            if not selector.select(min(remaining, 0.1)):
+                continue
             chunk = os.read(server.stdout.fileno(), 4096)
             if not chunk:
                 raise RuntimeError("emulator exited before announcing both endpoints")
@@ -83,6 +86,7 @@ def bootstrap(rest: str, integration_project: str) -> None:
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def post(path: str, body: dict[str, object]) -> dict[str, object]:
+        check_interrupted()
         request = urllib.request.Request(
             f"{rest}/bigquery/v2/projects/{path}",
             data=json.dumps(body).encode(),
@@ -171,8 +175,20 @@ def show_log(log: BinaryIO) -> None:
         print(f"\n>> emulator log (last 64 KiB):\n{contents}", file=sys.stderr, flush=True)
 
 
-def interrupted(signum: int, _frame: object) -> None:
-    raise SystemExit(128 + signum)
+# The first SIGINT or SIGTERM. The handler only records it, because an exception raised between
+# Popen's fork and the assignment of its result would leave the new process unowned. main() raises
+# it where everything it started is owned, and cleanup has no such point, so later signals cannot
+# interrupt it.
+received: list[int] = []
+
+
+def record_signal(signum: int, _frame: object) -> None:
+    received.append(signum)
+
+
+def check_interrupted() -> None:
+    if received:
+        raise SystemExit(128 + received[0])
 
 
 def main() -> int:
@@ -198,8 +214,8 @@ def main() -> int:
         command = command[1:]
     commands = [command] if command else [["scripts/run-one-live-test.sh", name] for name in SMOKE_TESTS]
 
-    signal.signal(signal.SIGINT, interrupted)
-    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGINT, record_signal)
+    signal.signal(signal.SIGTERM, record_signal)
     server = None
     test = None
     stdout_thread = None
@@ -234,6 +250,7 @@ def main() -> int:
                 stderr=log,
                 start_new_session=True,
             )
+            check_interrupted()
             rest, storage = endpoints(server, log)
             assert server.stdout is not None
             stdout_thread = threading.Thread(target=drain_stdout, args=(server.stdout, log, stdout_stopped))
@@ -249,6 +266,7 @@ def main() -> int:
             for command in commands:
                 test = subprocess.Popen(command, cwd=REPOSITORY_ROOT, env=environment, start_new_session=True)
                 while True:
+                    check_interrupted()
                     with contextlib.suppress(subprocess.TimeoutExpired):
                         test.wait(timeout=0.2)
                     if server.poll() is not None:
@@ -258,6 +276,7 @@ def main() -> int:
                         break
                 stop(test)
                 test = None
+                check_interrupted()
                 if status:
                     return status
             return 0
@@ -266,9 +285,6 @@ def main() -> int:
             print(f"error: {error}", file=sys.stderr, flush=True)
             return 1
         finally:
-            # A further signal must not abandon the processes cleanup is ending; it is bounded.
-            signal.signal(signal.SIGINT, signal.SIG_IGN)
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)
             stop(test)
             stop(server)
             stdout_stopped.set()
@@ -281,4 +297,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    status = main()
+    # A signal that arrived after the last check, during cleanup, still marks the run interrupted.
+    sys.exit(128 + received[0] if received else status)

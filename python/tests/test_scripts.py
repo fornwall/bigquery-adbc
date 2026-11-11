@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import http.server
+import importlib.util
 import json
 import os
 import shutil
@@ -14,6 +16,7 @@ import time
 from collections.abc import Iterator
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -226,6 +229,8 @@ if os.environ.get("FAKE_FAILURE") == "startup":
     print("startup diagnostic", flush=True)
     print("startup failed", file=sys.stderr)
     sys.exit(3)
+if os.environ.get("FAKE_FAILURE") == "silent":
+    time.sleep(60)
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -352,7 +357,10 @@ def test_emulator_runner_cleans_up_a_failed_start_without_running_tests(tmp_path
 
 
 @posix
-def test_emulator_runner_terminates_its_server_and_test_on_signal(tmp_path: Path) -> None:
+@pytest.mark.parametrize("phase", ["startup", "test"])
+def test_emulator_runner_terminates_its_server_and_test_on_signal(tmp_path: Path, phase: str) -> None:
+    # At startup the emulator has not announced its endpoints, and never will.
+    ready = tmp_path / ("server.pid" if phase == "startup" else "child.pid")
     with subprocess.Popen(
         [
             str(REPOSITORY_ROOT / "scripts/run-emulator-tests.sh"),
@@ -362,26 +370,28 @@ def test_emulator_runner_terminates_its_server_and_test_on_signal(tmp_path: Path
             "import os, pathlib, time; "
             'pathlib.Path(os.environ["FAKE_ROOT"], "child.pid").write_text(str(os.getpid())); time.sleep(60)',
         ],
-        env=emulator_environment(tmp_path),
+        env={**emulator_environment(tmp_path), "FAKE_FAILURE": "silent" if phase == "startup" else ""},
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     ) as runner:
         try:
             deadline = time.monotonic() + 10
-            while not (tmp_path / "child.pid").exists():
+            while not ready.exists():
                 assert runner.poll() is None, runner.communicate()
-                assert time.monotonic() < deadline, "test command did not start"
+                assert time.monotonic() < deadline, f"{phase} did not begin"
                 time.sleep(0.01)
             runner.send_signal(signal.SIGTERM)
-            runner.communicate(timeout=10)
+            # Well within the 30 seconds the runner waits for the endpoints.
+            runner.communicate(timeout=5)
             assert runner.returncode == 143
         finally:
             if runner.poll() is None:
-                runner.terminate()
+                runner.kill()
                 runner.communicate(timeout=10)
     assert_process_stopped(tmp_path / "server.pid")
-    assert_process_stopped(tmp_path / "child.pid")
+    if phase == "test":
+        assert_process_stopped(tmp_path / "child.pid")
 
 
 # Starts a process that ignores SIGTERM and records its PID once it does.
@@ -439,6 +449,50 @@ def test_emulator_runner_finishes_cleanup_despite_a_second_signal(tmp_path: Path
                 runner.communicate(timeout=10)
     assert_process_stopped(tmp_path / "child.pid")
     assert_process_stopped(tmp_path / "server.pid")
+
+
+@posix
+@pytest.mark.parametrize("target", ["emulator", "test"])
+def test_emulator_runner_owns_a_process_signalled_while_it_starts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, target: str
+) -> None:
+    # A signal that arrives inside Popen, after the fork, must not leave the new process unowned.
+    spec = importlib.util.spec_from_file_location("emulator_tests", REPOSITORY_ROOT / "scripts/lib/emulator-tests.py")
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+
+    started: list[subprocess.Popen[bytes]] = []
+    real_popen = subprocess.Popen
+
+    def popen(command: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+        process = real_popen(command, **kwargs)
+        started.append(process)
+        if (target == "emulator") == (len(started) == 1):
+            os.kill(os.getpid(), signal.SIGTERM)
+        return process
+
+    for key, value in emulator_environment(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    command = [sys.executable, "-c", "import time; time.sleep(60)"]
+    monkeypatch.setattr(sys, "argv", ["run-emulator-tests.sh", "--", *command])
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    handlers = {signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        with pytest.raises(SystemExit) as caught:
+            runner.main()
+        assert caught.value.code == 128 + signal.SIGTERM
+        assert len(started) == (1 if target == "emulator" else 2)
+        for process in started:
+            with pytest.raises(ProcessLookupError):
+                os.killpg(process.pid, 0)
+    finally:
+        for signum, handler in handlers.items():
+            signal.signal(signum, handler)
+        for process in started:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
 
 
 @posix
