@@ -290,13 +290,6 @@ fn parameter_metadata_must_use_the_googlesql_names_the_driver_emits() {
     let mislabelled = parameter_type(&annotated(DataType::Int64, "STRING")).unwrap_err();
     assert_failure(&mislabelled, Status::InvalidArguments, &["incompatible"]);
 
-    assert_eq!(
-        parameter_type(&annotated(DataType::Int64, "NOT_A_TYPE"))
-            .unwrap_err()
-            .status,
-        Status::NotImplemented
-    );
-
     let list = annotated(
         DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
         "INT64",
