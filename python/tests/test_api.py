@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, call
@@ -32,6 +34,18 @@ def test_public_low_level_api() -> None:
         "connect",
         "driver_path",
     }
+
+
+def test_import_defers_distribution_metadata_until_version_is_read() -> None:
+    # importlib.metadata costs more to import than the rest of the package.
+    script = (
+        "import sys, bigquery_adbc as driver\n"
+        "assert 'importlib.metadata' not in sys.modules\n"
+        "version = driver.__version__\n"
+        "assert vars(driver)['__version__'] == version\n"
+        "assert not hasattr(driver, 'missing')\n"
+    )
+    subprocess.run([sys.executable, "-c", script], check=True)
 
 
 def test_driver_path_rereads_the_development_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

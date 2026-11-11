@@ -509,6 +509,26 @@ PYTEST_ADDOPTS='-q --durations=15' \
   cargo test --locked --test clients foundry::suite_passes -- --ignored
 ```
 
+### Python package import
+
+`bigquery_adbc.__version__` reads the distribution metadata on first use: `importlib.metadata` and
+the email parser it loads cost more to import than the rest of the package. 2026-11-11, Linux
+x86-64, Python 3.15.1, the locked `python/` environment, medians of 25 `-X importtime` runs and 7
+`perf stat` runs:
+
+| `import bigquery_adbc` | Eager `__version__` | On first use |
+| --- | ---: | ---: |
+| Cumulative import time | 27.2 ms | 10.3 ms |
+| `instructions:u` beyond `python -c pass` | 211 M | 79 M |
+
+`bigquery_adbc.dbapi` still imports PyArrow, as `adbc_driver_manager.dbapi` does.
+
+```sh
+uv sync --project python --locked
+python/.venv/bin/python -X importtime -c 'import bigquery_adbc' 2>&1 | tail -n 1
+perf stat -e instructions:u python/.venv/bin/python -c 'import bigquery_adbc'
+```
+
 ## Rejected optimizations
 
 Re-evaluating one means rebuilding the rejected code and [measuring again](#reproducing).

@@ -28,6 +28,8 @@ changes.
 - A gRPC `OUT_OF_RANGE`, such as a Storage Write append past the end of its stream, returns
   `INVALID_STATE` rather than `INVALID_ARGUMENT`, as the same condition reported by a stream
   commit already did.
+- `import bigquery_adbc` takes about 60% less time (27 to 10 ms on Linux x86-64), since
+  `__version__` reads the package metadata on first use.
 - Python's `dbapi.connect()` takes `backend` as its only keyword beyond `autocommit`, so a
   misspelled keyword raises `TypeError` before the driver loads, instead of after opening the
   database and connection.

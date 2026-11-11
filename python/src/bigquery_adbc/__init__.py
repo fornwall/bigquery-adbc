@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.metadata
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -36,11 +35,21 @@ _PACKAGE_DIR = Path(__file__).resolve().parent
 # float or bytes value sets a typed option, and a path is passed as its string.
 _OptionValue = str | bytes | int | float | Path
 
-try:
-    __version__ = importlib.metadata.version(_DISTRIBUTION_NAME)
-except importlib.metadata.PackageNotFoundError:
-    # Only an uninstalled source tree lacks distribution metadata.
-    __version__ = "0.0.0+unknown"
+
+def __getattr__(name: str) -> str:
+    # importlib.metadata and its email parser cost as much to import as the rest of this package,
+    # so __version__ is read on first use.
+    if name != "__version__":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib.metadata
+
+    try:
+        version = importlib.metadata.version(_DISTRIBUTION_NAME)
+    except importlib.metadata.PackageNotFoundError:
+        # Only an uninstalled source tree lacks distribution metadata.
+        version = "0.0.0+unknown"
+    globals()["__version__"] = version
+    return version
 
 
 def _validated_library_path(path: Path, source: str) -> str:
