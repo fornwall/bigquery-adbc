@@ -365,11 +365,13 @@ and accepts a custom logger from native Go callers.
 A commit or rollback sends nothing more; the next query begins the next transaction, in a new
 session if BigQuery ended the old one. Go sends `BEGIN TRANSACTION` right after, so a failed `BEGIN`
 reports an error for a commit that succeeded. A new session is created by the `BEGIN` itself, one
-request fewer than Go's separate `SELECT 1`. `BEGIN`, `COMMIT` and `ROLLBACK` run to a verdict as
-named jobs, ignoring cancellation for up to a minute (a cancelled `BEGIN` that creates its session
-ends that session instead), and only a refused `BEGIN` or `COMMIT` keeps the session; Go cancels
-them with its context and keeps the session after any failure. Without `bigquery.location` the
-session uses the default dataset's location, where Go's lands in the US.
+request fewer than Go's separate `SELECT 1`. A cancel, or a minute without an answer, ends only the
+wait for that `BEGIN`: the driver ends the session once BigQuery names it, and a `BEGIN` that fails
+leaves any session it created to expire. Otherwise `BEGIN`, `COMMIT` and `ROLLBACK` run to a
+verdict as named jobs, ignoring cancellation for up to a minute, and only a refused `BEGIN` or
+`COMMIT` keeps the session; Go cancels them with its context and keeps the session after any
+failure. Without `bigquery.location` the session uses the default dataset's location, where Go's
+lands in the US.
 
 ### G40. Snapshot isolation is an accepted and reported isolation level
 
