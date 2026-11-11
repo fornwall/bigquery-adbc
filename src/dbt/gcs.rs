@@ -6,7 +6,7 @@
 use adbc_core::error::Result;
 
 use super::lro::{Delivery, LroPoller, PollBudget};
-use super::text_slots;
+use super::{resource_segment, text_slots};
 use crate::BigQueryStatementOption;
 use crate::cancellation::Operation;
 use crate::query::ExecutionContext;
@@ -41,7 +41,12 @@ impl GcsWriteOptions {
     /// Unlike the fork, both the bucket and the object name are required: the object is what the
     /// job submitted next reads, so writing to the wrong key silently runs stale code.
     pub(crate) fn execute(&self, context: &ExecutionContext, operation: &Operation) -> Result<()> {
-        let bucket = self.required(OPERATION, BigQueryStatementOption::WriteGcsBucket)?;
+        // The bucket is a path segment, which `.` or `..` would resolve away. The object name
+        // travels in the query string, where no segment is resolved.
+        let bucket = resource_segment(
+            self.required(OPERATION, BigQueryStatementOption::WriteGcsBucket)?,
+            BigQueryStatementOption::WriteGcsBucket,
+        )?;
         let object_name = self.required(OPERATION, BigQueryStatementOption::WriteGcsObjectName)?;
         let content = self.content.as_deref().unwrap_or_default();
 

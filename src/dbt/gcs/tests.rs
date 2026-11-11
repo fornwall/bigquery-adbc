@@ -134,6 +134,45 @@ fn a_half_configured_write_names_the_option_it_is_missing() {
     );
 }
 
+/// The bucket is a URL path segment, where `.` or `..` would be resolved away and the upload
+/// would address another resource, so such a bucket is refused before any request. A dotted
+/// bucket name is an ordinary one.
+#[test]
+fn a_bucket_that_would_reshape_the_upload_url_is_refused() {
+    let (endpoint, captured) = capture_requests(vec![ok(json!({"kind": "storage#object"}))]);
+    let mut connection = connection_writing_objects_to(endpoint);
+    for bucket in [".", "..", "dbt/python"] {
+        let mut statement = write_statement(&mut connection, "a/b.py", None);
+        set_option(
+            &mut statement,
+            BigQueryStatementOption::WriteGcsBucket,
+            bucket,
+        );
+        let error = statement.execute_update().unwrap_err();
+        assert_failure(
+            &error,
+            Status::InvalidArguments,
+            &[BigQueryStatementOption::WriteGcsBucket.as_str()],
+        );
+    }
+
+    let mut statement = write_statement(&mut connection, "a/b.py", None);
+    set_option(
+        &mut statement,
+        BigQueryStatementOption::WriteGcsBucket,
+        "dbt.python.example.com",
+    );
+    assert_eq!(statement.execute_update().unwrap(), None);
+    let requests = captured.served(1);
+    assert!(
+        requests[0]
+            .line
+            .starts_with("POST /upload/storage/v1/b/dbt.python.example.com/o?"),
+        "{}",
+        requests[0].line
+    );
+}
+
 /// Cloud Storage's own status survives rather than being flattened the way the fork flattens
 /// every python-model failure to UNKNOWN.
 #[test]

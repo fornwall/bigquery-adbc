@@ -39,6 +39,9 @@ changes.
 - With `bigquery.query.dry_run`, the dbt authorized-view, table metadata and python-model
   operations return `NOT_IMPLEMENTED` before any request instead of making their change, as a
   table copy already did.
+- A python-model upload refuses a Cloud Storage bucket of `.` or `..`, which addressed a
+  different resource, and one containing `/`, `?`, `#`, `%`, `\` or whitespace, which no bucket
+  name has.
 
 ## [0.5.0] - 2026-11-09
 

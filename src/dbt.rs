@@ -120,10 +120,11 @@ fn required_string<'a>(
 
 /// Rejects an option value that would change the shape of the URL it is interpolated into.
 ///
-/// Dataproc and Vertex AI options reach the request path, where a query, fragment, escape, or
-/// whitespace would address a different resource. `\` matters most: the WHATWG URL parser
-/// `reqwest` uses ends a special scheme's host at a backslash, so one that reaches a host name
-/// redirects the request. Empty, `.`, and `..` segments are refused because they reshape the path.
+/// Dataproc, Vertex AI and Cloud Storage options reach the request path, where a query, fragment,
+/// escape, or whitespace would address a different resource. `\` matters most: the WHATWG URL
+/// parser `reqwest` uses ends a special scheme's host at a backslash, so one that reaches a host
+/// name redirects the request. Empty, `.`, and `..` segments are refused because they reshape the
+/// path.
 fn resource_path(value: &str, key: BigQueryStatementOption) -> Result<&str> {
     let reshapes = value.contains(['?', '#', '%', '\\'])
         || value.chars().any(char::is_whitespace)
