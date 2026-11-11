@@ -14,160 +14,156 @@ changes.
 
 ### Changed
 
-- C API calls no longer make a `getpid` system call each to detect `fork`. On x86-64 Linux that
-  was most of their overhead: setting or getting an option takes about a fifth of the time.
+- A manual-commit transaction that needs a new session creates it with its `BEGIN TRANSACTION`
+  instead of a separate query, so the first statement on a connection with autocommit disabled
+  (the Python DB-API default) makes one request fewer: about 0.65 s faster in a live measurement
+  (median 1.24 s instead of 1.90 s for `SELECT 1`). A cancel during that `BEGIN` now returns
+  `CANCELLED` at once, and one unanswered after 60 seconds returns `TIMEOUT`; either way the driver
+  ends the session once BigQuery's answer names it. A `BEGIN` that fails, or whose answer never
+  arrives, leaves any session it created for BigQuery to expire.
 - A database opened after another on the same driver closed reuses the REST connection pool the
   closed one left, so a process that opens a database per connection, as Python's
   `dbapi.connect()` does, skips the TCP and TLS handshake and the reload of the system's root
   certificates: in a live measurement the first query of each later database started 35 ms
   sooner. Databases open at the same time keep connections of their own.
-- The native library is 3% smaller (250 KB on x86-64 Linux): IAM impersonation refusals decode
-  without the SDK's generic `google.rpc.Status` parser, URL parsing links no Unicode host-name
-  tables, and `adbc_core`, `tokio-util` and `flatbuffers` compile for size.
-- A query whose request exceeds BigQuery's 10 MB cap, such as very long SQL or a large bound
-  value, still returns `INVALID_ARGUMENT`, but the message now names the cap after
-  "Payload Too Large (HTTP 413)" and says to shorten the SQL, bind smaller values, or bulk-ingest
-  large values.
-- A manual-commit transaction that needs a new session creates it with its `BEGIN TRANSACTION`
-  instead of a separate query, so the first statement on a connection with autocommit disabled
-  (the Python DB-API default) makes one request fewer: about 0.65 s faster in measurements
-  (median 1.24 s instead of 1.90 s for `SELECT 1`). A cancel during that `BEGIN` now returns
-  `CANCELLED` at once, and a `BEGIN` still unanswered after 60 seconds returns `TIMEOUT`; either
-  way the driver ends the session once BigQuery's answer names it. A `BEGIN` that fails, or whose
-  answer never arrives, leaves any session it created for BigQuery to expire.
+- C API calls no longer make a `getpid` system call each to detect `fork`. On x86-64 Linux that
+  was most of their overhead: setting or getting an option takes about a fifth of the time.
+- Bulk ingest does less local work. An append into an existing table converts each row of its
+  first batch once, as it is sent, instead of also checking the whole batch first; a refused value
+  still fails the ingest with nothing committed, and `create` and `replace` still check the batch
+  before changing the target. Dictionary-encoded string, binary, numeric and temporal columns
+  expand about twice as fast when their keys are scattered, as a pandas categorical's are, and
+  splitting a batch into requests costs less for dictionary columns and for batches between one
+  and two requests in size.
+- REST results convert `NUMERIC` and `BIGNUMERIC` cells with about a quarter fewer instructions.
+- `import bigquery_adbc` takes about 60% less time (27 to 10 ms on Linux x86-64), since
+  `__version__` reads the package metadata on first use.
+- `GetObjects` and `GetStatistics` with a catalog filter naming another project no longer check
+  that the project exists before walking it, saving a request whenever the walk finds a dataset.
+  A walk that finds nothing still checks, so a missing project still yields no catalog row.
+- IAM impersonation refusals decode without the SDK's generic `google.rpc.Status` parser, URL
+  parsing links no Unicode host-name tables, and `adbc_core`, `tokio-util` and `flatbuffers`
+  compile for size, which takes 250 KB (3%) off the native library on x86-64 Linux.
 - A credential URL option or a URL in a credential document, `credential_source` included,
   naming a non-ASCII or percent-encoded host is refused; write an internationalized host in
   Punycode (`xn--`). `bigquery.allow_untrusted_endpoint` no longer skips parsing those options and
   a document's destinations, so a malformed one fails when the connection opens.
 - A `json_credential_string` credential that does not begin a JSON object, usually a file path,
   is refused with how to select `json_credential_file` instead.
-- The dbt installer accepts dbt's Rust target triples with `--target`, and rejects unknown
-  options and missing values before installing.
-- A gRPC `OUT_OF_RANGE`, such as a Storage Write append past the end of its stream, returns
-  `INVALID_STATE` rather than `INVALID_ARGUMENT`, as the same condition reported by a stream
-  commit already did.
-- `import bigquery_adbc` takes about 60% less time (27 to 10 ms on Linux x86-64), since
-  `__version__` reads the package metadata on first use.
-- Python's `dbapi.connect()` takes `backend` as its only keyword beyond `autocommit`, so a
-  misspelled keyword raises `TypeError` before the driver loads, instead of after opening the
-  database and connection.
-- A bulk-ingest `Date64` value that is not a whole day is refused with its row in the bound stream,
-  like every other refused value.
-- An append that omits a `REQUIRED` column with a default value says that Storage Write does not
-  fill it in. The reference now says that omitted nullable and repeated columns take their default
-  values.
-- A bulk-ingest append into an existing table converts each row of its first batch once, as it is
-  sent, instead of also checking the whole batch first; a refused value still fails the ingest
-  with nothing committed. `create` and `replace` still check it before changing the target.
-- Bulk ingest expands dictionary-encoded string, binary and fixed-width columns about twice as
-  fast when their keys are scattered, as a pandas categorical's are, and refuses a dictionary whose
-  expansion exceeds 32-bit offsets before copying any of it.
-- The patched dbt is built from dbt's `main` at `ef0aa4db3a` (2026-11-11).
-- The driver uses `google-cloud-bigquery` 1.0.0 for Storage Read and Write, which
-  `ADBC_INFO_VENDOR_VERSION` reports.
-- An Arrow `Null` parameter annotated `ARRAY<...>`, `STRUCT<...>` or `RANGE<...>` still returns
-  `NOT_IMPLEMENTED`, but the error now says to bind a null `List` or `Struct` field of that type
-  instead of calling the type unimplemented.
-- `GetObjects` and `GetStatistics` with a catalog filter naming another project no longer check
-  that the project exists before walking it, saving a request whenever the walk finds a dataset.
-  A walk that finds nothing still checks, so a missing project still yields no catalog row.
+- A query request over BigQuery's 10 MB cap, such as very long SQL or a large bound value, still
+  returns `INVALID_ARGUMENT`, but the message now names the cap after
+  "Payload Too Large (HTTP 413)" and says to shorten the SQL, bind smaller values, or bulk-ingest
+  large values.
 - Executing a `?` placeholder with no parameters bound still returns BigQuery's
-  `INVALID_ARGUMENT` "Positional parameters are not supported", but the error now says to bind
-  the parameters, since positional parameters are the default.
+  `INVALID_ARGUMENT` "Positional parameters are not supported", but the error now says to bind a
+  value for each placeholder.
 - When BigQuery refuses a query because of a `STRING`, such as inserting into an `INT64` column,
   and bound parameters came from unannotated Arrow `Null` fields (a DB-API `None`), the error
   names every such field and says to `CAST` its placeholder, since such a field binds as a `STRING`
   NULL.
+- An Arrow `Null` parameter annotated `ARRAY<...>`, `STRUCT<...>` or `RANGE<...>` still returns
+  `NOT_IMPLEMENTED`, but the error now says to bind a null `List` or `Struct` field of that type
+  instead of calling the type unimplemented.
+- A gRPC `OUT_OF_RANGE`, such as a Storage Write append past the end of its stream, returns
+  `INVALID_STATE` rather than `INVALID_ARGUMENT`, as the same condition reported by a stream
+  commit already did. On a Storage Read stream, where it means a value Arrow cannot hold, such as
+  an `INTERVAL` past 2,562,047 hours, it returns `INVALID_DATA`, as REST does for the same value.
+- A bulk-ingest `Date64` value that is not a whole day is refused with its row in the bound stream,
+  like every other refused value.
+- The refusal of an append that omits a `REQUIRED` column with a default value says that Storage
+  Write does not fill such a column with its default; omitted nullable and repeated columns do
+  take their defaults.
+- The driver uses `google-cloud-bigquery` 1.0.0 for Storage Read and Write, which
+  `ADBC_INFO_VENDOR_VERSION` reports.
+- The patched dbt is built from dbt's `main` at `ef0aa4db3a`.
+- The dbt installer accepts dbt's Rust target triples with `--target`, and rejects unknown
+  options and missing values before installing.
+- Python's `dbapi.connect()` takes `backend` as its only keyword beyond `autocommit`, so a
+  misspelled keyword raises `TypeError` before the driver loads, instead of after opening the
+  database and connection.
 
 ### Fixed
 
-- The hint to set `bigquery.query.parameter_mode` when BigQuery refuses a placeholder style goes
-  before a failed job's console link, which stays last in the message.
+- A token exchange refused permanently, such as an impersonation before its IAM grant propagates,
+  no longer fails every later request from the database: the next request rebuilds the refused
+  credential layer from the same configuration and asks again, as Go's token sources ask again,
+  so a refusal resolved after the connection opened lets requests through. Under Application
+  Default Credentials the rebuild reads ADC again, so a new
+  `gcloud auth application-default login` takes effect.
+- A connection URI's `AuthCredentials` can no longer make the driver run a command, exhaust memory
+  or block forever. A credential file path it supplies must be a regular file, not a pipe,
+  terminal or `/dev/stdin`, and a credential document it supplies, inline or by path, cannot name
+  a `credential_source.executable`, which the auth library runs when
+  `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`, nor a `credential_source.file` other than a
+  regular file of at most 1 MiB, which the library reads whole at every token fetch. Set
+  `bigquery.auth.credentials` as an option to go beyond this.
+- A `bigquery.auth.credentials` file over 1 MiB is refused after reading that much instead of
+  being read whole, so a path such as `/dev/zero` no longer exhausts memory.
 - A REST result row of up to BigQuery's 20 MiB limit is read, rather than failing with
   `INVALID_DATA` as "over the driver's fixed 67108864-byte limit", when its JSON exceeds 64 MiB:
   BigQuery spells each control character, `<` or `>` in six bytes, so such a row can arrive as a
   120 MB response. The limit on a buffered response is now 128 MiB.
-- A token exchange refused permanently, such as an impersonation before its IAM grant propagates,
-  no longer fails every later request from the database: each request asks the refused layer
-  again, rebuilt from the same configuration, as Go's token sources ask again, so a refusal
-  resolved after the connection opened lets the next request through. An impersonation is asked
-  again over the source token it already has. Under Application Default Credentials the rebuild
-  reads ADC again, so a new `gcloud auth application-default login` takes effect (G135).
-- A process forked while another thread was in a C API call no longer hangs in the child: the
-  child could inherit the driver's handle lock held, so creating or releasing any handle there,
-  including a new database, waited forever.
-- A credential document that a URI supplies through `AuthCredentials`, inline or by path, can no
-  longer name a `credential_source.executable`, which the auth library runs when
-  `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`, nor a `credential_source.file` other than a
-  regular file of at most 1 MiB, which the library reads whole at every token fetch (so
-  `/dev/zero` exhausted memory). Set `bigquery.auth.credentials` as an option to go beyond this.
-- A `bigquery.auth.credentials` file over 1 MiB is refused after reading that much instead of
-  being read whole, so a path such as `/dev/zero`, which a URI's `AuthCredentials` can name, no
-  longer exhausts memory.
-- A credential file path a URI's `AuthCredentials` supplies must be a regular file, so a URI can
-  no longer block the connection forever on a pipe, terminal or `/dev/stdin`. A path set as
-  `bigquery.auth.credentials` can still name a pipe.
+- A partition stream that fails, or is cancelled, before its first results read no longer asks
+  BigQuery to cancel the partition's already finished job. That request could fail for a reader
+  without permission to cancel the job, making `AdbcConnectionCancel` return `UNKNOWN`.
 - Cancel no longer fails with `UNKNOWN` and BigQuery's 404 after stopping a job submission before
   the job was created, when that submission ended just as the cancel claimed it.
+- The hint to set `bigquery.query.parameter_mode` when BigQuery refuses a placeholder style goes
+  before a failed job's console link, which stays last in the message.
+- Named parameters whose names differ beyond ASCII case, such as `é` and `É`, bind as the separate
+  parameters BigQuery reads them as, instead of being refused as duplicates.
 - A named parameter longer than BigQuery's 127-character limit is refused before sending when its
   name has characters beyond U+FFFF, which BigQuery counts twice.
 - In the Rust API, `bind` and `bind_stream` refuse a schema nested more than 32 levels with
   `INVALID_ARGUMENT` and keep the previous binding, as the C API does, rather than accepting it
   and failing the next execute.
-- A partition stream that fails, or is cancelled, before its first results read no longer asks
-  BigQuery to cancel the partition's already finished job. That request could fail for a reader
-  without permission to cancel the job, making `AdbcConnectionCancel` return `UNKNOWN`.
-- Releasing a handle or result stream that a `fork` child inherited leaks it instead of running
-  its destructors, which could wait forever on locks held by threads the child does not have.
-- The `AdbcError` that `AdbcErrorFromArrayStream` returns stays valid when other stream callbacks
-  run before the caller reads it; Rust's aliasing rules had invalidated the pointer.
-- A connection released and recreated on the same `AdbcConnection` while another thread's
-  `AdbcConnectionInit` waited on BigQuery can be cancelled; it had received the first connection's
-  cancellation handle, so `AdbcConnectionCancel` found nothing to cancel.
+- When the driver cannot settle what became of a job its submission may have created, the error
+  says BigQuery may still run the job, links it and names it in `bigquery.job_id`, for queries and
+  dbt seed loads and table copies alike: after a lost answer or a 409 whose job cannot be fetched,
+  with or without `bigquery.location`, and when a search for a job submitted without a location
+  fails partway, such as on a transient `jobs.get` failure. Such an error reads
+  `failed to submit`, not `BigQuery rejected`, and a 409 whose job is never found returns
+  `UNKNOWN` instead of `ALREADY_EXISTS`.
+- A dbt 2.0 seed load or table copy whose wait for its job ends on failed polls links the job and
+  names it in `bigquery.job_id`, as a query's wait does.
+- A submission none of whose attempts could connect (DNS, TCP or TLS) counts as having sent
+  nothing. A job submission reports `bigquery.job.verdict` `not_created` instead of failing to
+  look for its job, and a `jobs.query` no longer says BigQuery may have run the statement. A dbt
+  2.0 Dataproc or Vertex AI submission no longer says the work may have started, a Vertex AI
+  notebook execution is resent, and one cancelled while connecting reports `CANCELLED` instead of
+  the connect failure.
+- A dbt 2.0 seed upload that sent nothing, because it could not connect or obtain a token, or that
+  BigQuery refused with a retryable reason such as a rate limit, is sent again from the start of
+  its file under the same job ID, as other job submissions are, instead of failing the seed. A 409
+  naming that job then recovers it.
+- A dbt 2.0 seed load that BigQuery refuses with a 409 naming no job, as for a `WRITE_EMPTY` load
+  into a table with rows, returns `ALREADY_EXISTS` at once instead of first polling for a job
+  BigQuery never created and then sending it a cancel.
 - With `bigquery.query.dry_run`, the dbt authorized-view, table metadata and python-model
   operations return `NOT_IMPLEMENTED` before any request instead of making their change, as a
   table copy already did.
 - A python-model upload refuses a Cloud Storage bucket of `.` or `..`, which addressed a
   different resource, and one containing `/`, `?`, `#`, `%`, `\` or whitespace, which no bucket
   name has.
-- A job submission none of whose attempts could connect (DNS, TCP or TLS) reports
-  `bigquery.job.verdict` `not_created` instead of failing to look for its job, and such a
-  `jobs.query` no longer says BigQuery may have run the statement.
-- A dbt 2.0 Dataproc or Vertex AI submission cancelled while it was connecting, whose connection
-  then failed, reports `CANCELLED` instead of the connect failure and no longer says the work may
-  have started.
-- A dbt 2.0 Dataproc or Vertex AI submission that could not connect no longer says the work may
-  have started, and a Vertex AI notebook execution is resent after such a failure, since nothing
-  was sent.
 - A `create` bulk ingest whose commit is refused says it kept the table it created and suggests
   retrying with `append`, rather than suggesting a retry that would fail on that table. A commit
   that ends without an answer may have committed every row, so it says to check the table first.
-- When looking for a job submitted without `bigquery.location` fails partway, for example on a
-  transient `jobs.get` failure, the error now says the job may still run and names it in
-  `bigquery.job_id`, as it does when the job is found nowhere. So do a submission with a location,
-  including a dbt table copy, whose job a 409 or a lost answer leaves unfetched, and a dbt seed
-  load whose job a lost answer leaves unfetched. Such a failure reads `failed to submit`, not
-  `BigQuery rejected`, and when the job a 409 names cannot be fetched it is `UNKNOWN` instead of
-  `ALREADY_EXISTS`. A seed's 409 that names no job, as for a `WRITE_EMPTY` load into a table
-  with rows, still reports `ALREADY_EXISTS`: BigQuery creates no job for it.
-- A dbt 2.0 seed load or table copy whose wait for its job ends on failed polls links the job and
-  names it in `bigquery.job_id`, as a query's wait does.
-- A dbt 2.0 seed upload that sent nothing, because it could not connect or obtain a token, or that
-  BigQuery refused with a retryable reason such as a rate limit, is sent again from the start of
-  its file under the same job ID, as other job submissions are, instead of failing the seed. A 409
-  naming that job then recovers it.
-- An append to a view, snapshot or other object that is not a table reports that, rather than
-  what one of its columns makes of a bound all-null field.
-- A Storage Read stream that BigQuery fails with `OUT_OF_RANGE`, for a value Arrow cannot hold
-  such as an `INTERVAL` past 2,562,047 hours, reports `INVALID_DATA`, as REST does for the same
-  value, instead of `INVALID_ARGUMENT`.
-- Named parameters whose names differ beyond ASCII case, such as `é` and `É`, bind as the separate
-  parameters BigQuery reads them as, instead of being refused as duplicates.
-- A bulk-ingest dry run refuses a schema that leaves an append request no room for rows, as the
-  ingest it validates does.
 - When an ingest's table creation reached BigQuery but failed without its verdict, such as a lost
   response, the error says the table may exist, and in `create` mode suggests retrying with
   `create_append`. A creation that could not connect says nothing more.
+- An append to a view, snapshot or other object that is not a table reports that, rather than
+  what one of its columns makes of a bound all-null field.
+- A bulk-ingest dry run refuses a schema that leaves an append request no room for rows, as the
+  ingest it validates does.
+- A `fork` child no longer hangs in the driver. It could inherit the handle lock held by another
+  thread's C API call, so creating or releasing any handle there, including a new database,
+  waited forever. Releasing a handle or result stream it inherited leaks it instead of running
+  destructors that could wait on locks held by threads the child does not have.
+- The `AdbcError` that `AdbcErrorFromArrayStream` returns stays valid when other stream callbacks
+  run before the caller reads it; Rust's aliasing rules had invalidated the pointer.
+- A connection released and recreated on the same `AdbcConnection` while another thread's
+  `AdbcConnectionInit` waited on BigQuery can be cancelled; it had received the first connection's
+  cancellation handle, so `AdbcConnectionCancel` found nothing to cancel.
 - The `.tar.gz` native release archives name root as their files' owner, with mode 0755 for the
   library and 0644 for the rest, instead of the build machine's user and modes: extracting as root
   kept that user, such as uid 1001 on Linux, as the library's owner.
