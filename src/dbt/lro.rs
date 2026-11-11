@@ -269,7 +269,9 @@ impl<'a> LroPoller<'a> {
     }
 
     /// Sends a submission, which a cancel stops only until it may have left: nothing exists before
-    /// that, and only its answer names the work afterwards.
+    /// that, and only its answer names the work afterwards. A connection that could not be
+    /// established clears the start signal, since it sent nothing, so that failure after a cancel
+    /// reports the cancellation.
     async fn submit(&self, request: Request<'_>) -> Result<(reqwest::StatusCode, bytes::Bytes)> {
         let start = RequestStart::default();
         let request = request.with_start_signal(&start);
@@ -277,10 +279,12 @@ impl<'a> LroPoller<'a> {
         tokio::select! {
             biased;
             () = self.operation.cancelled() => {
-                if start.started() {
-                    sending.await
-                } else {
-                    Err(self.operation.cancelled_error())
+                if !start.started() {
+                    return Err(self.operation.cancelled_error());
+                }
+                match sending.await {
+                    Err(_) if !start.started() => Err(self.operation.cancelled_error()),
+                    answer => answer,
                 }
             }
             answer = &mut sending => answer,

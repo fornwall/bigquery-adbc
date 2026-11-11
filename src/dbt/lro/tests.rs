@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use adbc_core::CancelHandle as _;
 use adbc_core::error::Status;
 use google_cloud_auth::credentials::{
     CacheableResource, Credentials, CredentialsProvider, EntityTag, anonymous,
@@ -351,6 +352,42 @@ fn a_cancel_during_the_token_mint_sends_nothing() {
 
         assert_eq!(answer.unwrap_err().status, Status::Cancelled);
         assert!(server.stop().is_empty());
+    }
+}
+
+/// A cancel that finds a submission connecting waits for its answer, since a sent request may
+/// have started work only that answer names. A connection that then cannot be established sent
+/// nothing, so the cancel won: the caller sees `CANCELLED`, not the connect failure, and no
+/// claim that the work may have started.
+#[test]
+fn a_cancel_during_a_connection_that_then_fails_reports_the_cancellation() {
+    for delivery in [Delivery::Once, Delivery::Deduplicated] {
+        let runtime = crate::runtime::new_runtime().unwrap();
+        let (cancellation, operation) = poller_operation(&runtime);
+        let credentials = anonymous::Builder::new().build();
+        let (endpoint, connecting, release) = crate::test_support::http::stalled_tls_handshake();
+        let poller = test_poller(&operation, &credentials, endpoint.clone());
+        let url = format!("{endpoint}/v1/submit");
+        let factory = || Request::post_json(&url, &b"{}"[..], "submit the work");
+        let canceller = std::thread::spawn(move || {
+            connecting.recv().unwrap();
+            crate::cancellation::OperationCancelHandle(cancellation)
+                .try_cancel()
+                .unwrap();
+            release.send(()).unwrap();
+        });
+
+        let failure = runtime
+            .block_on(poller.request(delivery, &factory))
+            .unwrap_err();
+        canceller.join().unwrap();
+
+        assert_eq!(failure.status, Status::Cancelled, "{}", failure.message);
+        assert!(
+            !failure.message.contains("may have started"),
+            "{}",
+            failure.message
+        );
     }
 }
 

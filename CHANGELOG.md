@@ -67,6 +67,9 @@ changes.
 - A job submission none of whose attempts could connect (DNS, TCP or TLS) reports
   `bigquery.job.verdict` `not_created` instead of failing to look for its job, and such a
   `jobs.query` no longer says BigQuery may have run the statement.
+- A dbt 2.0 Dataproc or Vertex AI submission cancelled while it was connecting, whose connection
+  then failed, reports `CANCELLED` instead of the connect failure and no longer says the work may
+  have started.
 - A `create` bulk ingest whose commit fails says it kept the table it created and suggests
   retrying with `append`, rather than suggesting a retry that would fail on that table.
 - When looking for a job submitted without `bigquery.location` fails partway, for example on a

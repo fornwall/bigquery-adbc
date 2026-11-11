@@ -398,6 +398,28 @@ pub(crate) fn redirect_once(
     (endpoint, handle)
 }
 
+/// An `https` endpoint whose first connection stalls in its TLS handshake until the test releases
+/// it, then fails, so a request there has started but fails to connect: reqwest reports a
+/// connection it could not establish, which proves no byte of the request was sent.
+///
+/// The receiver yields once the client's first handshake bytes arrive. Sending on the sender, or
+/// dropping it, closes that connection unanswered; later connections are closed at once.
+pub(crate) fn stalled_tls_handshake() -> (String, mpsc::Receiver<()>, mpsc::Sender<()>) {
+    let (listener, endpoint) = mock_listener();
+    let endpoint = endpoint.replacen("http://", "https://", 1);
+    let (connecting, connected) = mpsc::channel();
+    let (release, released) = mpsc::channel::<()>();
+    thread::spawn(move || {
+        if let Some(mut stream) = accept(&listener, None) {
+            let _ = stream.read(&mut [0; 1]);
+            let _ = connecting.send(());
+            let _ = released.recv();
+        }
+        retire(listener);
+    });
+    (endpoint, connected, release)
+}
+
 /// A [`loopback_listener`] in the non-blocking mode [`accept`] polls, with its endpoint.
 pub(crate) fn mock_listener() -> (TcpListener, String) {
     let listener = loopback_listener();
