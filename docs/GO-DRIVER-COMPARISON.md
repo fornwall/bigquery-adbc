@@ -664,10 +664,9 @@ whole, so a URI that names `/dev/zero` exhausts Go's memory.
 
 A credential document's `token_uri`, `token_url`, `service_account_impersonation_url`,
 `credential_source.url` or AWS source URL naming a non-ASCII host is refused, so an
-internationalized host must be
-written in Punycode (`xn--`); Go's HTTP client converts such a host to Punycode itself. Without
-Unicode mapping, a fullwidth spelling of a Google host cannot pass the [endpoint
-rules](REFERENCE.md#endpoint-overrides) either.
+internationalized host must be written in Punycode (`xn--`); Go's HTTP client converts such a host
+to Punycode itself. Without Unicode mapping, a fullwidth spelling of a Google host cannot pass the
+[endpoint rules](REFERENCE.md#endpoint-overrides) either.
 
 ### G98. JSON credential options take four document types
 
@@ -682,13 +681,13 @@ works only as Application Default Credentials, where the bundled SDK ignores
 
 After a token exchange the auth library treats as permanent, such as an IAM refusal or
 `invalid_grant`, the next request rebuilds the refused layer from the same configuration and asks
-again; Go's token sources ask again on each request too. A rebuilt impersonation reuses the source
-token, as Go's does. A credential the library builds whole, such as an
-`impersonated_service_account` document or an external account with
-`service_account_impersonation_url`, repeats all of its exchanges. Refresh tokens and documents set
-as options are sent again unchanged, so a revoked one keeps failing. Application Default
+again, as Go's token sources ask on each request (UP-140). A rebuilt impersonation reuses its
+source token, as Go's does; a credential the library builds whole (an
+`impersonated_service_account` document, or an external account with
+`service_account_impersonation_url`) repeats every exchange, and a refresh token or document set
+as an option is sent again unchanged, so a revoked one keeps failing. Application Default
 Credentials are read again, so a new `gcloud auth application-default login` reaches the open
-database, where Go reads them once per connection; they are not rebuilt when they would switch
+database, where Go reads them once per connection; they are not rebuilt when that would switch
 between a file and the metadata server, as removing the file would off Google Cloud.
 
 ## C interface and object lifecycle

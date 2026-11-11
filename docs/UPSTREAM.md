@@ -402,9 +402,7 @@ ends its refresh task at the first failure classified as permanent, such as an I
 first fetch starts when the credential is built, as a connection opens, so a refusal at that
 moment would fail every later request from the database's clients. On a permanent failure the
 driver rebuilds the refused layer from the same configuration, over the layer beneath it, and asks
-it once (`src/config/recovery.rs`). Each failing request so repeats that layer's exchange, and a
-credential the library builds whole, such as an `impersonated_service_account` document or an
-external account with `service_account_impersonation_url`, repeats every exchange it makes.
+it once, so each failing request repeats that layer's exchanges (`src/config/recovery.rs`, G135).
 
 ## UP-141: each token exchange builds a new HTTP client
 
