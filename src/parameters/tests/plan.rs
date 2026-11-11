@@ -15,6 +15,8 @@ fn validates_named_parameter_field_names() {
             .collect()
     }
 
+    // A character beyond U+FFFF, two UTF-16 code units.
+    let snake = "\u{1F40D}";
     // Everything BigQuery accepts must pass: a quoted `@`identifier`` reference reaches
     // names that are not unquoted identifiers (observed, not documented).
     validate_parameter_fields(
@@ -26,19 +28,30 @@ fn validates_named_parameter_field_names() {
             "a\nb",
             "\u{fc}ber",
             &"x".repeat(127),
-            // The limit counts characters, not bytes: 127 two-byte characters pass.
+            // The limit counts UTF-16 code units, not bytes: 127 two-byte characters pass, and so
+            // do 63 characters beyond U+FFFF and one more character.
             &"\u{fc}".repeat(127),
+            &format!("{}x", snake.repeat(63)),
         ]),
         ParameterMode::Named,
     )
     .unwrap();
 
     let too_long = "x".repeat(128);
+    let too_long_beyond_u_ffff = snake.repeat(64);
     let duplicate = "\"a\" at parameter 2 duplicates \"a\" at parameter 0";
     let case_duplicate = "\"A\" at parameter 2 duplicates \"a\" at parameter 0";
     let length = "128 characters long; it cannot exceed 127 characters";
-    let refusals: [(&[&str], &[&str]); 6] = [
+    let refusals: [(&[&str], &[&str]); 7] = [
         (&[&too_long], &[&too_long, length]),
+        // BigQuery refuses 64 such characters as too long (observed).
+        (
+            &[&too_long_beyond_u_ffff],
+            &[
+                "128 characters long, counting each character beyond U+FFFF as two; it cannot \
+                 exceed 127 characters",
+            ],
+        ),
         (&["a", ""], &["parameter 1 has an empty field name"]),
         (&["a", "b", "a"], &[duplicate]),
         // BigQuery matches names case-insensitively, by full Unicode uppercase mapping.

@@ -162,11 +162,11 @@ pub(crate) fn parameters_for_schema(
         .collect())
 }
 
-/// The longest named parameter name BigQuery accepts, in characters, not bytes; 128 is rejected
-/// with "Query parameter name is too long: ..., must be less than 128 characters" (observed, not
-/// documented). Length is the only constraint: names with spaces, backticks, control characters,
-/// leading digits, non-ASCII letters or reserved keywords work when the SQL quotes them
-/// (`` @`my param` ``), so nothing else may be rejected here.
+/// The longest named parameter name BigQuery accepts, in UTF-16 code units, so a character beyond
+/// U+FFFF counts twice; 128 is rejected with "Query parameter name is too long: ..., must be less
+/// than 128 characters" (observed, not documented). Length is the only constraint: names with
+/// spaces, backticks, control characters, leading digits, non-ASCII letters or reserved keywords
+/// work when the SQL quotes them (`` @`my param` ``), so nothing else may be rejected here.
 const MAX_PARAMETER_NAME_CHARACTERS: usize = 127;
 
 fn validate_parameter_fields(fields: &Fields, mode: ParameterMode) -> Result<()> {
@@ -181,11 +181,16 @@ fn validate_parameter_fields(fields: &Fields, mode: ParameterMode) -> Result<()>
                  the @parameter it binds"
             )));
         }
-        let characters = field.name().chars().count();
+        let characters = field.name().encode_utf16().count();
         if characters > MAX_PARAMETER_NAME_CHARACTERS {
+            let counting = if characters == field.name().chars().count() {
+                ""
+            } else {
+                ", counting each character beyond U+FFFF as two"
+            };
             return Err(invalid_argument(format!(
-                "named BigQuery parameter field {:?} is {characters} characters long; it cannot \
-                 exceed {MAX_PARAMETER_NAME_CHARACTERS} characters",
+                "named BigQuery parameter field {:?} is {characters} characters long{counting}; \
+                 it cannot exceed {MAX_PARAMETER_NAME_CHARACTERS} characters",
                 field.name()
             )));
         }

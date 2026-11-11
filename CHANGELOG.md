@@ -29,6 +29,8 @@ changes.
 
 - Cancel no longer fails with `UNKNOWN` and BigQuery's 404 after stopping a job submission before
   the job was created, when that submission ended just as the cancel claimed it.
+- A named parameter longer than BigQuery's 127-character limit is refused before sending when its
+  name has characters beyond U+FFFF, which BigQuery counts twice.
 
 ## [0.5.0] - 2026-11-09
 
